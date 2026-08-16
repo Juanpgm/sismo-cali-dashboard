@@ -18,6 +18,17 @@ const NUM_FIELDS = {
   n_sotanos: 'sótanos',
 };
 
+// Adjacent-building external-risk fields, moved here from the sidebar: they are
+// yes/no flags, so points get a semantic 2-color scale (present = hazard, absent
+// = clear) rather than an arbitrary categorical one.
+const RISK_FIELDS = new Set(['41_a', '42_a', 'riesgo_caida']);
+function riskColor(value) {
+  const v = normalize(value);
+  if (v === 'si') return COLORS.status.i2; // present → hazard (red)
+  if (v === 'no') return COLORS.status.h;  // absent → clear (green)
+  return COLORS.unknown;                   // blank → sin dato (gray)
+}
+
 let map = null;
 let pointsLayer = null;
 let heatLayer = null;
@@ -82,6 +93,10 @@ function pointColor(record) {
       return dynamicColor('severidad_danos', record.severidad_danos);
     case 'uso_edificacion':
       return dynamicColor('uso_edificacion', record.uso_edificacion);
+    case '41_a':
+    case '42_a':
+    case 'riesgo_caida':
+      return riskColor(record[state.colorBy]);
     case 'criterio_habitabilidad':
     default:
       return habitabilityColor(record.criterio_habitabilidad || record.habitabilidad_calc);
@@ -190,6 +205,13 @@ function renderPointsLegend(records) {
     entries = dynamicScaleCache.field === state.colorBy
       ? dynamicScaleCache.scale.legend.map((e) => ({ label: e.label, color: e.color }))
       : [];
+  } else if (RISK_FIELDS.has(state.colorBy)) {
+    title = labelForField(state.colorBy);
+    entries = [
+      { label: 'Presente (Sí)', color: COLORS.status.i2 },
+      { label: 'Ausente (No)', color: COLORS.status.h },
+      { label: 'Sin dato', color: COLORS.unknown },
+    ];
   } else {
     title = 'Criterio de habitabilidad';
     entries = Object.entries(COLORS.status).map(([code, color]) => ({ label: labelForCode(code), color }));

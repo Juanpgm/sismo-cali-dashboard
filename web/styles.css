@@ -56,7 +56,9 @@ html, body {
   color: var(--text-primary);
   font-family: var(--font-ui);
   -webkit-font-smoothing: antialiased;
-  overflow-x: hidden;
+  /* clip (not hidden): suppresses horizontal scroll WITHOUT turning body into a
+     scroll container, which would break the sidebar's position:sticky child. */
+  overflow-x: clip;
 }
 
 body {
@@ -521,12 +523,30 @@ a { color: var(--accent); }
 .filters-panel {
   background: var(--surface);
   border-right: 1px solid var(--border);
-  padding: 20px 16px;
-  overflow-y: auto;
+  /* No fixed height: the grid stretches this column to the full document
+     height, so the sidebar surface runs all the way down to the footer. The
+     controls themselves live in a sticky scroller (#filters-root) so they stay
+     in view while the page scrolls. */
+}
+
+#filters-root {
   position: sticky;
   top: 0;
-  height: 100vh;
+  max-height: 100vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 20px 16px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
 }
+#filters-root::-webkit-scrollbar { width: 8px; }
+#filters-root::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+#filters-root::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
 .filters-header {
   display: flex;
@@ -558,7 +578,7 @@ a { color: var(--accent); }
   width: 100%;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 10px;
   background: var(--surface-2);
   border: 1px solid var(--border-strong);
   color: var(--text-primary);
@@ -569,8 +589,30 @@ a { color: var(--accent); }
   font-weight: 600;
   cursor: pointer;
   text-align: left;
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
+.filter-toggle > span:first-child { flex: 1; min-width: 0; }
 .filter-toggle:hover { border-color: var(--accent); }
+/* Caret makes the dropdown affordance explicit; rotates when the panel opens. */
+.filter-toggle::after {
+  content: "";
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid var(--text-muted);
+  border-bottom: 2px solid var(--text-muted);
+  transform: rotate(45deg) translateY(-1px);
+  transition: transform 0.18s ease;
+}
+.filter-block:has(.filter-options.is-open) .filter-toggle::after {
+  transform: rotate(-135deg) translateY(2px);
+}
+.filter-block:has(.filter-options.is-open) .filter-toggle { border-color: var(--accent); }
+/* Engaged filter (has selections) — accent cue so active filters read at a glance. */
+.filter-toggle:has(.filter-count:not(:empty)) {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
 .filter-count {
   font-family: var(--font-mono);
   color: var(--accent);
@@ -586,8 +628,9 @@ a { color: var(--accent); }
   border-radius: var(--radius-sm);
   margin-top: 4px;
   padding: 6px;
-  max-height: 220px;
+  max-height: 260px;
   overflow-y: auto;
+  box-shadow: var(--shadow-card);
 }
 .filter-options.is-open { display: flex; }
 .filter-option {
