@@ -154,6 +154,8 @@ const FIELD_LABELS = {
   escaleras_cual: 'Escaleras (cuál)',
   calidad_construccion: 'Calidad de construcción',
   estado_edificacion: 'Estado de la edificación',
+  '41_a': 'Caída de objetos de edificios adyacentes',
+  '42_a': 'Colapso de edificios adyacentes',
   '46_especifique_cual': 'Otro riesgo (especifique)',
   colapso_total: 'Colapso total',
   colapso_parcial: 'Colapso parcial',

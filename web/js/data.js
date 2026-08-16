@@ -2,34 +2,48 @@
 import { normalize, buildSearchIndex, splitMultiValue, labelForField } from './utils.js';
 
 // Sidebar section order/labels for FILTER_FIELDS' `group` key.
+// Ordered so the severity-determining fields the assessor needs first come first.
 export const FILTER_GROUPS = [
-  { key: 'evaluacion', label: 'Evaluación' },
-  { key: 'ubicacion', label: 'Ubicación' },
+  { key: 'severidad', label: 'Severidad y daño' },
+  { key: 'riesgo', label: 'Riesgo externo' },
   { key: 'edificacion', label: 'Edificación' },
+  { key: 'ubicacion', label: 'Ubicación' },
   { key: 'contexto', label: 'Contexto' },
 ];
 
 // Single source of truth for filterable (checkbox/dropdown) fields — filters.js imports this directly.
 export const FILTER_FIELDS = [
-  { field: 'criterio_habitabilidad', label: 'Criterio de habitabilidad', group: 'evaluacion' },
-  { field: 'nivel_dano', label: 'Nivel de daño', group: 'evaluacion' },
-  { field: 'severidad_danos', label: labelForField('severidad_danos'), group: 'evaluacion' },
-  { field: 'comuna', label: 'Comuna', group: 'ubicacion' },
-  { field: 'barrio_geo', label: 'Barrio', emptyLabel: 'Sin barrio asignado', group: 'ubicacion' },
+  // Severity / damage grade — the primary triage decision fields.
+  { field: 'severidad_danos', label: labelForField('severidad_danos'), group: 'severidad' },
+  { field: 'nivel_dano', label: 'Nivel de daño', group: 'severidad' },
+  { field: 'criterio_habitabilidad', label: 'Habitabilidad', group: 'severidad' },
+  // Adjacent-building external risk (EDE sections 4.1 / 4.2 / 5.6).
+  { field: '41_a', label: 'Caída de objetos de edificios adyacentes', group: 'riesgo' },
+  { field: '42_a', label: 'Colapso de edificios adyacentes', group: 'riesgo' },
+  { field: 'riesgo_caida', label: 'Riesgo de caída de elementos', group: 'riesgo' },
+  // Building type / condition.
   { field: 'uso_edificacion', label: 'Uso de la edificación', multiValue: true, group: 'edificacion' },
-  { field: 'tipo_propiedad', label: 'Tipo de propiedad', group: 'edificacion' },
-  { field: 'epoca_construccion', label: 'Época de construcción', group: 'edificacion' },
   { field: 'sistema_estructural', label: 'Sistema estructural', group: 'edificacion' },
   { field: 'material_estructura', label: labelForField('material_estructura'), group: 'edificacion' },
   { field: 'calidad_construccion', label: 'Calidad de construcción', group: 'edificacion' },
   { field: 'estado_edificacion', label: labelForField('estado_edificacion'), group: 'edificacion' },
+  { field: 'tipo_propiedad', label: 'Tipo de propiedad', group: 'edificacion' },
+  { field: 'epoca_construccion', label: 'Época de construcción', group: 'edificacion' },
+  { field: 'comuna', label: 'Comuna', group: 'ubicacion' },
+  { field: 'barrio_geo', label: 'Barrio', emptyLabel: 'Sin barrio asignado', group: 'ubicacion' },
   { field: 'entidad', label: labelForField('entidad'), group: 'contexto' },
 ];
 
 // Numeric range fields — separate control type (min/max inputs, not a value Set).
 export const RANGE_FIELDS = [
   { field: 'n_pisos', label: labelForField('n_pisos') },
+  { field: 'n_sotanos', label: labelForField('n_sotanos') },
   { field: 'n_ocupantes', label: labelForField('n_ocupantes') },
+  { field: 'n_residenciales', label: labelForField('n_residenciales') },
+  { field: 'n_comerciales', label: labelForField('n_comerciales') },
+  { field: 'n_no_habitadas', label: labelForField('n_no_habitadas') },
+  { field: 'frente', label: labelForField('frente') },
+  { field: 'fondo', label: labelForField('fondo') },
   { field: 'n_muertos', label: labelForField('n_muertos') },
   { field: 'n_heridos', label: labelForField('n_heridos') },
 ];

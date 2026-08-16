@@ -10,6 +10,17 @@ function sumField(records, field) {
   return total;
 }
 
+/** Mean over records with a numeric value, rounded to 1 decimal (0 if none). */
+function avgField(records, field) {
+  let total = 0;
+  let n = 0;
+  for (const r of records) {
+    const v = Number(r[field]);
+    if (!Number.isNaN(v)) { total += v; n += 1; }
+  }
+  return n ? Math.round((total / n) * 10) / 10 : 0;
+}
+
 function isYes(v) {
   return normalize(v) === 'si' || normalize(v) === 'sí';
 }
@@ -23,6 +34,13 @@ const TILE_DEFS = [
   { key: 'habitables', label: 'Habitables', accent: COLORS.status.h },
   { key: 'colapsos', label: 'Colapsos (Total / Parcial)', accent: COLORS.status.i3 },
   { key: 'ocupantes_riesgo', label: 'Ocupantes en no habitables', accent: COLORS.status.i1 },
+  // Numeric-variable aggregates.
+  { key: 'ocupantes_total', label: 'Ocupantes totales', accent: null },
+  { key: 'u_residenciales', label: 'Unidades residenciales', accent: null },
+  { key: 'u_comerciales', label: 'Unidades comerciales', accent: null },
+  { key: 'u_no_habitadas', label: 'Unidades no habitadas', accent: null },
+  { key: 'pisos_prom', label: 'Pisos (promedio)', accent: null },
+  { key: 'sotanos_total', label: 'Sótanos (total)', accent: null },
 ];
 
 const HAB_ORDER = ['h', 'r1', 'r2', 'i1', 'i2', 'i3'];
@@ -48,6 +66,12 @@ export function computeKpis(records) {
     habitables: habitables.length,
     colapsos: `${colapsoTotal} / ${colapsoParcial}`,
     ocupantes_riesgo: sumField(noHab, 'n_ocupantes'),
+    ocupantes_total: sumField(records, 'n_ocupantes'),
+    u_residenciales: sumField(records, 'n_residenciales'),
+    u_comerciales: sumField(records, 'n_comerciales'),
+    u_no_habitadas: sumField(records, 'n_no_habitadas'),
+    pisos_prom: avgField(records, 'n_pisos'),
+    sotanos_total: sumField(records, 'n_sotanos'),
   };
 }
 
