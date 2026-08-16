@@ -74,6 +74,15 @@
               <option value="uso_edificacion">Uso de la edificación</option>
             </select>
           </label>
+          <label class="inline-select">
+            Tamaño por
+            <select id="size-by-select">
+              <option value="none">Uniforme</option>
+              <option value="n_ocupantes">N.º de habitantes</option>
+              <option value="n_pisos">N.º de pisos</option>
+              <option value="n_sotanos">N.º de sótanos</option>
+            </select>
+          </label>
         </div>
 
         <div class="map-sub-controls is-hidden" data-mode-controls="heat">
@@ -83,6 +92,9 @@
               <option value="count">N.º de inspecciones</option>
               <option value="victims">Muertos + heridos</option>
               <option value="damage">Nivel de daño</option>
+              <option value="n_ocupantes">N.º de habitantes</option>
+              <option value="n_pisos">N.º de pisos</option>
+              <option value="n_sotanos">N.º de sótanos</option>
             </select>
           </label>
         </div>
@@ -101,6 +113,9 @@
               <option value="count">N.º de inspecciones</option>
               <option value="no_habitables">N.º de no habitables</option>
               <option value="victims">Muertos + heridos</option>
+              <option value="n_ocupantes">Total habitantes</option>
+              <option value="n_pisos">Total pisos</option>
+              <option value="n_sotanos">Total sótanos</option>
             </select>
           </label>
         </div>
@@ -130,6 +145,18 @@
         <div class="chart-tile">
           <h3 class="chart-tile-title">Habitabilidad por comuna</h3>
           <canvas id="chart-hab-comuna"></canvas>
+        </div>
+        <div class="chart-tile">
+          <h3 class="chart-tile-title">Distribución de habitabilidad</h3>
+          <canvas id="chart-hab-doughnut"></canvas>
+        </div>
+        <div class="chart-tile">
+          <h3 class="chart-tile-title">Severidad de daños</h3>
+          <canvas id="chart-severidad"></canvas>
+        </div>
+        <div class="chart-tile chart-tile-wide">
+          <h3 class="chart-tile-title">Riesgos y afectaciones (conteo de "Sí")</h3>
+          <canvas id="chart-flags"></canvas>
         </div>
         <div class="chart-tile chart-tile-wide">
           <h3 class="chart-tile-title">Inspecciones por día</h3>

@@ -4,7 +4,7 @@ import { initFilters } from './filters.js';
 import { renderKpis } from './kpi.js';
 import { renderStatistics } from './charts.js';
 import {
-  initMap, render as renderMap, setMode, setColorBy, setHeatWeight,
+  initMap, render as renderMap, setMode, setColorBy, setSizeBy, setHeatWeight,
   setChoroplethLevel, setChoroplethMetric, invalidateSize, highlightRecord,
 } from './mapview.js';
 import { initTable, renderTable, setTotalRecords, openDetailModal } from './table.js';
@@ -100,6 +100,10 @@ function wireMapControls() {
 
   el('#color-by-select').addEventListener('change', (e) => {
     setColorBy(e.target.value);
+    renderMap(store.filtered);
+  });
+  el('#size-by-select').addEventListener('change', (e) => {
+    setSizeBy(e.target.value);
     renderMap(store.filtered);
   });
   el('#heat-weight-select').addEventListener('change', (e) => {

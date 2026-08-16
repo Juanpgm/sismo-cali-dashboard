@@ -1,7 +1,7 @@
 /* global Chart */
 // Chart.js 4 (UMD global via CDN, same pattern as Leaflet's `L`) — "Estadísticas" charts.
 import {
-  COLORS, themeColor, labelForCode, splitMultiValue, habCode, normalize, formatDate,
+  COLORS, themeColor, labelForCode, labelForField, splitMultiValue, habCode, normalize, formatDate,
 } from './utils.js';
 
 const registry = new Map();
@@ -243,6 +243,113 @@ function renderTimeSeries(records) {
   });
 }
 
+function isYes(v) {
+  return normalize(v) === 'si';
+}
+
+// Meaningful, human-labeled Sí/No hazard/affectation flags. The remaining binary
+// fields are opaque EDE damage-matrix sub-cells (41_b, 43_c, 45_a…) without a
+// codebook, so they're left out of this summary rather than shown as "B"/"C".
+const FLAG_FIELDS = [
+  'colapso_total', 'colapso_parcial', '42_a', '41_a', 'riesgo_caida',
+  'asentamiento_severo', 'inclinacion_importante', 'suelo_inestable',
+  'existen_sistemas_combinados',
+];
+
+/** Horizontal bar: count of "Sí" for every meaningful binary flag. */
+function renderFlags(records) {
+  const rows = FLAG_FIELDS
+    .map((f) => ({ label: labelForField(f), count: records.reduce((n, r) => n + (isYes(r[f]) ? 1 : 0), 0) }))
+    .sort((a, b) => b.count - a.count);
+  const total = records.length;
+  upsertChart('chart-flags', {
+    type: 'bar',
+    data: {
+      labels: rows.map((r) => r.label),
+      datasets: [{
+        label: 'Casos con "Sí"',
+        data: rows.map((r) => r.count),
+        backgroundColor: COLORS.status.i2,
+        borderRadius: 4,
+        maxBarThickness: 22,
+      }],
+    },
+    options: baseOptions({
+      indexAxis: 'y',
+      scales: {
+        x: { beginAtZero: true },
+        y: { grid: { display: false } },
+      },
+      plugins: {
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const v = ctx.parsed.x;
+              const pct = total ? Math.round((v / total) * 1000) / 10 : 0;
+              return `${v} de ${total} (${pct}%)`;
+            },
+          },
+        },
+      },
+    }),
+  });
+}
+
+/** Doughnut: habitability distribution over the filtered set. */
+function renderHabDoughnut(records) {
+  const counts = Object.fromEntries(HAB_ORDER.map((c) => [c, 0]));
+  for (const r of records) {
+    const code = habCode(r);
+    if (code in counts) counts[code] += 1;
+  }
+  const present = HAB_ORDER.filter((c) => counts[c] > 0);
+  upsertChart('chart-hab-doughnut', {
+    type: 'doughnut',
+    data: {
+      labels: present.map(labelForCode),
+      datasets: [{
+        data: present.map((c) => counts[c]),
+        backgroundColor: present.map((c) => COLORS.status[c]),
+        borderColor: themeColor('--surface', '#12294a'),
+        borderWidth: 2,
+      }],
+    },
+    options: baseOptions({ cutout: '55%', plugins: { legend: { display: true } } }),
+  });
+}
+
+const SEV_ORDER = ['sin_dano', 'bajo', 'medio', 'medio_alto', 'alto'];
+const SEV_COLORS = {
+  sin_dano: COLORS.damage.sin_dano,
+  bajo: COLORS.damage.bajo,
+  medio: COLORS.damage.medio,
+  medio_alto: '#fb7185',
+  alto: COLORS.damage.alto,
+};
+
+/** Pie: damage-severity distribution over the filtered set. */
+function renderSeveridad(records) {
+  const counts = new Map(SEV_ORDER.map((k) => [k, 0]));
+  for (const r of records) {
+    const k = normalize(r.severidad_danos);
+    if (counts.has(k)) counts.set(k, counts.get(k) + 1);
+  }
+  const present = SEV_ORDER.filter((k) => counts.get(k) > 0);
+  upsertChart('chart-severidad', {
+    type: 'pie',
+    data: {
+      labels: present.map(labelForCode),
+      datasets: [{
+        data: present.map((k) => counts.get(k)),
+        backgroundColor: present.map((k) => SEV_COLORS[k]),
+        borderColor: themeColor('--surface', '#12294a'),
+        borderWidth: 2,
+      }],
+    },
+    options: baseOptions({ plugins: { legend: { display: true } } }),
+  });
+}
+
 let warnedMissingChart = false;
 
 /** Render all 5 "Estadísticas" charts from the current filtered record set. */
@@ -258,5 +365,8 @@ export function renderStatistics(records) {
   renderByNivelDano(records);
   renderByUso(records);
   renderHabByComuna(records);
+  renderHabDoughnut(records);
+  renderSeveridad(records);
+  renderFlags(records);
   renderTimeSeries(records);
 }

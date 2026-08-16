@@ -10,6 +10,14 @@ const CALI_ZOOM = 12;
 
 const DAMAGE_ORDER = { sin_dano: 0, bajo: 1, medio: 2, alto: 3 };
 
+// Per-building numeric fields shared across map modes (size / intensity / metric).
+// Values are the short noun used in legends and labels.
+const NUM_FIELDS = {
+  n_ocupantes: 'habitantes',
+  n_pisos: 'pisos',
+  n_sotanos: 'sótanos',
+};
+
 let map = null;
 let pointsLayer = null;
 let heatLayer = null;
@@ -24,9 +32,10 @@ let highlightMarker = null;
 const state = {
   mode: 'points', // points | heat | choropleth
   colorBy: 'criterio_habitabilidad',
-  heatWeight: 'count', // count | victims | damage
+  sizeBy: 'none', // none | n_ocupantes | n_pisos | n_sotanos
+  heatWeight: 'count', // count | victims | damage | n_ocupantes | n_pisos | n_sotanos
   choroplethLevel: 'comuna', // comuna | barrio
-  choroplethMetric: 'count', // count | no_habitables | victims
+  choroplethMetric: 'count', // count | no_habitables | victims | n_ocupantes | n_pisos | n_sotanos
 };
 
 export function getState() {
@@ -86,6 +95,36 @@ function dynamicColor(field, value) {
     : COLORS.unknown;
 }
 
+const MIN_RADIUS = 5;
+const MAX_RADIUS = 18;
+const BASE_RADIUS = 7;
+
+/** Min/max of a numeric field over records (ignores blank/non-numeric). */
+function numericBounds(records, field) {
+  let min = null;
+  let max = null;
+  for (const r of records) {
+    const v = Number(r[field]);
+    if (Number.isNaN(v)) continue;
+    if (min === null || v < min) min = v;
+    if (max === null || v > max) max = v;
+  }
+  return { min: min ?? 0, max: max ?? 0 };
+}
+
+/** Marker radius scaled so circle AREA is proportional to the sizeBy value
+ *  (sqrt of the normalized value). Uniform BASE_RADIUS when sizing is off. */
+function radiusFor(record, bounds) {
+  const field = state.sizeBy;
+  if (field === 'none' || !bounds) return BASE_RADIUS;
+  const v = Number(record[field]);
+  if (Number.isNaN(v)) return MIN_RADIUS;
+  const { min, max } = bounds;
+  if (max <= min) return (MIN_RADIUS + MAX_RADIUS) / 2;
+  const t = Math.sqrt((v - min) / (max - min));
+  return MIN_RADIUS + t * (MAX_RADIUS - MIN_RADIUS);
+}
+
 function popupHtml(r) {
   const title = escapeHtml(r.nombre_edificacion || r.direccion || 'Sin nombre');
   const hab = r.criterio_habitabilidad || r.habitabilidad_calc;
@@ -98,6 +137,7 @@ function popupHtml(r) {
         <dt>Habitabilidad</dt><dd>${escapeHtml(labelForCode(hab))}</dd>
         <dt>Nivel de daño</dt><dd>${escapeHtml(labelForCode(r.nivel_dano))}</dd>
         <dt>Muertos / heridos</dt><dd>${Number(r.n_muertos) || 0} / ${Number(r.n_heridos) || 0}</dd>
+        <dt>Habitantes / pisos / sótanos</dt><dd>${Number(r.n_ocupantes) || 0} / ${Number(r.n_pisos) || 0} / ${Number(r.n_sotanos) || 0}</dd>
       </dl>
       <button type="button" class="btn-link" data-detail-id="${escapeHtml(String(r.ObjectID))}">Ver detalle &rarr;</button>
     </div>
@@ -115,9 +155,11 @@ function renderPoints(records) {
     };
   }
 
+  const sizeBounds = state.sizeBy === 'none' ? null : numericBounds(withCoords, state.sizeBy);
+
   for (const r of withCoords) {
     const marker = L.circleMarker([Number(r.y), Number(r.x)], {
-      radius: 7,
+      radius: radiusFor(r, sizeBounds),
       color: '#0B1D33',
       weight: 1,
       fillColor: pointColor(r),
@@ -152,6 +194,7 @@ function renderPointsLegend(records) {
     title = 'Criterio de habitabilidad';
     entries = Object.entries(COLORS.status).map(([code, color]) => ({ label: labelForCode(code), color }));
   }
+  if (state.sizeBy !== 'none') title += ` · tamaño ∝ ${NUM_FIELDS[state.sizeBy]}`;
   setLegend(title, entries.map((e) => ({ ...e, shape: 'circle' })));
 }
 
@@ -161,6 +204,10 @@ function weightFor(record) {
       return (Number(record.n_muertos) || 0) + (Number(record.n_heridos) || 0) + 0.15;
     case 'damage':
       return (DAMAGE_ORDER[normalize(record.nivel_dano)] ?? -1) + 1 || 0.2;
+    case 'n_ocupantes':
+    case 'n_pisos':
+    case 'n_sotanos':
+      return Number(record[state.heatWeight]) || 0;
     case 'count':
     default:
       return 1;
@@ -175,12 +222,16 @@ function renderHeat(records) {
   const points = records
     .filter((r) => r.x != null && r.y != null && !Number.isNaN(Number(r.x)) && !Number.isNaN(Number(r.y)))
     .map((r) => [Number(r.y), Number(r.x), weightFor(r)]);
-  heatLayer = L.heatLayer(points, { radius: 26, blur: 20, maxZoom: 17, minOpacity: 0.35 });
+  // Scale the ramp to the actual weight range; otherwise leaflet.heat's default
+  // max of 1.0 saturates every point once weights exceed 1 (e.g. occupants).
+  const maxWeight = points.reduce((m, p) => Math.max(m, p[2]), 0) || 1;
+  heatLayer = L.heatLayer(points, { radius: 26, blur: 20, maxZoom: 17, minOpacity: 0.35, max: maxWeight });
   heatLayer.addTo(map);
 
   const label = state.heatWeight === 'victims' ? 'Intensidad: muertos + heridos'
     : state.heatWeight === 'damage' ? 'Intensidad: nivel de daño'
-      : 'Intensidad: número de inspecciones';
+      : NUM_FIELDS[state.heatWeight] ? `Intensidad: ${NUM_FIELDS[state.heatWeight]}`
+        : 'Intensidad: número de inspecciones';
   setLegend(label, [
     { label: 'Baja', color: interpolateRamp(COLORS.choropleth, 0.15), shape: 'square' },
     { label: 'Media', color: interpolateRamp(COLORS.choropleth, 0.5), shape: 'square' },
@@ -207,6 +258,9 @@ function metricValue(records, metric) {
   }
   if (metric === 'victims') {
     return records.reduce((sum, r) => sum + (Number(r.n_muertos) || 0) + (Number(r.n_heridos) || 0), 0);
+  }
+  if (NUM_FIELDS[metric]) {
+    return records.reduce((sum, r) => sum + (Number(r[metric]) || 0), 0);
   }
   return records.length;
 }
@@ -268,6 +322,7 @@ async function renderChoropleth(records) {
 function metricLabel(metric) {
   if (metric === 'no_habitables') return 'No habitables';
   if (metric === 'victims') return 'Muertos + heridos';
+  if (NUM_FIELDS[metric]) return `Total ${NUM_FIELDS[metric]}`;
   return 'N° inspecciones';
 }
 
@@ -312,6 +367,7 @@ export async function render(records) {
 
 export function setMode(mode) { state.mode = mode; }
 export function setColorBy(field) { state.colorBy = field; }
+export function setSizeBy(field) { state.sizeBy = field; }
 export function setHeatWeight(mode) { state.heatWeight = mode; }
 export function setChoroplethLevel(level) { state.choroplethLevel = level; }
 export function setChoroplethMetric(metric) { state.choroplethMetric = metric; }
