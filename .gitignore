@@ -20,3 +20,7 @@ venv/
 
 # Tooling artifacts
 .atl/
+
+# Knowledge-graph sources (large PDFs/txt, re-downloadable via
+# knowledge/build_kg.py --extract)
+knowledge/fuentes/

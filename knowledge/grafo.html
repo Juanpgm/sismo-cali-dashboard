@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grafo de conocimiento — Criterios de demolición</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1: #fcfcfb;
+    --page: #f9f9f7;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --border: rgba(11,11,11,0.10);
+    --patologia: #2a78d6;
+    --elemento: #eb6834;
+    --criterio: #1baf7a;
+    --accion: #0b0b0b;
+    --termino: #898781;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-1: #1a1a19;
+      --page: #0d0d0d;
+      --text-primary: #ffffff;
+      --text-secondary: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --border: rgba(255,255,255,0.10);
+      --patologia: #3987e5;
+      --elemento: #d95926;
+      --criterio: #199e70;
+      --accion: #ffffff;
+      --termino: #898781;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --border: rgba(255,255,255,0.10);
+    --patologia: #3987e5;
+    --elemento: #d95926;
+    --criterio: #199e70;
+    --accion: #ffffff;
+    --termino: #898781;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--page); color: var(--text-primary);
+    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    padding: 10px 16px; display: flex; align-items: center; gap: 16px;
+    flex-wrap: wrap; border-bottom: 1px solid var(--grid); background: var(--surface-1);
+  }
+  header h1 { font-size: 1rem; font-weight: 600; }
+  header .sub { font-size: 0.78rem; color: var(--text-secondary); }
+  .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-left: auto; }
+  .controls input[type="search"] {
+    padding: 5px 10px; border: 1px solid var(--grid); border-radius: 6px;
+    background: var(--page); color: var(--text-primary); font-size: 0.82rem; width: 180px;
+  }
+  .tipo-toggle {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 0.78rem;
+    color: var(--text-secondary); cursor: pointer; user-select: none;
+    padding: 3px 8px; border: 1px solid var(--grid); border-radius: 999px;
+  }
+  .tipo-toggle input { accent-color: var(--text-secondary); }
+  .tipo-toggle svg { flex: none; }
+  #theme-btn, #fit-btn {
+    border: 1px solid var(--grid); background: var(--page); color: var(--text-primary);
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 0.8rem;
+  }
+  .view-tabs { display: inline-flex; border: 1px solid var(--grid); border-radius: 7px; overflow: hidden; }
+  .view-tab {
+    border: none; background: var(--page); color: var(--text-secondary);
+    padding: 5px 12px; font-size: 0.8rem; cursor: pointer;
+  }
+  .view-tab.active { background: var(--text-primary); color: var(--surface-1); font-weight: 600; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #docs-wrap { flex: 1; display: flex; min-height: 0; background: var(--surface-1); }
+  #docs-wrap[hidden] { display: none; }
+  #docs-nav {
+    width: 220px; flex: none; border-right: 1px solid var(--grid); overflow-y: auto;
+    padding: 12px 0;
+  }
+  #docs-nav a {
+    display: block; padding: 6px 16px; font-size: 0.82rem; color: var(--text-secondary);
+    text-decoration: none; border-left: 2px solid transparent;
+  }
+  #docs-nav a:hover { color: var(--text-primary); }
+  #docs-nav a.active { color: var(--text-primary); border-left-color: var(--text-primary); font-weight: 600; }
+  #docs-nav .doc-group { font-size: 0.68rem; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--muted); padding: 10px 16px 4px; }
+  #docs-article {
+    flex: 1; overflow-y: auto; padding: 26px 40px; max-width: 760px;
+    font-size: 0.92rem; line-height: 1.65;
+  }
+  #docs-article h1 { font-size: 1.5rem; margin: 0 0 14px; }
+  #docs-article h2 { font-size: 1.15rem; margin: 26px 0 8px; padding-top: 10px; border-top: 1px solid var(--grid); }
+  #docs-article h2:first-child { border-top: none; padding-top: 0; }
+  #docs-article p { margin: 0 0 10px; color: var(--text-secondary); }
+  #docs-article blockquote {
+    margin: 8px 0 14px; padding: 6px 12px; border-left: 3px solid var(--patologia);
+    background: var(--page); font-size: 0.85rem; color: var(--text-secondary);
+  }
+  #docs-article code {
+    font-size: 0.8rem; background: var(--page); border: 1px solid var(--grid);
+    border-radius: 4px; padding: 1px 5px; word-break: break-word;
+  }
+  #docs-article ul { margin: 4px 0 14px; padding-left: 20px; color: var(--text-secondary); font-size: 0.85rem; }
+  #docs-article li { margin: 2px 0; }
+  #docs-article a { color: var(--text-primary); }
+  #docs-article strong { color: var(--text-primary); }
+  #graph-wrap { flex: 1; position: relative; background: var(--surface-1); }
+  #graph { width: 100%; height: 100%; cursor: grab; touch-action: none; }
+  #graph.dragging { cursor: grabbing; }
+  aside {
+    width: 320px; max-width: 40vw; border-left: 1px solid var(--grid);
+    background: var(--surface-1); overflow-y: auto; padding: 14px 16px;
+    font-size: 0.84rem; line-height: 1.45;
+  }
+  aside h2 { font-size: 0.95rem; margin-bottom: 2px; }
+  aside .tipo-chip {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 0.72rem;
+    color: var(--text-secondary); margin-bottom: 8px;
+  }
+  aside .campo { margin-top: 10px; }
+  aside .campo b { display: block; font-size: 0.72rem; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--muted); margin-bottom: 2px; }
+  aside .cita {
+    font-size: 0.78rem; color: var(--text-secondary); border-left: 3px solid var(--grid);
+    padding-left: 8px;
+  }
+  aside code { font-size: 0.74rem; background: var(--page); border: 1px solid var(--grid);
+    border-radius: 4px; padding: 1px 5px; word-break: break-all; }
+  aside ul { list-style: none; padding: 0; }
+  aside li { padding: 3px 0; border-bottom: 1px solid var(--grid); }
+  aside li:last-child { border-bottom: none; }
+  aside .rel { color: var(--muted); font-size: 0.72rem; }
+  aside a { color: var(--text-primary); text-decoration: underline; cursor: pointer; }
+  aside .hint { color: var(--muted); font-size: 0.78rem; margin-top: 10px; }
+  .leyenda {
+    position: absolute; left: 12px; bottom: 12px; background: var(--surface-1);
+    border: 1px solid var(--grid); border-radius: 8px; padding: 8px 12px;
+    font-size: 0.74rem; color: var(--text-secondary); line-height: 1.7;
+  }
+  .leyenda div { display: flex; align-items: center; gap: 7px; }
+  .edge { stroke: var(--muted); stroke-opacity: 0.55; fill: none; }
+  .edge.detecta { stroke-dasharray: 3 3; stroke-opacity: 0.3; }
+  .edge.pondera { stroke-dasharray: 1 3; stroke-opacity: 0.7; }
+  .edge.hl { stroke: var(--text-primary); stroke-opacity: 0.9; }
+  .node { cursor: pointer; }
+  .node .shape { stroke: var(--surface-1); stroke-width: 2px; }
+  .node.sel .shape { stroke: var(--text-primary); stroke-width: 2.5px; }
+  .node.dim { opacity: 0.18; }
+  .edge.dim { opacity: 0.08; }
+  .nlabel {
+    font-size: 9.5px; fill: var(--text-secondary); pointer-events: none;
+    paint-order: stroke; stroke: var(--surface-1); stroke-width: 2.5px; stroke-linejoin: round;
+  }
+  .node.tipo-termino .nlabel { display: none; }
+  .node.tipo-termino:hover .nlabel, .node.tipo-termino.sel .nlabel { display: block; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Grafo de conocimiento — criterios de demolición</h1>
+    <div class="sub">NSR-10 Título A (cap. A.10) · Guía AIS / Manual de campo post-sismo · <span id="stats"></span></div>
+  </div>
+  <div class="controls">
+    <div class="view-tabs" role="tablist">
+      <button type="button" class="view-tab active" id="tab-grafo" role="tab" aria-selected="true">Grafo</button>
+      <button type="button" class="view-tab" id="tab-docs" role="tab" aria-selected="false">Documentación</button>
+    </div>
+    <input type="search" id="buscar" placeholder="Buscar nodo…" aria-label="Buscar nodo">
+    <span id="toggles"></span>
+    <button id="fit-btn" type="button">Centrar</button>
+    <button id="theme-btn" type="button" aria-label="Cambiar tema">◐</button>
+  </div>
+</header>
+<main>
+  <div id="graph-wrap">
+    <svg id="graph" role="img" aria-label="Grafo de conocimiento de criterios de demolición"></svg>
+    <div class="leyenda" id="leyenda-edges">
+      <div><svg width="26" height="6"><line x1="0" y1="3" x2="26" y2="3" class="edge" style="stroke-opacity:.8"/></svg> indica / sugiere / afecta</div>
+      <div><svg width="26" height="6"><line x1="0" y1="3" x2="26" y2="3" class="edge detecta" style="stroke-opacity:.6"/></svg> detecta (léxico)</div>
+      <div><svg width="26" height="6"><line x1="0" y1="3" x2="26" y2="3" class="edge pondera" style="stroke-opacity:.8"/></svg> pondera (criticidad)</div>
+    </div>
+  </div>
+  <div id="docs-wrap" hidden>
+    <nav id="docs-nav"></nav>
+    <article id="docs-article"></article>
+  </div>
+  <aside id="panel">
+    <h2>Grafo de criterios</h2>
+    <p class="hint">Cada nodo y arista cita su fuente (NSR-10 o Guía AIS). Hacé clic en un nodo para ver su detalle y conexiones; arrastralo para reacomodar; rueda para zoom. Los términos (puntos grises) son el léxico de detección — su etiqueta aparece al pasar el mouse.</p>
+  </aside>
+</main>
+<script id="kg-data" type="application/json">{"nodes": [{"id": "grieta_diagonal", "tipo": "patologia", "nombre": "Grietas diagonales (falla por cortante)", "descripcion": "Agrietamiento diagonal en muros/vigas/columnas, tipico en X en mamposteria; falla por cortante", "fuente": {"doc": "AIS-manual", "ref": "Tablas 3-5/3-6, pags 44-47"}}, {"id": "grieta_horizontal_flexion", "tipo": "patologia", "nombre": "Grietas horizontales por flexion", "descripcion": "Grietas horizontales en extremos de muros portantes (flexion)", "fuente": {"doc": "AIS-manual", "ref": "pags 46-47"}}, {"id": "aplastamiento", "tipo": "patologia", "nombre": "Aplastamiento del concreto/mamposteria", "descripcion": "Nivel severo: aplastamiento del material y agrietamiento del nucleo", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-5, pags 44-45"}}, {"id": "pandeo_refuerzo", "tipo": "patologia", "nombre": "Pandeo de barras/elementos", "descripcion": "Pandeo de refuerzo longitudinal o de elementos; nivel severo", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-5, pags 44-45"}}, {"id": "acero_expuesto", "tipo": "patologia", "nombre": "Exposicion de barras de refuerzo", "descripcion": "Nivel fuerte: perdida de recubrimiento con exposicion de barras", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-5, pags 44-45"}}, {"id": "perdida_recubrimiento", "tipo": "patologia", "nombre": "Perdida de recubrimiento", "descripcion": "Nivel moderado-fuerte en elementos de concreto", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-5, pags 44-45"}}, {"id": "desplome_inclinacion", "tipo": "patologia", "nombre": "Desplome / inclinacion permanente", "descripcion": "Inclinacion > 2 grados (~1/30 de altura) implica alto riesgo de estabilidad global", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-2, pags 27-28"}}, {"id": "asentamiento_diferencial", "tipo": "patologia", "nombre": "Asentamiento / hundimiento diferencial", "descripcion": "Falla de cimentacion o suelo; produce inclinacion", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-3, pags 32/38-39"}}, {"id": "fisura_generica", "tipo": "patologia", "nombre": "Fisuracion leve", "descripcion": "Fisuras < 1.0 mm: nivel muy leve a leve", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-5, pags 44-45"}}, {"id": "grieta_generica", "tipo": "patologia", "nombre": "Agrietamiento sin orientacion declarada", "descripcion": "Grietas 1.0-2.0 mm: nivel moderado", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-5, pags 44-45"}}, {"id": "dislocacion_piezas", "tipo": "patologia", "nombre": "Dislocacion de piezas de mamposteria", "descripcion": "Nivel fuerte: agrietamiento diagonal severo > 3 mm con dislocacion de piezas", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-6, pag 47"}}, {"id": "falla_nudo", "tipo": "patologia", "nombre": "Falla en nudos viga-columna", "descripcion": "Elemento de saturacion en porticos: su dano severo compromete toda la edificacion", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-12, pag 59"}}, {"id": "socavacion_deslizamiento", "tipo": "patologia", "nombre": "Deslizamiento / falla de talud / socavacion", "descripcion": "Fenomeno geotecnico con disminucion de capacidad del suelo", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-3, pag 32"}}, {"id": "desprendimiento", "tipo": "patologia", "nombre": "Desprendimiento de acabados/elementos", "descripcion": "Elementos en peligro de caer (fachadas, antepechos, cielos rasos)", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-21, pag 59"}}, {"id": "corrosion", "tipo": "patologia", "nombre": "Corrosion / oxidacion del refuerzo", "descripcion": "Degrada el estado de conservacion: phi_e 0.6 con estado malo", "fuente": {"doc": "NSR-10", "ref": "Tabla A.10.4-1, pag 121"}}, {"id": "punzonamiento", "tipo": "patologia", "nombre": "Punzonamiento en losas", "descripcion": "Grietas por punzonamiento alrededor de columnas en losas/entrepisos", "fuente": {"doc": "AIS-manual", "ref": "pag 44"}}, {"id": "muro_carga", "tipo": "elemento", "nombre": "Muro de carga / portante", "fuente": {"doc": "AIS-manual", "ref": "Tablas 3-4/3-12, pags 43/59"}}, {"id": "muro_generico", "tipo": "elemento", "nombre": "Muro sin calificar", "descripcion": "En mamposteria estructural las fachadas y varios divisorios son parte del sistema estructural", "fuente": {"doc": "AIS-manual", "ref": "pags 51/53"}}, {"id": "columna", "tipo": "elemento", "nombre": "Columna / columneta", "fuente": {"doc": "AIS-manual", "ref": "Tablas 3-4/3-12, pags 43/59"}}, {"id": "nudo", "tipo": "elemento", "nombre": "Nudo viga-columna / conexion", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-12, pag 59"}}, {"id": "viga", "tipo": "elemento", "nombre": "Viga / vigueta", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-4, pag 43"}}, {"id": "losa_entrepiso", "tipo": "elemento", "nombre": "Losa / entrepiso / contrapiso", "fuente": {"doc": "AIS-manual", "ref": "Tablas 3-4/3-11, pags 43/58"}}, {"id": "cimentacion", "tipo": "elemento", "nombre": "Cimentacion", "fuente": {"doc": "AIS-manual", "ref": "pags 38-39"}}, {"id": "cubierta", "tipo": "elemento", "nombre": "Cubierta / estructura de techo", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-17, pag 55"}}, {"id": "no_estructural", "tipo": "elemento", "nombre": "Elemento no estructural (divisorios, acabados, cielos rasos)", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-21, pags 59-61"}}, {"id": "ais_t3_13_riesgo_estructural", "tipo": "criterio_norma", "nombre": "Riesgo estructural por severidad y extension del dano", "descripcion": "Dano severo en >15% de elementos verticales o >20% de horizontales: riesgo muy alto (peligro de colapso); severo 5-15% o fuerte 10-30%: riesgo alto (no habitable)", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-13, pags 49-50"}}, {"id": "ais_t3_22_habitabilidad", "tipo": "criterio_norma", "nombre": "Regla de habitabilidad por combinacion de 4 riesgos", "descripcion": "Peligro de colapso (Rojo) con 1+ riesgo muy alto o 2+ riesgos altos; No habitable (Naranja) con 1+ riesgo alto", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-22, pag 60"}}, {"id": "ais_t3_2_estabilidad", "tipo": "criterio_norma", "nombre": "Riesgo por estabilidad global", "descripcion": "Colapso total o parcial >50% o inclinacion notable: riesgo muy alto; colapso parcial 5-50%: alto", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-2, pags 27-28"}}, {"id": "ais_t3_3_geotecnico", "tipo": "criterio_norma", "nombre": "Riesgo geotecnico", "descripcion": "Fallas severas de cimentacion, hundimiento o inclinacion: riesgo muy alto", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-3, pag 32"}}, {"id": "ais_t3_12_saturacion", "tipo": "criterio_norma", "nombre": "Elementos de saturacion", "descripcion": "Dano severo en muros de carga, columnas o nudos satura el dano global de la edificacion", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-12, pag 59"}}, {"id": "ais_t3_21_no_estructural", "tipo": "criterio_norma", "nombre": "Riesgo no estructural", "descripcion": "Danos severos generalizados o elementos en peligro de caer: riesgo alto; no genera colapso por si solo", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-21, pags 59-60"}}, {"id": "ais_demolicion_experto", "tipo": "criterio_norma", "nombre": "Recomendacion de demolicion requiere experticia", "descripcion": "Posible demolicion solo ante riesgo inminente para vecinos o imposibilidad de recuperacion sin dudas, y por evaluador con experiencia en patologia", "fuente": {"doc": "AIS-manual", "ref": "pags 27/49"}}, {"id": "nsr10_a10_10_1_reparar_vs_demoler", "tipo": "criterio_norma", "nombre": "Reparar vs demoler: factibilidad tecnica", "descripcion": "Edificaciones con danos moderados a severos se evaluan para establecer si es tecnicamente factible repararlas; provee criterios para designarlas a demolicion total", "fuente": {"doc": "NSR-10", "ref": "A.10.10.1, pag 126"}}, {"id": "nsr10_a10_10_1_2_alcance_dano", "tipo": "criterio_norma", "nombre": "Alcance de la reparacion segun tipo de dano", "descripcion": "Dano solo no estructural se repara por A.9; dano estructural exige evaluacion general y reparar los elementos danados mas los necesarios por resistencia y deriva", "fuente": {"doc": "NSR-10", "ref": "A.10.10.1.2, pags 126-127"}}, {"id": "nsr10_a10_4_3_4_conservacion", "tipo": "criterio_norma", "nombre": "Resistencia efectiva reducida por estado de conservacion", "descripcion": "Resistencia efectiva = existente x phi_c x phi_e; calidad/conservacion mala reduce a 0.6", "fuente": {"doc": "NSR-10", "ref": "A.10.4.3.4 Tabla A.10.4-1, pag 121"}}, {"id": "demoler", "tipo": "accion", "nombre": "Demoler la edificacion", "fuente": {"doc": "AIS-manual", "ref": "Seccion 9, pags 12/27"}}, {"id": "apuntalar", "tipo": "accion", "nombre": "Apuntalar", "fuente": {"doc": "AIS-manual", "ref": "Seccion 9, pag 12"}}, {"id": "reforzar", "tipo": "accion", "nombre": "Reforzar / rehabilitar", "fuente": {"doc": "NSR-10", "ref": "A.10.9.1, pag 124"}}, {"id": "evacuar", "tipo": "accion", "nombre": "Evacuar", "fuente": {"doc": "AIS-manual", "ref": "Seccion 9, pag 12"}}, {"id": "estudio_vulnerabilidad", "tipo": "accion", "nombre": "Estudio de vulnerabilidad", "fuente": {"doc": "AIS-manual", "ref": "pag 49"}}, {"id": "t_grieta_diagonal", "tipo": "termino", "nombre": "grieta diagonal", "patron": "griet\\w+\\s+(?:\\w+\\s+){0,2}diagonal|agrietamiento\\s+diagonal|fisur\\w+\\s+diagonal|griet\\w+\\s+en\\s+x\\b|falla\\s+(?:de|por)\\s+cortante", "fuente": {"doc": "AIS-manual", "ref": "pags 44-47"}}, {"id": "t_grieta_horizontal", "tipo": "termino", "nombre": "grieta horizontal", "patron": "griet\\w+\\s+horizontal|agrietamiento\\s+horizontal", "fuente": {"doc": "AIS-manual", "ref": "pags 46-47"}}, {"id": "t_aplastamiento", "tipo": "termino", "nombre": "aplastamiento", "patron": "aplasta", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-5, pags 44-45"}}, {"id": "t_pandeo", "tipo": "termino", "nombre": "pandeo", "patron": "pande[oa]", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-5, pags 44-45"}}, {"id": "t_acero_expuesto", "tipo": "termino", "nombre": "acero expuesto", "patron": "(?:acero|refuerzo|barras?)\\s+(?:[#\\w.]+\\s+){0,2}expuest|exposici.n\\s+de\\s+(?:barras|acero|refuerzo)|acero\\s+(?:a\\s+la\\s+)?vista", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-5, pags 44-45"}}, {"id": "t_recubrimiento", "tipo": "termino", "nombre": "perdida de recubrimiento", "patron": "p.rdida\\s+de(?:l)?\\s+(?:recubrimiento|revestimiento)|(?:recubrimiento|revestimiento)\\s+(?:perdid|desprendid|ca.d)|descascaramiento", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-5, pags 44-45"}}, {"id": "t_desplome", "tipo": "termino", "nombre": "desplome/inclinacion", "patron": "desplom|inclinaci|inclinad|volcam|desviaci.n|fuera\\s+de\\s+plomo|ladead", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-2, pags 27-28"}}, {"id": "t_asentamiento", "tipo": "termino", "nombre": "asentamiento", "patron": "asentamiento|asentad|hundimiento|hundid|subsidencia", "fuente": {"doc": "AIS-manual", "ref": "pags 38-39"}}, {"id": "t_fisura", "tipo": "termino", "nombre": "fisura", "patron": "fisur", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-5, pags 44-45"}}, {"id": "t_grieta", "tipo": "termino", "nombre": "grieta", "patron": "griet|agrieta", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-5, pags 44-45"}}, {"id": "t_dislocacion", "tipo": "termino", "nombre": "dislocacion", "patron": "dislocaci|dislocad|desencaj", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-6, pag 47"}}, {"id": "t_falla_nudo", "tipo": "termino", "nombre": "falla de nudo", "patron": "falla\\w*\\s+(?:de\\s+|en\\s+)?(?:los\\s+)?nudos?|nudos?\\s+(?:fallad|agrietad|da.ad)|uni.n\\s+viga[\\s-]columna", "fuente": {"doc": "AIS-manual", "ref": "pag 44"}}, {"id": "t_deslizamiento", "tipo": "termino", "nombre": "deslizamiento/talud", "patron": "socav|deslizamiento|talud|remoci.n\\s+en\\s+masa|ladera|licuaci.n", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-3, pag 32"}}, {"id": "t_desprendimiento", "tipo": "termino", "nombre": "desprendimiento", "patron": "desprend|peligro\\s+de\\s+caer|riesgo\\s+de\\s+ca.da", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-21, pag 59"}}, {"id": "t_corrosion", "tipo": "termino", "nombre": "corrosion", "patron": "corro.i.n|corro.d|oxid", "fuente": {"doc": "NSR-10", "ref": "Tabla A.10.4-1, pag 121"}}, {"id": "t_punzonamiento", "tipo": "termino", "nombre": "punzonamiento", "patron": "punzonamiento", "fuente": {"doc": "AIS-manual", "ref": "pag 44"}}, {"id": "t_muro_carga", "tipo": "termino", "nombre": "muro de carga", "patron": "muros?\\s+(?:de\\s+carga|portantes?|estructurales?|de\\s+contenci.n)|mamposter.a\\s+(?:estructural|portante|de\\s+carga)|tapia|adobe|bahareque", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-4, pag 43"}}, {"id": "t_muro", "tipo": "termino", "nombre": "muro", "patron": "muros?\\b|mamposter", "fuente": {"doc": "AIS-manual", "ref": "pags 51/53"}}, {"id": "t_columna", "tipo": "termino", "nombre": "columna", "patron": "columnas?|columnetas?", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-4, pag 43"}}, {"id": "t_nudo", "tipo": "termino", "nombre": "nudo", "patron": "nudos?\\b|conexi.n\\s+viga", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-12, pag 59"}}, {"id": "t_viga", "tipo": "termino", "nombre": "viga", "patron": "vigas?\\b|viguetas?|dintel", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-4, pag 43"}}, {"id": "t_losa", "tipo": "termino", "nombre": "losa/entrepiso", "patron": "losas?\\b|entrepisos?|contrapisos?|placas?\\s+de\\s+(?:piso|entrepiso|concreto)", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-11, pag 58"}}, {"id": "t_cimentacion", "tipo": "termino", "nombre": "cimentacion", "patron": "cimentaci|cimientos?|zapatas?|fundaci.n", "fuente": {"doc": "AIS-manual", "ref": "pags 38-39"}}, {"id": "t_cubierta", "tipo": "termino", "nombre": "cubierta", "patron": "cubiertas?|tejas?|techos?|cerchas?|correas?|culatas?", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-17, pag 55"}}, {"id": "t_no_estructural", "tipo": "termino", "nombre": "no estructural", "patron": "pa.etes?|divisori|particion|acabados?|enchapes?|cielos?\\s+rasos?|antepechos?|fachadas?", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-21, pags 59-61"}}, {"id": "t_demoler", "tipo": "termino", "nombre": "demoler", "patron": "demol|derrib|desmont", "fuente": {"doc": "AIS-manual", "ref": "Seccion 9, pags 12/27"}}, {"id": "t_apuntalar", "tipo": "termino", "nombre": "apuntalar", "patron": "apuntal", "fuente": {"doc": "AIS-manual", "ref": "Seccion 9, pag 12"}}, {"id": "t_reforzar", "tipo": "termino", "nombre": "reforzar", "patron": "reforz|rehabilitaci.n\\s+s.smica", "fuente": {"doc": "NSR-10", "ref": "A.10.9.1, pag 124"}}, {"id": "t_evacuar", "tipo": "termino", "nombre": "evacuar", "patron": "evacuaci|evacuar|desaloj", "fuente": {"doc": "AIS-manual", "ref": "Seccion 9, pag 12"}}, {"id": "t_vulnerabilidad", "tipo": "termino", "nombre": "estudio de vulnerabilidad", "patron": "vulnerabilidad", "fuente": {"doc": "AIS-manual", "ref": "pag 49"}}], "edges": [{"de": "t_grieta_diagonal", "a": "grieta_diagonal", "relacion": "detecta"}, {"de": "t_grieta_horizontal", "a": "grieta_horizontal_flexion", "relacion": "detecta"}, {"de": "t_aplastamiento", "a": "aplastamiento", "relacion": "detecta"}, {"de": "t_pandeo", "a": "pandeo_refuerzo", "relacion": "detecta"}, {"de": "t_acero_expuesto", "a": "acero_expuesto", "relacion": "detecta"}, {"de": "t_recubrimiento", "a": "perdida_recubrimiento", "relacion": "detecta"}, {"de": "t_desplome", "a": "desplome_inclinacion", "relacion": "detecta"}, {"de": "t_asentamiento", "a": "asentamiento_diferencial", "relacion": "detecta"}, {"de": "t_fisura", "a": "fisura_generica", "relacion": "detecta"}, {"de": "t_grieta", "a": "grieta_generica", "relacion": "detecta"}, {"de": "t_dislocacion", "a": "dislocacion_piezas", "relacion": "detecta"}, {"de": "t_falla_nudo", "a": "falla_nudo", "relacion": "detecta"}, {"de": "t_deslizamiento", "a": "socavacion_deslizamiento", "relacion": "detecta"}, {"de": "t_desprendimiento", "a": "desprendimiento", "relacion": "detecta"}, {"de": "t_corrosion", "a": "corrosion", "relacion": "detecta"}, {"de": "t_punzonamiento", "a": "punzonamiento", "relacion": "detecta"}, {"de": "t_muro_carga", "a": "muro_carga", "relacion": "detecta"}, {"de": "t_muro", "a": "muro_generico", "relacion": "detecta"}, {"de": "t_columna", "a": "columna", "relacion": "detecta"}, {"de": "t_nudo", "a": "nudo", "relacion": "detecta"}, {"de": "t_viga", "a": "viga", "relacion": "detecta"}, {"de": "t_losa", "a": "losa_entrepiso", "relacion": "detecta"}, {"de": "t_cimentacion", "a": "cimentacion", "relacion": "detecta"}, {"de": "t_cubierta", "a": "cubierta", "relacion": "detecta"}, {"de": "t_no_estructural", "a": "no_estructural", "relacion": "detecta"}, {"de": "t_demoler", "a": "demoler", "relacion": "detecta"}, {"de": "t_apuntalar", "a": "apuntalar", "relacion": "detecta"}, {"de": "t_reforzar", "a": "reforzar", "relacion": "detecta"}, {"de": "t_evacuar", "a": "evacuar", "relacion": "detecta"}, {"de": "t_vulnerabilidad", "a": "estudio_vulnerabilidad", "relacion": "detecta"}, {"de": "aplastamiento", "a": "ais_t3_13_riesgo_estructural", "relacion": "indica", "peso": 0.9, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-5 nivel severo, pags 44-45"}}, {"de": "pandeo_refuerzo", "a": "ais_t3_13_riesgo_estructural", "relacion": "indica", "peso": 0.9, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-5 nivel severo, pags 44-45"}}, {"de": "grieta_diagonal", "a": "ais_t3_13_riesgo_estructural", "relacion": "indica", "peso": 0.7, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-6 nivel fuerte, pag 47"}}, {"de": "grieta_horizontal_flexion", "a": "ais_t3_13_riesgo_estructural", "relacion": "indica", "peso": 0.5, "fuente": {"doc": "AIS-manual", "ref": "pags 46-47"}}, {"de": "acero_expuesto", "a": "nsr10_a10_4_3_4_conservacion", "relacion": "indica", "peso": 0.7, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-5 nivel fuerte, pags 44-45"}}, {"de": "perdida_recubrimiento", "a": "nsr10_a10_4_3_4_conservacion", "relacion": "indica", "peso": 0.5, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-5 nivel moderado, pags 44-45"}}, {"de": "desplome_inclinacion", "a": "ais_t3_2_estabilidad", "relacion": "indica", "peso": 0.9, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-2, inclinacion >2 grados, pags 27-28"}}, {"de": "asentamiento_diferencial", "a": "ais_t3_3_geotecnico", "relacion": "indica", "peso": 0.8, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-3 riesgo muy alto, pag 32"}}, {"de": "fisura_generica", "a": "ais_t3_13_riesgo_estructural", "relacion": "indica", "peso": 0.25, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-5 nivel leve, pags 44-45"}}, {"de": "grieta_generica", "a": "ais_t3_13_riesgo_estructural", "relacion": "indica", "peso": 0.45, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-5 nivel moderado, pags 44-45"}}, {"de": "dislocacion_piezas", "a": "ais_t3_13_riesgo_estructural", "relacion": "indica", "peso": 0.7, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-6 nivel fuerte, pag 47"}}, {"de": "falla_nudo", "a": "ais_t3_12_saturacion", "relacion": "indica", "peso": 0.85, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-12, pag 59"}}, {"de": "socavacion_deslizamiento", "a": "ais_t3_3_geotecnico", "relacion": "indica", "peso": 0.8, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-3, pag 32"}}, {"de": "desprendimiento", "a": "ais_t3_21_no_estructural", "relacion": "indica", "peso": 0.5, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-21 riesgo alto, pag 59"}}, {"de": "corrosion", "a": "nsr10_a10_4_3_4_conservacion", "relacion": "indica", "peso": 0.5, "fuente": {"doc": "NSR-10", "ref": "Tabla A.10.4-1, pag 121"}}, {"de": "punzonamiento", "a": "ais_t3_13_riesgo_estructural", "relacion": "indica", "peso": 0.8, "fuente": {"doc": "AIS-manual", "ref": "pag 44"}}, {"de": "muro_carga", "a": "ais_t3_12_saturacion", "relacion": "pondera", "peso": 1.0, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-12, pag 59"}}, {"de": "columna", "a": "ais_t3_12_saturacion", "relacion": "pondera", "peso": 1.0, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-12, pag 59"}}, {"de": "nudo", "a": "ais_t3_12_saturacion", "relacion": "pondera", "peso": 1.0, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-12, pag 59"}}, {"de": "viga", "a": "ais_t3_12_saturacion", "relacion": "pondera", "peso": 0.8, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-13 umbrales horizontales, pag 21"}}, {"de": "losa_entrepiso", "a": "ais_t3_12_saturacion", "relacion": "pondera", "peso": 0.8, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-13 umbrales horizontales, pag 21"}}, {"de": "cimentacion", "a": "ais_t3_3_geotecnico", "relacion": "pondera", "peso": 0.9, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-3, pag 32"}}, {"de": "muro_generico", "a": "ais_t3_12_saturacion", "relacion": "pondera", "peso": 0.7, "fuente": {"doc": "AIS-manual", "ref": "pags 51/53: en mamposteria estructural los muros son estructurales"}}, {"de": "cubierta", "a": "ais_t3_21_no_estructural", "relacion": "pondera", "peso": 0.3, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-17, pag 55"}}, {"de": "no_estructural", "a": "ais_t3_21_no_estructural", "relacion": "pondera", "peso": 0.3, "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-21, pag 59"}}, {"de": "ais_t3_2_estabilidad", "a": "demoler", "relacion": "sugiere", "fuente": {"doc": "AIS-manual", "ref": "Seccion 5.1, pags 27/34"}}, {"de": "nsr10_a10_10_1_reparar_vs_demoler", "a": "demoler", "relacion": "sugiere", "fuente": {"doc": "NSR-10", "ref": "A.10.10.1, pag 126"}}, {"de": "ais_demolicion_experto", "a": "demoler", "relacion": "sugiere", "fuente": {"doc": "AIS-manual", "ref": "pags 27/49"}}, {"de": "ais_t3_13_riesgo_estructural", "a": "estudio_vulnerabilidad", "relacion": "sugiere", "fuente": {"doc": "AIS-manual", "ref": "pag 49"}}, {"de": "ais_t3_13_riesgo_estructural", "a": "apuntalar", "relacion": "sugiere", "fuente": {"doc": "AIS-manual", "ref": "Tabla 3-13 riesgo alto, pags 49-50"}}, {"de": "nsr10_a10_10_1_2_alcance_dano", "a": "reforzar", "relacion": "sugiere", "fuente": {"doc": "NSR-10", "ref": "A.10.10.1.2, pags 126-127"}}, {"de": "grieta_diagonal", "a": "muro_carga", "relacion": "afecta", "fuente": {"doc": "AIS-manual", "ref": "pags 46-47"}}, {"de": "aplastamiento", "a": "columna", "relacion": "afecta", "fuente": {"doc": "AIS-manual", "ref": "pag 44"}}, {"de": "pandeo_refuerzo", "a": "columna", "relacion": "afecta", "fuente": {"doc": "AIS-manual", "ref": "pag 44"}}, {"de": "punzonamiento", "a": "losa_entrepiso", "relacion": "afecta", "fuente": {"doc": "AIS-manual", "ref": "pag 44"}}, {"de": "asentamiento_diferencial", "a": "cimentacion", "relacion": "afecta", "fuente": {"doc": "AIS-manual", "ref": "pags 38-39"}}, {"de": "falla_nudo", "a": "nudo", "relacion": "afecta", "fuente": {"doc": "AIS-manual", "ref": "pag 44"}}]}</script>
+<script id="docs-data" type="application/json">{"README.md": "# Documentación del grafo de conocimiento\n\nGrafo de conocimiento para criterios de demolicion post-sismo. Curado desde NSR-10 Titulo A (cap A.10) y la Guia AIS / Manual de campo para inspeccion de edificaciones despues de un sismo (AIS-Manizales 2003, precursor del formulario EDE). Las paginas citadas refieren a los .txt extraidos por build_kg.py.\n\n## Fuentes primarias\n\n- **NSR-10**: `knowledge/fuentes/nsr10_titulo_a.pdf (iisee.kenken.go.jp, Ver-2017)`\n- **AIS-manual**: `knowledge/fuentes/ais_manual_campo.pdf (idea.manizales.unal.edu.co)`\n\n## Índice\n\n- [Patologías](./patologias.md) — 16 nodos\n- [Elementos](./elementos.md) — 9 nodos\n- [Criterios normativos](./criterios-normativos.md) — 10 nodos\n- [Acciones](./acciones.md) — 5 nodos\n- [Términos de detección](./terminos-de-deteccion.md) — 30 nodos", "patologias.md": "# Patologías\n\n16 nodos del grafo de conocimiento. Fuente: NSR-10 Título A (cap. A.10) y Guía AIS / Manual de campo para inspección de edificaciones después de un sismo. Cada entrada cita su referencia exacta.\n\n## Agrietamiento sin orientacion declarada\n\nGrietas 1.0-2.0 mm: nivel moderado\n\n> **Fuente:** AIS-manual — Tabla 3-5, pags 44-45\n\n**Conexiones:**\n- → **indica** Riesgo estructural por severidad y extension del dano (Criterios normativos) (peso 0.45)\n- ← **detecta** grieta (Términos de detección)\n\n## Aplastamiento del concreto/mamposteria\n\nNivel severo: aplastamiento del material y agrietamiento del nucleo\n\n> **Fuente:** AIS-manual — Tabla 3-5, pags 44-45\n\n**Conexiones:**\n- → **indica** Riesgo estructural por severidad y extension del dano (Criterios normativos) (peso 0.9)\n- → **afecta** Columna / columneta (Elementos)\n- ← **detecta** aplastamiento (Términos de detección)\n\n## Asentamiento / hundimiento diferencial\n\nFalla de cimentacion o suelo; produce inclinacion\n\n> **Fuente:** AIS-manual — Tabla 3-3, pags 32/38-39\n\n**Conexiones:**\n- → **indica** Riesgo geotecnico (Criterios normativos) (peso 0.8)\n- → **afecta** Cimentacion (Elementos)\n- ← **detecta** asentamiento (Términos de detección)\n\n## Corrosion / oxidacion del refuerzo\n\nDegrada el estado de conservacion: phi_e 0.6 con estado malo\n\n> **Fuente:** NSR-10 — Tabla A.10.4-1, pag 121\n\n**Conexiones:**\n- → **indica** Resistencia efectiva reducida por estado de conservacion (Criterios normativos) (peso 0.5)\n- ← **detecta** corrosion (Términos de detección)\n\n## Deslizamiento / falla de talud / socavacion\n\nFenomeno geotecnico con disminucion de capacidad del suelo\n\n> **Fuente:** AIS-manual — Tabla 3-3, pag 32\n\n**Conexiones:**\n- → **indica** Riesgo geotecnico (Criterios normativos) (peso 0.8)\n- ← **detecta** deslizamiento/talud (Términos de detección)\n\n## Desplome / inclinacion permanente\n\nInclinacion > 2 grados (~1/30 de altura) implica alto riesgo de estabilidad global\n\n> **Fuente:** AIS-manual — Tabla 3-2, pags 27-28\n\n**Conexiones:**\n- → **indica** Riesgo por estabilidad global (Criterios normativos) (peso 0.9)\n- ← **detecta** desplome/inclinacion (Términos de detección)\n\n## Desprendimiento de acabados/elementos\n\nElementos en peligro de caer (fachadas, antepechos, cielos rasos)\n\n> **Fuente:** AIS-manual — Tabla 3-21, pag 59\n\n**Conexiones:**\n- → **indica** Riesgo no estructural (Criterios normativos) (peso 0.5)\n- ← **detecta** desprendimiento (Términos de detección)\n\n## Dislocacion de piezas de mamposteria\n\nNivel fuerte: agrietamiento diagonal severo > 3 mm con dislocacion de piezas\n\n> **Fuente:** AIS-manual — Tabla 3-6, pag 47\n\n**Conexiones:**\n- → **indica** Riesgo estructural por severidad y extension del dano (Criterios normativos) (peso 0.7)\n- ← **detecta** dislocacion (Términos de detección)\n\n## Exposicion de barras de refuerzo\n\nNivel fuerte: perdida de recubrimiento con exposicion de barras\n\n> **Fuente:** AIS-manual — Tabla 3-5, pags 44-45\n\n**Conexiones:**\n- → **indica** Resistencia efectiva reducida por estado de conservacion (Criterios normativos) (peso 0.7)\n- ← **detecta** acero expuesto (Términos de detección)\n\n## Falla en nudos viga-columna\n\nElemento de saturacion en porticos: su dano severo compromete toda la edificacion\n\n> **Fuente:** AIS-manual — Tabla 3-12, pag 59\n\n**Conexiones:**\n- → **indica** Elementos de saturacion (Criterios normativos) (peso 0.85)\n- → **afecta** Nudo viga-columna / conexion (Elementos)\n- ← **detecta** falla de nudo (Términos de detección)\n\n## Fisuracion leve\n\nFisuras < 1.0 mm: nivel muy leve a leve\n\n> **Fuente:** AIS-manual — Tabla 3-5, pags 44-45\n\n**Conexiones:**\n- → **indica** Riesgo estructural por severidad y extension del dano (Criterios normativos) (peso 0.25)\n- ← **detecta** fisura (Términos de detección)\n\n## Grietas diagonales (falla por cortante)\n\nAgrietamiento diagonal en muros/vigas/columnas, tipico en X en mamposteria; falla por cortante\n\n> **Fuente:** AIS-manual — Tablas 3-5/3-6, pags 44-47\n\n**Conexiones:**\n- → **indica** Riesgo estructural por severidad y extension del dano (Criterios normativos) (peso 0.7)\n- → **afecta** Muro de carga / portante (Elementos)\n- ← **detecta** grieta diagonal (Términos de detección)\n\n## Grietas horizontales por flexion\n\nGrietas horizontales en extremos de muros portantes (flexion)\n\n> **Fuente:** AIS-manual — pags 46-47\n\n**Conexiones:**\n- → **indica** Riesgo estructural por severidad y extension del dano (Criterios normativos) (peso 0.5)\n- ← **detecta** grieta horizontal (Términos de detección)\n\n## Pandeo de barras/elementos\n\nPandeo de refuerzo longitudinal o de elementos; nivel severo\n\n> **Fuente:** AIS-manual — Tabla 3-5, pags 44-45\n\n**Conexiones:**\n- → **indica** Riesgo estructural por severidad y extension del dano (Criterios normativos) (peso 0.9)\n- → **afecta** Columna / columneta (Elementos)\n- ← **detecta** pandeo (Términos de detección)\n\n## Perdida de recubrimiento\n\nNivel moderado-fuerte en elementos de concreto\n\n> **Fuente:** AIS-manual — Tabla 3-5, pags 44-45\n\n**Conexiones:**\n- → **indica** Resistencia efectiva reducida por estado de conservacion (Criterios normativos) (peso 0.5)\n- ← **detecta** perdida de recubrimiento (Términos de detección)\n\n## Punzonamiento en losas\n\nGrietas por punzonamiento alrededor de columnas en losas/entrepisos\n\n> **Fuente:** AIS-manual — pag 44\n\n**Conexiones:**\n- → **indica** Riesgo estructural por severidad y extension del dano (Criterios normativos) (peso 0.8)\n- → **afecta** Losa / entrepiso / contrapiso (Elementos)\n- ← **detecta** punzonamiento (Términos de detección)\n", "elementos.md": "# Elementos\n\n9 nodos del grafo de conocimiento. Fuente: NSR-10 Título A (cap. A.10) y Guía AIS / Manual de campo para inspección de edificaciones después de un sismo. Cada entrada cita su referencia exacta.\n\n## Cimentacion\n\n> **Fuente:** AIS-manual — pags 38-39\n\n**Conexiones:**\n- → **pondera (criticidad)** Riesgo geotecnico (Criterios normativos) (peso 0.9)\n- ← **detecta** cimentacion (Términos de detección)\n- ← **afecta** Asentamiento / hundimiento diferencial (Patologías)\n\n## Columna / columneta\n\n> **Fuente:** AIS-manual — Tablas 3-4/3-12, pags 43/59\n\n**Conexiones:**\n- → **pondera (criticidad)** Elementos de saturacion (Criterios normativos) (peso 1.0)\n- ← **detecta** columna (Términos de detección)\n- ← **afecta** Aplastamiento del concreto/mamposteria (Patologías)\n- ← **afecta** Pandeo de barras/elementos (Patologías)\n\n## Cubierta / estructura de techo\n\n> **Fuente:** AIS-manual — Tabla 3-17, pag 55\n\n**Conexiones:**\n- → **pondera (criticidad)** Riesgo no estructural (Criterios normativos) (peso 0.3)\n- ← **detecta** cubierta (Términos de detección)\n\n## Elemento no estructural (divisorios, acabados, cielos rasos)\n\n> **Fuente:** AIS-manual — Tabla 3-21, pags 59-61\n\n**Conexiones:**\n- → **pondera (criticidad)** Riesgo no estructural (Criterios normativos) (peso 0.3)\n- ← **detecta** no estructural (Términos de detección)\n\n## Losa / entrepiso / contrapiso\n\n> **Fuente:** AIS-manual — Tablas 3-4/3-11, pags 43/58\n\n**Conexiones:**\n- → **pondera (criticidad)** Elementos de saturacion (Criterios normativos) (peso 0.8)\n- ← **detecta** losa/entrepiso (Términos de detección)\n- ← **afecta** Punzonamiento en losas (Patologías)\n\n## Muro de carga / portante\n\n> **Fuente:** AIS-manual — Tablas 3-4/3-12, pags 43/59\n\n**Conexiones:**\n- → **pondera (criticidad)** Elementos de saturacion (Criterios normativos) (peso 1.0)\n- ← **detecta** muro de carga (Términos de detección)\n- ← **afecta** Grietas diagonales (falla por cortante) (Patologías)\n\n## Muro sin calificar\n\nEn mamposteria estructural las fachadas y varios divisorios son parte del sistema estructural\n\n> **Fuente:** AIS-manual — pags 51/53\n\n**Conexiones:**\n- → **pondera (criticidad)** Elementos de saturacion (Criterios normativos) (peso 0.7)\n- ← **detecta** muro (Términos de detección)\n\n## Nudo viga-columna / conexion\n\n> **Fuente:** AIS-manual — Tabla 3-12, pag 59\n\n**Conexiones:**\n- → **pondera (criticidad)** Elementos de saturacion (Criterios normativos) (peso 1.0)\n- ← **detecta** nudo (Términos de detección)\n- ← **afecta** Falla en nudos viga-columna (Patologías)\n\n## Viga / vigueta\n\n> **Fuente:** AIS-manual — Tabla 3-4, pag 43\n\n**Conexiones:**\n- → **pondera (criticidad)** Elementos de saturacion (Criterios normativos) (peso 0.8)\n- ← **detecta** viga (Términos de detección)\n", "criterios-normativos.md": "# Criterios normativos\n\n10 nodos del grafo de conocimiento. Fuente: NSR-10 Título A (cap. A.10) y Guía AIS / Manual de campo para inspección de edificaciones después de un sismo. Cada entrada cita su referencia exacta.\n\n## Alcance de la reparacion segun tipo de dano\n\nDano solo no estructural se repara por A.9; dano estructural exige evaluacion general y reparar los elementos danados mas los necesarios por resistencia y deriva\n\n> **Fuente:** NSR-10 — A.10.10.1.2, pags 126-127\n\n**Conexiones:**\n- → **sugiere** Reforzar / rehabilitar (Acciones)\n\n## Elementos de saturacion\n\nDano severo en muros de carga, columnas o nudos satura el dano global de la edificacion\n\n> **Fuente:** AIS-manual — Tabla 3-12, pag 59\n\n**Conexiones:**\n- ← **indica** Falla en nudos viga-columna (Patologías) (peso 0.85)\n- ← **pondera (criticidad)** Muro de carga / portante (Elementos) (peso 1.0)\n- ← **pondera (criticidad)** Columna / columneta (Elementos) (peso 1.0)\n- ← **pondera (criticidad)** Nudo viga-columna / conexion (Elementos) (peso 1.0)\n- ← **pondera (criticidad)** Viga / vigueta (Elementos) (peso 0.8)\n- ← **pondera (criticidad)** Losa / entrepiso / contrapiso (Elementos) (peso 0.8)\n- ← **pondera (criticidad)** Muro sin calificar (Elementos) (peso 0.7)\n\n## Recomendacion de demolicion requiere experticia\n\nPosible demolicion solo ante riesgo inminente para vecinos o imposibilidad de recuperacion sin dudas, y por evaluador con experiencia en patologia\n\n> **Fuente:** AIS-manual — pags 27/49\n\n**Conexiones:**\n- → **sugiere** Demoler la edificacion (Acciones)\n\n## Regla de habitabilidad por combinacion de 4 riesgos\n\nPeligro de colapso (Rojo) con 1+ riesgo muy alto o 2+ riesgos altos; No habitable (Naranja) con 1+ riesgo alto\n\n> **Fuente:** AIS-manual — Tabla 3-22, pag 60\n\n## Reparar vs demoler: factibilidad tecnica\n\nEdificaciones con danos moderados a severos se evaluan para establecer si es tecnicamente factible repararlas; provee criterios para designarlas a demolicion total\n\n> **Fuente:** NSR-10 — A.10.10.1, pag 126\n\n**Conexiones:**\n- → **sugiere** Demoler la edificacion (Acciones)\n\n## Resistencia efectiva reducida por estado de conservacion\n\nResistencia efectiva = existente x phi_c x phi_e; calidad/conservacion mala reduce a 0.6\n\n> **Fuente:** NSR-10 — A.10.4.3.4 Tabla A.10.4-1, pag 121\n\n**Conexiones:**\n- ← **indica** Exposicion de barras de refuerzo (Patologías) (peso 0.7)\n- ← **indica** Perdida de recubrimiento (Patologías) (peso 0.5)\n- ← **indica** Corrosion / oxidacion del refuerzo (Patologías) (peso 0.5)\n\n## Riesgo estructural por severidad y extension del dano\n\nDano severo en >15% de elementos verticales o >20% de horizontales: riesgo muy alto (peligro de colapso); severo 5-15% o fuerte 10-30%: riesgo alto (no habitable)\n\n> **Fuente:** AIS-manual — Tabla 3-13, pags 49-50\n\n**Conexiones:**\n- → **sugiere** Estudio de vulnerabilidad (Acciones)\n- → **sugiere** Apuntalar (Acciones)\n- ← **indica** Aplastamiento del concreto/mamposteria (Patologías) (peso 0.9)\n- ← **indica** Pandeo de barras/elementos (Patologías) (peso 0.9)\n- ← **indica** Grietas diagonales (falla por cortante) (Patologías) (peso 0.7)\n- ← **indica** Grietas horizontales por flexion (Patologías) (peso 0.5)\n- ← **indica** Fisuracion leve (Patologías) (peso 0.25)\n- ← **indica** Agrietamiento sin orientacion declarada (Patologías) (peso 0.45)\n- ← **indica** Dislocacion de piezas de mamposteria (Patologías) (peso 0.7)\n- ← **indica** Punzonamiento en losas (Patologías) (peso 0.8)\n\n## Riesgo geotecnico\n\nFallas severas de cimentacion, hundimiento o inclinacion: riesgo muy alto\n\n> **Fuente:** AIS-manual — Tabla 3-3, pag 32\n\n**Conexiones:**\n- ← **indica** Asentamiento / hundimiento diferencial (Patologías) (peso 0.8)\n- ← **indica** Deslizamiento / falla de talud / socavacion (Patologías) (peso 0.8)\n- ← **pondera (criticidad)** Cimentacion (Elementos) (peso 0.9)\n\n## Riesgo no estructural\n\nDanos severos generalizados o elementos en peligro de caer: riesgo alto; no genera colapso por si solo\n\n> **Fuente:** AIS-manual — Tabla 3-21, pags 59-60\n\n**Conexiones:**\n- ← **indica** Desprendimiento de acabados/elementos (Patologías) (peso 0.5)\n- ← **pondera (criticidad)** Cubierta / estructura de techo (Elementos) (peso 0.3)\n- ← **pondera (criticidad)** Elemento no estructural (divisorios, acabados, cielos rasos) (Elementos) (peso 0.3)\n\n## Riesgo por estabilidad global\n\nColapso total o parcial >50% o inclinacion notable: riesgo muy alto; colapso parcial 5-50%: alto\n\n> **Fuente:** AIS-manual — Tabla 3-2, pags 27-28\n\n**Conexiones:**\n- → **sugiere** Demoler la edificacion (Acciones)\n- ← **indica** Desplome / inclinacion permanente (Patologías) (peso 0.9)\n", "acciones.md": "# Acciones\n\n5 nodos del grafo de conocimiento. Fuente: NSR-10 Título A (cap. A.10) y Guía AIS / Manual de campo para inspección de edificaciones después de un sismo. Cada entrada cita su referencia exacta.\n\n## Apuntalar\n\n> **Fuente:** AIS-manual — Seccion 9, pag 12\n\n**Conexiones:**\n- ← **detecta** apuntalar (Términos de detección)\n- ← **sugiere** Riesgo estructural por severidad y extension del dano (Criterios normativos)\n\n## Demoler la edificacion\n\n> **Fuente:** AIS-manual — Seccion 9, pags 12/27\n\n**Conexiones:**\n- ← **detecta** demoler (Términos de detección)\n- ← **sugiere** Riesgo por estabilidad global (Criterios normativos)\n- ← **sugiere** Reparar vs demoler: factibilidad tecnica (Criterios normativos)\n- ← **sugiere** Recomendacion de demolicion requiere experticia (Criterios normativos)\n\n## Estudio de vulnerabilidad\n\n> **Fuente:** AIS-manual — pag 49\n\n**Conexiones:**\n- ← **detecta** estudio de vulnerabilidad (Términos de detección)\n- ← **sugiere** Riesgo estructural por severidad y extension del dano (Criterios normativos)\n\n## Evacuar\n\n> **Fuente:** AIS-manual — Seccion 9, pag 12\n\n**Conexiones:**\n- ← **detecta** evacuar (Términos de detección)\n\n## Reforzar / rehabilitar\n\n> **Fuente:** NSR-10 — A.10.9.1, pag 124\n\n**Conexiones:**\n- ← **detecta** reforzar (Términos de detección)\n- ← **sugiere** Alcance de la reparacion segun tipo de dano (Criterios normativos)\n", "terminos-de-deteccion.md": "# Términos de detección\n\n30 nodos del grafo de conocimiento. Fuente: NSR-10 Título A (cap. A.10) y Guía AIS / Manual de campo para inspección de edificaciones después de un sismo. Cada entrada cita su referencia exacta.\n\n## acero expuesto\n\n> **Fuente:** AIS-manual — Tabla 3-5, pags 44-45\n\n**Patrón de detección:** `(?:acero|refuerzo|barras?)\\s+(?:[#\\w.]+\\s+){0,2}expuest|exposici.n\\s+de\\s+(?:barras|acero|refuerzo)|acero\\s+(?:a\\s+la\\s+)?vista`\n\n**Conexiones:**\n- → **detecta** Exposicion de barras de refuerzo (Patologías)\n\n## aplastamiento\n\n> **Fuente:** AIS-manual — Tabla 3-5, pags 44-45\n\n**Patrón de detección:** `aplasta`\n\n**Conexiones:**\n- → **detecta** Aplastamiento del concreto/mamposteria (Patologías)\n\n## apuntalar\n\n> **Fuente:** AIS-manual — Seccion 9, pag 12\n\n**Patrón de detección:** `apuntal`\n\n**Conexiones:**\n- → **detecta** Apuntalar (Acciones)\n\n## asentamiento\n\n> **Fuente:** AIS-manual — pags 38-39\n\n**Patrón de detección:** `asentamiento|asentad|hundimiento|hundid|subsidencia`\n\n**Conexiones:**\n- → **detecta** Asentamiento / hundimiento diferencial (Patologías)\n\n## cimentacion\n\n> **Fuente:** AIS-manual — pags 38-39\n\n**Patrón de detección:** `cimentaci|cimientos?|zapatas?|fundaci.n`\n\n**Conexiones:**\n- → **detecta** Cimentacion (Elementos)\n\n## columna\n\n> **Fuente:** AIS-manual — Tabla 3-4, pag 43\n\n**Patrón de detección:** `columnas?|columnetas?`\n\n**Conexiones:**\n- → **detecta** Columna / columneta (Elementos)\n\n## corrosion\n\n> **Fuente:** NSR-10 — Tabla A.10.4-1, pag 121\n\n**Patrón de detección:** `corro.i.n|corro.d|oxid`\n\n**Conexiones:**\n- → **detecta** Corrosion / oxidacion del refuerzo (Patologías)\n\n## cubierta\n\n> **Fuente:** AIS-manual — Tabla 3-17, pag 55\n\n**Patrón de detección:** `cubiertas?|tejas?|techos?|cerchas?|correas?|culatas?`\n\n**Conexiones:**\n- → **detecta** Cubierta / estructura de techo (Elementos)\n\n## demoler\n\n> **Fuente:** AIS-manual — Seccion 9, pags 12/27\n\n**Patrón de detección:** `demol|derrib|desmont`\n\n**Conexiones:**\n- → **detecta** Demoler la edificacion (Acciones)\n\n## deslizamiento/talud\n\n> **Fuente:** AIS-manual — Tabla 3-3, pag 32\n\n**Patrón de detección:** `socav|deslizamiento|talud|remoci.n\\s+en\\s+masa|ladera|licuaci.n`\n\n**Conexiones:**\n- → **detecta** Deslizamiento / falla de talud / socavacion (Patologías)\n\n## desplome/inclinacion\n\n> **Fuente:** AIS-manual — Tabla 3-2, pags 27-28\n\n**Patrón de detección:** `desplom|inclinaci|inclinad|volcam|desviaci.n|fuera\\s+de\\s+plomo|ladead`\n\n**Conexiones:**\n- → **detecta** Desplome / inclinacion permanente (Patologías)\n\n## desprendimiento\n\n> **Fuente:** AIS-manual — Tabla 3-21, pag 59\n\n**Patrón de detección:** `desprend|peligro\\s+de\\s+caer|riesgo\\s+de\\s+ca.da`\n\n**Conexiones:**\n- → **detecta** Desprendimiento de acabados/elementos (Patologías)\n\n## dislocacion\n\n> **Fuente:** AIS-manual — Tabla 3-6, pag 47\n\n**Patrón de detección:** `dislocaci|dislocad|desencaj`\n\n**Conexiones:**\n- → **detecta** Dislocacion de piezas de mamposteria (Patologías)\n\n## estudio de vulnerabilidad\n\n> **Fuente:** AIS-manual — pag 49\n\n**Patrón de detección:** `vulnerabilidad`\n\n**Conexiones:**\n- → **detecta** Estudio de vulnerabilidad (Acciones)\n\n## evacuar\n\n> **Fuente:** AIS-manual — Seccion 9, pag 12\n\n**Patrón de detección:** `evacuaci|evacuar|desaloj`\n\n**Conexiones:**\n- → **detecta** Evacuar (Acciones)\n\n## falla de nudo\n\n> **Fuente:** AIS-manual — pag 44\n\n**Patrón de detección:** `falla\\w*\\s+(?:de\\s+|en\\s+)?(?:los\\s+)?nudos?|nudos?\\s+(?:fallad|agrietad|da.ad)|uni.n\\s+viga[\\s-]columna`\n\n**Conexiones:**\n- → **detecta** Falla en nudos viga-columna (Patologías)\n\n## fisura\n\n> **Fuente:** AIS-manual — Tabla 3-5, pags 44-45\n\n**Patrón de detección:** `fisur`\n\n**Conexiones:**\n- → **detecta** Fisuracion leve (Patologías)\n\n## grieta\n\n> **Fuente:** AIS-manual — Tabla 3-5, pags 44-45\n\n**Patrón de detección:** `griet|agrieta`\n\n**Conexiones:**\n- → **detecta** Agrietamiento sin orientacion declarada (Patologías)\n\n## grieta diagonal\n\n> **Fuente:** AIS-manual — pags 44-47\n\n**Patrón de detección:** `griet\\w+\\s+(?:\\w+\\s+){0,2}diagonal|agrietamiento\\s+diagonal|fisur\\w+\\s+diagonal|griet\\w+\\s+en\\s+x\\b|falla\\s+(?:de|por)\\s+cortante`\n\n**Conexiones:**\n- → **detecta** Grietas diagonales (falla por cortante) (Patologías)\n\n## grieta horizontal\n\n> **Fuente:** AIS-manual — pags 46-47\n\n**Patrón de detección:** `griet\\w+\\s+horizontal|agrietamiento\\s+horizontal`\n\n**Conexiones:**\n- → **detecta** Grietas horizontales por flexion (Patologías)\n\n## losa/entrepiso\n\n> **Fuente:** AIS-manual — Tabla 3-11, pag 58\n\n**Patrón de detección:** `losas?\\b|entrepisos?|contrapisos?|placas?\\s+de\\s+(?:piso|entrepiso|concreto)`\n\n**Conexiones:**\n- → **detecta** Losa / entrepiso / contrapiso (Elementos)\n\n## muro\n\n> **Fuente:** AIS-manual — pags 51/53\n\n**Patrón de detección:** `muros?\\b|mamposter`\n\n**Conexiones:**\n- → **detecta** Muro sin calificar (Elementos)\n\n## muro de carga\n\n> **Fuente:** AIS-manual — Tabla 3-4, pag 43\n\n**Patrón de detección:** `muros?\\s+(?:de\\s+carga|portantes?|estructurales?|de\\s+contenci.n)|mamposter.a\\s+(?:estructural|portante|de\\s+carga)|tapia|adobe|bahareque`\n\n**Conexiones:**\n- → **detecta** Muro de carga / portante (Elementos)\n\n## no estructural\n\n> **Fuente:** AIS-manual — Tabla 3-21, pags 59-61\n\n**Patrón de detección:** `pa.etes?|divisori|particion|acabados?|enchapes?|cielos?\\s+rasos?|antepechos?|fachadas?`\n\n**Conexiones:**\n- → **detecta** Elemento no estructural (divisorios, acabados, cielos rasos) (Elementos)\n\n## nudo\n\n> **Fuente:** AIS-manual — Tabla 3-12, pag 59\n\n**Patrón de detección:** `nudos?\\b|conexi.n\\s+viga`\n\n**Conexiones:**\n- → **detecta** Nudo viga-columna / conexion (Elementos)\n\n## pandeo\n\n> **Fuente:** AIS-manual — Tabla 3-5, pags 44-45\n\n**Patrón de detección:** `pande[oa]`\n\n**Conexiones:**\n- → **detecta** Pandeo de barras/elementos (Patologías)\n\n## perdida de recubrimiento\n\n> **Fuente:** AIS-manual — Tabla 3-5, pags 44-45\n\n**Patrón de detección:** `p.rdida\\s+de(?:l)?\\s+(?:recubrimiento|revestimiento)|(?:recubrimiento|revestimiento)\\s+(?:perdid|desprendid|ca.d)|descascaramiento`\n\n**Conexiones:**\n- → **detecta** Perdida de recubrimiento (Patologías)\n\n## punzonamiento\n\n> **Fuente:** AIS-manual — pag 44\n\n**Patrón de detección:** `punzonamiento`\n\n**Conexiones:**\n- → **detecta** Punzonamiento en losas (Patologías)\n\n## reforzar\n\n> **Fuente:** NSR-10 — A.10.9.1, pag 124\n\n**Patrón de detección:** `reforz|rehabilitaci.n\\s+s.smica`\n\n**Conexiones:**\n- → **detecta** Reforzar / rehabilitar (Acciones)\n\n## viga\n\n> **Fuente:** AIS-manual — Tabla 3-4, pag 43\n\n**Patrón de detección:** `vigas?\\b|viguetas?|dintel`\n\n**Conexiones:**\n- → **detecta** Viga / vigueta (Elementos)\n"}</script>
+<script>
+"use strict";
+const KG = JSON.parse(document.getElementById("kg-data").textContent);
+const DOCS = JSON.parse(document.getElementById("docs-data").textContent);
+const NODES = KG.nodes.map((n, i) => ({...n, i,
+  x: 0, y: 0, vx: 0, vy: 0, fixed: false, visible: true}));
+const byId = Object.fromEntries(NODES.map(n => [n.id, n]));
+const EDGES = KG.edges.map(e => ({...e, s: byId[e.de], t: byId[e.a]}));
+
+const TIPOS = {
+  patologia:      {label: "Patología",  color: "var(--patologia)", shape: "circle",   r: 9},
+  elemento:       {label: "Elemento",   color: "var(--elemento)",  shape: "square",   r: 9},
+  criterio_norma: {label: "Criterio",   color: "var(--criterio)",  shape: "diamond",  r: 10},
+  accion:         {label: "Acción",     color: "var(--accion)",    shape: "triangle", r: 10},
+  termino:        {label: "Término",    color: "var(--termino)",   shape: "circle",   r: 4},
+};
+const REL_LABEL = {detecta: "detecta", indica: "indica", sugiere: "sugiere",
+                   pondera: "pondera (criticidad)", afecta: "afecta"};
+
+// deterministic initial layout: type-clustered rings (tight — autofit handles the rest)
+const seeds = {patologia: [-90, 0], elemento: [90, 45], criterio_norma: [0, -90],
+               accion: [65, -125], termino: [0, 65]};
+NODES.forEach((n, i) => {
+  const [cx, cy] = seeds[n.tipo] || [0, 0];
+  const a = i * 2.399963; // golden angle -> no overlaps at t0
+  const r = 22 + 8 * Math.sqrt(i);
+  n.x = cx + r * Math.cos(a); n.y = cy + r * Math.sin(a);
+});
+
+const svg = document.getElementById("graph");
+const NS = "http://www.w3.org/2000/svg";
+const gRoot = document.createElementNS(NS, "g");
+svg.appendChild(gRoot);
+const gEdges = document.createElementNS(NS, "g");
+const gNodes = document.createElementNS(NS, "g");
+gRoot.appendChild(gEdges); gRoot.appendChild(gNodes);
+
+function shapePath(shape, r) {
+  if (shape === "square")   return `M${-r},${-r}h${2*r}v${2*r}h${-2*r}Z`;
+  if (shape === "diamond")  return `M0,${-r*1.2}L${r*1.2},0L0,${r*1.2}L${-r*1.2},0Z`;
+  if (shape === "triangle") return `M0,${-r*1.2}L${r*1.1},${r*0.85}L${-r*1.1},${r*0.85}Z`;
+  return `M${-r},0a${r},${r} 0 1,0 ${2*r},0a${r},${r} 0 1,0 ${-2*r},0`;
+}
+
+EDGES.forEach(e => {
+  const el = document.createElementNS(NS, "line");
+  el.setAttribute("class", `edge ${e.relacion}`);
+  el.setAttribute("stroke-width", e.peso ? (0.8 + 1.8 * e.peso).toFixed(1) : "1.2");
+  gEdges.appendChild(el); e.el = el;
+});
+NODES.forEach(n => {
+  const t = TIPOS[n.tipo];
+  const g = document.createElementNS(NS, "g");
+  g.setAttribute("class", `node tipo-${n.tipo}`);
+  const p = document.createElementNS(NS, "path");
+  p.setAttribute("class", "shape");
+  p.setAttribute("d", shapePath(t.shape, t.r));
+  p.setAttribute("fill", t.color);
+  const txt = document.createElementNS(NS, "text");
+  txt.setAttribute("class", "nlabel");
+  txt.setAttribute("y", t.r + 11);
+  txt.setAttribute("text-anchor", "middle");
+  txt.textContent = n.nombre.length > 34 ? n.nombre.slice(0, 32) + "…" : n.nombre;
+  const title = document.createElementNS(NS, "title");
+  title.textContent = `${n.nombre} (${t.label})\n${n.fuente.doc} — ${n.fuente.ref}`;
+  g.append(title, p, txt);
+  gNodes.appendChild(g); n.el = g;
+  g.addEventListener("pointerdown", ev => startDrag(n, ev));
+  g.addEventListener("click", ev => { ev.stopPropagation(); select(n); });
+});
+
+// ── force simulation ─────────────────────────────────────────────
+const REST = {detecta: 55, pondera: 95, default: 110};
+let alpha = 1;
+function tick() {
+  const vis = NODES.filter(n => n.visible);
+  for (let i = 0; i < vis.length; i++) {          // repulsion (n^2, n=70: fine)
+    for (let j = i + 1; j < vis.length; j++) {
+      const a = vis[i], b = vis[j];
+      let dx = b.x - a.x, dy = b.y - a.y;
+      let d2 = dx * dx + dy * dy || 1;
+      if (d2 > 60000) continue;
+      const f = 900 / d2;
+      dx *= f; dy *= f;
+      if (!a.fixed) { a.vx -= dx; a.vy -= dy; }
+      if (!b.fixed) { b.vx += dx; b.vy += dy; }
+    }
+  }
+  for (const e of EDGES) {                        // springs
+    if (!e.s.visible || !e.t.visible) continue;
+    const rest = REST[e.relacion] || REST.default;
+    let dx = e.t.x - e.s.x, dy = e.t.y - e.s.y;
+    const d = Math.sqrt(dx * dx + dy * dy) || 1;
+    const f = 0.04 * (d - rest) / d;
+    dx *= f; dy *= f;
+    if (!e.s.fixed) { e.s.vx += dx; e.s.vy += dy; }
+    if (!e.t.fixed) { e.t.vx -= dx; e.t.vy -= dy; }
+  }
+  for (const n of vis) {                          // gravity + integrate
+    if (n.fixed) continue;
+    n.vx -= n.x * 0.012; n.vy -= n.y * 0.012;
+    n.vx *= 0.82; n.vy *= 0.82;
+    n.x += n.vx * alpha; n.y += n.vy * alpha;
+  }
+  render();
+  if (!userMoved) fitToView();  // keep the graph framed while it's still expanding
+  alpha *= 0.94;  // settle in ~1.2s at 60fps — snappy, not a 6s drift
+  if (alpha > 0.02) requestAnimationFrame(tick);
+}
+function reheat() { const was = alpha; alpha = 1; if (was <= 0.02) requestAnimationFrame(tick); }
+let userMoved = false;
+function fitToView() {
+  const vis = NODES.filter(n => n.visible);
+  if (!vis.length) return;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  vis.forEach(n => {
+    minX = Math.min(minX, n.x); maxX = Math.max(maxX, n.x);
+    minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y);
+  });
+  const pad = 70;
+  const w = Math.max(1, maxX - minX + pad * 2), h = Math.max(1, maxY - minY + pad * 2);
+  const {width, height} = svg.getBoundingClientRect();
+  view.k = Math.min(2.2, Math.max(0.15, Math.min(width / w, height / h)));
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  view.x = -cx * view.k; view.y = -cy * view.k;
+  applyView();
+}
+
+function render() {
+  for (const e of EDGES) {
+    e.el.setAttribute("x1", e.s.x); e.el.setAttribute("y1", e.s.y);
+    e.el.setAttribute("x2", e.t.x); e.el.setAttribute("y2", e.t.y);
+  }
+  for (const n of NODES) n.el.setAttribute("transform", `translate(${n.x},${n.y})`);
+}
+
+// ── pan / zoom / drag ────────────────────────────────────────────
+let view = {x: 0, y: 0, k: 1};
+function applyView() {
+  const {width, height} = svg.getBoundingClientRect();
+  gRoot.setAttribute("transform",
+    `translate(${width / 2 + view.x},${height / 2 + view.y}) scale(${view.k})`);
+}
+svg.addEventListener("wheel", ev => {
+  ev.preventDefault();
+  userMoved = true;
+  view.k = Math.min(4, Math.max(0.25, view.k * (ev.deltaY < 0 ? 1.12 : 0.89)));
+  applyView();
+}, {passive: false});
+let panning = null, dragging = null;
+svg.addEventListener("pointerdown", ev => {
+  if (dragging) return;
+  panning = {x: ev.clientX, y: ev.clientY};
+  svg.classList.add("dragging"); svg.setPointerCapture(ev.pointerId);
+});
+svg.addEventListener("pointermove", ev => {
+  if (dragging) {
+    const {width, height} = svg.getBoundingClientRect();
+    dragging.x = (ev.clientX - svg.getBoundingClientRect().left - width / 2 - view.x) / view.k;
+    dragging.y = (ev.clientY - svg.getBoundingClientRect().top - height / 2 - view.y) / view.k;
+    reheat(); return;
+  }
+  if (panning) {
+    userMoved = true;
+    view.x += ev.clientX - panning.x; view.y += ev.clientY - panning.y;
+    panning = {x: ev.clientX, y: ev.clientY}; applyView();
+  }
+});
+["pointerup", "pointercancel"].forEach(t => svg.addEventListener(t, () => {
+  if (dragging) { dragging.fixed = false; dragging = null; }
+  panning = null; svg.classList.remove("dragging");
+}));
+function startDrag(n, ev) {
+  ev.stopPropagation(); dragging = n; n.fixed = true;
+  userMoved = true; // dragging a node hands camera control to the user
+  svg.setPointerCapture(ev.pointerId);
+}
+svg.addEventListener("click", () => select(null));
+
+// ── selection + panel ────────────────────────────────────────────
+const panel = document.getElementById("panel");
+let selected = null;
+function chip(tipo) {
+  const t = TIPOS[tipo];
+  return `<span class="tipo-chip"><svg width="14" height="14" viewBox="-8 -8 16 16">
+    <path d="${shapePath(t.shape, 5.5)}" fill="${t.color}"/></svg>${t.label}</span>`;
+}
+function select(n) {
+  selected = n;
+  NODES.forEach(m => m.el.classList.toggle("sel", m === n));
+  const near = new Set(n ? [n.id] : []);
+  EDGES.forEach(e => {
+    const on = n && (e.s === n || e.t === n) && e.s.visible && e.t.visible;
+    e.el.classList.toggle("hl", !!on);
+    e.el.classList.toggle("dim", !!n && !on);
+    if (on) { near.add(e.s.id); near.add(e.t.id); }
+  });
+  NODES.forEach(m => m.el.classList.toggle("dim", !!n && !near.has(m.id)));
+  if (!n) {
+    panel.innerHTML = `<h2>Grafo de criterios</h2>
+      <p class="hint">Cada nodo y arista cita su fuente (NSR-10 o Guía AIS). Hacé clic en un
+      nodo para ver su detalle y conexiones; arrastralo para reacomodar; rueda para zoom.
+      Los términos (puntos grises) son el léxico de detección — su etiqueta aparece al
+      pasar el mouse.</p>`;
+    return;
+  }
+  const rel = [];
+  EDGES.forEach(e => {
+    if (e.s === n) rel.push({dir: "→", other: e.t, e});
+    if (e.t === n) rel.push({dir: "←", other: e.s, e});
+  });
+  panel.innerHTML = `
+    <h2>${n.nombre}</h2>${chip(n.tipo)}
+    ${n.descripcion ? `<div class="campo"><b>Descripción</b>${n.descripcion}</div>` : ""}
+    <div class="campo"><b>Fuente</b><div class="cita">${n.fuente.doc} — ${n.fuente.ref}</div></div>
+    ${n.patron ? `<div class="campo"><b>Patrón de detección</b><code>${n.patron.replace(/&/g,"&amp;").replace(/</g,"&lt;")}</code></div>` : ""}
+    <div class="campo"><a data-goto-doc="${n.id}">Ver ficha en documentación →</a></div>
+    <div class="campo"><b>Conexiones (${rel.length})</b><ul>
+      ${rel.map(r => `<li><span class="rel">${r.dir} ${REL_LABEL[r.e.relacion]}${r.e.peso != null ? ` · peso ${r.e.peso}` : ""}</span><br>
+        <a data-id="${r.other.id}">${r.other.nombre}</a>
+        ${r.e.fuente ? `<div class="rel">${r.e.fuente.doc} — ${r.e.fuente.ref}</div>` : ""}</li>`).join("")}
+    </ul></div>`;
+  panel.querySelectorAll("a[data-id]").forEach(a =>
+    a.addEventListener("click", () => select(byId[a.dataset.id])));
+  const goto = panel.querySelector("a[data-goto-doc]");
+  if (goto) goto.addEventListener("click", () => showDocFor(n));
+}
+
+// ── filters, search, legend toggles ──────────────────────────────
+const togglesEl = document.getElementById("toggles");
+// Términos (léxico de detección, 30 nodos) arrancan ocultos: son ruido en la
+// primera vista, el usuario los reactiva si quiere ver el detalle léxico.
+const active = Object.fromEntries(Object.keys(TIPOS).map(t => [t, t !== "termino"]));
+Object.entries(TIPOS).forEach(([tipo, t]) => {
+  const lab = document.createElement("label");
+  lab.className = "tipo-toggle";
+  lab.innerHTML = `<input type="checkbox" ${active[tipo] ? "checked" : ""}>
+    <svg width="12" height="12" viewBox="-8 -8 16 16"><path d="${shapePath(t.shape, 5.5)}" fill="${t.color}"/></svg>
+    ${t.label} (${NODES.filter(n => n.tipo === tipo).length})`;
+  lab.querySelector("input").addEventListener("change", ev => {
+    active[tipo] = ev.target.checked; applyFilter();
+  });
+  togglesEl.appendChild(lab);
+});
+const buscar = document.getElementById("buscar");
+buscar.addEventListener("input", applyFilter);
+function applyFilter() {
+  const q = buscar.value.trim().toLowerCase();
+  NODES.forEach(n => {
+    n.visible = active[n.tipo] &&
+      (!q || n.nombre.toLowerCase().includes(q) || n.id.includes(q));
+    n.el.style.display = n.visible ? "" : "none";
+  });
+  EDGES.forEach(e => {
+    e.el.style.display = (e.s.visible && e.t.visible) ? "" : "none";
+  });
+  if (selected && !selected.visible) select(null); else select(selected);
+  reheat();
+  fitToView();
+}
+document.getElementById("fit-btn").addEventListener("click", fitToView);
+applyFilter(); // apply the termino-hidden default before first render
+
+document.getElementById("theme-btn").addEventListener("click", () => {
+  const r = document.documentElement;
+  const dark = r.dataset.theme === "dark" ||
+    (!r.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+  r.dataset.theme = dark ? "light" : "dark";
+});
+
+document.getElementById("stats").textContent =
+  `${NODES.length} nodos · ${EDGES.length} aristas, todos con cita`;
+addEventListener("resize", applyView);
+applyView();
+requestAnimationFrame(tick);
+
+// ── documentación (.md viewer) ────────────────────────────────────
+const ACCENTS = {"á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u", "ñ": "n"};
+function slugify(s) {
+  return s.toLowerCase().replace(/[áéíóúñ]/g, c => ACCENTS[c])
+    .replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+}
+function mdToHtml(md) {
+  let html = "", inList = false;
+  const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = s => esc(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, t, href) => {
+      const local = href.match(/^\.\/(.+)\.md$/);
+      return local ? `<a href="#" data-doc="${local[1]}.md">${t}</a>` : `<a href="${href}">${t}</a>`;
+    });
+  const closeList = () => { if (inList) { html += "</ul>"; inList = false; } };
+  for (const line of md.split("\n")) {
+    if (line.startsWith("# ")) { closeList(); html += `<h1>${inline(line.slice(2))}</h1>`; continue; }
+    if (line.startsWith("## ")) {
+      closeList(); const t = line.slice(3);
+      html += `<h2 id="${slugify(t)}">${inline(t)}</h2>`; continue;
+    }
+    if (line.startsWith("> ")) { closeList(); html += `<blockquote>${inline(line.slice(2))}</blockquote>`; continue; }
+    if (line.startsWith("- ")) {
+      if (!inList) { html += "<ul>"; inList = true; }
+      html += `<li>${inline(line.slice(2))}</li>`; continue;
+    }
+    closeList();
+    if (line.trim() === "") continue;
+    html += `<p>${inline(line)}</p>`;
+  }
+  closeList();
+  return html;
+}
+
+const docsNav = document.getElementById("docs-nav");
+const docsArticle = document.getElementById("docs-article");
+const DOC_FILES = Object.keys(DOCS).sort((a, b) => (a === "README.md" ? -1 : b === "README.md" ? 1 : 0));
+DOC_FILES.forEach(fname => {
+  const a = document.createElement("a");
+  a.textContent = fname === "README.md" ? "Índice" : fname.replace(/\.md$/, "").replace(/-/g, " ");
+  a.dataset.doc = fname;
+  a.addEventListener("click", ev => { ev.preventDefault(); openDoc(fname); });
+  docsNav.appendChild(a);
+});
+function openDoc(fname, anchor) {
+  const md = DOCS[fname];
+  if (!md) return;
+  docsArticle.innerHTML = mdToHtml(md);
+  docsNav.querySelectorAll("a").forEach(a => a.classList.toggle("active", a.dataset.doc === fname));
+  docsArticle.querySelectorAll("a[data-doc]").forEach(a =>
+    a.addEventListener("click", ev => { ev.preventDefault(); openDoc(a.dataset.doc); }));
+  docsArticle.scrollTop = 0;
+  if (anchor) {
+    const el = docsArticle.querySelector(`#${CSS.escape(anchor)}`);
+    if (el) el.scrollIntoView({block: "start"});
+  }
+}
+// Matches build_kg.py's _slug(tipo) — kept explicit rather than derived from
+// the (differently-worded) chip labels in TIPOS, which drifted from this once.
+const DOC_FILE = {patologia: "patologias.md", elemento: "elementos.md",
+                  criterio_norma: "criterios-normativos.md",
+                  accion: "acciones.md", termino: "terminos-de-deteccion.md"};
+function showDocFor(n) {
+  setView("docs");
+  openDoc(DOC_FILE[n.tipo], slugify(n.nombre));
+}
+const tabGrafo = document.getElementById("tab-grafo");
+const tabDocs = document.getElementById("tab-docs");
+const graphWrap = document.getElementById("graph-wrap");
+const docsWrap = document.getElementById("docs-wrap");
+function setView(view) {
+  const isDocs = view === "docs";
+  graphWrap.hidden = isDocs; panel.hidden = isDocs; docsWrap.hidden = !isDocs;
+  tabGrafo.classList.toggle("active", !isDocs); tabGrafo.setAttribute("aria-selected", String(!isDocs));
+  tabDocs.classList.toggle("active", isDocs); tabDocs.setAttribute("aria-selected", String(isDocs));
+  if (isDocs && !docsArticle.innerHTML) openDoc("README.md");
+}
+tabGrafo.addEventListener("click", () => setView("grafo"));
+tabDocs.addEventListener("click", () => setView("docs"));
+</script>
+</body>
+</html>
