@@ -1,0 +1,512 @@
+"""Refresh the public seismic-inspection dashboard data.
+
+Downloads the latest inspections xlsx (Google Drive, with a local-file
+fallback), applies the exact cleaning contract defined in
+`data_cleaning.ipynb`, strips PII, spatially joins each inspection to its
+comuna/barrio polygon, and writes `inspections.json` + `meta.json` for the
+static frontend.
+
+No API/server is started here — this is a batch/cron-style script. Run it
+directly, or with `--loop SECONDS` to re-run forever (e.g. from an hourly
+cron wrapper).
+"""
+
+from __future__ import annotations
+
+import argparse
+import io
+import json
+import logging
+import os
+import re
+import time
+from collections import Counter
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pandas as pd
+import requests
+from shapely.geometry import Point, shape
+from shapely.strtree import STRtree
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger("refresh_data")
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+LOCAL_XLSX = REPO_ROOT / "S123_042e021e34e349ddadf738270674dcc9_EXCEL.xlsx"
+
+# Polygon names for the spatial join are read from the *prepared* basemaps
+# (web/data/comunas.geojson, web/data/barrios.geojson), not the raw files
+# under basemaps/. prepare_basemaps.py already repairs the U+FFFD mojibake
+# in barrio names there; reading its output instead of re-deriving names
+# from the raw basemap guarantees `comuna`/`barrio_geo` match the polygon
+# `name` values the frontend renders, by construction — run
+# `python scripts/prepare_basemaps.py` before this script.
+PREPARED_BASEMAPS_DIR = REPO_ROOT / "web" / "data"
+
+DRIVE_FILE_ID = "12igFWh8DmezKDyVnwX1CMJIVvenTW9u-"
+DRIVE_PUBLIC_URL = "https://drive.google.com/uc?export=download&id={file_id}"
+DRIVE_CONFIRM_URL = "https://drive.usercontent.google.com/download"
+
+DEFAULT_OUT_DIR = REPO_ROOT / "web" / "data"
+
+# --- Cleaning contract copied verbatim from data_cleaning.ipynb ---------
+
+COLS_A_ELIMINAR = [
+    "¿Se conoce el número de muertos y heridos?",
+    "Alcance de la evaluación:Exterior: qué tanto del perímetro externo de la edificación se logró observar — "
+    "Parcial (solo una parte visible) o Completa (se recorrió todo el contorno)."
+    "Interior: si se pudo ingresar a la edificación — No Ingreso (no fue posible entrar), "
+    "Parcial (se inspeccionaron algunas áreas) o Completa (se recorrió toda la edificación por dentro).",
+]
+
+RENAME_MAP = {
+    "Fecha de Inspección:": "fecha_inspeccion",
+    "Hora:": "hora",
+    "Nombre Evaluador:": "nombre_evaluador",
+    "ID Grupo:": "id_grupo",
+    "Especifique la entidad:": "entidad",
+    "Tipo de evento:": "tipo_evento",
+    "Nombre de la edificación:": "nombre_edificacion",
+    "Municipio:": "municipio",
+    "Barrio/vereda:": "barrio_vereda",
+    "Dirección:": "direccion",
+    "2.2 Código predial / catastral (si se tiene):": "cod_predial_catastral",
+    "Tipo de propiedad:": "tipo_propiedad",
+    "Nombre de contacto:": "nombre_contacto",
+    "Relación con la edificación:": "relacion_edificacion",
+    "Especifique otro:": "otro",
+    "E-mail:": "email",
+    "Teléfono:": "telefono",
+    "3.1 Época de construcción": "epoca_construccion",
+    "Número de pisos sobre el terreno": "n_pisos",
+    "Número de sótanos": "n_sotanos",
+    "Número aproximado de ocupantes": "n_ocupantes",
+    "Dimensiones — Frente (m):": "frente",
+    "Dimensiones — Fondo (m):": "fondo",
+    "Número de unidades residenciales:": "n_residenciales",
+    "Número de unidades comerciales:": "n_comerciales",
+    "Número de unidades no habitadas:": "n_no_habitadas",
+    "Muertos:": "n_muertos",
+    "Heridos:": "n_heridos",
+    "Acceso a la edificación": "acceso_edificacion",
+    "3.2 Uso de la edificación": "uso_edificacion",
+    "¿Cuál?": "uso_cual",
+    "3.3.1 Sistema estructural:": "sistema_estructural",
+    "¿Cuál?.1": "sistema_estructural_cual",
+    "3.3.2 Material:": "material_estructura",
+    "3.4.1 Material del entrepiso:": "material_entrepiso",
+    "3.4.2 Sistema de entrepiso:": "sistema_entrepiso",
+    "¿Cuál?.2": "sistema_entrepiso_cual",
+    "¿Existen sistemas combinados?": "existen_sistemas_combinados",
+    "Observaciones:": "observaciones",
+    "3.5.1 Sistema de soporte de cubierta:": "sistema_cubierta",
+    "¿Cuál?.3": "sistema_cubierta_cual",
+    "3.5.2 Revestimiento de cubierta:": "revestimiento_cubierta",
+    "¿Cuál?.4": "revestimiento_cubierta_cual",
+    "3.6.1 Muros divisorios:": "sistema_muros_divisorios",
+    "¿Cuál?.5": "sistema_muros_divisorios_cual",
+    "3.6.2 Fachadas:": "fachadas",
+    "¿Cuál?.6": "fachadas_cual",
+    "3.6.3 Escaleras:": "escaleras",
+    "¿Cuál?.7": "escaleras_cual",
+    "3.7 Calidad del diseño y la construcción:": "calidad_construccion",
+    "3.8 Estado de la edificación (conservación):": "estado_edificacion",
+    "4.1 Caída de objetos de edificios adyacentes — a) Existe riesgo externo": "41_a",
+    "4.1 — b) Compromete estabilidad de la edificación": "41_b",
+    "4.1 — c) Compromete accesos y/o ocupantes": "41_c",
+    "4.2 Colapso o probable colapso de edificios adyacentes — a) Existe riesgo externo": "42_a",
+    "4.2 — b) Compromete estabilidad de la edificación": "42_b",
+    "4.2 — c) Compromete accesos y/o ocupantes": "42_c",
+    "4.3 Falla en sistemas de distribución de servicios — a) Existe riesgo externo": "43_a",
+    "4.3 — b) Compromete estabilidad de la edificación": "43_b",
+    "4.3 — c) Compromete accesos y/o ocupantes": "43_c",
+    "4.4 Inestabilidad del terreno, movimientos en masa — a) Existe riesgo externo": "44_a",
+    "4.4 — b) Compromete estabilidad de la edificación": "44_b",
+    "4.4 — c) Compromete accesos y/o ocupantes": "44_c",
+    "4.5 Accesos y salidas — a) Existe riesgo externo": "45_a",
+    "4.5 — b) Compromete estabilidad de la edificación": "45_b",
+    "4.5 — c) Compromete accesos y/o ocupantes": "45_c",
+    "4.6 Otro — a) Existe riesgo externo": "46_a",
+    "4.6 — b) Compromete estabilidad de la edificación": "46_b",
+    "4.6 — c) Compromete accesos y/o ocupantes": "46_c",
+    "4.6 Especifique cuál:": "46_especifique_cual",
+    "5.1 Colapso total": "colapso_total",
+    "5.2 Colapso parcial": "colapso_parcial",
+    "5.3 Asentamiento severo en elementos estructurales": "asentamiento_severo",
+    "5.4 Inclinación o desviación importante": "inclinacion_importante",
+    "5.5 Problemas de inestabilidad en el suelo de cimentación": "suelo_inestable",
+    "5.6 Riesgo de caída de elementos de la edificación": "riesgo_caida",
+    "5.7 Daño en muros de carga, columnas y otros elementos": "danos_estructura",
+    "5.8 Daño en contrapiso, entrepiso, muros de contención": "danos_contrapiso_entrepiso_muroscont",
+    "5.9 Daño en muros divisorios, fachada, antepechos": "danos_muro_div",
+    "5.10 Cubierta (recubrimiento y estructura de soporte)": "danos_cubierta",
+    "5.11 Cielo rasos, luminarias, instalaciones": "cielos_instalaciones",
+    "Alcance — Exterior:": "alc_exterior",
+    "Alcance — Interior:": "alc_interior",
+    "Matriz de referencia (6.2 y 6.3)": "matriz_ref",
+    "6.1 Porcentaje de afectación en planta:": "afectacion_planta",
+    "severidad_calc": "afectacion_planta_calc",
+    "6.2 Severidad de daños:": "severidad_danos",
+    "nivel_dano_calc": "severidad_danos_calc",
+    "6.3 Nivel de daño en la edificación:": "nivel_dano",
+    "7. Criterio de habitabilidad:": "criterio_habitabilidad",
+    "Justifique el cambio respecto al criterio sugerido:": "justificacion_criterio",
+    "8.1 Evaluación adicional requerida:": "requiere_evaluacion_adicional",
+    "8.1 Evaluación estructural — detalle:": "eval_estructural",
+    "8.1 Evaluación geotécnica — detalle:": "eval_geotecnica",
+    "8.1 Otra evaluación — ¿cuál?": "eval_otra",
+    "8.2 Recomendaciones y medidas:": "recomendaciones",
+    "Aislamiento — indique las áreas:": "aislamiento",
+    "Intervención de entidades — ¿cuáles?": "intervencion_entades",
+    "Observaciones generales:": "observaciones_generales",
+    "Matrícula Profesional:": "matricula_profesional",
+}
+
+# Public dashboard: never export these, regardless of what's in RENAME_MAP.
+PII_COLUMNS = ["email", "telefono", "nombre_contacto", "cod_predial_catastral", "matricula_profesional"]
+
+NUMERIC_COLUMNS = [
+    "n_pisos",
+    "n_ocupantes",
+    "n_muertos",
+    "n_heridos",
+    "n_residenciales",
+    "n_comerciales",
+    "n_no_habitadas",
+    "frente",
+    "fondo",
+    "gps_precision_m",
+    "x",
+    "y",
+]
+
+
+# --- Step 1: acquire the source xlsx ------------------------------------
+
+
+def _looks_like_xlsx(content: bytes) -> bool:
+    # xlsx files are zip archives -> local file header magic bytes "PK\x03\x04"
+    return content[:2] == b"PK"
+
+
+def _extract_confirm_params(html_text: str, file_id: str) -> dict | None:
+    """Parse the Drive "can't scan for viruses" interstitial for the hidden
+    form fields needed to confirm the download."""
+    confirm = re.search(r'name="confirm"\s+value="([^"]+)"', html_text)
+    uuid = re.search(r'name="uuid"\s+value="([^"]+)"', html_text)
+    if not confirm:
+        confirm = re.search(r"confirm=([0-9A-Za-z_-]+)", html_text)
+    if not confirm:
+        return None
+    params = {"id": file_id, "export": "download", "confirm": confirm.group(1)}
+    if uuid:
+        params["uuid"] = uuid.group(1)
+    return params
+
+
+def download_public(file_id: str) -> bytes:
+    session = requests.Session()
+    url = DRIVE_PUBLIC_URL.format(file_id=file_id)
+    resp = session.get(url, timeout=30)
+    resp.raise_for_status()
+
+    if _looks_like_xlsx(resp.content):
+        return resp.content
+
+    # Large-file / virus-scan interstitial: pull the confirm token and retry.
+    params = _extract_confirm_params(resp.text, file_id)
+    if params:
+        resp2 = session.get(DRIVE_CONFIRM_URL, params=params, timeout=30)
+        resp2.raise_for_status()
+        if _looks_like_xlsx(resp2.content):
+            return resp2.content
+
+    raise ValueError("Public Drive download did not return a valid xlsx (got HTML/interstitial content).")
+
+
+def download_service_account(file_id: str) -> bytes:
+    creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if not creds_path:
+        raise RuntimeError("GOOGLE_APPLICATION_CREDENTIALS is not set.")
+
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseDownload
+    except ImportError as exc:
+        raise ImportError("googleapiclient/google-auth not installed; skipping service-account download.") from exc
+
+    scopes = ["https://www.googleapis.com/auth/drive.readonly"]
+    credentials = service_account.Credentials.from_service_account_file(creds_path, scopes=scopes)
+    drive_service = build("drive", "v3", credentials=credentials)
+
+    request = drive_service.files().get_media(fileId=file_id)
+    buffer = io.BytesIO()
+    downloader = MediaIoBaseDownload(buffer, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+
+    content = buffer.getvalue()
+    if not _looks_like_xlsx(content):
+        raise ValueError("Service-account download did not return a valid xlsx.")
+    return content
+
+
+def acquire_xlsx(source: str) -> tuple[bytes | None, Path | None, str]:
+    """Returns (content_bytes_or_None, local_path_or_None, source_used)."""
+    if source == "local":
+        if not LOCAL_XLSX.exists():
+            raise FileNotFoundError(f"Local fallback xlsx not found: {LOCAL_XLSX}")
+        log.warning("Using local fallback xlsx: %s", LOCAL_XLSX)
+        return None, LOCAL_XLSX, "local"
+
+    attempts = []
+    if source in ("auto", "drive"):
+        attempts.append(("public", lambda: download_public(DRIVE_FILE_ID)))
+        attempts.append(("service_account", lambda: download_service_account(DRIVE_FILE_ID)))
+
+    for label, fn in attempts:
+        try:
+            log.info("Trying Drive download via %s ...", label)
+            content = fn()
+            log.info("Drive download via %s succeeded (%d bytes).", label, len(content))
+            return content, None, "drive"
+        except Exception as exc:  # noqa: BLE001 - any failure just moves to next strategy
+            log.warning("Drive download via %s failed: %s", label, exc)
+
+    if source == "drive":
+        raise RuntimeError("All Drive download strategies failed and source='drive' disallows local fallback.")
+
+    if not LOCAL_XLSX.exists():
+        raise FileNotFoundError(f"No Drive download succeeded and local fallback xlsx not found: {LOCAL_XLSX}")
+    log.warning("All Drive download strategies failed. Using local fallback xlsx: %s", LOCAL_XLSX)
+    return None, LOCAL_XLSX, "local"
+
+
+# --- Step 2: clean per data_cleaning.ipynb -------------------------------
+
+
+def load_and_clean(content: bytes | None, local_path: Path | None) -> pd.DataFrame:
+    source = io.BytesIO(content) if content is not None else local_path
+    df = pd.read_excel(source)
+
+    existing_drop_cols = [c for c in COLS_A_ELIMINAR if c in df.columns]
+    df = df.drop(columns=existing_drop_cols)
+    df = df.rename(columns=RENAME_MAP)
+
+    return df
+
+
+# --- Step 3: post-processing ---------------------------------------------
+
+
+def normalize_municipio(series: pd.Series) -> pd.Series:
+    def _norm(value):
+        if not isinstance(value, str):
+            return value
+        stripped = value.strip()
+        if not stripped:
+            return value
+        # Every observed value in this dataset (Cali, Santiago de Cali,
+        # Valle del Cauca, Calib, typos, casing/spacing variants) refers to
+        # the same municipality: Cali.
+        return "Cali"
+
+    return series.apply(_norm)
+
+
+def add_date_fields(df: pd.DataFrame) -> pd.DataFrame:
+    fecha_dt = pd.to_datetime(df["fecha_inspeccion"], errors="coerce")
+    df["fecha_inspeccion"] = fecha_dt.dt.strftime("%Y-%m-%d")
+
+    hora_str = df["hora"].astype("string")
+
+    def _combine(date_str, hora_val):
+        if pd.isna(date_str) or not isinstance(hora_val, str) or not hora_val.strip():
+            return None
+        match = re.match(r"^(\d{1,2}):(\d{2})", hora_val.strip())
+        if not match:
+            return None
+        hh, mm = match.groups()
+        return f"{date_str}T{int(hh):02d}:{mm}"
+
+    df["fecha_hora"] = [
+        _combine(d, h) for d, h in zip(df["fecha_inspeccion"], hora_str)
+    ]
+    return df
+
+
+def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
+    for col in NUMERIC_COLUMNS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def drop_pii(df: pd.DataFrame) -> pd.DataFrame:
+    return df.drop(columns=[c for c in PII_COLUMNS if c in df.columns])
+
+
+# --- Step 4: spatial join --------------------------------------------------
+
+
+def load_prepared_polygons(geojson_path: Path):
+    """Load geometries + `properties.name` from a *prepared* basemap (the
+    output of prepare_basemaps.py), which already has repaired, join-ready
+    names."""
+    if not geojson_path.exists():
+        raise FileNotFoundError(
+            f"{geojson_path} not found. Run `python scripts/prepare_basemaps.py` first "
+            "to generate the prepared/repaired basemaps used for the spatial join."
+        )
+    with geojson_path.open(encoding="utf-8") as f:
+        data = json.load(f)
+    geoms = []
+    names = []
+    for ft in data["features"]:
+        geoms.append(shape(ft["geometry"]))
+        names.append(ft["properties"].get("name"))
+    return geoms, names
+
+
+def spatial_join(df: pd.DataFrame) -> pd.DataFrame:
+    comunas_geoms, comunas_names = load_prepared_polygons(PREPARED_BASEMAPS_DIR / "comunas.geojson")
+    barrios_geoms, barrios_names = load_prepared_polygons(PREPARED_BASEMAPS_DIR / "barrios.geojson")
+
+    comunas_tree = STRtree(comunas_geoms)
+    barrios_tree = STRtree(barrios_geoms)
+
+    def match(tree: STRtree, geoms, names, x, y):
+        if pd.isna(x) or pd.isna(y):
+            return None
+        point = Point(x, y)
+        candidate_idx = tree.query(point, predicate="intersects")
+        for idx in candidate_idx:
+            if geoms[idx].contains(point) or geoms[idx].intersects(point):
+                return names[idx]
+        return None
+
+    comuna_vals = []
+    barrio_geo_vals = []
+    for x, y in zip(df["x"], df["y"]):
+        comuna_vals.append(match(comunas_tree, comunas_geoms, comunas_names, x, y))
+        barrio_geo_vals.append(match(barrios_tree, barrios_geoms, barrios_names, x, y))
+
+    df["comuna"] = comuna_vals
+    df["barrio_geo"] = barrio_geo_vals
+    return df
+
+
+# --- Step 5: write outputs -------------------------------------------------
+
+
+def write_outputs(df: pd.DataFrame, out_dir: Path, source_used: str) -> tuple[Path, Path, int]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    records_json = df.to_json(orient="records", date_format="iso", force_ascii=False)
+    records = json.loads(records_json)
+
+    inspections_path = out_dir / "inspections.json"
+    inspections_path.write_text(
+        json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    if "evento_id" in df.columns and df["evento_id"].notna().any():
+        event_id = Counter(df["evento_id"].dropna()).most_common(1)[0][0]
+    else:
+        event_id = None
+
+    meta = {
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "row_count": int(len(df)),
+        "source": source_used,
+        "event_id": event_id,
+    }
+    meta_path = out_dir / "meta.json"
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return inspections_path, meta_path, len(records)
+
+
+# --- Orchestration ----------------------------------------------------------
+
+
+def run_once(source: str, out_dir: Path) -> None:
+    log.info("=== refresh_data run start (source=%s, out=%s) ===", source, out_dir)
+
+    content, local_path, source_used = acquire_xlsx(source)
+    df = load_and_clean(content, local_path)
+    log.info("Loaded and cleaned %d rows, %d columns.", len(df), len(df.columns))
+
+    df["municipio"] = normalize_municipio(df["municipio"])
+    df = add_date_fields(df)
+    df = coerce_numeric(df)
+    df = drop_pii(df)
+    df = spatial_join(df)
+
+    matched_comuna = df["comuna"].notna().sum()
+    matched_barrio = df["barrio_geo"].notna().sum()
+    log.info(
+        "Spatial join: comuna matched %d/%d, barrio matched %d/%d.",
+        matched_comuna, len(df), matched_barrio, len(df),
+    )
+
+    inspections_path, meta_path, n = write_outputs(df, out_dir, source_used)
+    log.info("Wrote %s (%d records) and %s.", inspections_path, n, meta_path)
+    log.info("=== refresh_data run complete (source_used=%s) ===", source_used)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Refresh the seismic dashboard data files.")
+    parser.add_argument("--source", choices=["auto", "drive", "local"], default="auto")
+    parser.add_argument("--loop", type=int, default=0, help="Re-run every N seconds forever. Default: run once.")
+    parser.add_argument("--out", type=Path, default=DEFAULT_OUT_DIR, help="Output directory for JSON files.")
+    parser.add_argument(
+        "--deploy",
+        action="store_true",
+        help="After a successful refresh, redeploy the web/ directory to Vercel production.",
+    )
+    return parser.parse_args()
+
+
+def deploy_to_vercel() -> None:
+    import subprocess
+
+    web_dir = DEFAULT_OUT_DIR.parent
+    log.info("Deploying %s to Vercel production...", web_dir)
+    result = subprocess.run(
+        ["vercel", "deploy", "--prod", "--yes"],
+        cwd=web_dir,
+        capture_output=True,
+        text=True,
+        shell=(os.name == "nt"),
+    )
+    if result.returncode == 0:
+        log.info("Vercel deploy OK: %s", result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "done")
+    else:
+        log.error("Vercel deploy failed (exit %d): %s", result.returncode, result.stderr.strip()[-500:])
+
+
+def main() -> None:
+    args = parse_args()
+
+    if args.loop and args.loop > 0:
+        log.info("Looping every %d seconds. Press Ctrl+C to stop.", args.loop)
+        while True:
+            try:
+                run_once(args.source, args.out)
+                if args.deploy:
+                    deploy_to_vercel()
+            except Exception:  # noqa: BLE001 - keep the loop alive across failures
+                log.exception("Run failed; will retry on next loop iteration.")
+            time.sleep(args.loop)
+    else:
+        run_once(args.source, args.out)
+        if args.deploy:
+            deploy_to_vercel()
+
+
+if __name__ == "__main__":
+    main()

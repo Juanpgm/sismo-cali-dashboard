@@ -1,0 +1,22 @@
+# Raw survey Excel — contains PII (email, telefono, nombre_contacto, etc.)
+# Kept local only; never publish.
+*.xlsx
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Vercel
+.vercel/
+
+# Secrets / credentials
+.env
+.env.*
+*service-account*.json
+*credentials*.json
+
+# Tooling artifacts
+.atl/
