@@ -14,11 +14,13 @@ cron wrapper).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import logging
 import os
 import re
+import string
 import time
 from collections import Counter
 from datetime import datetime, timezone
@@ -28,6 +30,8 @@ import pandas as pd
 import requests
 from shapely.geometry import Point, shape
 from shapely.strtree import STRtree
+
+from address_norm import normalize_address
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("refresh_data")
@@ -44,9 +48,26 @@ LOCAL_XLSX = REPO_ROOT / "S123_042e021e34e349ddadf738270674dcc9_EXCEL.xlsx"
 # `python scripts/prepare_basemaps.py` before this script.
 PREPARED_BASEMAPS_DIR = REPO_ROOT / "web" / "data"
 
-DRIVE_FILE_ID = "12igFWh8DmezKDyVnwX1CMJIVvenTW9u-"
-DRIVE_PUBLIC_URL = "https://drive.google.com/uc?export=download&id={file_id}"
-DRIVE_CONFIRM_URL = "https://drive.usercontent.google.com/download"
+# Source is now a NATIVE Google Sheet (converted from the Survey123 xlsx export),
+# not an uploaded .xlsx. Native Sheets must be *exported* to xlsx (Drive API
+# files.export, or the docs export URL) — a plain file download returns HTML.
+DRIVE_FILE_ID = "19k--nAEScol_3E7nbSpPev07gW2_UT8ojSsaMGbn6Ds"
+# Export a public native Sheet as xlsx without auth (only works if it's shared publicly).
+SHEET_EXPORT_URL = "https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx"
+# MIME type requested when exporting a native Sheet via the Drive API (service account).
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+# Tab (worksheet) in the same Sheet where the normalized table is written back.
+NORMALIZED_TAB = "tabla_normalizada"
+
+# Service-account scopes: read (export the raw tab) + write (update the normalized tab).
+SA_SCOPES = [
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/spreadsheets",
+]
+
+# id_edan: 5-char code from 0-9 + A-Z (uppercase, no symbols).
+ID_EDAN_ALPHABET = string.digits + string.ascii_uppercase
 
 DEFAULT_OUT_DIR = REPO_ROOT / "web" / "data"
 
@@ -190,39 +211,16 @@ def _looks_like_xlsx(content: bytes) -> bool:
     return content[:2] == b"PK"
 
 
-def _extract_confirm_params(html_text: str, file_id: str) -> dict | None:
-    """Parse the Drive "can't scan for viruses" interstitial for the hidden
-    form fields needed to confirm the download."""
-    confirm = re.search(r'name="confirm"\s+value="([^"]+)"', html_text)
-    uuid = re.search(r'name="uuid"\s+value="([^"]+)"', html_text)
-    if not confirm:
-        confirm = re.search(r"confirm=([0-9A-Za-z_-]+)", html_text)
-    if not confirm:
-        return None
-    params = {"id": file_id, "export": "download", "confirm": confirm.group(1)}
-    if uuid:
-        params["uuid"] = uuid.group(1)
-    return params
-
-
 def download_public(file_id: str) -> bytes:
+    """Export a *public* native Google Sheet as xlsx. If the sheet isn't shared
+    publicly, Google returns an HTML sign-in page — caught by the PK check."""
     session = requests.Session()
-    url = DRIVE_PUBLIC_URL.format(file_id=file_id)
+    url = SHEET_EXPORT_URL.format(file_id=file_id)
     resp = session.get(url, timeout=30)
     resp.raise_for_status()
-
     if _looks_like_xlsx(resp.content):
         return resp.content
-
-    # Large-file / virus-scan interstitial: pull the confirm token and retry.
-    params = _extract_confirm_params(resp.text, file_id)
-    if params:
-        resp2 = session.get(DRIVE_CONFIRM_URL, params=params, timeout=30)
-        resp2.raise_for_status()
-        if _looks_like_xlsx(resp2.content):
-            return resp2.content
-
-    raise ValueError("Public Drive download did not return a valid xlsx (got HTML/interstitial content).")
+    raise ValueError("Public Sheet export did not return a valid xlsx (sheet not shared publicly?).")
 
 
 def download_service_account(file_id: str) -> bytes:
@@ -237,11 +235,11 @@ def download_service_account(file_id: str) -> bytes:
     except ImportError as exc:
         raise ImportError("googleapiclient/google-auth not installed; skipping service-account download.") from exc
 
-    scopes = ["https://www.googleapis.com/auth/drive.readonly"]
-    credentials = service_account.Credentials.from_service_account_file(creds_path, scopes=scopes)
+    credentials = service_account.Credentials.from_service_account_file(creds_path, scopes=SA_SCOPES)
     drive_service = build("drive", "v3", credentials=credentials)
 
-    request = drive_service.files().get_media(fileId=file_id)
+    # Native Google Sheets are exported (not downloaded) to xlsx via export_media.
+    request = drive_service.files().export_media(fileId=file_id, mimeType=XLSX_MIME)
     buffer = io.BytesIO()
     downloader = MediaIoBaseDownload(buffer, request)
     done = False
@@ -250,7 +248,7 @@ def download_service_account(file_id: str) -> bytes:
 
     content = buffer.getvalue()
     if not _looks_like_xlsx(content):
-        raise ValueError("Service-account download did not return a valid xlsx.")
+        raise ValueError("Service-account export did not return a valid xlsx.")
     return content
 
 
@@ -264,8 +262,10 @@ def acquire_xlsx(source: str) -> tuple[bytes | None, Path | None, str]:
 
     attempts = []
     if source in ("auto", "drive"):
-        attempts.append(("public", lambda: download_public(DRIVE_FILE_ID)))
+        # Service account first: the Sheet is private, shared only with the SA.
+        # Public export is a fallback for when the sheet is also shared publicly.
         attempts.append(("service_account", lambda: download_service_account(DRIVE_FILE_ID)))
+        attempts.append(("public", lambda: download_public(DRIVE_FILE_ID)))
 
     for label, fn in attempts:
         try:
@@ -290,7 +290,14 @@ def acquire_xlsx(source: str) -> tuple[bytes | None, Path | None, str]:
 
 def load_and_clean(content: bytes | None, local_path: Path | None) -> pd.DataFrame:
     source = io.BytesIO(content) if content is not None else local_path
-    df = pd.read_excel(source)
+    # The Sheet holds both the raw survey tab and our written-back
+    # NORMALIZED_TAB; always read a RAW tab so we never feed our own output back
+    # in as input (which would compound the rename on every run).
+    xls = pd.ExcelFile(source)
+    raw_tabs = [s for s in xls.sheet_names if s != NORMALIZED_TAB]
+    tab = raw_tabs[0] if raw_tabs else xls.sheet_names[0]
+    log.info("Reading raw tab '%s' (tabs available: %s).", tab, xls.sheet_names)
+    df = pd.read_excel(xls, sheet_name=tab)
 
     existing_drop_cols = [c for c in COLS_A_ELIMINAR if c in df.columns]
     df = df.drop(columns=existing_drop_cols)
@@ -345,8 +352,63 @@ def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_address_norm(df: pd.DataFrame) -> pd.DataFrame:
+    """Add `direccion_norm` (IGAC-normalized address) right after `direccion`,
+    and `coords` — the x (lon) / y (lat) pair as WGS84 "lat, lon", the same
+    format as `coords_unificadas` in the EDAN SISMO table. Runs after
+    coerce_numeric so x/y are already numeric."""
+    if "direccion" in df.columns:
+        norm = df["direccion"].apply(normalize_address)
+        df.insert(df.columns.get_loc("direccion") + 1, "direccion_norm", norm)
+    if "x" in df.columns and "y" in df.columns:
+        coords = [
+            f"{lat:.6f}, {lon:.6f}" if pd.notna(lon) and pd.notna(lat) else ""
+            for lon, lat in zip(df["x"], df["y"])
+        ]
+        pos = (df.columns.get_loc("direccion_norm") + 1
+               if "direccion_norm" in df.columns else len(df.columns))
+        df.insert(pos, "coords", coords)
+    return df
+
+
 def drop_pii(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=[c for c in PII_COLUMNS if c in df.columns])
+
+
+def _base36(n: int) -> str:
+    if n == 0:
+        return "0"
+    out = []
+    while n:
+        n, rem = divmod(n, 36)
+        out.append(ID_EDAN_ALPHABET[rem])
+    return "".join(reversed(out))
+
+
+def _id_edan(key: str) -> str:
+    """Deterministic 5-char uppercase alphanumeric id derived from a stable key,
+    so the same inspection keeps its id across refreshes. 36^5 ≈ 60M codes."""
+    digest = hashlib.sha1(str(key).encode("utf-8")).hexdigest()
+    return _base36(int(digest, 16))[:5].rjust(5, "0")
+
+
+def add_id_edan(df: pd.DataFrame) -> pd.DataFrame:
+    """Prepend an `id_edan` column (5 chars, [0-9A-Z], no symbols). Stable key
+    preference: GlobalID (survey UUID) → ObjectID → row position."""
+    def key_for(row: dict, i: int) -> str:
+        for col in ("GlobalID", "ObjectID"):
+            v = row.get(col)
+            if v is not None and not (isinstance(v, float) and pd.isna(v)) and str(v).strip():
+                return str(v)
+        return f"row-{i}"
+
+    ids = [_id_edan(key_for(r, i)) for i, r in enumerate(df.to_dict("records"))]
+    # Distinct records must get distinct ids. With ~hundreds of rows in a 60M
+    # space a clash is astronomically unlikely, but never ship the ID path unchecked.
+    if len(set(ids)) != len(ids):
+        raise ValueError("id_edan collision detected; widen the id space or add a suffix.")
+    df.insert(0, "id_edan", ids)
+    return df
 
 
 # --- Step 4: spatial join --------------------------------------------------
@@ -430,10 +492,46 @@ def write_outputs(df: pd.DataFrame, out_dir: Path, source_used: str) -> tuple[Pa
     return inspections_path, meta_path, len(records)
 
 
+def write_normalized_tab(df: pd.DataFrame, sheet_id: str, tab: str = NORMALIZED_TAB) -> int:
+    """Overwrite `tab` in the Google Sheet with the normalized table (clear then
+    write). Requires the service account to be an EDITOR of the sheet and the
+    spreadsheets write scope. Returns the number of data rows written."""
+    creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if not creds_path:
+        raise RuntimeError("GOOGLE_APPLICATION_CREDENTIALS is not set.")
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+
+    credentials = service_account.Credentials.from_service_account_file(creds_path, scopes=SA_SCOPES)
+    ss = build("sheets", "v4", credentials=credentials).spreadsheets()
+
+    existing = {s["properties"]["title"] for s in ss.get(spreadsheetId=sheet_id).execute().get("sheets", [])}
+    if tab not in existing:
+        ss.batchUpdate(
+            spreadsheetId=sheet_id,
+            body={"requests": [{"addSheet": {"properties": {"title": tab}}}]},
+        ).execute()
+
+    # Reuse pandas' JSON serialization (numpy scalars, dates → JSON), then
+    # turn nulls into "" since the Sheets API rejects None cells.
+    rows = json.loads(df.to_json(orient="values", date_format="iso"))
+    rows = [["" if c is None else c for c in row] for row in rows]
+    values = [list(df.columns)] + rows
+
+    ss.values().clear(spreadsheetId=sheet_id, range=f"'{tab}'").execute()
+    ss.values().update(
+        spreadsheetId=sheet_id,
+        range=f"'{tab}'!A1",
+        valueInputOption="RAW",
+        body={"values": values},
+    ).execute()
+    return len(df)
+
+
 # --- Orchestration ----------------------------------------------------------
 
 
-def run_once(source: str, out_dir: Path) -> None:
+def run_once(source: str, out_dir: Path, write_sheet: bool = True) -> None:
     log.info("=== refresh_data run start (source=%s, out=%s) ===", source, out_dir)
 
     content, local_path, source_used = acquire_xlsx(source)
@@ -445,6 +543,8 @@ def run_once(source: str, out_dir: Path) -> None:
     df = coerce_numeric(df)
     df = drop_pii(df)
     df = spatial_join(df)
+    df = add_id_edan(df)
+    df = add_address_norm(df)
 
     matched_comuna = df["comuna"].notna().sum()
     matched_barrio = df["barrio_geo"].notna().sum()
@@ -455,6 +555,19 @@ def run_once(source: str, out_dir: Path) -> None:
 
     inspections_path, meta_path, n = write_outputs(df, out_dir, source_used)
     log.info("Wrote %s (%d records) and %s.", inspections_path, n, meta_path)
+
+    # Write the normalized table back to the Sheet tab. Only possible when we
+    # authenticated with the service account (source_used == 'drive' via SA).
+    # A failure here must not lose the JSON already written for the dashboard.
+    if write_sheet and source_used == "drive" and os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        try:
+            written = write_normalized_tab(df, DRIVE_FILE_ID)
+            log.info("Wrote %d rows to Sheet tab '%s'.", written, NORMALIZED_TAB)
+        except Exception as exc:  # noqa: BLE001 - JSON already saved; surface but don't crash
+            log.error("Failed to write Sheet tab '%s': %s", NORMALIZED_TAB, exc)
+    elif write_sheet and source_used == "drive":
+        log.warning("Skipping Sheet write-back: GOOGLE_APPLICATION_CREDENTIALS not set.")
+
     log.info("=== refresh_data run complete (source_used=%s) ===", source_used)
 
 
@@ -467,6 +580,11 @@ def parse_args() -> argparse.Namespace:
         "--deploy",
         action="store_true",
         help="After a successful refresh, redeploy the web/ directory to Vercel production.",
+    )
+    parser.add_argument(
+        "--no-write-sheet",
+        action="store_true",
+        help=f"Skip writing the normalized table back to the '{NORMALIZED_TAB}' Sheet tab.",
     )
     return parser.parse_args()
 
@@ -492,18 +610,20 @@ def deploy_to_vercel() -> None:
 def main() -> None:
     args = parse_args()
 
+    write_sheet = not args.no_write_sheet
+
     if args.loop and args.loop > 0:
         log.info("Looping every %d seconds. Press Ctrl+C to stop.", args.loop)
         while True:
             try:
-                run_once(args.source, args.out)
+                run_once(args.source, args.out, write_sheet=write_sheet)
                 if args.deploy:
                     deploy_to_vercel()
             except Exception:  # noqa: BLE001 - keep the loop alive across failures
                 log.exception("Run failed; will retry on next loop iteration.")
             time.sleep(args.loop)
     else:
-        run_once(args.source, args.out)
+        run_once(args.source, args.out, write_sheet=write_sheet)
         if args.deploy:
             deploy_to_vercel()
 
