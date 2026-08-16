@@ -16,6 +16,7 @@ const kpiRow = el('#kpi-row');
 const activeChipsEl = el('#active-chips');
 const searchInput = el('#search-input');
 const refreshBtn = el('#refresh-btn');
+const refreshProgress = el('#refresh-progress');
 const retryBtn = el('#retry-btn');
 const errorOverlay = el('#error-overlay');
 const errorMessage = el('[data-error-message]');
@@ -126,8 +127,17 @@ function onRowClick(record) {
 
 async function loadAndRender({ isRefresh = false } = {}) {
   try {
-    if (isRefresh) refreshBtn.classList.add('is-loading');
-    await store.load();
+    if (isRefresh) {
+      refreshBtn.classList.add('is-loading');
+      refreshBtn.setAttribute('aria-busy', 'true');
+      refreshBtn.querySelector('span').textContent = 'Actualizando…';
+      refreshProgress.hidden = false;
+      // Floor the perceived duration so the progress feedback is visible even
+      // when the JSON comes back from cache in a few milliseconds.
+      await Promise.all([store.load(), new Promise((r) => setTimeout(r, 600))]);
+    } else {
+      await store.load();
+    }
     errorOverlay.hidden = true;
     renderHeaderMeta();
 
@@ -156,6 +166,9 @@ async function loadAndRender({ isRefresh = false } = {}) {
     if (isRefresh) showToast('Error al actualizar los datos.', 'error');
   } finally {
     refreshBtn.classList.remove('is-loading');
+    refreshBtn.removeAttribute('aria-busy');
+    refreshBtn.querySelector('span').textContent = 'Actualizar datos';
+    refreshProgress.hidden = true;
   }
 }
 
