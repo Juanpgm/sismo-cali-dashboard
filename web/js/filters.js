@@ -212,7 +212,7 @@ function renderChips(chipsRoot, store) {
       onRemove: () => { store.setFilter('dateFrom', null); store.setFilter('dateTo', null); },
     });
   }
-  if (store.filters.search) {
+  if (store.filters.search.length) {
     chips.push({
       text: `Búsqueda: "${store.filters.searchRaw}"`,
       onRemove: () => store.setSearch(''),

@@ -1,5 +1,5 @@
 // Data loading + global filter state (tiny pub/sub store, no framework).
-import { normalize, buildSearchIndex, splitMultiValue, labelForField } from './utils.js';
+import { normalizeAddressText, buildSearchIndex, splitMultiValue, labelForField } from './utils.js';
 
 // Sidebar section order/labels for FILTER_FIELDS' `group` key.
 // Ordered so the severity-determining fields the assessor needs first come first.
@@ -81,7 +81,7 @@ class Store {
     this.filters = {
       dateFrom: null,
       dateTo: null,
-      search: '',
+      search: [], // tokens, address-normalized (see setSearch)
       searchRaw: '', // original (non-normalized) text, for chip display
     };
     for (const def of FILTER_FIELDS) this.filters[def.field] = new Set();
@@ -203,7 +203,9 @@ class Store {
   }
 
   setSearch(text) {
-    this.filters.search = normalize(text);
+    // Address-aware normalization (abbreviations, separators, digit/letter
+    // splits) + token list so "Cra 44a 10-25" and "carrera 44 10-25" match.
+    this.filters.search = normalizeAddressText(text).split(' ').filter(Boolean);
     this.filters.searchRaw = text || '';
     this.applyFilters();
   }
@@ -211,7 +213,7 @@ class Store {
   clearFilters() {
     this.filters.dateFrom = null;
     this.filters.dateTo = null;
-    this.filters.search = '';
+    this.filters.search = [];
     this.filters.searchRaw = '';
     for (const def of FILTER_FIELDS) this.filters[def.field].clear();
     for (const def of RANGE_FIELDS) {
@@ -225,7 +227,7 @@ class Store {
     let n = 0;
     if (this.filters.dateFrom) n++;
     if (this.filters.dateTo) n++;
-    if (this.filters.search) n++;
+    if (this.filters.search.length) n++;
     for (const def of FILTER_FIELDS) n += this.filters[def.field].size > 0 ? 1 : 0;
     for (const def of RANGE_FIELDS) {
       const r = this.filters[def.field];
@@ -262,7 +264,7 @@ class Store {
       for (const def of RANGE_FIELDS) {
         if (!matchesRange(r, def, this.filters[def.field])) return false;
       }
-      if (search && !r._search.includes(search)) return false;
+      if (search.length && !search.every((tok) => r._search.includes(tok))) return false;
       return true;
     });
     this.notify();

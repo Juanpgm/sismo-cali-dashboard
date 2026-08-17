@@ -85,6 +85,37 @@ export function normalize(str) {
     .trim();
 }
 
+/** Colombian address way-type abbreviations -> single canonical short form.
+ *  Longest variants first so e.g. "crra"/"carrera" both hit before "cr". */
+const WAY_TYPE_MAP = [
+  [/\b(calle|cll)\b/g, 'cl'],
+  [/\b(carrera|carrea|crra|cra|krra|kra)\b/g, 'cr'],
+  [/\b(avenida|aven)\b/g, 'av'],
+  [/\b(diagonal|diag)\b/g, 'dg'],
+  [/\b(transversal|trans)\b/g, 'tv'],
+  [/\bcircular\b/g, 'cir'],
+  [/\bautopista\b/g, 'au'],
+  [/\bmanzana\b/g, 'mz'],
+];
+
+/** normalize() + address-aware fuzz: punctuation/separators -> spaces, way-type
+ *  abbreviations collapsed to one canonical form, digit<->letter boundaries
+ *  split ("44a" / "5B2" -> "44 a" / "5 b 2"), noise words dropped. Used to
+ *  build the search index AND the query, so "Cra 44a #10-25" and
+ *  "carrera 44 10-25" land on the same tokens. */
+export function normalizeAddressText(str) {
+  let s = normalize(str)
+    .replace(/[#.,\-]/g, ' ')
+    .replace(/\b(no|num)\b/g, ' ');
+  for (const [re, canon] of WAY_TYPE_MAP) s = s.replace(re, canon);
+  s = s
+    .replace(/(\d)([a-z])/g, '$1 $2')
+    .replace(/([a-z])(\d)/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return s;
+}
+
 /** Capitalize-and-space a raw snake_case field/code as a last-resort label. */
 export function prettify(code) {
   if (code === null || code === undefined || code === '') return 'Sin dato';
@@ -296,7 +327,7 @@ export function buildSearchIndex(record) {
     if (v === null || v === undefined) continue;
     if (typeof v === 'string' || typeof v === 'number') parts.push(String(v));
   }
-  return normalize(parts.join(' | '));
+  return normalizeAddressText(parts.join(' | '));
 }
 
 /** Color for a habitability code. */
