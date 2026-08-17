@@ -1,7 +1,7 @@
 /* global Chart */
 // Chart.js 4 (UMD global via CDN, same pattern as Leaflet's `L`) — "Estadísticas" charts.
 import {
-  COLORS, themeColor, labelForCode, labelForField, splitMultiValue, habCode, normalize, formatDate,
+  COLORS, themeColor, labelForCode, labelForField, splitMultiValue, habCode, habBinary, normalize, formatDate,
 } from './utils.js';
 
 const registry = new Map();
@@ -295,21 +295,25 @@ function renderFlags(records) {
   });
 }
 
-/** Doughnut: habitability distribution over the filtered set. */
+// Binary habitability (Momento 3 framing) for the headline doughnut.
+const HAB_BINARY_ORDER = ['habitable', 'no_habitable'];
+const HAB_BINARY_COLOR = { habitable: COLORS.status.h, no_habitable: COLORS.status.i2 };
+
+/** Doughnut: Habitable vs No habitable distribution over the filtered set. */
 function renderHabDoughnut(records) {
-  const counts = Object.fromEntries(HAB_ORDER.map((c) => [c, 0]));
+  const counts = Object.fromEntries(HAB_BINARY_ORDER.map((c) => [c, 0]));
   for (const r of records) {
-    const code = habCode(r);
-    if (code in counts) counts[code] += 1;
+    const code = habBinary(r);
+    if (code) counts[code] += 1;
   }
-  const present = HAB_ORDER.filter((c) => counts[c] > 0);
+  const present = HAB_BINARY_ORDER.filter((c) => counts[c] > 0);
   upsertChart('chart-hab-doughnut', {
     type: 'doughnut',
     data: {
       labels: present.map(labelForCode),
       datasets: [{
         data: present.map((c) => counts[c]),
-        backgroundColor: present.map((c) => COLORS.status[c]),
+        backgroundColor: present.map((c) => HAB_BINARY_COLOR[c]),
         borderColor: themeColor('--surface', '#12294a'),
         borderWidth: 2,
       }],

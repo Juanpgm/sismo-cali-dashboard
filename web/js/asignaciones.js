@@ -198,27 +198,14 @@ function renderTable() {
   el('#asig-table').innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`;
 }
 
-/** RFC-4180-ish CSV: quote every field, double internal quotes. */
-function toCsv(records) {
-  if (!records.length) return '';
-  const cols = Object.keys(records[0]);
-  const esc = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
-  const lines = [cols.map(esc).join(',')];
-  for (const r of records) lines.push(cols.map((c) => esc(r[c])).join(','));
-  return lines.join('\r\n');
-}
-
-function downloadCsv() {
-  const csv = '﻿' + toCsv(data.records); // BOM so Excel reads UTF-8
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
+/** Download the static .xlsx that asignar_f3.py exports alongside the JSON. */
+function downloadXlsx() {
   const a = document.createElement('a');
-  a.href = url;
-  a.download = `asignaciones_${(data.generated_at || '').slice(0, 10) || 'export'}.csv`;
+  a.href = `data/asignaciones.xlsx?t=${Date.now()}`;
+  a.download = `asignaciones_${(data?.generated_at || '').slice(0, 10) || 'export'}.xlsx`;
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(url);
 }
 
 export function invalidateAsigSize() {
@@ -246,7 +233,7 @@ export async function initAsignaciones() {
   };
   legendControl.addTo(map);
 
-  el('#asig-download').addEventListener('click', downloadCsv);
+  el('#asig-download').addEventListener('click', downloadXlsx);
 
   try {
     const bust = `?t=${Date.now()}`;

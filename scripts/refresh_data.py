@@ -480,11 +480,17 @@ def write_outputs(df: pd.DataFrame, out_dir: Path, source_used: str) -> tuple[Pa
     else:
         event_id = None
 
+    # Original (pre-normalization) EDAN-F3 column names, for the dashboard to
+    # display in its selectable options. Only columns actually exported get a
+    # label; internal/derived names are skipped.
+    source_labels = {norm: orig for orig, norm in RENAME_MAP.items() if norm in df.columns}
+
     meta = {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "row_count": int(len(df)),
         "source": source_used,
         "event_id": event_id,
+        "source_labels": source_labels,
     }
     meta_path = out_dir / "meta.json"
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")

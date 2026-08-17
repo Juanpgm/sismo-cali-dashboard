@@ -3,7 +3,7 @@
 // and mobile bottom sheet (CSS only).
 import { FILTER_FIELDS, FILTER_GROUPS, RANGE_FIELDS } from './data.js';
 import { renderMultiSelect } from './multiselect.js';
-import { labelForCode, escapeHtml } from './utils.js';
+import { labelForCode, escapeHtml, sourceLabel } from './utils.js';
 
 const NONE = '__none__';
 
@@ -135,7 +135,7 @@ function render(root, store, chipsRoot) {
     const fieldRoot = root.querySelector(`[data-filter-field="${def.field}"]`);
     msHandles[def.field] = renderMultiSelect(fieldRoot, {
       field: def.field,
-      label: def.label,
+      label: sourceLabel(def.field, def.label),
       options: buildOptions(def, store),
       selectedSet: store.filters[def.field],
       onToggle: (value) => store.toggleMultiFilter(def.field, value),
@@ -191,7 +191,7 @@ function renderChips(chipsRoot, store) {
   for (const def of FILTER_FIELDS) {
     for (const value of store.filters[def.field]) {
       chips.push({
-        text: `${def.label}: ${optionLabel(def, value)}`,
+        text: `${sourceLabel(def.field, def.label)}: ${optionLabel(def, value)}`,
         onRemove: () => store.toggleMultiFilter(def.field, value),
       });
     }

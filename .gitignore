@@ -1,6 +1,9 @@
 # Raw survey Excel — contains PII (email, telefono, nombre_contacto, etc.)
 # Kept local only; never publish.
 *.xlsx
+# Exception: the assignments roster is a published dashboard artifact (no PII),
+# downloaded by the "Descargar tabla (Excel)" button.
+!web/data/asignaciones.xlsx
 
 # Python
 __pycache__/

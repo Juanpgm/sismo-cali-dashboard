@@ -2,8 +2,16 @@
 import {
   COLORS, habitabilityColor, damageColor, buildCategoricalScale,
   interpolateRamp, labelForCode, labelForField, formatValue, escapeHtml, normalize,
-  isNoHabitable,
+  isNoHabitableBinary, habBinary,
 } from './utils.js';
+
+/** Binary habitability color: green Habitable / red No habitable / gray sin dato. */
+function habBinaryColor(record) {
+  const b = habBinary(record);
+  if (b === 'habitable') return COLORS.status.h;
+  if (b === 'no_habitable') return COLORS.status.i2;
+  return COLORS.unknown;
+}
 
 const CALI_CENTER = [3.42, -76.53];
 const CALI_ZOOM = 12;
@@ -42,7 +50,7 @@ let highlightMarker = null;
 
 const state = {
   mode: 'points', // points | heat | choropleth
-  colorBy: 'criterio_habitabilidad',
+  colorBy: 'habitabilidad_binaria',
   sizeBy: 'none', // none | n_ocupantes | n_pisos | n_sotanos
   heatWeight: 'count', // count | victims | damage | n_ocupantes | n_pisos | n_sotanos
   choroplethLevel: 'comuna', // comuna | barrio
@@ -87,6 +95,8 @@ export function invalidateSize() {
 
 function pointColor(record) {
   switch (state.colorBy) {
+    case 'habitabilidad_binaria':
+      return habBinaryColor(record);
     case 'nivel_dano':
       return damageColor(record.nivel_dano);
     case 'severidad_danos':
@@ -197,7 +207,14 @@ function renderPoints(records) {
 function renderPointsLegend(records) {
   let entries;
   let title;
-  if (state.colorBy === 'nivel_dano') {
+  if (state.colorBy === 'habitabilidad_binaria') {
+    title = 'Habitabilidad';
+    entries = [
+      { label: 'Habitable', color: COLORS.status.h },
+      { label: 'No habitable', color: COLORS.status.i2 },
+      { label: 'Sin dato', color: COLORS.unknown },
+    ];
+  } else if (state.colorBy === 'nivel_dano') {
     title = 'Nivel de daño';
     entries = Object.entries(COLORS.damage).map(([code, color]) => ({ label: labelForCode(code), color }));
   } else if (state.colorBy === 'severidad_danos' || state.colorBy === 'uso_edificacion') {
@@ -276,7 +293,7 @@ async function ensureGeo(level) {
 
 function metricValue(records, metric) {
   if (metric === 'no_habitables') {
-    return records.filter(isNoHabitable).length;
+    return records.filter(isNoHabitableBinary).length;
   }
   if (metric === 'victims') {
     return records.reduce((sum, r) => sum + (Number(r.n_muertos) || 0) + (Number(r.n_heridos) || 0), 0);

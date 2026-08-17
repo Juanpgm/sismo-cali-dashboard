@@ -49,13 +49,16 @@ export const COLORS = {
 /* ------------------------------------------------------------------ */
 
 const KNOWN_LABELS = {
-  // habitability
+  // habitability (granular)
   h: 'Habitable',
   r1: 'Uso restringido R1',
   r2: 'Uso restringido R2',
   i1: 'No habitable I1',
   i2: 'No habitable I2',
   i3: 'No habitable I3 (insegura)',
+  // habitability (binary — Momento 3 framing)
+  habitable: 'Habitable',
+  no_habitable: 'No habitable',
   // damage level
   sin_dano: 'Sin daño',
   bajo: 'Daño bajo',
@@ -390,6 +393,28 @@ export function isNoHabitable(record) {
 
 export function isRestringido(record) {
   return RESTRINGIDO_CODES.includes(habCode(record));
+}
+
+/* ---- Binary habitability (Momento 3 / PMU framing) --------------------- */
+// Habitable = 'h'; No habitable = anything else that has a habitability code
+// (r1/r2/i1/i2/i3). Blank code -> '' (sin dato), counted in neither bucket.
+export function habBinary(record) {
+  const c = habCode(record);
+  if (c === 'h') return 'habitable';
+  if (c === '') return '';
+  return 'no_habitable';
+}
+export function isHabitable(record) { return habBinary(record) === 'habitable'; }
+export function isNoHabitableBinary(record) { return habBinary(record) === 'no_habitable'; }
+
+/* ---- Source (pre-normalization) field labels from the EDAN-F3 excel ----- */
+// Populated once from meta.json's `source_labels` on load; used ONLY for the
+// display of selectable options (filters, "Colorear por"). Internal field keys
+// and values are never touched.
+let SOURCE_LABELS = {};
+export function setSourceLabels(map) { SOURCE_LABELS = map || {}; }
+export function sourceLabel(field, fallback) {
+  return SOURCE_LABELS[field] || fallback || labelForField(field);
 }
 
 /** Split a comma-joined multi-value field (e.g. "residencial,comercial") into trimmed parts. */

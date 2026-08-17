@@ -1,5 +1,7 @@
 // KPI tile row — recomputed from the currently filtered record set.
-import { COLORS, isNoHabitable, isRestringido, habCode, labelForCode, normalize } from './utils.js';
+// Habitability follows the Momento 3 / PMU binary framing (Habitable vs No
+// habitable); the granular R1..I3 breakdown lives in the doughnut + map option.
+import { COLORS, isHabitable, isNoHabitableBinary, habBinary, labelForCode, normalize } from './utils.js';
 
 function sumField(records, field) {
   let total = 0;
@@ -25,14 +27,16 @@ function isYes(v) {
   return normalize(v) === 'si' || normalize(v) === 'sí';
 }
 
+// Headline tiles mirror the Momento 3 slide: Inspeccionados · Habitable ·
+// No habitable · Colapso total · Colapso parcial, then victims and unit counts.
 const TILE_DEFS = [
-  { key: 'total', label: 'Total inspecciones', accent: null },
+  { key: 'total', label: 'Inspeccionados', accent: null },
+  { key: 'habitables', label: 'Habitable', accent: COLORS.status.h },
+  { key: 'no_habitables', label: 'No habitable', accent: COLORS.status.i2 },
+  { key: 'colapso_total', label: 'Colapso total', accent: COLORS.status.i3 },
+  { key: 'colapso_parcial', label: 'Colapso parcial', accent: COLORS.status.r2 },
   { key: 'muertos', label: 'Muertos', accent: COLORS.status.i2 },
   { key: 'heridos', label: 'Heridos', accent: COLORS.status.r2 },
-  { key: 'no_habitables', label: 'No habitables', accent: COLORS.status.i2 },
-  { key: 'restringido', label: 'Uso restringido', accent: COLORS.status.r1 },
-  { key: 'habitables', label: 'Habitables', accent: COLORS.status.h },
-  { key: 'colapsos', label: 'Colapsos (Total / Parcial)', accent: COLORS.status.i3 },
   { key: 'ocupantes_riesgo', label: 'Ocupantes en no habitables', accent: COLORS.status.i1 },
   // Numeric-variable aggregates.
   { key: 'ocupantes_total', label: 'Ocupantes totales', accent: null },
@@ -43,7 +47,9 @@ const TILE_DEFS = [
   { key: 'sotanos_total', label: 'Sótanos (total)', accent: null },
 ];
 
-const HAB_ORDER = ['h', 'r1', 'r2', 'i1', 'i2', 'i3'];
+// Binary habitability segments for the distribution bar.
+const HAB_BINARY_ORDER = ['habitable', 'no_habitable'];
+const HAB_BINARY_COLOR = { habitable: COLORS.status.h, no_habitable: COLORS.status.i2 };
 
 /** Guarded percentage: never NaN/Infinity, always 0 when total is 0. */
 function pct(part, total) {
@@ -52,19 +58,16 @@ function pct(part, total) {
 }
 
 export function computeKpis(records) {
-  const noHab = records.filter(isNoHabitable);
-  const restringido = records.filter(isRestringido);
-  const habitables = records.filter((r) => habCode(r) === 'h');
-  const colapsoTotal = records.filter((r) => isYes(r.colapso_total)).length;
-  const colapsoParcial = records.filter((r) => isYes(r.colapso_parcial)).length;
+  const noHab = records.filter(isNoHabitableBinary);
+  const habitables = records.filter(isHabitable);
   return {
     total: records.length,
     muertos: sumField(records, 'n_muertos'),
     heridos: sumField(records, 'n_heridos'),
     no_habitables: noHab.length,
-    restringido: restringido.length,
     habitables: habitables.length,
-    colapsos: `${colapsoTotal} / ${colapsoParcial}`,
+    colapso_total: records.filter((r) => isYes(r.colapso_total)).length,
+    colapso_parcial: records.filter((r) => isYes(r.colapso_parcial)).length,
     ocupantes_riesgo: sumField(noHab, 'n_ocupantes'),
     ocupantes_total: sumField(records, 'n_ocupantes'),
     u_residenciales: sumField(records, 'n_residenciales'),
@@ -76,10 +79,10 @@ export function computeKpis(records) {
 }
 
 function habDistribution(records) {
-  const counts = Object.fromEntries(HAB_ORDER.map((c) => [c, 0]));
+  const counts = Object.fromEntries(HAB_BINARY_ORDER.map((c) => [c, 0]));
   for (const r of records) {
-    const code = habCode(r);
-    if (HAB_ORDER.includes(code)) counts[code]++;
+    const code = habBinary(r);
+    if (code) counts[code]++;
   }
   return counts;
 }
@@ -109,8 +112,6 @@ export function renderKpis(container, filteredRecords, allRecords) {
         `<span class="kpi-sub">${noHabFilteredRate}% del filtrado</span>`
         + `<span class="kpi-delta" style="color:${deltaColor}">${deltaArrow} ${Math.abs(deltaPts)} pts vs. total</span>`,
       );
-    } else if (def.key === 'restringido') {
-      sub = subLine(`<span class="kpi-sub">${pct(values.restringido, total)}% del filtrado</span>`);
     } else if (def.key === 'habitables') {
       sub = subLine(`<span class="kpi-sub">${pct(values.habitables, total)}% del filtrado</span>`);
     } else if (def.key === 'ocupantes_riesgo') {
@@ -126,11 +127,11 @@ export function renderKpis(container, filteredRecords, allRecords) {
   }).join('');
 
   const dist = habDistribution(filteredRecords);
-  const segsHtml = HAB_ORDER.map((code) => {
+  const segsHtml = HAB_BINARY_ORDER.map((code) => {
     const count = dist[code];
     const share = total ? (count / total) * 100 : 0;
     if (share <= 0) return '';
-    return `<div class="hab-bar-seg" style="width:${share}%;background:${COLORS.status[code]}" title="${labelForCode(code)}: ${count}"></div>`;
+    return `<div class="hab-bar-seg" style="width:${share}%;background:${HAB_BINARY_COLOR[code]}" title="${labelForCode(code)}: ${count}"></div>`;
   }).join('');
 
   const habBarHtml = `

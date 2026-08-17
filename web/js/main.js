@@ -9,7 +9,7 @@ import {
 } from './mapview.js';
 import { initTable, renderTable, setTotalRecords, openDetailModal } from './table.js';
 import { initAsignaciones, invalidateAsigSize } from './asignaciones.js';
-import { debounce } from './utils.js';
+import { debounce, setSourceLabels, sourceLabel } from './utils.js';
 
 const el = (sel) => document.querySelector(sel);
 
@@ -56,6 +56,24 @@ function renderHeaderMeta() {
   if (!store.meta) return;
   lastUpdateEl.textContent = `Última actualización: ${formatGeneratedAt(store.meta.generated_at)}`;
   eventBadgeEl.textContent = `Evento ${store.meta.event_id ?? '—'}`;
+}
+
+// "Colorear por" options that map to a real EDAN-F3 variable get the original
+// (pre-normalization) source name, like the filter titles. Viz-only options
+// (binary habitability) keep their descriptive label.
+const COLOR_BY_SOURCE_FIELDS = {
+  criterio_habitabilidad: 'criterio_habitabilidad',
+  nivel_dano: 'nivel_dano',
+  severidad_danos: 'severidad_danos',
+  uso_edificacion: 'uso_edificacion',
+};
+function applySourceLabelsToSelect() {
+  const select = el('#color-by-select');
+  if (!select) return;
+  select.querySelectorAll('option').forEach((opt) => {
+    const field = COLOR_BY_SOURCE_FIELDS[opt.value];
+    if (field) opt.textContent = sourceLabel(field, opt.textContent);
+  });
 }
 
 function onStoreChange() {
@@ -168,6 +186,10 @@ async function loadAndRender({ isRefresh = false } = {}) {
     }
     errorOverlay.hidden = true;
     renderHeaderMeta();
+    // Selectable options display the original EDAN-F3 excel names (display only;
+    // internal field keys and values are unchanged).
+    setSourceLabels(store.meta?.source_labels || {});
+    applySourceLabelsToSelect();
 
     if (!mapInitialized) {
       initMap('map', { onDetail: (id) => {
