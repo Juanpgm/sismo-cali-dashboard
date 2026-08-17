@@ -3,6 +3,18 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<script>
+/* Set the theme before first paint (no flash): saved choice wins, else default
+   by Colombia time-of-day — light 06:00–17:59, dark otherwise. */
+(function () {
+  try {
+    var s = localStorage.getItem('sismo-theme');
+    if (s === 'light' || s === 'dark') { document.documentElement.dataset.theme = s; return; }
+  } catch (e) { /* storage blocked */ }
+  var h = Number(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Bogota', hour: '2-digit', hourCycle: 'h23' }).format(new Date()));
+  document.documentElement.dataset.theme = (h >= 6 && h < 18) ? 'light' : 'dark';
+})();
+</script>
 <title>Sismo Cali — Agosto 2026 · Evaluación de Daños en Edificaciones</title>
 <meta name="description" content="Panel de control de inspecciones de habitabilidad post-sismo en Cali, Colombia.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏚️</text></svg>">
@@ -36,6 +48,11 @@
         </div>
 
         <span class="event-badge" data-event-badge>Evento —</span>
+
+        <button type="button" class="btn-icon theme-toggle" id="theme-toggle" aria-label="Cambiar tema claro / oscuro" title="Cambiar tema claro / oscuro">
+          <svg class="icon-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="5"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="2" y1="12" x2="5" y2="12"/><line x1="19" y1="12" x2="22" y2="12"/><line x1="4.9" y1="4.9" x2="7" y2="7"/><line x1="17" y1="17" x2="19.1" y2="19.1"/><line x1="4.9" y1="19.1" x2="7" y2="17"/><line x1="17" y1="7" x2="19.1" y2="4.9"/></svg>
+          <svg class="icon-moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        </button>
       </div>
 
       <div class="app-header-bottom">

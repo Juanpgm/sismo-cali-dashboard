@@ -3,7 +3,7 @@
 // already visited (F3 done), a progress summary, and a CSV download of the
 // full roster. Data comes from the static artifacts asignar_f3.py exports:
 //   data/asignaciones.json  · data/zonas_asignacion.geojson
-import { COLORS, escapeHtml, interpolateRamp } from './utils.js';
+import { COLORS, escapeHtml, interpolateRamp, basemapTileUrl } from './utils.js';
 
 const ASIG_URL = 'data/asignaciones.json';
 const ZONES_URL = 'data/zonas_asignacion.geojson';
@@ -15,6 +15,7 @@ const PRIO_RAMP = ['#eab308', '#f97316', '#dc2626'];
 const VISITED_COLOR = COLORS.status.h; // green — already visited
 
 let map = null;
+let baseTile = null;
 let zonesLayer = null;
 let pointsLayer = null;
 let legendEl = null;
@@ -212,13 +213,25 @@ export function invalidateAsigSize() {
   if (map) setTimeout(() => map.invalidateSize(), 60);
 }
 
+/** Swap the assignments-map base tiles to match the active theme. No-op until
+ *  the view has been opened (map built lazily). */
+export function applyAsigTheme() {
+  if (!map) return;
+  if (baseTile) map.removeLayer(baseTile);
+  baseTile = L.tileLayer(basemapTileUrl(), {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    subdomains: 'abcd', maxZoom: 20,
+  }).addTo(map);
+  baseTile.bringToBack();
+}
+
 /** Lazy one-time init: build the map, load data, render everything. */
 export async function initAsignaciones() {
   if (initialized) { invalidateAsigSize(); return; }
   initialized = true;
 
   map = L.map('asig-map', { zoomControl: true, minZoom: 10, maxZoom: 18 }).setView(CALI_CENTER, CALI_ZOOM);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  baseTile = L.tileLayer(basemapTileUrl(), {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
     subdomains: 'abcd', maxZoom: 20,
   }).addTo(map);

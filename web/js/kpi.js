@@ -28,23 +28,25 @@ function isYes(v) {
 }
 
 // Headline tiles mirror the Momento 3 slide: Inspeccionados · Habitable ·
-// No habitable · Colapso total · Colapso parcial, then victims and unit counts.
+// No habitable · Colapso total · Colapso parcial. Human-cost figures (victims,
+// occupants) and unit/structure counts are de-emphasized into a collapsed
+// `secondary` group so the panel doesn't lead with the death/casualty numbers.
 const TILE_DEFS = [
-  { key: 'total', label: 'Inspeccionados', accent: null },
-  { key: 'habitables', label: 'Habitable', accent: COLORS.status.h },
-  { key: 'no_habitables', label: 'No habitable', accent: COLORS.status.i2 },
-  { key: 'colapso_total', label: 'Colapso total', accent: COLORS.status.i3 },
-  { key: 'colapso_parcial', label: 'Colapso parcial', accent: COLORS.status.r2 },
-  { key: 'muertos', label: 'Muertos', accent: COLORS.status.i2 },
-  { key: 'heridos', label: 'Heridos', accent: COLORS.status.r2 },
-  { key: 'ocupantes_riesgo', label: 'Ocupantes en no habitables', accent: COLORS.status.i1 },
-  // Numeric-variable aggregates.
-  { key: 'ocupantes_total', label: 'Ocupantes totales', accent: null },
-  { key: 'u_residenciales', label: 'Unidades residenciales', accent: null },
-  { key: 'u_comerciales', label: 'Unidades comerciales', accent: null },
-  { key: 'u_no_habitadas', label: 'Unidades no habitadas', accent: null },
-  { key: 'pisos_prom', label: 'Pisos (promedio)', accent: null },
-  { key: 'sotanos_total', label: 'Sótanos (total)', accent: null },
+  { key: 'total', label: 'Inspeccionados', accent: null, group: 'headline' },
+  { key: 'habitables', label: 'Habitable', accent: COLORS.status.h, group: 'headline' },
+  { key: 'no_habitables', label: 'No habitable', accent: COLORS.status.i2, group: 'headline' },
+  { key: 'colapso_total', label: 'Colapso total', accent: COLORS.status.i3, group: 'headline' },
+  { key: 'colapso_parcial', label: 'Colapso parcial', accent: COLORS.status.r2, group: 'headline' },
+  // Human cost + counts — hidden by default, smaller, low visual weight.
+  { key: 'muertos', label: 'Muertos', accent: COLORS.status.i2, group: 'secondary' },
+  { key: 'heridos', label: 'Heridos', accent: COLORS.status.r2, group: 'secondary' },
+  { key: 'ocupantes_riesgo', label: 'Ocupantes en no habitables', accent: COLORS.status.i1, group: 'secondary' },
+  { key: 'ocupantes_total', label: 'Ocupantes totales', accent: null, group: 'secondary' },
+  { key: 'u_residenciales', label: 'Unidades residenciales', accent: null, group: 'secondary' },
+  { key: 'u_comerciales', label: 'Unidades comerciales', accent: null, group: 'secondary' },
+  { key: 'u_no_habitadas', label: 'Unidades no habitadas', accent: null, group: 'secondary' },
+  { key: 'pisos_prom', label: 'Pisos (promedio)', accent: null, group: 'secondary' },
+  { key: 'sotanos_total', label: 'Sótanos (total)', accent: null, group: 'secondary' },
 ];
 
 // Binary habitability segments for the distribution bar.
@@ -105,7 +107,7 @@ export function renderKpis(container, filteredRecords, allRecords) {
 
   const ocupantesTotalFiltrados = sumField(filteredRecords, 'n_ocupantes');
 
-  const tilesHtml = TILE_DEFS.map((def) => {
+  const tileHtml = (def) => {
     let sub = '';
     if (def.key === 'no_habitables') {
       sub = subLine(
@@ -124,7 +126,10 @@ export function renderKpis(container, filteredRecords, allRecords) {
         ${sub}
       </div>
     `;
-  }).join('');
+  };
+
+  const headlineHtml = TILE_DEFS.filter((d) => d.group === 'headline').map(tileHtml).join('');
+  const secondaryHtml = TILE_DEFS.filter((d) => d.group === 'secondary').map(tileHtml).join('');
 
   const dist = habDistribution(filteredRecords);
   const segsHtml = HAB_BINARY_ORDER.map((code) => {
@@ -141,5 +146,13 @@ export function renderKpis(container, filteredRecords, allRecords) {
     </div>
   `;
 
-  container.innerHTML = tilesHtml + habBarHtml;
+  // Victims / occupancy / counts stay collapsed by default (de-emphasized).
+  const secondaryDetailsHtml = `
+    <details class="kpi-secondary">
+      <summary>Víctimas, ocupación y conteos detallados</summary>
+      <div class="kpi-secondary-grid">${secondaryHtml}</div>
+    </details>
+  `;
+
+  container.innerHTML = headlineHtml + habBarHtml + secondaryDetailsHtml;
 }

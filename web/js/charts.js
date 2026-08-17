@@ -195,6 +195,32 @@ function renderHabByComuna(records) {
   });
 }
 
+/** Show a message inside a chart tile instead of an (empty/broken) canvas. */
+function setChartEmpty(canvasId, message) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const existing = registry.get(canvasId);
+  if (existing) { existing.destroy(); registry.delete(canvasId); }
+  canvas.style.display = 'none';
+  const tile = canvas.closest('.chart-tile');
+  let note = tile && tile.querySelector('.chart-empty');
+  if (tile && !note) {
+    note = document.createElement('p');
+    note.className = 'chart-empty';
+    tile.appendChild(note);
+  }
+  if (note) note.textContent = message;
+}
+
+/** Re-show a tile's canvas and drop any empty-state message. */
+function clearChartEmpty(canvasId) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  canvas.style.display = '';
+  const note = canvas.closest('.chart-tile') && canvas.closest('.chart-tile').querySelector('.chart-empty');
+  if (note) note.remove();
+}
+
 function renderTimeSeries(records) {
   const byDay = new Map();
   for (const r of records) {
@@ -203,6 +229,14 @@ function renderTimeSeries(records) {
     byDay.set(d, (byDay.get(d) || 0) + 1);
   }
   const days = [...byDay.keys()].sort();
+  // The source EDAN sheet ships every inspection date as "##########" (a stale
+  // Sheets display artifact), so there is nothing to plot. Degrade to a clear
+  // note rather than an empty axis until the date column is fixed at the source.
+  if (!days.length) {
+    setChartEmpty('chart-timeseries', 'Sin fechas de inspección en el origen: la columna llega vacía o como «##########».');
+    return;
+  }
+  clearChartEmpty('chart-timeseries');
   let running = 0;
   const cumulative = days.map((d) => (running += byDay.get(d)));
   const surface = themeColor('--surface', '#12294a');

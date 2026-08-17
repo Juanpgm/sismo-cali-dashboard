@@ -2,8 +2,10 @@
 import {
   COLORS, habitabilityColor, damageColor, buildCategoricalScale,
   interpolateRamp, labelForCode, labelForField, formatValue, escapeHtml, normalize,
-  isNoHabitableBinary, habBinary,
+  isNoHabitableBinary, habBinary, basemapTileUrl,
 } from './utils.js';
+
+const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
 
 /** Binary habitability color: green Habitable / red No habitable / gray sin dato. */
 function habBinaryColor(record) {
@@ -38,6 +40,7 @@ function riskColor(value) {
 }
 
 let map = null;
+let baseTile = null;
 let pointsLayer = null;
 let heatLayer = null;
 let choroplethLayer = null;
@@ -69,8 +72,8 @@ export function initMap(containerId, { onDetail } = {}) {
     maxZoom: 18,
   }).setView(CALI_CENTER, CALI_ZOOM);
 
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+  baseTile = L.tileLayer(basemapTileUrl(), {
+    attribution: TILE_ATTRIBUTION,
     subdomains: 'abcd',
     maxZoom: 20,
   }).addTo(map);
@@ -91,6 +94,16 @@ export function initMap(containerId, { onDetail } = {}) {
 
 export function invalidateSize() {
   if (map) map.invalidateSize();
+}
+
+/** Swap the base tiles to match the active theme (light/dark). */
+export function applyMapTheme() {
+  if (!map) return;
+  if (baseTile) map.removeLayer(baseTile);
+  baseTile = L.tileLayer(basemapTileUrl(), {
+    attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20,
+  }).addTo(map);
+  baseTile.bringToBack();
 }
 
 function pointColor(record) {
@@ -436,7 +449,7 @@ export function buildMiniMap(containerEl, record) {
   }
   containerEl.innerHTML = '';
   const mini = L.map(containerEl, { zoomControl: false, attributionControl: false, dragging: false, scrollWheelZoom: false });
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { subdomains: 'abcd', maxZoom: 20 }).addTo(mini);
+  L.tileLayer(basemapTileUrl(), { subdomains: 'abcd', maxZoom: 20 }).addTo(mini);
   const latlng = [Number(record.y), Number(record.x)];
   mini.setView(latlng, 16);
   L.circleMarker(latlng, { radius: 8, color: COLORS.accent, weight: 2, fillColor: COLORS.accent, fillOpacity: 0.6 }).addTo(mini);

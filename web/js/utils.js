@@ -423,6 +423,13 @@ export function splitMultiValue(value) {
   return String(value).split(',').map((s) => s.trim()).filter(Boolean);
 }
 
+/** CARTO basemap tiles matching the active theme: Positron (light_all) when the
+ *  page is in light mode, Dark Matter (dark_all) otherwise. */
+export function basemapTileUrl() {
+  const style = document.documentElement.dataset.theme === 'light' ? 'light_all' : 'dark_all';
+  return `https://{s}.basemaps.cartocdn.com/${style}/{z}/{x}/{y}{r}.png`;
+}
+
 /** Read a CSS custom property off :root, with a fallback for non-DOM contexts. */
 export function themeColor(varName, fallback = '') {
   if (typeof document === 'undefined' || typeof getComputedStyle !== 'function') return fallback;

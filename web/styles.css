@@ -47,6 +47,50 @@
   --header-h: auto;
 }
 
+/* ---- Light theme (Positron) — same accent/status semantics, inverted ink/surface ---- */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #eef2f7;
+  --bg-grid: rgba(11, 29, 51, 0.045);
+  --surface: #ffffff;
+  --surface-2: #f3f6fb;
+  --surface-3: #e7edf5;
+  --border: rgba(11, 29, 51, 0.12);
+  --border-strong: rgba(11, 29, 51, 0.22);
+
+  --text-primary: #0B1D33;
+  --text-secondary: #33475f;
+  --text-muted: #62748c;
+
+  --accent: #b57e00;            /* darker gold for AA contrast on light surfaces */
+  --accent-ink: #ffffff;
+  --accent-dim: rgba(181, 126, 0, 0.14);
+
+  --shadow-card: 0 1px 2px rgba(11, 29, 51, 0.10), 0 8px 24px rgba(11, 29, 51, 0.08);
+  --shadow-modal: 0 20px 60px rgba(11, 29, 51, 0.25);
+}
+
+/* Toggle shows the destination: sun in dark mode (→ light), moon in light mode. */
+.theme-toggle .icon-moon { display: none; }
+.theme-toggle .icon-sun { display: inline; }
+:root[data-theme="light"] .theme-toggle .icon-sun { display: none; }
+:root[data-theme="light"] .theme-toggle .icon-moon { display: inline; }
+
+/* Empty-state note inside a chart tile (e.g. time series with no source dates). */
+.chart-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 120px;
+  margin: 0;
+  padding: 0 1rem;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
 * { box-sizing: border-box; }
 
 html, body {
@@ -392,6 +436,52 @@ a { color: var(--accent); }
 }
 .hab-bar-seg { height: 100%; }
 
+/* Secondary KPIs (victims / occupancy / counts): collapsed by default and
+   visually quieter than the headline habitability tiles. */
+.kpi-secondary {
+  grid-column: 1 / -1;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+}
+.kpi-secondary > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.kpi-secondary > summary::-webkit-details-marker { display: none; }
+.kpi-secondary > summary::before {
+  content: "▸";
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+}
+.kpi-secondary[open] > summary::before { transform: rotate(90deg); }
+.kpi-secondary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+  padding: 2px 12px 12px;
+}
+/* Smaller, flatter tiles inside the collapsible group. */
+.kpi-secondary-grid .kpi-tile {
+  padding: 10px 12px;
+  box-shadow: none;
+  background: var(--surface);
+}
+.kpi-secondary-grid .kpi-tile::before { opacity: 0.5; }
+.kpi-secondary-grid .kpi-label { font-size: 0.62rem; }
+.kpi-secondary-grid .kpi-value { font-size: 1.15rem; }
+.kpi-secondary-grid .kpi-sub, .kpi-secondary-grid .kpi-delta { font-size: 0.62rem; }
+
 /* ============================================================
    Cards / toolbars
    ============================================================ */
@@ -474,7 +564,7 @@ a { color: var(--accent); }
 .leaflet-container { background: var(--bg) !important; font-family: var(--font-ui); }
 
 .map-legend {
-  background: rgba(10, 22, 41, 0.92);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   padding: 10px 12px;
@@ -496,7 +586,8 @@ a { color: var(--accent); }
 .legend-circle { border-radius: 50%; }
 .legend-square { border-radius: 3px; }
 
-.map-popup h4 { font-size: 0.9rem; margin-bottom: 6px; color: var(--bg); }
+/* Leaflet popup wrapper stays white in both themes, so popup ink is fixed dark. */
+.map-popup h4 { font-size: 0.9rem; margin-bottom: 6px; color: #0B1D33; }
 .map-popup dl { margin: 0 0 8px; display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; font-size: 0.78rem; }
 .map-popup dt { color: #5b6b80; font-weight: 600; }
 .map-popup dd { margin: 0; color: #0B1D33; }

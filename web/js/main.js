@@ -5,10 +5,11 @@ import { renderKpis } from './kpi.js';
 import { renderStatistics } from './charts.js';
 import {
   initMap, render as renderMap, setMode, setColorBy, setSizeBy, setHeatWeight,
-  setChoroplethLevel, setChoroplethMetric, invalidateSize, highlightRecord,
+  setChoroplethLevel, setChoroplethMetric, invalidateSize, highlightRecord, applyMapTheme,
 } from './mapview.js';
 import { initTable, renderTable, setTotalRecords, openDetailModal } from './table.js';
-import { initAsignaciones, invalidateAsigSize } from './asignaciones.js';
+import { initAsignaciones, invalidateAsigSize, applyAsigTheme } from './asignaciones.js';
+import { initTheme } from './theme.js';
 import { debounce, setSourceLabels, sourceLabel } from './utils.js';
 
 const el = (sel) => document.querySelector(sel);
@@ -199,6 +200,7 @@ async function loadAndRender({ isRefresh = false } = {}) {
       initTable(tableCard, store.records, { onRowClick });
       wireMapControls();
       wireViewTabs();
+      initTheme();
       store.subscribe(onStoreChange);
       mapInitialized = true;
     }
@@ -236,5 +238,12 @@ document.addEventListener('keydown', (e) => {
   }
 });
 window.addEventListener('resize', debounce(() => invalidateSize(), 200));
+// Theme toggle: swap map tiles (both maps) and rebuild charts so Chart.js picks
+// up the new CSS-variable colors it bakes in at construction time.
+document.addEventListener('themechange', () => {
+  applyMapTheme();
+  applyAsigTheme();
+  if (store.records.length) renderStatistics(store.filtered);
+});
 
 loadAndRender();
