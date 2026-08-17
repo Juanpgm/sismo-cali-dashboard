@@ -47,6 +47,13 @@
       </div>
     </header>
 
+    <nav class="view-tabs" role="tablist" aria-label="Vistas">
+      <button type="button" class="view-tab is-active" data-view="panel" role="tab" aria-selected="true">Panel</button>
+      <button type="button" class="view-tab" data-view="asignaciones" role="tab" aria-selected="false">Asignaciones</button>
+    </nav>
+
+    <div id="view-panel" data-view-panel="panel">
+
     <div class="search-bar">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
       <input type="search" id="search-input" placeholder="Buscar por dirección, barrio, edificación, evaluador, observaciones…" aria-label="Buscar en todos los campos">
@@ -189,6 +196,33 @@
           <tbody></tbody>
         </table>
       </div>
+    </section>
+
+    </div><!-- /#view-panel -->
+
+    <!-- ============ ASSIGNMENTS VIEW ============ -->
+    <section id="view-asignaciones" data-view-panel="asignaciones" aria-label="Asignaciones de visita" hidden>
+      <section class="card asig-summary-card">
+        <div id="asig-summary" class="asig-summary">Cargando asignaciones…</div>
+      </section>
+
+      <section class="card map-card" aria-label="Mapa de asignaciones">
+        <div class="card-toolbar">
+          <h2 class="stats-title">Puntos a visitar por zona</h2>
+          <button type="button" class="btn-secondary" id="asig-download">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><line x1="5" y1="21" x2="19" y2="21"/></svg>
+            Descargar tabla (CSV)
+          </button>
+        </div>
+        <div class="map-container" id="asig-map"></div>
+      </section>
+
+      <section class="card table-card">
+        <div class="card-toolbar">
+          <h2 class="stats-title">Roster de asignaciones</h2>
+        </div>
+        <div class="table-scroll" id="asig-table"></div>
+      </section>
     </section>
 
     <footer class="app-footer">

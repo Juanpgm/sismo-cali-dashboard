@@ -8,6 +8,7 @@ import {
   setChoroplethLevel, setChoroplethMetric, invalidateSize, highlightRecord,
 } from './mapview.js';
 import { initTable, renderTable, setTotalRecords, openDetailModal } from './table.js';
+import { initAsignaciones, invalidateAsigSize } from './asignaciones.js';
 import { debounce } from './utils.js';
 
 const el = (sel) => document.querySelector(sel);
@@ -125,6 +126,33 @@ function onRowClick(record) {
   openDetailModal(record);
 }
 
+function switchView(view) {
+  document.querySelectorAll('.view-tab').forEach((btn) => {
+    const active = btn.dataset.view === view;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-selected', String(active));
+  });
+  document.querySelectorAll('[data-view-panel]').forEach((panel) => {
+    panel.hidden = panel.dataset.viewPanel !== view;
+  });
+  // The filters sidebar only applies to the Panel view; collapse it otherwise.
+  document.querySelector('.app-shell').classList.toggle('asig-active', view === 'asignaciones');
+  if (view === 'asignaciones') {
+    closeFiltersDrawer();
+    initAsignaciones().catch((err) => {
+      console.error(err);
+      showToast('No se pudo cargar la vista de asignaciones.', 'error');
+    });
+    invalidateAsigSize();
+  }
+}
+
+function wireViewTabs() {
+  document.querySelectorAll('.view-tab').forEach((btn) => {
+    btn.addEventListener('click', () => switchView(btn.dataset.view));
+  });
+}
+
 async function loadAndRender({ isRefresh = false } = {}) {
   try {
     if (isRefresh) {
@@ -148,6 +176,7 @@ async function loadAndRender({ isRefresh = false } = {}) {
       } });
       initTable(tableCard, store.records, { onRowClick });
       wireMapControls();
+      wireViewTabs();
       store.subscribe(onStoreChange);
       mapInitialized = true;
     }
