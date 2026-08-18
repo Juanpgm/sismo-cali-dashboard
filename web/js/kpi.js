@@ -63,6 +63,15 @@ function pct(part, total) {
 export function computeKpis(records) {
   const noHab = records.filter(isNoHabitableBinary);
   const habCounts = habDistribution(records);
+  // Sum of residential units per habitability code (records + units are the
+  // two differentiated readings shown on each habitability tile).
+  const resByCode = Object.fromEntries(HAB_CODES.map((c) => [c, 0]));
+  for (const r of records) {
+    const c = habCode(r);
+    if (resByCode[c] === undefined) continue;
+    const v = Number(r.n_residenciales);
+    if (!Number.isNaN(v)) resByCode[c] += v;
+  }
   return {
     total: records.length,
     muertos: sumField(records, 'n_muertos'),
@@ -70,6 +79,9 @@ export function computeKpis(records) {
     hab_h: habCounts.h,
     hab_r: habCounts.r1 + habCounts.r2,
     hab_i: habCounts.i1 + habCounts.i2 + habCounts.i3,
+    hab_h_res: resByCode.h,
+    hab_r_res: resByCode.r1 + resByCode.r2,
+    hab_i_res: resByCode.i1 + resByCode.i2 + resByCode.i3,
     colapso_total: records.filter((r) => isYes(r.colapso_total)).length,
     colapso_parcial: records.filter((r) => isYes(r.colapso_parcial)).length,
     ocupantes_riesgo: sumField(noHab, 'n_ocupantes'),
@@ -105,7 +117,10 @@ export function renderKpis(container, filteredRecords, allRecords) {
   const tileHtml = (def) => {
     let sub = '';
     if (def.key.startsWith('hab_')) {
-      sub = subLine(`<span class="kpi-sub">${pct(values[def.key], total)}% del filtrado</span>`);
+      sub = subLine(
+        `<span class="kpi-sub">${pct(values[def.key], total)}% del filtrado</span>`
+        + `<span class="kpi-sub">${values[`${def.key}_res`]} unid. residenciales</span>`,
+      );
     } else if (def.key === 'ocupantes_riesgo') {
       sub = subLine(`<span class="kpi-sub">${pct(values.ocupantes_riesgo, ocupantesTotalFiltrados)}% de ocupantes totales</span>`);
     }
