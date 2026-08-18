@@ -384,6 +384,43 @@ function renderSeveridad(records) {
   });
 }
 
+/** Doughnut: building-use distribution over the filtered set (uso_edificacion
+ *  is multi-value — a record counts toward every use it lists). Top 3 by
+ *  count get the validated categorical palette; the rest fold into "Otros",
+ *  same convention as the map's categorical color-by for this field. */
+function renderUsoDoughnut(records) {
+  const counts = new Map();
+  for (const r of records) {
+    for (const part of splitMultiValue(r.uso_edificacion)) {
+      counts.set(part, (counts.get(part) || 0) + 1);
+    }
+  }
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const top = sorted.slice(0, COLORS.categorical.length);
+  const otherCount = sorted.slice(COLORS.categorical.length).reduce((sum, [, v]) => sum + v, 0);
+  const labels = top.map(([k]) => labelForCode(k));
+  const data = top.map(([, v]) => v);
+  const colors = top.map((_, i) => COLORS.categorical[i]);
+  if (otherCount > 0) {
+    labels.push('Otros');
+    data.push(otherCount);
+    colors.push(COLORS.categoricalOther);
+  }
+  upsertChart('chart-uso-doughnut', {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{
+        data,
+        backgroundColor: colors,
+        borderColor: themeColor('--surface', '#12294a'),
+        borderWidth: 2,
+      }],
+    },
+    options: baseOptions({ cutout: '55%', plugins: { legend: { display: true } } }),
+  });
+}
+
 let warnedMissingChart = false;
 
 /** Render all 5 "Estadísticas" charts from the current filtered record set. */
@@ -401,6 +438,7 @@ export function renderStatistics(records) {
   renderHabByComuna(records);
   renderHabDoughnut(records);
   renderSeveridad(records);
+  renderUsoDoughnut(records);
   renderFlags(records);
   renderTimeSeries(records);
 }
