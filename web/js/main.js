@@ -231,8 +231,8 @@ async function loadAndRender({ isRefresh = false } = {}) {
 // generated_at advances, then re-render. Falls back to a plain reload when the
 // endpoint is unreachable (e.g. local dev without the serverless function).
 const REFRESH_ENDPOINT = '/api/refresh';
-const POLL_INTERVAL_MS = 20000;
-const POLL_MAX_TRIES = 12; // ~4 min ceiling so the button never spins forever
+const POLL_INTERVAL_MS = 15000;
+const POLL_MAX_TRIES = 20; // ~5 min opportunistic background watch
 
 function setRefreshChrome(on) {
   refreshBtn.classList.toggle('is-loading', on);
@@ -243,20 +243,27 @@ function setRefreshChrome(on) {
   refreshProgress.hidden = !on;
 }
 
-async function waitForFreshData(baseline) {
+// Fire-and-forget after a successful trigger: the button is already reset, so
+// this quietly watches the published meta.json and re-renders IF fresh data
+// lands. A timeout is NOT a failure — the pipeline skips publishing when the
+// source data hasn't changed, so we stay silent rather than report an error.
+async function pollForFreshData(baseline) {
   for (let i = 0; i < POLL_MAX_TRIES; i += 1) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
     try {
       const res = await fetch(`data/meta.json?t=${Date.now()}`, { cache: 'no-store' });
       if (res.ok) {
         const meta = await res.json();
-        if (meta.generated_at && meta.generated_at !== baseline) return true;
+        if (meta.generated_at && meta.generated_at !== baseline) {
+          await loadAndRender();
+          showToast('Datos actualizados');
+          return;
+        }
       }
     } catch {
-      // transient network hiccup during the deploy window; keep polling.
+      // transient hiccup during the deploy window; keep watching.
     }
   }
-  return false;
 }
 
 async function triggerRefresh() {
@@ -276,24 +283,20 @@ async function triggerRefresh() {
     let body = {};
     try { body = await res.json(); } catch { /* body optional */ }
 
-    if (res.ok) {
-      showToast('Actualización disparada. Puede tardar un par de minutos…');
-    } else if (res.status === 409) {
-      showToast('Ya hay una actualización en curso. Espera a que termine.', 'error');
+    if (res.ok || res.status === 409) {
+      // The trigger fired — that's the success the user asked for. The new data
+      // lands minutes later (pipeline + redeploy) or not at all when nothing
+      // changed, so we report success now and watch in the background instead
+      // of freezing the button for minutes.
+      showToast(res.status === 409
+        ? 'Ya hay una actualización en curso; el dashboard se refrescará en unos minutos.'
+        : 'Actualización iniciada. El dashboard se refrescará solo en unos minutos.');
+      pollForFreshData(baseline).catch(() => {});
     } else {
       // Trigger unavailable (endpoint missing, token not set, Railway error):
       // never leave the user worse off — re-read the published JSON.
       await loadAndRender();
       showToast(`No se pudo disparar la actualización (${body.error || res.status}); recargué los datos publicados.`, 'error');
-      return;
-    }
-
-    const landed = await waitForFreshData(baseline);
-    if (landed) {
-      await loadAndRender();
-      showToast('Datos actualizados');
-    } else {
-      showToast('La actualización sigue en curso; los datos nuevos aparecerán en breve.');
     }
   } finally {
     setRefreshChrome(false);
