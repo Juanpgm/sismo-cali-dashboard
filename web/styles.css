@@ -453,6 +453,17 @@ a { color: var(--accent); }
   color: var(--text-primary);
 }
 
+.kpi-section-title {
+  grid-column: 1 / -1;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+  font-weight: 700;
+  margin: 6px 0 -2px;
+}
+.kpi-section-title:first-child { margin-top: 0; }
+
 .kpi-tile-wide { grid-column: 1 / -1; }
 .kpi-sub-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .kpi-sub {

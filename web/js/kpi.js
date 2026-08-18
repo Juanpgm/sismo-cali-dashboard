@@ -30,21 +30,21 @@ function isYes(v) {
 // Granular habitability codes in severity order (drives tiles + distribution bar).
 const HAB_CODES = ['h', 'r1', 'r2', 'i1', 'i2', 'i3'];
 
-// Headline tiles: Unidades residenciales · Habitable (H) · Uso restringido
-// (R1+R2) · No habitable (I1+I2+I3) · Colapso total · Colapso parcial.
-// Human-cost figures (victims, occupants) and unit/structure counts are
-// de-emphasized into a collapsed `secondary` group so the panel doesn't lead
-// with the death/casualty numbers.
+// Headline tiles split into two labeled sections: counts by record and sums
+// by residential unit (n_residenciales). Human-cost figures (victims,
+// occupants) and unit/structure counts are de-emphasized into a collapsed
+// `secondary` group so the panel doesn't lead with the death/casualty numbers.
 const TILE_DEFS = [
-  { key: 'u_residenciales', label: 'Unidades residenciales', accent: null, group: 'headline' },
-  { key: 'hab_h', label: 'Habitable (H) — registros', accent: COLORS.status.h, group: 'headline' },
-  { key: 'hab_r', label: 'Uso restringido (R1 + R2) — registros', accent: COLORS.status.r2, group: 'headline' },
-  { key: 'hab_i', label: 'No habitable (I1 + I2 + I3) — registros', accent: COLORS.status.i2, group: 'headline' },
-  { key: 'hab_h_res', label: 'Habitable (H) — unid. residenciales', accent: COLORS.status.h, group: 'headline' },
-  { key: 'hab_r_res', label: 'Uso restringido (R1 + R2) — unid. residenciales', accent: COLORS.status.r2, group: 'headline' },
-  { key: 'hab_i_res', label: 'No habitable (I1 + I2 + I3) — unid. residenciales', accent: COLORS.status.i2, group: 'headline' },
-  { key: 'colapso_total', label: 'Colapso total', accent: COLORS.status.i3, group: 'headline' },
-  { key: 'colapso_parcial', label: 'Colapso parcial', accent: COLORS.status.r2, group: 'headline' },
+  { key: 'total', label: 'Total registros', accent: null, group: 'headline', section: 'registros' },
+  { key: 'hab_h', label: 'Habitable (H)', accent: COLORS.status.h, group: 'headline', section: 'registros' },
+  { key: 'hab_r', label: 'Uso restringido (R1 + R2)', accent: COLORS.status.r2, group: 'headline', section: 'registros' },
+  { key: 'hab_i', label: 'No habitable (I1 + I2 + I3)', accent: COLORS.status.i2, group: 'headline', section: 'registros' },
+  { key: 'colapso_total', label: 'Colapso total', accent: COLORS.status.i3, group: 'headline', section: 'registros' },
+  { key: 'colapso_parcial', label: 'Colapso parcial', accent: COLORS.status.r2, group: 'headline', section: 'registros' },
+  { key: 'u_residenciales', label: 'Total unidades residenciales', accent: null, group: 'headline', section: 'residenciales' },
+  { key: 'hab_h_res', label: 'Habitable (H)', accent: COLORS.status.h, group: 'headline', section: 'residenciales' },
+  { key: 'hab_r_res', label: 'Uso restringido (R1 + R2)', accent: COLORS.status.r2, group: 'headline', section: 'residenciales' },
+  { key: 'hab_i_res', label: 'No habitable (I1 + I2 + I3)', accent: COLORS.status.i2, group: 'headline', section: 'residenciales' },
   // Human cost + counts — hidden by default, smaller, low visual weight.
   { key: 'muertos', label: 'Muertos', accent: COLORS.status.i2, group: 'secondary' },
   { key: 'heridos', label: 'Heridos', accent: COLORS.status.r2, group: 'secondary' },
@@ -135,7 +135,14 @@ export function renderKpis(container, filteredRecords, allRecords) {
     `;
   };
 
-  const headlineHtml = TILE_DEFS.filter((d) => d.group === 'headline').map(tileHtml).join('');
+  const sectionTitle = (t) => `<h3 class="kpi-section-title">${t}</h3>`;
+  const tilesFor = (section) => TILE_DEFS
+    .filter((d) => d.group === 'headline' && d.section === section)
+    .map(tileHtml).join('');
+  const headlineHtml = sectionTitle('Por número de registros')
+    + tilesFor('registros')
+    + sectionTitle('Por unidades residenciales (n_residenciales)')
+    + tilesFor('residenciales');
   const secondaryHtml = TILE_DEFS.filter((d) => d.group === 'secondary').map(tileHtml).join('');
 
   const dist = habDistribution(filteredRecords);
