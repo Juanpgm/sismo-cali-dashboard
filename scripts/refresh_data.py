@@ -1,10 +1,12 @@
 """Refresh the public seismic-inspection dashboard data.
 
-Downloads the latest inspections xlsx (Google Drive, with a local-file
-fallback), applies the exact cleaning contract defined in
-`data_cleaning.ipynb`, strips PII, spatially joins each inspection to its
-comuna/barrio polygon, and writes `inspections.json` + `meta.json` for the
-static frontend.
+The dashboard's source of truth is the curated `tabla_normalizada` tab of the
+Google Sheet. This script EXPORTS the Sheet, READS `tabla_normalizada` as-is
+(it is maintained externally and already dashboard-shaped), strips PII
+defensively, and writes `inspections.json` + `meta.json` for the static
+frontend. It NEVER re-derives that table from `raw_data` and NEVER writes it
+back — `raw_data` only supplies the original variable labels, encoded in
+RENAME_MAP for the dashboard's field titles.
 
 No API/server is started here — this is a batch/cron-style script. Run it
 directly, or with `--loop SECONDS` to re-run forever (e.g. from an hourly
@@ -288,21 +290,20 @@ def acquire_xlsx(source: str) -> tuple[bytes | None, Path | None, str]:
 # --- Step 2: clean per data_cleaning.ipynb -------------------------------
 
 
-def load_and_clean(content: bytes | None, local_path: Path | None) -> pd.DataFrame:
+def load_normalized_table(content: bytes | None, local_path: Path | None) -> pd.DataFrame:
+    """Read the curated `tabla_normalizada` tab — the dashboard's source of
+    truth. It is maintained externally and already dashboard-shaped (normalized
+    column names, id_edan, coords, comuna/barrio, …), so it is served as-is: we
+    never re-derive it from `raw_data` and never write it back."""
     source = io.BytesIO(content) if content is not None else local_path
-    # The Sheet holds both the raw survey tab and our written-back
-    # NORMALIZED_TAB; always read a RAW tab so we never feed our own output back
-    # in as input (which would compound the rename on every run).
     xls = pd.ExcelFile(source)
-    raw_tabs = [s for s in xls.sheet_names if s != NORMALIZED_TAB]
-    tab = raw_tabs[0] if raw_tabs else xls.sheet_names[0]
-    log.info("Reading raw tab '%s' (tabs available: %s).", tab, xls.sheet_names)
-    df = pd.read_excel(xls, sheet_name=tab)
-
-    existing_drop_cols = [c for c in COLS_A_ELIMINAR if c in df.columns]
-    df = df.drop(columns=existing_drop_cols)
-    df = df.rename(columns=RENAME_MAP)
-
+    if NORMALIZED_TAB not in xls.sheet_names:
+        raise ValueError(
+            f"'{NORMALIZED_TAB}' tab not found in the sheet (tabs: {xls.sheet_names})."
+        )
+    log.info("Reading '%s' (tabs available: %s).", NORMALIZED_TAB, xls.sheet_names)
+    df = pd.read_excel(xls, sheet_name=NORMALIZED_TAB)
+    df = df.dropna(how="all")  # drop fully-empty rows a Sheet export can append
     return df
 
 
@@ -498,82 +499,25 @@ def write_outputs(df: pd.DataFrame, out_dir: Path, source_used: str) -> tuple[Pa
     return inspections_path, meta_path, len(records)
 
 
-def write_normalized_tab(df: pd.DataFrame, sheet_id: str, tab: str = NORMALIZED_TAB) -> int:
-    """Overwrite `tab` in the Google Sheet with the normalized table (clear then
-    write). Requires the service account to be an EDITOR of the sheet and the
-    spreadsheets write scope. Returns the number of data rows written."""
-    creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    if not creds_path:
-        raise RuntimeError("GOOGLE_APPLICATION_CREDENTIALS is not set.")
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-
-    credentials = service_account.Credentials.from_service_account_file(creds_path, scopes=SA_SCOPES)
-    ss = build("sheets", "v4", credentials=credentials).spreadsheets()
-
-    existing = {s["properties"]["title"] for s in ss.get(spreadsheetId=sheet_id).execute().get("sheets", [])}
-    if tab not in existing:
-        ss.batchUpdate(
-            spreadsheetId=sheet_id,
-            body={"requests": [{"addSheet": {"properties": {"title": tab}}}]},
-        ).execute()
-
-    # Reuse pandas' JSON serialization (numpy scalars, dates → JSON), then
-    # turn nulls into "" since the Sheets API rejects None cells.
-    rows = json.loads(df.to_json(orient="values", date_format="iso"))
-    rows = [["" if c is None else c for c in row] for row in rows]
-    values = [list(df.columns)] + rows
-
-    ss.values().clear(spreadsheetId=sheet_id, range=f"'{tab}'").execute()
-    ss.values().update(
-        spreadsheetId=sheet_id,
-        range=f"'{tab}'!A1",
-        valueInputOption="RAW",
-        body={"values": values},
-    ).execute()
-    return len(df)
-
-
 # --- Orchestration ----------------------------------------------------------
 
 
-def run_once(source: str, out_dir: Path, write_sheet: bool = True) -> None:
+def run_once(source: str, out_dir: Path) -> None:
     log.info("=== refresh_data run start (source=%s, out=%s) ===", source, out_dir)
 
     content, local_path, source_used = acquire_xlsx(source)
-    df = load_and_clean(content, local_path)
-    log.info("Loaded and cleaned %d rows, %d columns.", len(df), len(df.columns))
+    df = load_normalized_table(content, local_path)
+    log.info("Read '%s': %d rows, %d columns.", NORMALIZED_TAB, len(df), len(df.columns))
 
-    df["municipio"] = normalize_municipio(df["municipio"])
-    df = add_date_fields(df)
+    # tabla_normalizada is already curated/dashboard-shaped; only enforce two
+    # invariants before publishing: numeric dtypes survive the Sheet round-trip,
+    # and PII is never exposed even if a column slipped into the table. We do NOT
+    # re-derive, re-key, or write anything back to the Sheet.
     df = coerce_numeric(df)
     df = drop_pii(df)
-    df = spatial_join(df)
-    df = add_id_edan(df)
-    df = add_address_norm(df)
-
-    matched_comuna = df["comuna"].notna().sum()
-    matched_barrio = df["barrio_geo"].notna().sum()
-    log.info(
-        "Spatial join: comuna matched %d/%d, barrio matched %d/%d.",
-        matched_comuna, len(df), matched_barrio, len(df),
-    )
 
     inspections_path, meta_path, n = write_outputs(df, out_dir, source_used)
     log.info("Wrote %s (%d records) and %s.", inspections_path, n, meta_path)
-
-    # Write the normalized table back to the Sheet tab. Only possible when we
-    # authenticated with the service account (source_used == 'drive' via SA).
-    # A failure here must not lose the JSON already written for the dashboard.
-    if write_sheet and source_used == "drive" and os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
-        try:
-            written = write_normalized_tab(df, DRIVE_FILE_ID)
-            log.info("Wrote %d rows to Sheet tab '%s'.", written, NORMALIZED_TAB)
-        except Exception as exc:  # noqa: BLE001 - JSON already saved; surface but don't crash
-            log.error("Failed to write Sheet tab '%s': %s", NORMALIZED_TAB, exc)
-    elif write_sheet and source_used == "drive":
-        log.warning("Skipping Sheet write-back: GOOGLE_APPLICATION_CREDENTIALS not set.")
-
     log.info("=== refresh_data run complete (source_used=%s) ===", source_used)
 
 
@@ -586,11 +530,6 @@ def parse_args() -> argparse.Namespace:
         "--deploy",
         action="store_true",
         help="After a successful refresh, redeploy the web/ directory to Vercel production.",
-    )
-    parser.add_argument(
-        "--no-write-sheet",
-        action="store_true",
-        help=f"Skip writing the normalized table back to the '{NORMALIZED_TAB}' Sheet tab.",
     )
     return parser.parse_args()
 
@@ -616,20 +555,18 @@ def deploy_to_vercel() -> None:
 def main() -> None:
     args = parse_args()
 
-    write_sheet = not args.no_write_sheet
-
     if args.loop and args.loop > 0:
         log.info("Looping every %d seconds. Press Ctrl+C to stop.", args.loop)
         while True:
             try:
-                run_once(args.source, args.out, write_sheet=write_sheet)
+                run_once(args.source, args.out)
                 if args.deploy:
                     deploy_to_vercel()
             except Exception:  # noqa: BLE001 - keep the loop alive across failures
                 log.exception("Run failed; will retry on next loop iteration.")
             time.sleep(args.loop)
     else:
-        run_once(args.source, args.out, write_sheet=write_sheet)
+        run_once(args.source, args.out)
         if args.deploy:
             deploy_to_vercel()
 
