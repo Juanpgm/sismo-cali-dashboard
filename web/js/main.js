@@ -19,6 +19,10 @@ const activeChipsEl = el('#active-chips');
 const searchInput = el('#search-input');
 const refreshBtn = el('#refresh-btn');
 const refreshProgress = el('#refresh-progress');
+const refreshProgressFill = refreshProgress.querySelector('.progress-bar-fill');
+const refreshStatus = el('#refresh-status');
+const refreshStatusText = refreshStatus.querySelector('.refresh-status-text');
+const refreshStatusPct = refreshStatus.querySelector('.pct');
 const retryBtn = el('#retry-btn');
 const errorOverlay = el('#error-overlay');
 const errorMessage = el('[data-error-message]');
@@ -178,6 +182,7 @@ async function loadAndRender({ isRefresh = false } = {}) {
       refreshBtn.classList.add('is-loading');
       refreshBtn.setAttribute('aria-busy', 'true');
       refreshBtn.querySelector('span').textContent = 'Actualizando…';
+      refreshProgress.classList.add('is-indeterminate');
       refreshProgress.hidden = false;
       // Floor the perceived duration so the progress feedback is visible even
       // when the JSON comes back from cache in a few milliseconds.
@@ -218,10 +223,16 @@ async function loadAndRender({ isRefresh = false } = {}) {
     errorOverlay.hidden = false;
     if (isRefresh) showToast('Error al actualizar los datos.', 'error');
   } finally {
-    refreshBtn.classList.remove('is-loading');
-    refreshBtn.removeAttribute('aria-busy');
-    refreshBtn.querySelector('span').textContent = 'Actualizar datos';
-    refreshProgress.hidden = true;
+    // Only the retry/legacy refresh path owns the button + indeterminate bar.
+    // When triggerRefresh calls this with isRefresh=false, it must not clobber
+    // the phased progress bar it is driving.
+    if (isRefresh) {
+      refreshBtn.classList.remove('is-loading');
+      refreshBtn.removeAttribute('aria-busy');
+      refreshBtn.querySelector('span').textContent = 'Actualizar datos';
+      refreshProgress.classList.remove('is-indeterminate');
+      refreshProgress.hidden = true;
+    }
   }
 }
 
@@ -240,13 +251,55 @@ function setRefreshChrome(on) {
   if (on) refreshBtn.setAttribute('aria-busy', 'true');
   else refreshBtn.removeAttribute('aria-busy');
   refreshBtn.querySelector('span').textContent = on ? 'Actualizando…' : 'Actualizar datos';
-  refreshProgress.hidden = !on;
 }
 
-// Fire-and-forget after a successful trigger: the button is already reset, so
-// this quietly watches the published meta.json and re-renders IF fresh data
-// lands. A timeout is NOT a failure — the pipeline skips publishing when the
-// source data hasn't changed, so we stay silent rather than report an error.
+// --- Phased progress bar for the manual refresh -------------------------
+let progressAnim = null;
+
+function setProgress(pct, label, state) {
+  if (progressAnim) { cancelAnimationFrame(progressAnim); progressAnim = null; }
+  refreshProgress.hidden = false;
+  refreshProgress.classList.remove('is-indeterminate');
+  refreshProgressFill.style.width = `${pct}%`;
+  refreshProgress.setAttribute('aria-valuenow', String(Math.round(pct)));
+  refreshStatus.hidden = false;
+  refreshStatus.classList.toggle('is-done', state === 'done');
+  refreshStatus.classList.toggle('is-error', state === 'error');
+  if (label != null) refreshStatusText.textContent = label;
+  refreshStatusPct.textContent = `${Math.round(pct)}%`;
+}
+
+// Ease the bar from its current width toward `target` over `duration`, so the
+// user sees steady movement while the server-side job is being queued/processed.
+function animateProgress(target, label, duration) {
+  return new Promise((resolve) => {
+    if (label != null) refreshStatusText.textContent = label;
+    const start = parseFloat(refreshProgressFill.style.width) || 0;
+    const t0 = performance.now();
+    const step = (now) => {
+      const p = Math.min(1, (now - t0) / duration);
+      const pct = start + (target - start) * p;
+      refreshProgressFill.style.width = `${pct}%`;
+      refreshStatusPct.textContent = `${Math.round(pct)}%`;
+      if (p < 1) { progressAnim = requestAnimationFrame(step); }
+      else { progressAnim = null; resolve(); }
+    };
+    progressAnim = requestAnimationFrame(step);
+  });
+}
+
+function clearProgress() {
+  if (progressAnim) { cancelAnimationFrame(progressAnim); progressAnim = null; }
+  refreshProgress.hidden = true;
+  refreshProgress.classList.remove('is-indeterminate');
+  refreshProgressFill.style.width = '0%';
+  refreshStatus.hidden = true;
+  refreshStatus.classList.remove('is-done', 'is-error');
+}
+
+// Background watch: when the published data actually changes, finish the bar and
+// re-render. A timeout is NOT a failure (the hourly job may publish later, or
+// have nothing new), so it just fades quietly.
 async function pollForFreshData(baseline) {
   for (let i = 0; i < POLL_MAX_TRIES; i += 1) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
@@ -255,8 +308,10 @@ async function pollForFreshData(baseline) {
       if (res.ok) {
         const meta = await res.json();
         if (meta.generated_at && meta.generated_at !== baseline) {
+          setProgress(100, 'Datos actualizados', 'done');
           await loadAndRender();
           showToast('Datos actualizados');
+          setTimeout(clearProgress, 1800);
           return;
         }
       }
@@ -269,12 +324,14 @@ async function pollForFreshData(baseline) {
 async function triggerRefresh() {
   const baseline = store.meta?.generated_at ?? null;
   setRefreshChrome(true);
+  setProgress(12, 'Enviando solicitud…');
   try {
     let res;
     try {
       res = await fetch(REFRESH_ENDPOINT, { method: 'POST' });
     } catch {
       // No backend reachable: degrade to re-reading the published JSON.
+      setProgress(100, 'Sin conexión — recargando datos', 'error');
       await loadAndRender();
       showToast('No se pudo contactar el servicio de actualización; recargué los datos publicados.', 'error');
       return;
@@ -284,22 +341,25 @@ async function triggerRefresh() {
     try { body = await res.json(); } catch { /* body optional */ }
 
     if (res.ok || res.status === 409) {
-      // The trigger fired — that's the success the user asked for. The new data
-      // lands minutes later (pipeline + redeploy) or not at all when nothing
-      // changed, so we report success now and watch in the background instead
-      // of freezing the button for minutes.
-      showToast(res.status === 409
-        ? 'Ya hay una actualización en curso; el dashboard se refrescará en unos minutos.'
-        : 'Actualización iniciada. El dashboard se refrescará solo en unos minutos.');
+      // The trigger fired — that's the success the user asked for. The real
+      // data lands later (the hourly job syncs + publishes), so we advance the
+      // bar through the server-side phases and keep watching in the background
+      // instead of freezing the button.
+      setProgress(45, res.status === 409 ? 'Ya había una actualización en curso…' : 'Encolado en el servidor…');
+      await animateProgress(88, 'Procesando datos…', 7000);
+      setProgress(100, 'Solicitud enviada — se publicará en breve', 'done');
+      showToast('Actualización encolada. El dashboard se refrescará en unos minutos.');
       pollForFreshData(baseline).catch(() => {});
     } else {
       // Trigger unavailable (endpoint missing, token not set, Railway error):
       // never leave the user worse off — re-read the published JSON.
+      setProgress(100, 'No se pudo disparar — recargando', 'error');
       await loadAndRender();
       showToast(`No se pudo disparar la actualización (${body.error || res.status}); recargué los datos publicados.`, 'error');
     }
   } finally {
     setRefreshChrome(false);
+    setTimeout(clearProgress, 2200);
   }
 }
 

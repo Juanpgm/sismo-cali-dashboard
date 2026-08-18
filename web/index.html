@@ -35,6 +35,11 @@
   <div class="main-column">
 
     <div class="progress-bar" id="refresh-progress" role="progressbar" aria-label="Actualizando datos" hidden><div class="progress-bar-fill"></div></div>
+    <div class="refresh-status" id="refresh-status" role="status" aria-live="polite" hidden>
+      <span class="refresh-status-dot"></span>
+      <span class="refresh-status-text"></span>
+      <span class="pct"></span>
+    </div>
     <header class="app-header">
       <div class="app-header-top">
         <button type="button" class="btn-icon filters-open-btn" id="filters-open-btn" aria-label="Abrir filtros" aria-controls="filters-panel">
