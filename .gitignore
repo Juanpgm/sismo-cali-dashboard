@@ -27,3 +27,6 @@ venv/
 # Knowledge-graph sources (large PDFs/txt, re-downloadable via
 # knowledge/build_kg.py --extract)
 knowledge/fuentes/
+
+.vercel
+.env*
