@@ -27,12 +27,12 @@ function isYes(v) {
   return normalize(v) === 'si' || normalize(v) === 'sí';
 }
 
-// Headline tiles mirror the Momento 3 slide: Inspeccionados · Habitable ·
+// Headline tiles mirror the Momento 3 slide: Unidades residenciales · Habitable ·
 // No habitable · Colapso total · Colapso parcial. Human-cost figures (victims,
 // occupants) and unit/structure counts are de-emphasized into a collapsed
 // `secondary` group so the panel doesn't lead with the death/casualty numbers.
 const TILE_DEFS = [
-  { key: 'total', label: 'Inspeccionados', accent: null, group: 'headline' },
+  { key: 'u_residenciales', label: 'Unidades residenciales', accent: null, group: 'headline' },
   { key: 'habitables', label: 'Habitable', accent: COLORS.status.h, group: 'headline' },
   { key: 'no_habitables', label: 'No habitable', accent: COLORS.status.i2, group: 'headline' },
   { key: 'colapso_total', label: 'Colapso total', accent: COLORS.status.i3, group: 'headline' },
@@ -42,7 +42,6 @@ const TILE_DEFS = [
   { key: 'heridos', label: 'Heridos', accent: COLORS.status.r2, group: 'secondary' },
   { key: 'ocupantes_riesgo', label: 'Ocupantes en no habitables', accent: COLORS.status.i1, group: 'secondary' },
   { key: 'ocupantes_total', label: 'Ocupantes totales', accent: null, group: 'secondary' },
-  { key: 'u_residenciales', label: 'Unidades residenciales', accent: null, group: 'secondary' },
   { key: 'u_comerciales', label: 'Unidades comerciales', accent: null, group: 'secondary' },
   { key: 'u_no_habitadas', label: 'Unidades no habitadas', accent: null, group: 'secondary' },
   { key: 'pisos_prom', label: 'Pisos (promedio)', accent: null, group: 'secondary' },
