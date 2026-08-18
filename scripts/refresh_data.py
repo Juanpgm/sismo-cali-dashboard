@@ -290,6 +290,26 @@ def acquire_xlsx(source: str) -> tuple[bytes | None, Path | None, str]:
 # --- Step 2: clean per data_cleaning.ipynb -------------------------------
 
 
+def dedup_latest_by_globalid(df: pd.DataFrame) -> pd.DataFrame:
+    """Idempotency guard: keep exactly one row per GlobalID — the newest by
+    ObjectID — so repeated loads/syncs and any accidental duplicate rows always
+    converge to the same result. Rows without a GlobalID are kept untouched, and
+    the original row order is preserved."""
+    if "GlobalID" not in df.columns:
+        return df
+    df = df.reset_index(drop=True)
+    gid = df["GlobalID"].astype("string").str.strip()
+    has_gid = gid.notna() & gid.ne("")
+    rank = (pd.to_numeric(df["ObjectID"], errors="coerce")
+            if "ObjectID" in df.columns
+            else pd.Series(range(len(df)), dtype="float")).fillna(-1)
+    keep = list(df.index[~has_gid])
+    with_gid = pd.DataFrame({"gid": gid[has_gid], "rank": rank[has_gid]}, index=df.index[has_gid])
+    # For each GlobalID, keep the row index with the highest ObjectID.
+    keep += list(with_gid.sort_values("rank").reset_index().groupby("gid")["index"].last())
+    return df.loc[sorted(set(keep))].reset_index(drop=True)
+
+
 def load_normalized_table(content: bytes | None, local_path: Path | None) -> pd.DataFrame:
     """Read the curated `tabla_normalizada` tab — the dashboard's source of
     truth. It is maintained externally and already dashboard-shaped (normalized
@@ -304,6 +324,10 @@ def load_normalized_table(content: bytes | None, local_path: Path | None) -> pd.
     log.info("Reading '%s' (tabs available: %s).", NORMALIZED_TAB, xls.sheet_names)
     df = pd.read_excel(xls, sheet_name=NORMALIZED_TAB)
     df = df.dropna(how="all")  # drop fully-empty rows a Sheet export can append
+    before = len(df)
+    df = dedup_latest_by_globalid(df)
+    if len(df) != before:
+        log.warning("Colapsadas %d fila(s) duplicada(s) por GlobalID (idempotencia).", before - len(df))
     return df
 
 

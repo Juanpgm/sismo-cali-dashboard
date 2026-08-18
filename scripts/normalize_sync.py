@@ -111,7 +111,13 @@ def run(dry_run: bool = False) -> None:
     gid_to_row: dict[str, tuple[int, int | None]] = {}
     for i, (gid, oid) in enumerate(zip(norm["GlobalID"], norm_oid)):
         if pd.notna(gid) and str(gid).strip():
-            gid_to_row[str(gid).strip()] = (i + 2, oid)
+            key = str(gid).strip()
+            prev = gid_to_row.get(key)
+            # If the tab already holds duplicate rows for a GlobalID, treat the
+            # newest (max ObjectID) as canonical so edit detection stays correct
+            # and we never re-append an inspection that already exists.
+            if prev is None or (oid is not None and (prev[1] is None or oid > prev[1])):
+                gid_to_row[key] = (i + 2, oid)
 
     new_idx: list = []
     edited: list[tuple[int, object]] = []  # (sheet_row, raw_index)
