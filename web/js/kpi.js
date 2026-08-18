@@ -37,9 +37,12 @@ const HAB_CODES = ['h', 'r1', 'r2', 'i1', 'i2', 'i3'];
 // with the death/casualty numbers.
 const TILE_DEFS = [
   { key: 'u_residenciales', label: 'Unidades residenciales', accent: null, group: 'headline' },
-  { key: 'hab_h', label: 'Habitable (H)', accent: COLORS.status.h, group: 'headline' },
-  { key: 'hab_r', label: 'Uso restringido (R1 + R2)', accent: COLORS.status.r2, group: 'headline' },
-  { key: 'hab_i', label: 'No habitable (I1 + I2 + I3)', accent: COLORS.status.i2, group: 'headline' },
+  { key: 'hab_h', label: 'Habitable (H) — registros', accent: COLORS.status.h, group: 'headline' },
+  { key: 'hab_r', label: 'Uso restringido (R1 + R2) — registros', accent: COLORS.status.r2, group: 'headline' },
+  { key: 'hab_i', label: 'No habitable (I1 + I2 + I3) — registros', accent: COLORS.status.i2, group: 'headline' },
+  { key: 'hab_h_res', label: 'Habitable (H) — unid. residenciales', accent: COLORS.status.h, group: 'headline' },
+  { key: 'hab_r_res', label: 'Uso restringido (R1 + R2) — unid. residenciales', accent: COLORS.status.r2, group: 'headline' },
+  { key: 'hab_i_res', label: 'No habitable (I1 + I2 + I3) — unid. residenciales', accent: COLORS.status.i2, group: 'headline' },
   { key: 'colapso_total', label: 'Colapso total', accent: COLORS.status.i3, group: 'headline' },
   { key: 'colapso_parcial', label: 'Colapso parcial', accent: COLORS.status.r2, group: 'headline' },
   // Human cost + counts — hidden by default, smaller, low visual weight.
@@ -116,11 +119,10 @@ export function renderKpis(container, filteredRecords, allRecords) {
 
   const tileHtml = (def) => {
     let sub = '';
-    if (def.key.startsWith('hab_')) {
-      sub = subLine(
-        `<span class="kpi-sub">${pct(values[def.key], total)}% del filtrado</span>`
-        + `<span class="kpi-sub">${values[`${def.key}_res`]} unid. residenciales</span>`,
-      );
+    if (def.key.startsWith('hab_') && def.key.endsWith('_res')) {
+      sub = subLine(`<span class="kpi-sub">${pct(values[def.key], values.u_residenciales)}% de unid. residenciales</span>`);
+    } else if (def.key.startsWith('hab_')) {
+      sub = subLine(`<span class="kpi-sub">${pct(values[def.key], total)}% del filtrado</span>`);
     } else if (def.key === 'ocupantes_riesgo') {
       sub = subLine(`<span class="kpi-sub">${pct(values.ocupantes_riesgo, ocupantesTotalFiltrados)}% de ocupantes totales</span>`);
     }
