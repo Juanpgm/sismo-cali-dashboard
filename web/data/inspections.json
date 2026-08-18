@@ -52534,7 +52534,7 @@
     "recomendaciones": "apuntalar,demoler,seguimiento,restringir_peatones",
     "aislamiento": null,
     "intervencion_entades": null,
-    "observaciones_generales": null,
+    "observaciones_generales": "[VERIF-BOTON]",
     "evento_id": "SISMO_2026_08_10",
     "gps_precision_m": 9.9350462,
     "CreationDate": "##########",
