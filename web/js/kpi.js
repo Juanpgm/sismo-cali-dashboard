@@ -1,7 +1,7 @@
 // KPI tile row — recomputed from the currently filtered record set.
 // Habitability uses the granular criterio_habitabilidad scale (H · R1 · R2 ·
 // I1 · I2 · I3): green for H, yellow shades for R, red shades for I.
-import { COLORS, isNoHabitableBinary, habCode, labelForCode, normalize } from './utils.js';
+import { COLORS, isNoHabitableBinary, habCode, labelForCode, normalize, splitMultiValue, escapeHtml } from './utils.js';
 
 function sumField(records, field) {
   let total = 0;
@@ -110,6 +110,31 @@ function subLine(html) {
   return html ? `<div class="kpi-sub-row">${html}</div>` : '';
 }
 
+/** Cards for the "Por uso de la edificación" section, sorted by count.
+ *  uso_edificacion is multi-value: a record counts in every use it lists,
+ *  so these cards can sum to more than the filtered total. */
+function usoTilesHtml(records, total) {
+  const counts = new Map();
+  const resSums = new Map();
+  for (const r of records) {
+    const nRes = Number(r.n_residenciales);
+    for (const part of splitMultiValue(r.uso_edificacion)) {
+      counts.set(part, (counts.get(part) || 0) + 1);
+      if (!Number.isNaN(nRes)) resSums.set(part, (resSums.get(part) || 0) + nRes);
+    }
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([uso, count]) => `
+    <div class="kpi-tile">
+      <span class="kpi-label">${escapeHtml(labelForCode(uso))}</span>
+      <span class="kpi-value">${count}</span>
+      <div class="kpi-sub-row">
+        <span class="kpi-sub">${pct(count, total)}% del filtrado</span>
+        <span class="kpi-sub">${Math.round(resSums.get(uso) || 0)} unid. residenciales</span>
+      </div>
+    </div>
+  `).join('');
+}
+
 /** @param {HTMLElement} container @param {object[]} filteredRecords @param {object[]} allRecords */
 export function renderKpis(container, filteredRecords, allRecords) {
   const values = computeKpis(filteredRecords);
@@ -142,7 +167,9 @@ export function renderKpis(container, filteredRecords, allRecords) {
   const headlineHtml = sectionTitle('Por número de registros')
     + tilesFor('registros')
     + sectionTitle('Por unidades residenciales (n_residenciales)')
-    + tilesFor('residenciales');
+    + tilesFor('residenciales')
+    + sectionTitle('Por uso de la edificación')
+    + usoTilesHtml(filteredRecords, total);
   const secondaryHtml = TILE_DEFS.filter((d) => d.group === 'secondary').map(tileHtml).join('');
 
   const dist = habDistribution(filteredRecords);
