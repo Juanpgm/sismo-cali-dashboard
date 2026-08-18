@@ -12,11 +12,11 @@ export const COLORS = {
   // Habitability (criterio_habitabilidad / habitabilidad_calc)
   status: {
     h: '#22c55e',
-    r1: '#eab308',
-    r2: '#f97316',
+    r1: '#facc15',
+    r2: '#eab308',
     i1: '#f87171',
     i2: '#ef4444',
-    i3: '#dc2626',
+    i3: '#b91c1c',
   },
   // Text color to use ON TOP of each status color (badges/legend chips).
   statusInk: {
@@ -435,7 +435,6 @@ export function habBinary(record) {
   if (c === '') return '';
   return 'no_habitable';
 }
-export function isHabitable(record) { return habBinary(record) === 'habitable'; }
 export function isNoHabitableBinary(record) { return habBinary(record) === 'no_habitable'; }
 
 /* ---- Source (pre-normalization) field labels from the EDAN-F3 excel ----- */

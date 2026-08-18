@@ -2,18 +2,10 @@
 import {
   COLORS, habitabilityColor, damageColor, buildCategoricalScale,
   interpolateRamp, labelForCode, labelForField, formatValue, escapeHtml, normalize,
-  isNoHabitableBinary, habBinary, basemapTileUrl,
+  isNoHabitableBinary, basemapTileUrl,
 } from './utils.js';
 
 const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
-
-/** Binary habitability color: green Habitable / red No habitable / gray sin dato. */
-function habBinaryColor(record) {
-  const b = habBinary(record);
-  if (b === 'habitable') return COLORS.status.h;
-  if (b === 'no_habitable') return COLORS.status.i2;
-  return COLORS.unknown;
-}
 
 const CALI_CENTER = [3.42, -76.53];
 const CALI_ZOOM = 12;
@@ -53,7 +45,7 @@ let highlightMarker = null;
 
 const state = {
   mode: 'points', // points | heat | choropleth
-  colorBy: 'habitabilidad_binaria',
+  colorBy: 'criterio_habitabilidad',
   sizeBy: 'none', // none | n_ocupantes | n_pisos | n_sotanos
   heatWeight: 'count', // count | victims | damage | n_ocupantes | n_pisos | n_sotanos
   choroplethLevel: 'comuna', // comuna | barrio
@@ -108,8 +100,6 @@ export function applyMapTheme() {
 
 function pointColor(record) {
   switch (state.colorBy) {
-    case 'habitabilidad_binaria':
-      return habBinaryColor(record);
     case 'nivel_dano':
       return damageColor(record.nivel_dano);
     case 'severidad_danos':
@@ -220,14 +210,7 @@ function renderPoints(records) {
 function renderPointsLegend(records) {
   let entries;
   let title;
-  if (state.colorBy === 'habitabilidad_binaria') {
-    title = 'Habitabilidad';
-    entries = [
-      { label: 'Habitable', color: COLORS.status.h },
-      { label: 'No habitable', color: COLORS.status.i2 },
-      { label: 'Sin dato', color: COLORS.unknown },
-    ];
-  } else if (state.colorBy === 'nivel_dano') {
+  if (state.colorBy === 'nivel_dano') {
     title = 'Nivel de daño';
     entries = Object.entries(COLORS.damage).map(([code, color]) => ({ label: labelForCode(code), color }));
   } else if (state.colorBy === 'severidad_danos' || state.colorBy === 'uso_edificacion') {
@@ -245,6 +228,7 @@ function renderPointsLegend(records) {
   } else {
     title = 'Criterio de habitabilidad';
     entries = Object.entries(COLORS.status).map(([code, color]) => ({ label: labelForCode(code), color }));
+    entries.push({ label: 'Sin dato', color: COLORS.unknown });
   }
   if (state.sizeBy !== 'none') title += ` · tamaño ∝ ${NUM_FIELDS[state.sizeBy]}`;
   setLegend(title, entries.map((e) => ({ ...e, shape: 'circle' })));

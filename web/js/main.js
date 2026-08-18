@@ -64,8 +64,7 @@ function renderHeaderMeta() {
 }
 
 // "Colorear por" options that map to a real EDAN-F3 variable get the original
-// (pre-normalization) source name, like the filter titles. Viz-only options
-// (binary habitability) keep their descriptive label.
+// (pre-normalization) source name, like the filter titles.
 const COLOR_BY_SOURCE_FIELDS = {
   criterio_habitabilidad: 'criterio_habitabilidad',
   nivel_dano: 'nivel_dano',

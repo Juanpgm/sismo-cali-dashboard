@@ -1,7 +1,7 @@
 // KPI tile row — recomputed from the currently filtered record set.
-// Habitability follows the Momento 3 / PMU binary framing (Habitable vs No
-// habitable); the granular R1..I3 breakdown lives in the doughnut + map option.
-import { COLORS, isHabitable, isNoHabitableBinary, habBinary, labelForCode, normalize } from './utils.js';
+// Habitability uses the granular criterio_habitabilidad scale (H · R1 · R2 ·
+// I1 · I2 · I3): green for H, yellow shades for R, red shades for I.
+import { COLORS, isNoHabitableBinary, habCode, labelForCode, normalize } from './utils.js';
 
 function sumField(records, field) {
   let total = 0;
@@ -27,14 +27,19 @@ function isYes(v) {
   return normalize(v) === 'si' || normalize(v) === 'sí';
 }
 
-// Headline tiles mirror the Momento 3 slide: Unidades residenciales · Habitable ·
-// No habitable · Colapso total · Colapso parcial. Human-cost figures (victims,
-// occupants) and unit/structure counts are de-emphasized into a collapsed
-// `secondary` group so the panel doesn't lead with the death/casualty numbers.
+// Granular habitability codes in severity order (drives tiles + distribution bar).
+const HAB_CODES = ['h', 'r1', 'r2', 'i1', 'i2', 'i3'];
+
+// Headline tiles: Unidades residenciales · Habitable (H) · Uso restringido
+// (R1+R2) · No habitable (I1+I2+I3) · Colapso total · Colapso parcial.
+// Human-cost figures (victims, occupants) and unit/structure counts are
+// de-emphasized into a collapsed `secondary` group so the panel doesn't lead
+// with the death/casualty numbers.
 const TILE_DEFS = [
   { key: 'u_residenciales', label: 'Unidades residenciales', accent: null, group: 'headline' },
-  { key: 'habitables', label: 'Habitable', accent: COLORS.status.h, group: 'headline' },
-  { key: 'no_habitables', label: 'No habitable', accent: COLORS.status.i2, group: 'headline' },
+  { key: 'hab_h', label: 'Habitable (H)', accent: COLORS.status.h, group: 'headline' },
+  { key: 'hab_r', label: 'Uso restringido (R1 + R2)', accent: COLORS.status.r2, group: 'headline' },
+  { key: 'hab_i', label: 'No habitable (I1 + I2 + I3)', accent: COLORS.status.i2, group: 'headline' },
   { key: 'colapso_total', label: 'Colapso total', accent: COLORS.status.i3, group: 'headline' },
   { key: 'colapso_parcial', label: 'Colapso parcial', accent: COLORS.status.r2, group: 'headline' },
   // Human cost + counts — hidden by default, smaller, low visual weight.
@@ -48,9 +53,6 @@ const TILE_DEFS = [
   { key: 'sotanos_total', label: 'Sótanos (total)', accent: null, group: 'secondary' },
 ];
 
-// Binary habitability segments for the distribution bar.
-const HAB_BINARY_ORDER = ['habitable', 'no_habitable'];
-const HAB_BINARY_COLOR = { habitable: COLORS.status.h, no_habitable: COLORS.status.i2 };
 
 /** Guarded percentage: never NaN/Infinity, always 0 when total is 0. */
 function pct(part, total) {
@@ -60,13 +62,14 @@ function pct(part, total) {
 
 export function computeKpis(records) {
   const noHab = records.filter(isNoHabitableBinary);
-  const habitables = records.filter(isHabitable);
+  const habCounts = habDistribution(records);
   return {
     total: records.length,
     muertos: sumField(records, 'n_muertos'),
     heridos: sumField(records, 'n_heridos'),
-    no_habitables: noHab.length,
-    habitables: habitables.length,
+    hab_h: habCounts.h,
+    hab_r: habCounts.r1 + habCounts.r2,
+    hab_i: habCounts.i1 + habCounts.i2 + habCounts.i3,
     colapso_total: records.filter((r) => isYes(r.colapso_total)).length,
     colapso_parcial: records.filter((r) => isYes(r.colapso_parcial)).length,
     ocupantes_riesgo: sumField(noHab, 'n_ocupantes'),
@@ -80,10 +83,10 @@ export function computeKpis(records) {
 }
 
 function habDistribution(records) {
-  const counts = Object.fromEntries(HAB_BINARY_ORDER.map((c) => [c, 0]));
+  const counts = Object.fromEntries(HAB_CODES.map((c) => [c, 0]));
   for (const r of records) {
-    const code = habBinary(r);
-    if (code) counts[code]++;
+    const code = habCode(r);
+    if (counts[code] !== undefined) counts[code]++;
   }
   return counts;
 }
@@ -95,26 +98,14 @@ function subLine(html) {
 /** @param {HTMLElement} container @param {object[]} filteredRecords @param {object[]} allRecords */
 export function renderKpis(container, filteredRecords, allRecords) {
   const values = computeKpis(filteredRecords);
-  const baseline = computeKpis(allRecords);
   const total = filteredRecords.length;
-
-  const noHabFilteredRate = pct(values.no_habitables, total);
-  const noHabBaselineRate = pct(baseline.no_habitables, allRecords.length);
-  const deltaPts = Math.round((noHabFilteredRate - noHabBaselineRate) * 10) / 10;
-  const deltaArrow = deltaPts > 0 ? '▲' : deltaPts < 0 ? '▼' : '■';
-  const deltaColor = deltaPts > 0 ? COLORS.status.i2 : deltaPts < 0 ? COLORS.status.h : COLORS.unknown;
 
   const ocupantesTotalFiltrados = sumField(filteredRecords, 'n_ocupantes');
 
   const tileHtml = (def) => {
     let sub = '';
-    if (def.key === 'no_habitables') {
-      sub = subLine(
-        `<span class="kpi-sub">${noHabFilteredRate}% del filtrado</span>`
-        + `<span class="kpi-delta" style="color:${deltaColor}">${deltaArrow} ${Math.abs(deltaPts)} pts vs. total</span>`,
-      );
-    } else if (def.key === 'habitables') {
-      sub = subLine(`<span class="kpi-sub">${pct(values.habitables, total)}% del filtrado</span>`);
+    if (def.key.startsWith('hab_')) {
+      sub = subLine(`<span class="kpi-sub">${pct(values[def.key], total)}% del filtrado</span>`);
     } else if (def.key === 'ocupantes_riesgo') {
       sub = subLine(`<span class="kpi-sub">${pct(values.ocupantes_riesgo, ocupantesTotalFiltrados)}% de ocupantes totales</span>`);
     }
@@ -131,11 +122,11 @@ export function renderKpis(container, filteredRecords, allRecords) {
   const secondaryHtml = TILE_DEFS.filter((d) => d.group === 'secondary').map(tileHtml).join('');
 
   const dist = habDistribution(filteredRecords);
-  const segsHtml = HAB_BINARY_ORDER.map((code) => {
+  const segsHtml = HAB_CODES.map((code) => {
     const count = dist[code];
     const share = total ? (count / total) * 100 : 0;
     if (share <= 0) return '';
-    return `<div class="hab-bar-seg" style="width:${share}%;background:${HAB_BINARY_COLOR[code]}" title="${labelForCode(code)}: ${count}"></div>`;
+    return `<div class="hab-bar-seg" style="width:${share}%;background:${COLORS.status[code]}" title="${labelForCode(code)}: ${count}"></div>`;
   }).join('');
 
   const habBarHtml = `
