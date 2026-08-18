@@ -1,0 +1,20 @@
+name: Hourly dashboard refresh
+
+# The dashboard-refresh Railway service is a run-on-deploy job (no cron), so the
+# "Actualizar datos" button can trigger it instantly via POST /api/refresh.
+# This scheduled job restores the automatic hourly refresh by hitting the same
+# public endpoint — no secrets needed; the Railway token lives server-side in
+# the Vercel function.
+on:
+  schedule:
+    - cron: '0 * * * *' # every hour, on the hour (UTC)
+  workflow_dispatch: {} # allow a manual run from the Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger dashboard refresh
+        run: |
+          curl -fsS -X POST https://sismo-cali-dashboard.vercel.app/api/refresh \
+            -w '\nHTTP %{http_code}\n'
