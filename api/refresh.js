@@ -23,21 +23,30 @@ const REDEPLOY = `mutation($s:String!,$e:String!){
   serviceInstanceRedeploy(serviceId:$s, environmentId:$e) }`;
 
 async function railway(token, query, variables) {
-  const res = await fetch(RAILWAY_API, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-      // Cloudflare answers 403 to requests without a User-Agent.
-      'User-Agent': 'sismo-cali-dashboard/1.0',
-    },
-    body: JSON.stringify({ query, variables }),
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok || json.errors) {
-    throw new Error(`Railway API ${res.status}: ${JSON.stringify(json.errors || json)}`);
+  // Railway authenticates account/team tokens via `Authorization: Bearer` and
+  // project tokens via the `Project-Access-Token` header. Try Bearer first and
+  // fall back to the project header so either token type works transparently.
+  const authHeaders = [
+    { Authorization: `Bearer ${token}` },
+    { 'Project-Access-Token': token },
+  ];
+  let lastError;
+  for (const auth of authHeaders) {
+    const res = await fetch(RAILWAY_API, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // Cloudflare answers 403 to requests without a User-Agent.
+        'User-Agent': 'sismo-cali-dashboard/1.0',
+        ...auth,
+      },
+      body: JSON.stringify({ query, variables }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (res.ok && !json.errors) return json.data;
+    lastError = `Railway API ${res.status}: ${JSON.stringify(json.errors || json)}`;
   }
-  return json.data;
+  throw new Error(lastError);
 }
 
 module.exports = async (req, res) => {
