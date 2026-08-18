@@ -26,6 +26,12 @@ git clone --depth 1 --branch "$BRANCH" \
   "https://x-access-token:${DASHBOARD_REPO_TOKEN}@github.com/${REPO}.git" /repo 2>&1 | _scrub
 
 cd /repo/scripts
+# Sync new/edited form responses (raw_data) into the curated tabla_normalizada
+# BEFORE reading it. Non-fatal: if the upsert fails, still publish whatever the
+# table currently holds rather than blocking the dashboard refresh.
+echo "Sincronizando raw_data → tabla_normalizada (upsert)…"
+python normalize_sync.py 2>&1 | _scrub || echo "normalize_sync falló; sigo con la tabla actual."
+
 echo "Corriendo refresh_data.py --source drive…"
 python refresh_data.py --source drive
 
