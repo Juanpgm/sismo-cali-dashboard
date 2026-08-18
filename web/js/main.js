@@ -225,8 +225,83 @@ async function loadAndRender({ isRefresh = false } = {}) {
   }
 }
 
+// Manual refresh: POST /api/refresh triggers the Railway pipeline (regenerate
+// JSON from the F3 Sheet + push → Vercel redeploy). The fresh data lands minutes
+// later, so we keep the button busy and poll the deployed meta.json until its
+// generated_at advances, then re-render. Falls back to a plain reload when the
+// endpoint is unreachable (e.g. local dev without the serverless function).
+const REFRESH_ENDPOINT = '/api/refresh';
+const POLL_INTERVAL_MS = 20000;
+const POLL_MAX_TRIES = 12; // ~4 min ceiling so the button never spins forever
+
+function setRefreshChrome(on) {
+  refreshBtn.classList.toggle('is-loading', on);
+  refreshBtn.disabled = on;
+  if (on) refreshBtn.setAttribute('aria-busy', 'true');
+  else refreshBtn.removeAttribute('aria-busy');
+  refreshBtn.querySelector('span').textContent = on ? 'Actualizando…' : 'Actualizar datos';
+  refreshProgress.hidden = !on;
+}
+
+async function waitForFreshData(baseline) {
+  for (let i = 0; i < POLL_MAX_TRIES; i += 1) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    try {
+      const res = await fetch(`data/meta.json?t=${Date.now()}`, { cache: 'no-store' });
+      if (res.ok) {
+        const meta = await res.json();
+        if (meta.generated_at && meta.generated_at !== baseline) return true;
+      }
+    } catch {
+      // transient network hiccup during the deploy window; keep polling.
+    }
+  }
+  return false;
+}
+
+async function triggerRefresh() {
+  const baseline = store.meta?.generated_at ?? null;
+  setRefreshChrome(true);
+  try {
+    let res;
+    try {
+      res = await fetch(REFRESH_ENDPOINT, { method: 'POST' });
+    } catch {
+      // No backend reachable: degrade to re-reading the published JSON.
+      await loadAndRender();
+      showToast('No se pudo contactar el servicio de actualización; recargué los datos publicados.', 'error');
+      return;
+    }
+
+    let body = {};
+    try { body = await res.json(); } catch { /* body optional */ }
+
+    if (res.ok) {
+      showToast('Actualización disparada. Puede tardar un par de minutos…');
+    } else if (res.status === 409) {
+      showToast('Ya hay una actualización en curso. Espera a que termine.', 'error');
+    } else {
+      // Trigger unavailable (endpoint missing, token not set, Railway error):
+      // never leave the user worse off — re-read the published JSON.
+      await loadAndRender();
+      showToast(`No se pudo disparar la actualización (${body.error || res.status}); recargué los datos publicados.`, 'error');
+      return;
+    }
+
+    const landed = await waitForFreshData(baseline);
+    if (landed) {
+      await loadAndRender();
+      showToast('Datos actualizados');
+    } else {
+      showToast('La actualización sigue en curso; los datos nuevos aparecerán en breve.');
+    }
+  } finally {
+    setRefreshChrome(false);
+  }
+}
+
 searchInput.addEventListener('input', debounce((e) => store.setSearch(e.target.value), 250));
-refreshBtn.addEventListener('click', () => loadAndRender({ isRefresh: true }));
+refreshBtn.addEventListener('click', () => triggerRefresh());
 retryBtn.addEventListener('click', () => loadAndRender({ isRefresh: true }));
 filtersOpenBtn.addEventListener('click', openFiltersDrawer);
 drawerBackdrop.addEventListener('click', closeFiltersDrawer);
