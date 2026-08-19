@@ -325,9 +325,16 @@ async function triggerRefresh() {
   setRefreshChrome(true);
   setProgress(12, 'Enviando solicitud…');
   try {
+    // Un deploy de Vercel en curso (publicamos cada 15 min) puede responder
+    // 5xx/501 por un instante: reintentamos una vez tras una pausa corta.
     let res;
     try {
       res = await fetch(REFRESH_ENDPOINT, { method: 'POST' });
+      if (!res.ok && res.status !== 409) {
+        setProgress(25, 'Reintentando…');
+        await new Promise((r) => setTimeout(r, 3000));
+        res = await fetch(REFRESH_ENDPOINT, { method: 'POST' });
+      }
     } catch {
       // No backend reachable: degrade to re-reading the published JSON.
       setProgress(100, 'Sin conexión — recargando datos', 'error');
