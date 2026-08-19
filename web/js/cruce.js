@@ -728,8 +728,36 @@ function subscribeDespachos() {
 function renderDespachos() {
   const box = el('#gestion-despachos');
   if (!box) return;
-  if (!despachos.length) {
-    box.innerHTML = '<p class="asig-progress-note">Sin despachos registrados.</p>';
+  // Cards por persona: asignaciones punto a punto (gestion_asignado_a), para
+  // ver/gestionar asignados que no vienen de un despacho por zona.
+  const porPersona = new Map();
+  records.forEach((r) => {
+    const p = String(r.gestion_asignado_a || '').trim();
+    if (!p || effectiveEstado(r) === 'sin_asignar') return;
+    if (!porPersona.has(p)) porPersona.set(p, []);
+    porPersona.get(p).push(r);
+  });
+  const personaCards = [...porPersona.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0], 'es'))
+    .map(([persona, pts]) => {
+      const lid = liderPorNombre(persona);
+      const nPend = pts.filter((r) => r.estado !== 'levantado').length;
+      const entidad = pts.find((r) => r.gestion_entidad)?.gestion_entidad || lid?.entidad || '—';
+      const fecha = pts.find((r) => r.gestion_fecha)?.gestion_fecha || '—';
+      const tel = lid?.telefono ? ` · ${escapeHtml(lid.telefono)}` : '';
+      return `<div class="despacho-card">
+        <div class="despacho-card-head">
+          <strong>${escapeHtml(persona)}</strong>
+          <span class="asig-badge">punto a punto</span>
+        </div>
+        <div class="despacho-card-meta">
+          ${escapeHtml(entidad)} · ${escapeHtml(fecha)} · <strong>${pts.length}</strong> pts (${nPend} pend.)${tel}
+          <div class="despacho-card-foot"><button type="button" class="btn-mini persona-verpuntos" data-persona="${escapeHtml(persona)}">Ver puntos asignados</button></div>
+        </div>
+      </div>`;
+    }).join('');
+  if (!despachos.length && !personaCards) {
+    box.innerHTML = '<p class="asig-progress-note">Sin despachos ni asignaciones registradas.</p>';
     return;
   }
   const rows = despachos.map((d) => {
@@ -756,7 +784,13 @@ function renderDespachos() {
       </div>
     </div>`;
   }).join('');
-  box.innerHTML = rows;
+  box.innerHTML = personaCards + rows;
+  box.querySelectorAll('.persona-verpuntos').forEach((b) =>
+    b.addEventListener('click', () => {
+      filtroLider = b.dataset.persona;
+      renderTable();
+      el('#gestion-table').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }));
   box.querySelectorAll('.despacho-verpuntos').forEach((b) =>
     b.addEventListener('click', () => {
       const d = despachos.find((x) => x.id === b.dataset.id);
