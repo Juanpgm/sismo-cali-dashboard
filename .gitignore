@@ -33,3 +33,8 @@ knowledge/fuentes/
 
 .vercel
 .env*
+
+# subproyecto con repo git propio (normalizador_data_sismo_cali)
+integracion_F1/
+# artefacto local del cruce (la fuente real es Firestore)
+web/data/cruce_criticos_survey.json
