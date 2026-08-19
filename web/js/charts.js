@@ -162,6 +162,47 @@ function renderByUso(records) {
   });
 }
 
+// Chronological order + explicit labels: prettify() would mangle the range codes
+// (its `^\d+_` strip turns "1984_1997" into "1997"), and none are in KNOWN_LABELS.
+const EPOCA_ORDER = ['antes_1984', '1984_1997', '1998_2010', 'despues_2010', 'desconocida'];
+const EPOCA_LABELS = {
+  antes_1984: 'Antes de 1984',
+  '1984_1997': '1984–1997',
+  '1998_2010': '1998–2010',
+  despues_2010: 'Después de 2010',
+  desconocida: 'Desconocida',
+};
+
+function renderByEpoca(records) {
+  const counts = new Map(EPOCA_ORDER.map((k) => [k, 0]));
+  let sinDato = 0;
+  for (const r of records) {
+    const k = normalize(r.epoca_construccion);
+    if (counts.has(k)) counts.set(k, counts.get(k) + 1);
+    else if (!r.epoca_construccion) sinDato += 1;
+  }
+  const cats = EPOCA_ORDER.filter((k) => counts.get(k) > 0);
+  const labels = cats.map((k) => EPOCA_LABELS[k]);
+  const data = cats.map((k) => counts.get(k));
+  if (sinDato > 0) { labels.push('Sin dato'); data.push(sinDato); }
+  upsertChart('chart-epoca', {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Inspecciones',
+        data,
+        backgroundColor: themeColor('--accent', '#FFC400'),
+        borderRadius: 4,
+        maxBarThickness: 40,
+        categoryPercentage: 0.7,
+        barPercentage: 0.8,
+      }],
+    },
+    options: baseOptions(),
+  });
+}
+
 const HAB_ORDER = ['h', 'r1', 'r2', 'i1', 'i2', 'i3'];
 
 function renderHabByComuna(records) {
@@ -435,6 +476,7 @@ export function renderStatistics(records) {
   renderByComuna(records);
   renderByNivelDano(records);
   renderByUso(records);
+  renderByEpoca(records);
   renderHabByComuna(records);
   renderHabDoughnut(records);
   renderSeveridad(records);
