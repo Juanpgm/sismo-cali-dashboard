@@ -1,7 +1,7 @@
 // KPI tile row — recomputed from the currently filtered record set.
 // Habitability uses the granular criterio_habitabilidad scale (H · R1 · R2 ·
 // I1 · I2 · I3): green for H, yellow shades for R, red shades for I.
-import { COLORS, isNoHabitableBinary, habCode, labelForCode, normalize, splitMultiValue, escapeHtml } from './utils.js';
+import { COLORS, isNoHabitableBinary, isNoHabitable, habCode, labelForCode, normalize, splitMultiValue, escapeHtml } from './utils.js';
 
 function sumField(records, field) {
   let total = 0;
@@ -88,7 +88,13 @@ export function computeKpis(records) {
     hab_i_res: resByCode.i1 + resByCode.i2 + resByCode.i3,
     colapso_total: records.filter((r) => isYes(r.colapso_total)).length,
     colapso_parcial: records.filter((r) => isYes(r.colapso_parcial)).length,
-    suspension_servicios: records.filter((r) => isYes(r.suspension_servicios)).length,
+    // Suspensión = colapso total + no habitable (I1-I3) SUMADOS sin intersectar:
+    // los registros que son ambos cuentan en las dos categorías (doble conteo
+    // deliberado). Por eso se calcula aquí y no desde el flag derivado por-registro.
+    suspension_colapso: records.filter((r) => isYes(r.colapso_total)).length,
+    suspension_nohab: records.filter((r) => isNoHabitable(r)).length,
+    suspension_servicios: records.filter((r) => isYes(r.colapso_total)).length
+      + records.filter((r) => isNoHabitable(r)).length,
     ocupantes_riesgo: sumField(noHab, 'n_ocupantes'),
     ocupantes_total: sumField(records, 'n_ocupantes'),
     u_residenciales: sumField(records, 'n_residenciales'),
@@ -152,6 +158,8 @@ export function renderKpis(container, filteredRecords, allRecords) {
       sub = subLine(`<span class="kpi-sub">${pct(values[def.key], total)}% del filtrado</span>`);
     } else if (def.key === 'ocupantes_riesgo') {
       sub = subLine(`<span class="kpi-sub">${pct(values.ocupantes_riesgo, ocupantesTotalFiltrados)}% de ocupantes totales</span>`);
+    } else if (def.key === 'suspension_servicios') {
+      sub = subLine(`<span class="kpi-sub">${values.suspension_colapso} colapso total + ${values.suspension_nohab} no habitable</span>`);
     }
     return `
       <div class="kpi-tile" style="${def.accent ? `--kpi-accent:${def.accent}` : ''}">

@@ -69,10 +69,11 @@ function bucketNpisos(v) {
   return `${b * 3 + 1}–${b * 3 + 3} pisos`;
 }
 
-// Suspensión de servicios: colapso total declarado + criterio de habitabilidad
-// no habitable (I1–I3). Derivado en carga; viaja en el export xlsx.
+// Suspensión de servicios: colapso total declarado O criterio de habitabilidad
+// no habitable (I1–I3) — cualquiera de los dos amerita corte. Derivado en carga;
+// viaja en el export xlsx.
 function suspensionServicios(r) {
-  return normalize(r.colapso_total) === 'si' && NO_HABITABLE_CODES.includes(habCode(r))
+  return normalize(r.colapso_total) === 'si' || NO_HABITABLE_CODES.includes(habCode(r))
     ? 'si' : 'no';
 }
 
