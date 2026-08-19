@@ -381,8 +381,6 @@ function openAsignarPunto(id) {
   if (!r) return;
   asignarPuntoId = id;
   el('#asignar-dir').textContent = `${r.direccion || r.registro_id} · zona ${r.zona_id || '—'}`;
-  el('#asignar-despacho').innerHTML = '<option value="">Sin despacho — asignar solo a una persona</option>'
-    + despachos.map((d) => `<option value="${escapeHtml(d.id)}"${r.gestion_despacho_id === d.id ? ' selected' : ''}>${escapeHtml(d.lider || '—')} · ${escapeHtml((d.zonas || []).join(', ') || 'sin zona')}</option>`).join('');
   const lid = liderPorNombre(r.gestion_asignado_a);
   el('#asignar-persona').value = r.gestion_asignado_a || '';
   el('#asignar-telefono').value = lid?.telefono || '';
@@ -408,11 +406,9 @@ async function submitAsignarPunto(e) {
   if (!canEdit || !asignarPuntoId) return;
   const err = el('#asignar-err');
   err.hidden = true;
-  const despId = el('#asignar-despacho').value;
-  const desp = despId ? despachos.find((d) => d.id === despId) : null;
-  const persona = el('#asignar-persona').value.trim() || (desp ? (desp.lider || '') : '');
+  const persona = el('#asignar-persona').value.trim();
   if (!persona) {
-    err.textContent = 'Poné la persona o elegí un despacho.';
+    err.textContent = 'Poné la persona asignada.';
     err.hidden = false;
     return;
   }
@@ -420,7 +416,7 @@ async function submitAsignarPunto(e) {
     await fb.updateDoc(fb.doc(fb.db, COLLECTION, asignarPuntoId), {
       gestion_estado: 'asignado',
       gestion_asignado_a: persona,
-      gestion_despacho_id: despId || '',
+      gestion_despacho_id: '',
       gestion_entidad: el('#asignar-entidad').value.trim(),
       gestion_fecha: el('#asignar-fecha').value,
       gestion_nota: el('#asignar-nota').value.trim(),
