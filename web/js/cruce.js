@@ -745,10 +745,15 @@ function renderDespachos() {
       const entidad = pts.find((r) => r.gestion_entidad)?.gestion_entidad || lid?.entidad || '—';
       const fecha = pts.find((r) => r.gestion_fecha)?.gestion_fecha || '—';
       const tel = lid?.telefono ? ` · ${escapeHtml(lid.telefono)}` : '';
+      const acciones = canEdit
+        ? `<div class="despacho-card-actions">
+             <button type="button" class="btn-mini btn-mini-danger persona-desasignar" data-persona="${escapeHtml(persona)}">Desasignar</button>
+           </div>` : '';
       return `<div class="despacho-card">
         <div class="despacho-card-head">
           <strong>${escapeHtml(persona)}</strong>
           <span class="asig-badge">punto a punto</span>
+          ${acciones}
         </div>
         <div class="despacho-card-meta">
           ${escapeHtml(entidad)} · ${escapeHtml(fecha)} · <strong>${pts.length}</strong> pts (${nPend} pend.)${tel}
@@ -785,6 +790,10 @@ function renderDespachos() {
     </div>`;
   }).join('');
   box.innerHTML = personaCards + rows;
+  if (canEdit) {
+    box.querySelectorAll('.persona-desasignar').forEach((b) =>
+      b.addEventListener('click', () => desasignarPersona(b.dataset.persona)));
+  }
   box.querySelectorAll('.persona-verpuntos').forEach((b) =>
     b.addEventListener('click', () => {
       filtroLider = b.dataset.persona;
@@ -807,6 +816,32 @@ function renderDespachos() {
       }));
     box.querySelectorAll('.despacho-del').forEach((b) =>
       b.addEventListener('click', () => deleteDespacho(b.dataset.id)));
+  }
+}
+
+/** Quita la asignación punto a punto de TODOS los puntos de una persona:
+ *  vuelven a Pendiente. No toca el directorio de líderes ni los despachos. */
+async function desasignarPersona(persona) {
+  if (!canEdit) return;
+  const pts = records.filter((r) =>
+    String(r.gestion_asignado_a || '').trim() === persona && effectiveEstado(r) !== 'sin_asignar');
+  if (!pts.length) return;
+  if (!confirm(`¿Desasignar ${pts.length} punto(s) de ${persona}? Vuelven a Pendiente.`)) return;
+  const limpio = {
+    gestion_estado: 'sin_asignar',
+    gestion_asignado_a: '',
+    gestion_despacho_id: '',
+    gestion_entidad: '',
+    gestion_fecha: '',
+    gestion_nota: '',
+    gestion_actualizado_utc: Date.now(),
+    gestion_actualizado_por: user?.email || '',
+  };
+  try {
+    await Promise.all(pts.map((r) => fb.updateDoc(fb.doc(fb.db, COLLECTION, r.id), limpio)));
+  } catch (ex) {
+    console.error('No se pudo desasignar', ex);
+    alert('No se pudieron desasignar todos los puntos. Recargá y verificá.');
   }
 }
 
