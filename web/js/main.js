@@ -387,14 +387,19 @@ async function triggerRefresh() {
   }
 }
 
-/** Download the static .xlsx that refresh_data.py exports alongside the JSON. */
+/** Build the .xlsx client-side from store.filtered so active filters apply.
+ *  The JSON records carry the same columns as the static export; only the
+ *  derived fields (_search, n_pisos_rango) are stripped. */
 el('#datos-download').addEventListener('click', () => {
-  const a = document.createElement('a');
-  a.href = `data/inspections.xlsx?t=${Date.now()}`;
-  a.download = `inspecciones_${(store.meta?.generated_at || '').slice(0, 10) || 'export'}.xlsx`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  const rows = store.filtered.map(({ _search, n_pisos_rango, ...r }) => r);
+  if (!rows.length) {
+    showToast('No hay registros con los filtros aplicados.', 'error');
+    return;
+  }
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'inspecciones');
+  XLSX.writeFile(wb, `inspecciones_${(store.meta?.generated_at || '').slice(0, 10) || 'export'}.xlsx`);
 });
 searchInput.addEventListener('input', debounce((e) => store.setSearch(e.target.value), 250));
 refreshBtn.addEventListener('click', () => triggerRefresh());
