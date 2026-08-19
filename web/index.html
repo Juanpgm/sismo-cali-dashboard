@@ -258,8 +258,16 @@
       <section class="card table-card">
         <div class="card-toolbar">
           <h2 class="stats-title">Registro de gestión</h2>
+          <label class="gestion-toggle"><input type="checkbox" id="gestion-solo-pendientes"> Solo pendientes sin asignar</label>
         </div>
         <div class="table-scroll" id="gestion-table"></div>
+      </section>
+
+      <section class="card table-card">
+        <div class="card-toolbar">
+          <h2 class="stats-title">Despachos registrados</h2>
+        </div>
+        <div class="gestion-despachos" id="gestion-despachos"></div>
       </section>
     </section>
 
@@ -283,6 +291,20 @@
   </div>
 </div>
 
+<!-- ============ PUNTO MODAL (detalle: dos IDs + datos del match) ============ -->
+<div class="modal" id="punto-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="punto-modal-title">
+  <div class="modal-backdrop" data-punto-close></div>
+  <div class="modal-panel">
+    <div class="modal-header">
+      <h2 id="punto-modal-title">Detalle del punto crítico</h2>
+      <button type="button" class="btn-icon" data-punto-close aria-label="Cerrar">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="punto-modal-body"></div>
+  </div>
+</div>
+
 <!-- ============ DESPACHO MODAL (registrar despacho / asignar zona) ============ -->
 <div class="modal" id="despacho-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="despacho-modal-title">
   <div class="modal-backdrop" data-despacho-close></div>
@@ -296,11 +318,8 @@
     <div class="modal-body">
       <form id="despacho-form" class="despacho-form">
         <label class="despacho-field despacho-field-full">
-          <span>Zona (elegí una y se agrega a la lista; repetí para agregar más)</span>
-          <div class="despacho-zone-row">
-            <select id="despacho-zona"><option value="">Selecciona una zona…</option></select>
-            <button type="button" class="btn-secondary" id="despacho-zona-add">Agregar</button>
-          </div>
+          <span>Zonas del despacho <small>(elegí una o más; el recorrido cubre todos sus puntos)</small></span>
+          <select id="despacho-zona"><option value="">Agregar una zona…</option></select>
           <div class="despacho-zone-list" id="despacho-zona-list"></div>
         </label>
         <label class="despacho-field"><span>Líder</span>

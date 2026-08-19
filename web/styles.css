@@ -1347,3 +1347,44 @@ select.gestion-edit:focus, input.gestion-edit:focus { outline: none; border-colo
 
 /* [hidden] debe ganar sobre display:flex/inline-flex de botones y cards */
 [hidden] { display: none !important; }
+
+/* ── Gestión: acciones por fila, toggle y tarjetas de despacho ── */
+.btn-mini { padding: 4px 10px; font-size: 0.78rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text-primary); cursor: pointer; white-space: nowrap; }
+.btn-mini:hover { border-color: var(--accent); }
+.btn-mini-danger { color: var(--status-i1); }
+.btn-mini-danger:hover { border-color: var(--status-i1); }
+.gestion-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 0.82rem; color: var(--text-secondary); cursor: pointer; }
+
+.gestion-despachos { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; padding: 4px 2px; }
+.despacho-card { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-2); padding: 12px 14px; }
+.despacho-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.despacho-card-head strong { font-size: 0.95rem; }
+.despacho-card-actions { display: flex; gap: 6px; margin-left: auto; }
+.despacho-card-meta { margin-top: 6px; font-size: 0.8rem; color: var(--text-muted); line-height: 1.45; }
+
+/* ── Modal de detalle del punto ── */
+.punto-modal-dir { margin: 0 0 8px; font-size: 1rem; }
+.punto-modal-badges { display: flex; gap: 6px; margin-bottom: 10px; }
+.punto-modal-sect { margin: 14px 0 6px; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.punto-modal-dl { display: grid; grid-template-columns: minmax(140px, 40%) 1fr; gap: 4px 14px; margin: 0; font-size: 0.88rem; }
+.punto-modal-dl dt { color: var(--text-secondary); }
+.punto-modal-dl dd { margin: 0; color: var(--text-primary); word-break: break-word; }
+
+/* ── Gestión: badge de estado + edición en el modal ── */
+.gestion-badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 0.76rem; font-weight: 600; }
+.gestion-badge.g-none { background: rgba(124,140,163,0.18); color: var(--text-secondary); }
+.gestion-badge.g-asig { background: rgba(59,130,246,0.18); color: #60a5fa; }
+.gestion-badge.g-campo { background: rgba(249,115,22,0.18); color: var(--status-r2); }
+.gestion-badge.g-done { background: rgba(34,197,94,0.18); color: var(--status-h); }
+
+.punto-edit { display: flex; flex-direction: column; gap: 10px; }
+.punto-edit label { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--text-secondary); }
+.punto-edit select, .punto-edit input, .punto-edit textarea { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text-primary); font-size: 0.9rem; font-family: inherit; }
+.punto-edit select:focus, .punto-edit input:focus, .punto-edit textarea:focus { outline: none; border-color: var(--accent); }
+.punto-edit-actions { display: flex; align-items: center; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+.map-legend .legend-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: middle; }
+
+/* ── Gestión: filtro por líder + pie de tarjeta de despacho ── */
+.gestion-filter-banner { display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin-bottom: 10px; border-radius: var(--radius-sm); background: var(--accent-dim); font-size: 0.85rem; color: var(--text-primary); }
+.despacho-card-foot { margin-top: 8px; }
+.despacho-field small, .punto-edit small { color: var(--text-muted); font-weight: 400; }

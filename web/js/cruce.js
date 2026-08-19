@@ -25,10 +25,33 @@ const ZONES_URL = 'data/zonas_asignacion.geojson';
 const PENDING_COLOR = COLORS.status.r2;   // rojo — falta levantamiento
 const DONE_COLOR = COLORS.status.h;       // verde — levantado en campo
 
-// Gestión workflow (editable). Los "hechos" del cruce (levantado/pendiente) no
-// se tocan; esto es el estado operativo de la asignación.
-const ESTADOS = ['sin_asignar', 'asignado', 'en_campo', 'cerrado'];
-const ESTADO_LABEL = { sin_asignar: 'Sin asignar', asignado: 'Asignado', en_campo: 'En campo', cerrado: 'Cerrado' };
+// Gestión workflow. `completado` es AUTOMÁTICO: un punto levantado (EDE hecha) se
+// muestra siempre como Completado, sin importar su estado manual. El resto es el
+// flujo operativo manual antes del levantamiento.
+const ESTADOS = ['sin_asignar', 'asignado', 'en_campo'];   // override manual por punto
+const ESTADO_LABEL = { sin_asignar: 'Pendiente', asignado: 'Asignado', en_campo: 'En campo', completado: 'Completado' };
+
+/** Despacho (el más reciente) que CUBRE una zona. La asignación es por zona:
+ *  un despacho toma un conjunto de puntos (los de sus zonas), no punto a punto. */
+function zoneDespacho(zonaId) {
+  if (!zonaId) return null;
+  return despachos.find((d) => (d.zonas || []).includes(zonaId)) || null; // despachos ordenado desc
+}
+
+/** Estado efectivo (auto): levantado ⇒ Completado; override manual del punto;
+ *  si su zona está cubierta por un despacho ⇒ Asignado; si no ⇒ Pendiente. */
+function effectiveEstado(r) {
+  if (r.estado === 'levantado') return 'completado';
+  if (r.gestion_estado && r.gestion_estado !== 'sin_asignar') return r.gestion_estado;
+  return zoneDespacho(r.zona_id) ? 'asignado' : 'sin_asignar';
+}
+
+/** Responsable efectivo: override manual del punto, o el líder del despacho de su zona. */
+function asignadoDe(r) {
+  if (r.gestion_asignado_a) return r.gestion_asignado_a;
+  const d = zoneDespacho(r.zona_id);
+  return d ? d.lider : '';
+}
 
 let map = null;
 let baseTile = null;
@@ -42,7 +65,13 @@ let initialized = false;
 let fb = null;             // firebase handles, loaded lazily
 let user = null;           // firebase Auth user or null
 let canEdit = false;       // user has the pmu custom claim
-let unsub = null;          // onSnapshot unsubscribe
+let unsub = null;          // onSnapshot unsubscribe (cruce)
+let unsubDespachos = null; // onSnapshot unsubscribe (despachos)
+let despachos = [];        // live despachos: [{ id, ...data }]
+let despachoEditId = null; // id del despacho en edición (null = crear)
+let soloPendientes = false;// filtro rápido de tabla: solo pendientes sin asignar
+let filtroLider = null;    // filtro: mostrar solo los puntos de una persona (líder)
+let cruceMeta = null;      // _meta/resumen: fecha de CORRIDA del pipeline
 
 const el = (sel) => document.querySelector(sel);
 
@@ -66,6 +95,7 @@ async function loadFirebase() {
     doc: fsMod.doc,
     updateDoc: fsMod.updateDoc,
     addDoc: fsMod.addDoc,
+    deleteDoc: fsMod.deleteDoc,
     writeBatch: fsMod.writeBatch,
     serverTimestamp: fsMod.serverTimestamp,
   };
@@ -107,10 +137,28 @@ function renderAuthBar() {
 }
 
 // ── Map ──────────────────────────────────────────────────────────────────────
-function zoneStyle(feature) {
-  const ola = String(feature.properties.ola || '');
-  return { color: 'rgba(255,255,255,0.30)', weight: 1,
-           fillColor: ola === '1' ? COLORS.accent : COLORS.status.r2, fillOpacity: 0.06 };
+// Coropleta de avance por polígono: rojo (0% levantado) → amarillo → verde (100%).
+const PROGRESS_RAMP = ['#dc2626', '#eab308', '#22c55e'];
+
+/** zona_id -> { total, done } contando puntos críticos por zona. */
+function zoneProgress() {
+  const m = {};
+  for (const r of records) {
+    if (!r.zona_id) continue;
+    const z = m[r.zona_id] || (m[r.zona_id] = { total: 0, done: 0 });
+    z.total += 1;
+    if (r.estado === 'levantado') z.done += 1;
+  }
+  return m;
+}
+
+function zoneStyle(feature, zstats) {
+  const s = zstats[feature.properties.zone_id];
+  if (!s || !s.total) {
+    return { color: 'rgba(255,255,255,0.20)', weight: 1, fillColor: '#64748b', fillOpacity: 0.05 };
+  }
+  return { color: 'rgba(255,255,255,0.35)', weight: 1,
+           fillColor: interpolateRamp(PROGRESS_RAMP, s.done / s.total), fillOpacity: 0.32 };
 }
 
 function pointPopup(r) {
@@ -139,11 +187,14 @@ function renderMap() {
 
   zonesLayer.clearLayers();
   if (zonesGeo) {
+    const zstats = zoneProgress();
     L.geoJSON(zonesGeo, {
-      style: zoneStyle,
+      style: (f) => zoneStyle(f, zstats),
       onEachFeature: (f, lyr) => {
         const p = f.properties;
-        lyr.bindTooltip(`<strong>${escapeHtml(p.zone_id || '')}</strong> · ola ${escapeHtml(String(p.ola || '—'))}`, { sticky: true });
+        const s = zstats[p.zone_id];
+        const av = s && s.total ? ` · ${s.done}/${s.total} (${Math.round((s.done / s.total) * 100)}%)` : ' · sin puntos';
+        lyr.bindTooltip(`<strong>${escapeHtml(p.zone_id || '')}</strong> · ola ${escapeHtml(String(p.ola || '—'))}${av}`, { sticky: true });
       },
     }).addTo(zonesLayer);
   }
@@ -163,13 +214,21 @@ function renderMap() {
 
 function setLegend() {
   if (!legendEl) return;
-  const entries = [
+  const points = [
     { label: 'Levantado (EDE hecha)', color: DONE_COLOR },
     { label: 'Falta EDE — asignable', color: PENDING_COLOR },
   ];
+  const zonas = [
+    { label: '0% levantado', color: PROGRESS_RAMP[0] },
+    { label: '50%', color: PROGRESS_RAMP[1] },
+    { label: '100%', color: PROGRESS_RAMP[2] },
+  ];
   legendEl.style.display = 'block';
-  legendEl.innerHTML = `<div class="legend-title">Estado del punto</div>${
-    entries.map((e) => `<div class="legend-row"><span class="legend-swatch legend-circle" style="background:${e.color}"></span><span>${escapeHtml(e.label)}</span></div>`).join('')}`;
+  legendEl.innerHTML = `
+    <div class="legend-title">Estado del punto</div>
+    ${points.map((e) => `<div class="legend-row"><span class="legend-swatch legend-circle" style="background:${e.color}"></span><span>${escapeHtml(e.label)}</span></div>`).join('')}
+    <div class="legend-title" style="margin-top:8px">Avance por zona</div>
+    ${zonas.map((e) => `<div class="legend-row"><span class="legend-swatch" style="background:${e.color}"></span><span>${escapeHtml(e.label)}</span></div>`).join('')}`;
 }
 
 // ── Summary ──────────────────────────────────────────────────────────────────
@@ -177,98 +236,223 @@ function renderSummary() {
   const total = records.length;
   const levantados = records.filter((r) => r.estado === 'levantado').length;
   const pendientes = total - levantados;
-  const cerrados = records.filter((r) => r.gestion_estado === 'cerrado').length;
-  const asignados = records.filter((r) => r.gestion_estado && r.gestion_estado !== 'sin_asignar' && r.gestion_estado !== 'cerrado').length;
+  const asignados = records.filter((r) => { const e = effectiveEstado(r); return e === 'asignado' || e === 'en_campo'; }).length;
+  const sinAsignar = records.filter((r) => effectiveEstado(r) === 'sin_asignar').length;
   const pct = total > 0 ? Math.round((levantados / total) * 100) : 0;
   el('#gestion-summary').innerHTML = `
     <div class="asig-stat"><span class="asig-stat-value tabular">${total}</span><span class="asig-stat-label">Puntos críticos</span></div>
-    <div class="asig-stat"><span class="asig-stat-value tabular" style="color:${DONE_COLOR}">${levantados}</span><span class="asig-stat-label">Levantados</span></div>
+    <div class="asig-stat"><span class="asig-stat-value tabular" style="color:${DONE_COLOR}">${levantados}</span><span class="asig-stat-label">Completados</span></div>
     <div class="asig-stat"><span class="asig-stat-value tabular" style="color:${PENDING_COLOR}">${pendientes}</span><span class="asig-stat-label">Falta EDE</span></div>
-    <div class="asig-stat"><span class="asig-stat-value tabular">${asignados}</span><span class="asig-stat-label">En gestión</span></div>
-    <div class="asig-stat"><span class="asig-stat-value tabular">${cerrados}</span><span class="asig-stat-label">Cerrados</span></div>
+    <div class="asig-stat"><span class="asig-stat-value tabular">${asignados}</span><span class="asig-stat-label">Asignados</span></div>
+    <div class="asig-stat"><span class="asig-stat-value tabular">${sinAsignar}</span><span class="asig-stat-label">Sin asignar</span></div>
     <div class="asig-progress-wrap">
       <div class="asig-progress-head"><span>Avance de campo</span><span class="tabular">${pct}%</span></div>
       <div class="asig-progress"><div class="asig-progress-fill" style="width:${pct}%"></div></div>
-      <p class="asig-progress-note">en vivo desde Firestore${records.length ? '' : ' · sin datos'}</p>
+      <p class="asig-progress-note">${cruceMeta?.generated_at ? `Última corrida: ${escapeHtml(formatTs(cruceMeta.generated_at))}` : 'en vivo desde Firestore'}${records.length ? '' : ' · sin datos'}</p>
     </div>`;
 }
 
-// ── Table (con edición inline si canEdit) ────────────────────────────────────
+// ── Table (con edición inline + acciones si canEdit) ─────────────────────────
+// Tabla de solo lectura y clara: el estado es un badge, la edición vive en el
+// modal de detalle (ojito). Nada de desplegables ni textboxes inline.
 const COLS = [
   ['estado', 'Punto'], ['gestion_estado', 'Gestión'], ['gestion_asignado_a', 'Asignado a'],
-  ['clave_integracion', 'Llave'], ['direccion', 'Dirección'], ['barrio', 'Barrio'],
-  ['comuna', 'Comuna'], ['zona_id', 'Zona'], ['nivel_riesgo', 'Riesgo'],
+  ['registro_id', 'ID crítico'], ['direccion', 'Dirección'],
+  ['barrio', 'Barrio'], ['comuna', 'Comuna'], ['zona_id', 'Zona'], ['nivel_riesgo', 'Riesgo'],
 ];
 
-function estadoSelect(r) {
-  const opts = ESTADOS.map((s) => `<option value="${s}"${(r.gestion_estado || 'sin_asignar') === s ? ' selected' : ''}>${ESTADO_LABEL[s]}</option>`).join('');
-  return `<select class="gestion-edit" data-id="${escapeHtml(r.id)}" data-field="gestion_estado">${opts}</select>`;
+const EYE_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+const GESTION_BADGE_CLS = { sin_asignar: 'g-none', asignado: 'g-asig', en_campo: 'g-campo', completado: 'g-done' };
+
+function gestionBadge(r) {
+  const s = effectiveEstado(r);
+  return `<span class="gestion-badge ${GESTION_BADGE_CLS[s] || 'g-none'}">${escapeHtml(ESTADO_LABEL[s])}</span>`;
+}
+
+function estadoOptions(sel) {
+  return ESTADOS.map((s) => `<option value="${s}"${(sel || 'sin_asignar') === s ? ' selected' : ''}>${ESTADO_LABEL[s]}</option>`).join('');
+}
+
+/** Filas visibles según los filtros activos (líder y/o "solo pendientes"). */
+function visibleRecords() {
+  let rows = records;
+  if (filtroLider) rows = rows.filter((r) => asignadoDe(r) === filtroLider);
+  if (soloPendientes) rows = rows.filter((r) => effectiveEstado(r) === 'sin_asignar');
+  // pendientes primero (accionables arriba).
+  return [...rows].sort((a, b) => (a.estado === 'levantado' ? 1 : 0) - (b.estado === 'levantado' ? 1 : 0));
 }
 
 function renderTable() {
-  const head = COLS.map(([, label]) => `<th>${escapeHtml(label)}</th>`).join('');
-  const sorted = [...records].sort((a, b) => (a.estado === 'levantado' ? 1 : 0) - (b.estado === 'levantado' ? 1 : 0));
-  const rows = sorted.map((r) => {
+  const head = '<th>Ver</th>' + COLS.map(([, label]) => `<th>${escapeHtml(label)}</th>`).join('')
+    + (canEdit ? '<th>Asignar</th>' : '');
+  const rows = visibleRecords().map((r) => {
+    const detalle = `<td><button type="button" class="btn-icon gestion-eye" data-id="${escapeHtml(r.id)}" aria-label="Ver detalle" title="Ver / gestionar">${EYE_SVG}</button></td>`;
     const cells = COLS.map(([key]) => {
       if (key === 'estado') {
         return r.estado === 'levantado'
           ? '<td><span class="asig-badge asig-badge-done">Levantado</span></td>'
           : '<td><span class="asig-badge asig-badge-pending">Falta EDE</span></td>';
       }
-      if (key === 'gestion_estado') {
-        return `<td>${canEdit ? estadoSelect(r) : escapeHtml(ESTADO_LABEL[r.gestion_estado] || 'Sin asignar')}</td>`;
-      }
-      if (key === 'gestion_asignado_a') {
-        return canEdit
-          ? `<td><input class="gestion-edit" type="text" value="${escapeHtml(r.gestion_asignado_a || '')}" data-id="${escapeHtml(r.id)}" data-field="gestion_asignado_a" placeholder="—"></td>`
-          : `<td>${escapeHtml(r.gestion_asignado_a || '—')}</td>`;
+      if (key === 'gestion_estado') return `<td>${gestionBadge(r)}</td>`;
+      if (key === 'gestion_asignado_a') return `<td>${escapeHtml(asignadoDe(r) || '—')}</td>`;
+      if (key === 'registro_id') {
+        // ID único real del crítico (API). Truncado en la tabla; completo en el detalle.
+        const rid = r.registro_id || '';
+        return `<td class="tabular" title="${escapeHtml(rid)}">${escapeHtml(rid.slice(0, 8))}${rid.length > 8 ? '…' : ''}</td>`;
       }
       const v = r[key] == null ? '' : String(r[key]);
-      const cls = key === 'clave_integracion' ? ' class="tabular"' : '';
-      return `<td${cls}>${escapeHtml(v)}</td>`;
+      return `<td>${escapeHtml(v)}</td>`;
     }).join('');
+    // Botón Asignar como acción de fila (precarga la zona en el modal de despacho).
+    let asignar = '';
+    if (canEdit) {
+      const already = r.gestion_estado && r.gestion_estado !== 'sin_asignar';
+      const done = r.estado === 'levantado';
+      asignar = done
+        ? '<td>—</td>'
+        : `<td><button type="button" class="btn-mini gestion-asignar" data-zona="${escapeHtml(r.zona_id || '')}">${already ? 'Reasignar' : 'Asignar'}</button></td>`;
+    }
     const stateClass = r.estado === 'levantado' ? 'asig-row-done' : 'asig-row-pending';
-    return `<tr class="${stateClass}">${cells}</tr>`;
+    return `<tr class="${stateClass}">${detalle}${cells}${asignar}</tr>`;
   }).join('');
-  el('#gestion-table').innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`;
-  if (canEdit) wireEditControls();
+  const banner = filtroLider
+    ? `<div class="gestion-filter-banner">Puntos asignados a <strong>${escapeHtml(filtroLider)}</strong> · ${visibleRecords().length} punto(s) <button type="button" class="btn-mini" id="gestion-clear-lider">Quitar filtro</button></div>`
+    : '';
+  el('#gestion-table').innerHTML = banner + `<table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`;
+  const t = el('#gestion-table');
+  const clear = el('#gestion-clear-lider');
+  if (clear) clear.addEventListener('click', () => { filtroLider = null; renderTable(); });
+  t.querySelectorAll('.gestion-eye').forEach((btn) =>
+    btn.addEventListener('click', () => openPunto(btn.dataset.id)));
+  t.querySelectorAll('.gestion-asignar').forEach((btn) =>
+    btn.addEventListener('click', () => openDespacho({ prefillZona: btn.dataset.zona || '' })));
 }
 
-function wireEditControls() {
-  el('#gestion-table').querySelectorAll('.gestion-edit').forEach((input) => {
-    const ev = input.tagName === 'SELECT' ? 'change' : 'change'; // input: dispara al perder foco/enter
-    input.addEventListener(ev, () => saveEdit(input.dataset.id, input.dataset.field, input.value));
-  });
+// ── Modal de detalle del punto (dos IDs + datos del match) ───────────────────
+function openPunto(id) {
+  const r = records.find((x) => x.id === id);
+  if (!r) return;
+  const row = (k, v) => `<dt>${escapeHtml(k)}</dt><dd>${v}</dd>`;
+  const mono = (v) => `<span class="tabular">${escapeHtml(v == null || v === '' ? '—' : String(v))}</span>`;
+  const matchTxt = r.estado === 'levantado'
+    ? `${escapeHtml(r.match || '—')}${r.dist_m != null ? ` · ${r.dist_m} m` : (r.match === 'globalid' ? ' · por GlobalID' : '')}`
+    : 'sin match (falta EDE)';
+  // Despacho que cubre la ZONA del punto (asignación por zona).
+  const desp = zoneDespacho(r.zona_id);
+  const despachoBlock = desp ? `
+    <h5 class="punto-modal-sect">Despacho de la zona ${escapeHtml(r.zona_id || '')}</h5>
+    <dl class="punto-modal-dl">
+      ${row('Líder', escapeHtml(desp.lider || '—'))}
+      ${row('Entidad · cuadrilla', `${escapeHtml(desp.entidad || '—')} · ${Number(desp.n_personas) || 0} pers · ${Number(desp.n_vehiculos) || 0} veh`)}
+      ${row('Celular', escapeHtml(desp.celular || '—'))}
+      ${row('Fecha del despacho', escapeHtml(desp.fecha || '—'))}
+    </dl>` : '';
+  el('#punto-modal-body').innerHTML = `
+    <h4 class="punto-modal-dir">${escapeHtml(r.direccion || 'Sin dirección')}</h4>
+    <div class="punto-modal-badges">
+      ${r.estado === 'levantado' ? '<span class="asig-badge asig-badge-done">Levantado</span>' : '<span class="asig-badge asig-badge-pending">Falta EDE</span>'}
+      ${gestionBadge(r)}
+    </div>
+    <h5 class="punto-modal-sect">Identificadores</h5>
+    <dl class="punto-modal-dl">
+      ${row('ID crítico (API atencionsismo)', mono(r.registro_id))}
+      ${row('ID survey EDE (GlobalID)', mono(r.survey_globalid))}
+      ${row('Llave de integración', mono(r.clave_integracion))}
+    </dl>
+    <h5 class="punto-modal-sect">Datos del match</h5>
+    <dl class="punto-modal-dl">
+      ${row('Método', escapeHtml(matchTxt))}
+      ${row('Coordenadas (corregidas)', mono(r.lat != null ? `${r.lat}, ${r.lon}` : '—'))}
+      ${row('Zona · ola · despacho', `${escapeHtml(r.zona_id || 'fuera de zona')} · ${escapeHtml(String(r.ola || '—'))} · ${escapeHtml(String(r.despacho || '—'))}`)}
+      ${row('Barrio · comuna', `${escapeHtml(r.barrio || '—')} · ${escapeHtml(r.comuna || '—')}`)}
+      ${row('Fecha EDE · evaluador', `${escapeHtml(r.survey_fecha || '—')} · ${escapeHtml(r.survey_evaluador || '—')}`)}
+      ${row('Nivel de riesgo', escapeHtml(r.nivel_riesgo || '—'))}
+      ${row('Requiere demolición', escapeHtml(r.requiere_demolicion || '—'))}
+    </dl>
+    ${despachoBlock}
+    <h5 class="punto-modal-sect">Gestión</h5>
+    ${canEdit ? `
+      ${r.estado === 'levantado' ? '<p class="asig-progress-note">EDE hecha → estado <strong>Completado</strong> automático.</p>' : ''}
+      <div class="punto-edit">
+        <label>Estado
+          <select id="punto-edit-estado"${r.estado === 'levantado' ? ' disabled' : ''}>${estadoOptions(r.gestion_estado)}</select>
+        </label>
+        <label>Asignado a <small>(vacío = líder del despacho de la zona)</small>
+          <input type="text" id="punto-edit-asignado" value="${escapeHtml(r.gestion_asignado_a || '')}" placeholder="${escapeHtml(asignadoDe(r) || '—')}">
+        </label>
+        <label>Nota
+          <textarea id="punto-edit-nota" rows="2" placeholder="nota…">${escapeHtml(r.gestion_nota || '')}</textarea>
+        </label>
+        <div class="punto-edit-actions">
+          <button type="button" class="btn-secondary" id="punto-asignar">Asignar a despacho</button>
+          <button type="button" class="btn-primary" id="punto-edit-save">Guardar gestión</button>
+          <span class="asig-error" id="punto-edit-msg" hidden></span>
+        </div>
+      </div>`
+    : `<dl class="punto-modal-dl">
+        ${row('Estado', escapeHtml(ESTADO_LABEL[effectiveEstado(r)]))}
+        ${row('Asignado a', escapeHtml(asignadoDe(r) || '—'))}
+        ${row('Nota', escapeHtml(r.gestion_nota || '—'))}
+      </dl>`}`;
+  if (canEdit) {
+    el('#punto-edit-save').addEventListener('click', () => saveGestion(id));
+    el('#punto-asignar').addEventListener('click', () => { closePunto(); openDespacho({ prefillZona: r.zona_id || '' }); });
+  }
+  const m = el('#punto-modal');
+  m.classList.add('is-open');
+  m.setAttribute('aria-hidden', 'false');
 }
 
-async function saveEdit(id, field, value) {
+function closePunto() {
+  const m = el('#punto-modal');
+  m.classList.remove('is-open');
+  m.setAttribute('aria-hidden', 'true');
+}
+
+async function saveGestion(id) {
   if (!canEdit || !fb) return;
   const patch = {
-    [field]: value,
+    gestion_estado: el('#punto-edit-estado').value,
+    gestion_asignado_a: el('#punto-edit-asignado').value.trim(),
+    gestion_nota: el('#punto-edit-nota').value.trim(),
     gestion_actualizado_utc: Date.now(),
     gestion_actualizado_por: user?.email || '',
   };
+  const msg = el('#punto-edit-msg');
   try {
     await fb.updateDoc(fb.doc(fb.db, COLLECTION, id), patch);
-    // onSnapshot re-renderiza solo; actualizamos el objeto local por si acaso.
-    const r = records.find((x) => x.id === id);
-    if (r) Object.assign(r, patch);
+    closePunto();
   } catch (ex) {
-    console.error('No se pudo guardar la edición', ex);
-    alert('No se pudo guardar. ¿Tenés permiso de edición (login del equipo)?');
+    console.error('No se pudo guardar la gestión', ex);
+    if (msg) { msg.textContent = 'No se pudo guardar. ¿Tenés permiso de edición?'; msg.hidden = false; }
   }
 }
 
 // ── Live data ────────────────────────────────────────────────────────────────
+/** Etiqueta de fecha de CORRIDA (no de mutación real): usa _meta/resumen.generated_at. */
+function corridaLabel() {
+  const upd = el('#gestion-updated');
+  if (!upd) return;
+  const fecha = cruceMeta?.generated_at ? formatTs(cruceMeta.generated_at) : '—';
+  upd.textContent = `${records.length} puntos · corrida ${fecha}`;
+}
+
+function subscribeMeta() {
+  fb.onSnapshot(fb.doc(fb.db, '_meta', 'resumen'), (snap) => {
+    cruceMeta = snap.exists() ? snap.data() : null;
+    corridaLabel();
+  }, (err) => console.error('Firestore _meta', err));
+}
+
 function subscribe() {
   if (unsub) return;
   unsub = fb.onSnapshot(fb.collection(fb.db, COLLECTION), (snap) => {
     records = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    const upd = el('#gestion-updated');
-    if (upd) upd.textContent = `${records.length} puntos · en vivo`;
+    corridaLabel();
     renderSummary();
     renderMap();
     renderTable();
+    renderDespachos();  // nPuntos por despacho depende de records
     invalidateGestionSize();
   }, (err) => {
     console.error('Firestore onSnapshot', err);
@@ -279,37 +463,61 @@ function subscribe() {
 // ── Modal Registrar despacho ─────────────────────────────────────────────────
 let despachoZonas = [];  // zonas agregadas a la lista del form
 
-function zonaOptions() {
-  // Todas las zonas de la base KML (zonas_asignacion.geojson); fallback a las que
-  // aparecen en los registros si el geojson no cargó.
-  const fromKml = (zonesGeo?.features || []).map((f) => f.properties?.zone_id).filter(Boolean);
-  const ids = [...new Set(fromKml.length ? fromKml : records.map((r) => r.zona_id).filter(Boolean))].sort();
-  return ['<option value="">Selecciona una zona…</option>']
-    .concat(ids.map((z) => `<option value="${escapeHtml(z)}">${escapeHtml(z)}</option>`)).join('');
+/** Puntos pendientes (sin levantar) de una zona — la "carga" del recorrido. */
+function zonaPendientes(zonaId) {
+  return records.filter((r) => r.zona_id === zonaId && r.estado !== 'levantado').length;
 }
 
-function renderZonaChips() {
+function zonaOptions() {
+  // Zonas de la base KML; excluye las ya agregadas. Cada opción muestra su carga.
+  const fromKml = (zonesGeo?.features || []).map((f) => f.properties?.zone_id).filter(Boolean);
+  const ids = [...new Set(fromKml.length ? fromKml : records.map((r) => r.zona_id).filter(Boolean))].sort();
+  return ['<option value="">Agregar una zona…</option>']
+    .concat(ids.filter((z) => !despachoZonas.includes(z)).map((z) => {
+      const p = zonaPendientes(z);
+      return `<option value="${escapeHtml(z)}">${escapeHtml(z)} · ${p} pendiente${p === 1 ? '' : 's'}</option>`;
+    })).join('');
+}
+
+/** Re-dibuja el selector (opciones addable) y los chips de zonas elegidas. */
+function refreshZonaPicker() {
+  const sel = el('#despacho-zona');
+  if (sel) sel.innerHTML = zonaOptions();
   const box = el('#despacho-zona-list');
   if (!box) return;
   box.innerHTML = despachoZonas.map((z) =>
-    `<span class="despacho-chip">${escapeHtml(z)}<button type="button" data-zona="${escapeHtml(z)}" aria-label="Quitar">×</button></span>`).join('');
+    `<span class="despacho-chip">${escapeHtml(z)} · ${zonaPendientes(z)} pend.<button type="button" data-zona="${escapeHtml(z)}" aria-label="Quitar">×</button></span>`).join('');
   box.querySelectorAll('button[data-zona]').forEach((b) =>
-    b.addEventListener('click', () => { despachoZonas = despachoZonas.filter((z) => z !== b.dataset.zona); renderZonaChips(); }));
+    b.addEventListener('click', () => { despachoZonas = despachoZonas.filter((z) => z !== b.dataset.zona); refreshZonaPicker(); }));
 }
 
-function openDespacho() {
+/** Abre el modal. opts.prefillZona precarga una zona (botón de fila); opts.edit
+ *  carga un despacho existente para editarlo (PUT). */
+function openDespacho(opts = {}) {
   if (!canEdit) return;
-  despachoZonas = [];
-  el('#despacho-zona').innerHTML = zonaOptions();
-  renderZonaChips();
-  el('#despacho-fecha').value = new Date().toISOString().slice(0, 10);
+  const d = opts.edit || null;
+  despachoEditId = d ? d.id : null;
+  despachoZonas = d ? [...(d.zonas || [])]
+    : (opts.prefillZona ? [opts.prefillZona] : []);
+  refreshZonaPicker();
+  el('#despacho-lider').value = d?.lider || '';
+  el('#despacho-celular').value = d?.celular || '';
+  el('#despacho-entidad').value = d?.entidad || '';
+  el('#despacho-personas').value = d?.n_personas || '';
+  el('#despacho-vehiculos').value = d?.n_vehiculos || '';
+  el('#despacho-sociales').value = d?.profesionales_sociales || '';
+  el('#despacho-fecha').value = d?.fecha || new Date().toISOString().slice(0, 10);
+  el('#despacho-observaciones').value = d?.observaciones || '';
   el('#despacho-err').hidden = true;
+  el('#despacho-modal-title').textContent = d ? 'Editar despacho' : 'Registrar despacho';
+  el('#despacho-submit').textContent = d ? 'Guardar cambios' : 'Asignar zona';
   const m = el('#despacho-modal');
   m.classList.add('is-open');
   m.setAttribute('aria-hidden', 'false');
 }
 
 function closeDespacho() {
+  despachoEditId = null;
   const m = el('#despacho-modal');
   m.classList.remove('is-open');
   m.setAttribute('aria-hidden', 'true');
@@ -332,32 +540,25 @@ async function submitDespacho(e) {
     profesionales_sociales: el('#despacho-sociales').value.trim(),
     fecha: el('#despacho-fecha').value,
     observaciones: el('#despacho-observaciones').value.trim(),
-    creado_utc: Date.now(),
-    creado_por: user?.email || '',
+    actualizado_utc: Date.now(),
+    actualizado_por: user?.email || '',
   };
   const submitBtn = el('#despacho-submit');
   submitBtn.disabled = true;
   try {
-    await fb.addDoc(fb.collection(fb.db, DESPACHOS_COLLECTION), despacho);
-    // Asigna los puntos pendientes de esas zonas a este despacho (líder).
-    const targets = records.filter((r) => despachoZonas.includes(r.zona_id)
-      && r.estado !== 'levantado'
-      && (!r.gestion_estado || r.gestion_estado === 'sin_asignar'));
-    if (targets.length) {
-      const batch = fb.writeBatch(fb.db);
-      for (const r of targets) {
-        batch.update(fb.doc(fb.db, COLLECTION, r.id), {
-          gestion_estado: 'asignado',
-          gestion_asignado_a: lider,
-          gestion_actualizado_utc: Date.now(),
-          gestion_actualizado_por: user?.email || '',
-        });
-      }
-      await batch.commit();
+    // La asignación es POR ZONA: el despacho guarda sus zonas y de ahí se deriva
+    // el estado de cada punto. No se escribe punto por punto (un recorrido cubre
+    // varios puntos de la zona), así se evita repetir y duplicar estados.
+    if (despachoEditId) {
+      await fb.updateDoc(fb.doc(fb.db, DESPACHOS_COLLECTION, despachoEditId), despacho);
+    } else {
+      despacho.creado_utc = Date.now();
+      despacho.creado_por = user?.email || '';
+      await fb.addDoc(fb.collection(fb.db, DESPACHOS_COLLECTION), despacho);
     }
     closeDespacho();
   } catch (ex) {
-    console.error('No se pudo registrar el despacho', ex);
+    console.error('No se pudo guardar el despacho', ex);
     err.textContent = 'No se pudo guardar el despacho. ¿Tenés permiso de edición?';
     err.hidden = false;
   } finally {
@@ -366,13 +567,93 @@ async function submitDespacho(e) {
 }
 
 function wireDespachoModal() {
-  el('#gestion-despacho-btn').addEventListener('click', openDespacho);
-  el('#despacho-zona-add').addEventListener('click', () => {
-    const v = el('#despacho-zona').value;
-    if (v && !despachoZonas.includes(v)) { despachoZonas.push(v); renderZonaChips(); }
+  el('#gestion-despacho-btn').addEventListener('click', () => openDespacho());
+  el('#despacho-zona').addEventListener('change', (e) => {
+    const v = e.target.value;
+    if (v && !despachoZonas.includes(v)) despachoZonas.push(v);
+    e.target.value = '';
+    refreshZonaPicker();
   });
   el('#despacho-form').addEventListener('submit', submitDespacho);
   document.querySelectorAll('[data-despacho-close]').forEach((b) => b.addEventListener('click', closeDespacho));
+  document.querySelectorAll('[data-punto-close]').forEach((b) => b.addEventListener('click', closePunto));
+}
+
+// ── Despachos (CRUD) ─────────────────────────────────────────────────────────
+function subscribeDespachos() {
+  if (unsubDespachos) return;
+  unsubDespachos = fb.onSnapshot(fb.collection(fb.db, DESPACHOS_COLLECTION), (snap) => {
+    despachos = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => (b.creado_utc || 0) - (a.creado_utc || 0));
+    // El estado/responsable de cada punto se DERIVA de la cobertura de zona, así
+    // que un cambio en despachos re-renderiza tabla, mapa y resumen también.
+    renderDespachos();
+    renderSummary();
+    renderMap();
+    renderTable();
+  }, (err) => console.error('Firestore despachos', err));
+}
+
+function renderDespachos() {
+  const box = el('#gestion-despachos');
+  if (!box) return;
+  if (!despachos.length) {
+    box.innerHTML = '<p class="asig-progress-note">Sin despachos registrados.</p>';
+    return;
+  }
+  const rows = despachos.map((d) => {
+    const enZonas = records.filter((r) => (d.zonas || []).includes(r.zona_id));
+    const nPuntos = enZonas.length;
+    const nPend = enZonas.filter((r) => r.estado !== 'levantado').length;
+    const acciones = canEdit
+      ? `<div class="despacho-card-actions">
+           <button type="button" class="btn-mini despacho-edit" data-id="${escapeHtml(d.id)}">Editar</button>
+           <button type="button" class="btn-mini btn-mini-danger despacho-del" data-id="${escapeHtml(d.id)}">Eliminar</button>
+         </div>` : '';
+    return `<div class="despacho-card">
+      <div class="despacho-card-head">
+        <strong>${escapeHtml(d.lider || '—')}</strong>
+        <span class="asig-badge">${escapeHtml((d.zonas || []).join(', ') || 'sin zona')}</span>
+        ${acciones}
+      </div>
+      <div class="despacho-card-meta">
+        ${escapeHtml(d.entidad || '—')} · cuadrilla ${Number(d.n_personas) || 0} · ${Number(d.n_vehiculos) || 0} veh.
+        · ${escapeHtml(d.fecha || '—')} · <strong>${nPuntos}</strong> pts (${nPend} pend.)${d.celular ? ` · ${escapeHtml(d.celular)}` : ''}
+        ${d.observaciones ? `<br><em>${escapeHtml(d.observaciones)}</em>` : ''}
+        <div class="despacho-card-foot"><button type="button" class="btn-mini despacho-verpuntos" data-id="${escapeHtml(d.id)}">Ver puntos asignados</button></div>
+      </div>
+    </div>`;
+  }).join('');
+  box.innerHTML = rows;
+  box.querySelectorAll('.despacho-verpuntos').forEach((b) =>
+    b.addEventListener('click', () => {
+      const d = despachos.find((x) => x.id === b.dataset.id);
+      if (!d) return;
+      filtroLider = d.lider;
+      renderTable();
+      el('#gestion-table').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }));
+  if (canEdit) {
+    box.querySelectorAll('.despacho-edit').forEach((b) =>
+      b.addEventListener('click', () => {
+        const d = despachos.find((x) => x.id === b.dataset.id);
+        if (d) openDespacho({ edit: d });
+      }));
+    box.querySelectorAll('.despacho-del').forEach((b) =>
+      b.addEventListener('click', () => deleteDespacho(b.dataset.id)));
+  }
+}
+
+async function deleteDespacho(id) {
+  if (!canEdit) return;
+  const d = despachos.find((x) => x.id === id);
+  if (!confirm(`¿Eliminar el despacho de ${d?.lider || 'este líder'}? Los puntos quedan asignados; cambialos manualmente si hace falta.`)) return;
+  try {
+    await fb.deleteDoc(fb.doc(fb.db, DESPACHOS_COLLECTION, id));
+  } catch (ex) {
+    console.error('No se pudo eliminar el despacho', ex);
+    alert('No se pudo eliminar el despacho.');
+  }
 }
 
 // ── Public API (mismos nombres que la vista Gestión anterior) ────────────────
@@ -422,6 +703,10 @@ export async function initGestion() {
 
   wireDespachoModal();
 
+  // Filtro rápido: solo pendientes sin asignar (agilidad, evitar repetir).
+  const toggle = el('#gestion-solo-pendientes');
+  if (toggle) toggle.addEventListener('change', (e) => { soloPendientes = e.target.checked; renderTable(); });
+
   fb.onAuthStateChanged(fb.auth, async (u) => {
     user = u;
     canEdit = false;
@@ -431,9 +716,12 @@ export async function initGestion() {
     }
     renderAuthBar();
     el('#gestion-despacho-btn').hidden = !canEdit;
-    renderTable();  // re-render para mostrar/ocultar controles de edición
+    renderTable();       // muestra/oculta controles + acciones
+    renderDespachos();   // muestra/oculta editar/eliminar
   });
 
   subscribe();
+  subscribeDespachos();
+  subscribeMeta();
   invalidateGestionSize();
 }
