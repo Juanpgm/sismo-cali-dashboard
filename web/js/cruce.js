@@ -352,7 +352,7 @@ function liderPorNombre(nombre) {
 
 /** Guarda/actualiza el líder en el directorio (id = nombre normalizado).
  *  Best-effort: un fallo acá nunca bloquea la asignación. */
-async function upsertLider(nombre, telefono) {
+async function upsertLider(nombre, telefono, entidad) {
   const n = String(nombre || '').trim();
   if (!canEdit || !n) return;
   const id = n.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -361,6 +361,7 @@ async function upsertLider(nombre, telefono) {
     await fb.setDoc(fb.doc(fb.db, LIDERES_COLLECTION, id), {
       nombre: n,
       ...(String(telefono || '').trim() ? { telefono: String(telefono).trim() } : {}),
+      ...(String(entidad || '').trim() ? { entidad: String(entidad).trim() } : {}),
       actualizado_utc: Date.now(),
     }, { merge: true });
   } catch (ex) {
@@ -382,8 +383,12 @@ function openAsignarPunto(id) {
   el('#asignar-dir').textContent = `${r.direccion || r.registro_id} · zona ${r.zona_id || '—'}`;
   el('#asignar-despacho').innerHTML = '<option value="">Sin despacho — asignar solo a una persona</option>'
     + despachos.map((d) => `<option value="${escapeHtml(d.id)}"${r.gestion_despacho_id === d.id ? ' selected' : ''}>${escapeHtml(d.lider || '—')} · ${escapeHtml((d.zonas || []).join(', ') || 'sin zona')}</option>`).join('');
+  const lid = liderPorNombre(r.gestion_asignado_a);
   el('#asignar-persona').value = r.gestion_asignado_a || '';
-  el('#asignar-telefono').value = liderPorNombre(r.gestion_asignado_a)?.telefono || '';
+  el('#asignar-telefono').value = lid?.telefono || '';
+  el('#asignar-entidad').value = r.gestion_entidad || lid?.entidad || '';
+  el('#asignar-fecha').value = r.gestion_fecha || new Date().toISOString().slice(0, 10);
+  el('#asignar-nota').value = r.gestion_nota || '';
   refreshLideresDatalist();
   el('#asignar-err').hidden = true;
   const m = el('#asignar-modal');
@@ -416,11 +421,14 @@ async function submitAsignarPunto(e) {
       gestion_estado: 'asignado',
       gestion_asignado_a: persona,
       gestion_despacho_id: despId || '',
+      gestion_entidad: el('#asignar-entidad').value.trim(),
+      gestion_fecha: el('#asignar-fecha').value,
+      gestion_nota: el('#asignar-nota').value.trim(),
       gestion_actualizado_utc: Date.now(),
       gestion_actualizado_por: user?.email || '',
     });
-    // Guarda el líder en el directorio (nombre + tel) para la próxima asignación.
-    upsertLider(persona, el('#asignar-telefono').value);
+    // Guarda el líder en el directorio (nombre + tel + entidad) para la próxima.
+    upsertLider(persona, el('#asignar-telefono').value, el('#asignar-entidad').value);
     closeAsignarPunto();
   } catch (ex) {
     console.error('No se pudo asignar el punto', ex);
@@ -432,11 +440,14 @@ async function submitAsignarPunto(e) {
 async function quitarAsignacionPunto() {
   if (!canEdit || !asignarPuntoId) return;
   try {
-    // Limpia el override: el punto vuelve a derivar su estado de la zona.
+    // Limpia la asignación completa: el punto vuelve a Pendiente.
     await fb.updateDoc(fb.doc(fb.db, COLLECTION, asignarPuntoId), {
       gestion_estado: 'sin_asignar',
       gestion_asignado_a: '',
       gestion_despacho_id: '',
+      gestion_entidad: '',
+      gestion_fecha: '',
+      gestion_nota: '',
       gestion_actualizado_utc: Date.now(),
       gestion_actualizado_por: user?.email || '',
     });
@@ -454,6 +465,7 @@ function wireAsignarModal() {
   el('#asignar-persona').addEventListener('input', (e) => {
     const l = liderPorNombre(e.target.value);
     if (l?.telefono) el('#asignar-telefono').value = l.telefono;
+    if (l?.entidad) el('#asignar-entidad').value = l.entidad;
   });
   el('#despacho-lider').addEventListener('input', (e) => {
     const l = liderPorNombre(e.target.value);
@@ -513,6 +525,7 @@ function openPunto(id) {
     </dl>
     ${despachoBlock}
     <h5 class="punto-modal-sect">Gestión</h5>
+    ${(r.gestion_entidad || r.gestion_fecha) ? `<p class="asig-progress-note">Entidad: ${escapeHtml(r.gestion_entidad || '—')} · fecha de visita: ${escapeHtml(r.gestion_fecha || '—')}</p>` : ''}
     ${canEdit ? `
       ${r.estado === 'levantado' ? '<p class="asig-progress-note">EDE hecha → estado <strong>Completado</strong> automático.</p>' : ''}
       <div class="punto-edit">
@@ -698,7 +711,7 @@ async function submitDespacho(e) {
       despacho.creado_por = user?.email || '';
       await fb.addDoc(fb.collection(fb.db, DESPACHOS_COLLECTION), despacho);
     }
-    upsertLider(lider, despacho.celular);  // directorio para próximas asignaciones
+    upsertLider(lider, despacho.celular, despacho.entidad);  // directorio para próximas asignaciones
     closeDespacho();
   } catch (ex) {
     console.error('No se pudo guardar el despacho', ex);
@@ -800,6 +813,45 @@ async function deleteDespacho(id) {
   }
 }
 
+// ── Descarga de la lista visible (para pasar a los voluntarios) ──────────────
+// Exporta lo que la tabla muestra: si está activo el filtro por líder ("Ver
+// puntos asignados") baja la lista de ESA persona; si no, todo el registro.
+// CSV con BOM: Excel lo abre con tildes correctas, sin dependencias.
+function buildCsv() {
+  const headers = ['Asignado a', 'Teléfono', 'Entidad', 'Fecha visita', 'Estado gestión', 'Punto',
+    'Dirección', 'Barrio', 'Comuna', 'Zona', 'Nivel de riesgo', 'Observaciones',
+    'ID crítico', 'Lat', 'Lon', 'Google Maps'];
+  const cell = (v) => {
+    const s = v == null ? '' : String(v);
+    return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const rows = visibleRecords().map((r) => {
+    const persona = asignadoDe(r);
+    const tel = liderPorNombre(persona)?.telefono || puntoDespacho(r)?.celular || '';
+    const maps = (r.lat != null && r.lon != null) ? `https://maps.google.com/?q=${r.lat},${r.lon}` : '';
+    return [persona || '—', tel, r.gestion_entidad || '', r.gestion_fecha || '',
+      ESTADO_LABEL[effectiveEstado(r)],
+      r.estado === 'levantado' ? 'Levantado' : 'Falta EDE',
+      r.direccion || '', r.barrio || '', r.comuna || '', r.zona_id || '',
+      r.nivel_riesgo || '', r.gestion_nota || '',
+      r.registro_id || '', r.lat ?? '', r.lon ?? '', maps]
+      .map(cell).join(',');
+  });
+  return '﻿' + headers.map(cell).join(',') + '\n' + rows.join('\n');
+}
+
+function downloadLista() {
+  const csv = buildCsv();
+  const slug = (filtroLider || 'todos').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+  a.download = `puntos_${slug}_${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(a.href);
+}
+
 // ── Public API (mismos nombres que la vista Gestión anterior) ────────────────
 export function invalidateGestionSize() {
   if (map) setTimeout(() => map.invalidateSize(), 60);
@@ -847,6 +899,7 @@ export async function initGestion() {
 
   wireDespachoModal();
   wireAsignarModal();
+  el('#gestion-download').addEventListener('click', downloadLista);
 
   // Filtro rápido: solo pendientes sin asignar (agilidad, evitar repetir).
   const toggle = el('#gestion-solo-pendientes');

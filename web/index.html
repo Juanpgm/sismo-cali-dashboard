@@ -258,7 +258,13 @@
       <section class="card table-card">
         <div class="card-toolbar">
           <h2 class="stats-title">Registro de gestión</h2>
-          <label class="gestion-toggle"><input type="checkbox" id="gestion-solo-pendientes"> Solo pendientes sin asignar</label>
+          <div class="gestion-toolbar-actions">
+            <label class="gestion-toggle"><input type="checkbox" id="gestion-solo-pendientes"> Solo pendientes sin asignar</label>
+            <button type="button" class="btn-secondary" id="gestion-download">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><line x1="5" y1="21" x2="19" y2="21"/></svg>
+              Descargar lista
+            </button>
+          </div>
         </div>
         <div class="table-scroll" id="gestion-table"></div>
       </section>
@@ -326,6 +332,15 @@
         </label>
         <label class="despacho-field"><span>Celular</span>
           <input type="tel" id="asignar-telefono" placeholder="300…">
+        </label>
+        <label class="despacho-field"><span>Entidad</span>
+          <input type="text" id="asignar-entidad" placeholder="EDRU, Secretaría de Vivienda…">
+        </label>
+        <label class="despacho-field"><span>Fecha de visita</span>
+          <input type="date" id="asignar-fecha">
+        </label>
+        <label class="despacho-field despacho-field-full"><span>Observaciones (opcional)</span>
+          <textarea id="asignar-nota" rows="2"></textarea>
         </label>
         <div class="despacho-actions">
           <span class="asig-error" id="asignar-err" hidden></span>
