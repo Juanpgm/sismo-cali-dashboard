@@ -269,7 +269,9 @@ def download_service_account(file_id: str) -> bytes:
         raise ImportError("googleapiclient/google-auth not installed; skipping service-account download.") from exc
 
     credentials = service_account.Credentials.from_service_account_file(creds_path, scopes=SA_SCOPES)
-    drive_service = build("drive", "v3", credentials=credentials)
+    # cache_discovery=False silences the harmless "file_cache is only supported
+    # with oauth2client<4.0.0" INFO line on modern oauth2client.
+    drive_service = build("drive", "v3", credentials=credentials, cache_discovery=False)
 
     # Native Google Sheets are exported (not downloaded) to xlsx via export_media.
     request = drive_service.files().export_media(fileId=file_id, mimeType=XLSX_MIME)

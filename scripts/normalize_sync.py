@@ -367,7 +367,7 @@ def run(dry_run: bool = False, source: str = "survey") -> None:
 
     creds = service_account.Credentials.from_service_account_file(
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"], scopes=SA_SCOPES)
-    ss = build("sheets", "v4", credentials=creds).spreadsheets()
+    ss = build("sheets", "v4", credentials=creds, cache_discovery=False).spreadsheets()
 
     # Update edited inspections in place — a single batch keeps it atomic-ish.
     if edited:
