@@ -605,38 +605,76 @@ function colapsoEvacCounts(records) {
   return acc;
 }
 
+// Etiquetas de las 3 métricas (compartidas por tabla y reporte del alcalde).
+const CE_LABELS = {
+  colapso: 'Colapso total',
+  evac: 'Evacuar · no habitable',
+  evacParcial: 'Evacuar · colapso parcial + no habitable',
+};
+// Filas que no son Casa/Edificación se atenúan para no distraer la lectura.
+const CE_MUTED = new Set(['sin_dato', 'erroneo']);
+
 function renderColapsoEvac(records) {
   const box = document.getElementById('colapso-evac-table');
   if (!box) return;
   const acc = colapsoEvacCounts(records);
   const fmt = (n) => Math.round(n).toLocaleString('es-CO');
   const totals = Object.fromEntries(CE_METRICS.map((m) => [m, { reg: 0, unid: 0 }]));
-  const cells = (c) => CE_METRICS.map((m) => `<td>${fmt(c[m].reg)}</td><td>${fmt(c[m].unid)}</td>`).join('');
+  // Un borde vertical separa cada grupo de 2 columnas (Reg. + Unid. hab.).
+  const cells = (c) => CE_METRICS.map((m, i) => {
+    const g = i > 0 ? ' class="ce-group"' : '';
+    return `<td${g}>${fmt(c[m].reg)}</td><td>${fmt(c[m].unid)}</td>`;
+  }).join('');
   const bodyRows = TIPOLOGIAS.map(([t, label]) => {
     const c = acc[t];
     CE_METRICS.forEach((m) => { totals[m].reg += c[m].reg; totals[m].unid += c[m].unid; });
-    return `<tr><th scope="row">${label}</th>${cells(c)}</tr>`;
+    const rowCls = CE_MUTED.has(t) ? ' class="ce-muted"' : '';
+    return `<tr${rowCls}><th scope="row">${label}</th>${cells(c)}</tr>`;
   }).join('');
   const footRow = `<tr class="tip-total-row"><th scope="row">TOTAL</th>${cells(totals)}</tr>`;
-  box.innerHTML = `<table class="tipologia-table">
+  const groupHead = (m) => `<th class="ce-group" colspan="2" scope="colgroup">${CE_LABELS[m]}</th>`;
+  const subHead = (i) => `<th${i > 0 ? ' class="ce-group"' : ''} scope="col">Reg.</th><th scope="col">Unid. hab.</th>`;
+  box.innerHTML = `<table class="tipologia-table ce-table">
     <thead>
       <tr><th rowspan="2" scope="col">Tipología (pisos sobre el terreno)</th>
-          <th colspan="2" scope="colgroup">Colapso total</th>
-          <th colspan="2" scope="colgroup">Evacuar · no habitable</th>
-          <th colspan="2" scope="colgroup">Evacuar · colapso parcial + no habitable</th></tr>
-      <tr><th scope="col">Reg.</th><th scope="col">Unid. hab.</th>
-          <th scope="col">Reg.</th><th scope="col">Unid. hab.</th>
-          <th scope="col">Reg.</th><th scope="col">Unid. hab.</th></tr>
+          <th colspan="2" scope="colgroup">${CE_LABELS.colapso}</th>
+          ${groupHead('evac')}${groupHead('evacParcial')}</tr>
+      <tr>${CE_METRICS.map((m, i) => subHead(i)).join('')}</tr>
     </thead>
     <tbody>${bodyRows}${footRow}</tbody>
   </table>
-  <p class="chart-note">Casa = 3 pisos o menos · Edificación = más de 3 pisos. Evacuar · no habitable = I1+I2+I3. Evacuar · colapso parcial + no habitable = colapso parcial Y no habitable, excluyendo colapso total. Unid. hab. = unidades residenciales.</p>`;
+  <p class="chart-note"><strong>Resumen sobre el total de registros (no depende de los filtros del tablero).</strong> Casa = 3 pisos o menos · Edificación = más de 3 pisos. Evacuar · no habitable = I1+I2+I3. Evacuar · colapso parcial + no habitable = colapso parcial Y no habitable, excluyendo colapso total. Unid. hab. = unidades residenciales.</p>`;
+}
+
+/** Filas planas (Casa/Edificación/… + TOTAL) para el "Reporte alcalde" xlsx.
+ *  Mismos conteos que la tabla, encabezados en español legibles. */
+export function colapsoEvacReport(records) {
+  const acc = colapsoEvacCounts(records);
+  const totals = Object.fromEntries(CE_METRICS.map((m) => [m, { reg: 0, unid: 0 }]));
+  const row = (label, c) => ({
+    'Tipología': label,
+    'Colapso total — Registros': c.colapso.reg,
+    'Colapso total — Unidades habitacionales': c.colapso.unid,
+    'Evacuar (no habitable) — Registros': c.evac.reg,
+    'Evacuar (no habitable) — Unidades habitacionales': c.evac.unid,
+    'Evacuar (parcial + no habitable) — Registros': c.evacParcial.reg,
+    'Evacuar (parcial + no habitable) — Unidades habitacionales': c.evacParcial.unid,
+  });
+  const rows = TIPOLOGIAS.map(([t, label]) => {
+    const c = acc[t];
+    CE_METRICS.forEach((m) => { totals[m].reg += c[m].reg; totals[m].unid += c[m].unid; });
+    return row(label, c);
+  });
+  rows.push(row('TOTAL', totals));
+  return rows;
 }
 
 let warnedMissingChart = false;
 
-/** Render all 5 "Estadísticas" charts from the current filtered record set. */
-export function renderStatistics(records) {
+/** Render all "Estadísticas" charts from the current filtered record set.
+ *  allRecords (sin filtrar) alimenta el reporte alcalde, que es un resumen fijo
+ *  sobre el total y NO debe moverse con los filtros del tablero. */
+export function renderStatistics(records, allRecords) {
   if (typeof Chart === 'undefined') {
     if (!warnedMissingChart) {
       console.warn('Chart.js no está disponible (falló la carga del CDN) — se omite "Estadísticas".');
@@ -650,7 +688,7 @@ export function renderStatistics(records) {
   renderByEpoca(records);
   renderHabByComuna(records);
   renderTipologia(records);
-  renderColapsoEvac(records);
+  renderColapsoEvac(allRecords || records); // reporte alcalde: siempre sobre el total
   renderHabDoughnut(records);
   renderSeveridad(records);
   renderUsoDoughnut(records);
