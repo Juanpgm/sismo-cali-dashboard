@@ -1,7 +1,7 @@
 /* global Chart */
 // Chart.js 4 (UMD global via CDN, same pattern as Leaflet's `L`) — "Estadísticas" charts.
 import {
-  COLORS, themeColor, labelForCode, labelForField, splitMultiValue, habCode, normalize, formatDate,
+  COLORS, themeColor, labelForCode, labelForField, splitMultiValue, habCode, isNoHabitable, normalize, formatDate,
 } from './utils.js';
 
 const registry = new Map();
@@ -580,6 +580,59 @@ function renderTipologia(records) {
   });
 }
 
+// ── Colapso total y evacuación por tipología (Casa/Edificio) ────────────────
+// Reusa tipologiaDe() (n_pisos <= 3 casa, > 3 edificación). Tres métricas por
+// tipología, cada una en registros y unidades habitacionales (n_residenciales):
+//   · Colapso total       = colapso_total == 'sí'
+//   · Evacuar (no habit.) = no habitable (I1/I2/I3)
+//   · Evacuar (parcial)   = colapso_parcial == 'sí' Y no habitable, sin colapso total
+const CE_METRICS = ['colapso', 'evac', 'evacParcial'];
+function colapsoEvacCounts(records) {
+  const acc = Object.fromEntries(TIPOLOGIAS.map(([t]) => [
+    t, Object.fromEntries(CE_METRICS.map((m) => [m, { reg: 0, unid: 0 }])),
+  ]));
+  for (const r of records) {
+    const cell = acc[tipologiaDe(r)];
+    const u = Number(r.n_residenciales);
+    const unid = Number.isNaN(u) ? 0 : u;
+    const total = normalize(r.colapso_total) === 'si';
+    const parcial = normalize(r.colapso_parcial) === 'si';
+    const noHab = isNoHabitable(r);
+    if (total) { cell.colapso.reg += 1; cell.colapso.unid += unid; }
+    if (noHab) { cell.evac.reg += 1; cell.evac.unid += unid; }
+    if (parcial && noHab && !total) { cell.evacParcial.reg += 1; cell.evacParcial.unid += unid; }
+  }
+  return acc;
+}
+
+function renderColapsoEvac(records) {
+  const box = document.getElementById('colapso-evac-table');
+  if (!box) return;
+  const acc = colapsoEvacCounts(records);
+  const fmt = (n) => Math.round(n).toLocaleString('es-CO');
+  const totals = Object.fromEntries(CE_METRICS.map((m) => [m, { reg: 0, unid: 0 }]));
+  const cells = (c) => CE_METRICS.map((m) => `<td>${fmt(c[m].reg)}</td><td>${fmt(c[m].unid)}</td>`).join('');
+  const bodyRows = TIPOLOGIAS.map(([t, label]) => {
+    const c = acc[t];
+    CE_METRICS.forEach((m) => { totals[m].reg += c[m].reg; totals[m].unid += c[m].unid; });
+    return `<tr><th scope="row">${label}</th>${cells(c)}</tr>`;
+  }).join('');
+  const footRow = `<tr class="tip-total-row"><th scope="row">TOTAL</th>${cells(totals)}</tr>`;
+  box.innerHTML = `<table class="tipologia-table">
+    <thead>
+      <tr><th rowspan="2" scope="col">Tipología (pisos sobre el terreno)</th>
+          <th colspan="2" scope="colgroup">Colapso total</th>
+          <th colspan="2" scope="colgroup">Evacuar · no habitable</th>
+          <th colspan="2" scope="colgroup">Evacuar · colapso parcial + no habitable</th></tr>
+      <tr><th scope="col">Reg.</th><th scope="col">Unid. hab.</th>
+          <th scope="col">Reg.</th><th scope="col">Unid. hab.</th>
+          <th scope="col">Reg.</th><th scope="col">Unid. hab.</th></tr>
+    </thead>
+    <tbody>${bodyRows}${footRow}</tbody>
+  </table>
+  <p class="chart-note">Casa = 3 pisos o menos · Edificación = más de 3 pisos. Evacuar · no habitable = I1+I2+I3. Evacuar · colapso parcial + no habitable = colapso parcial Y no habitable, excluyendo colapso total. Unid. hab. = unidades residenciales.</p>`;
+}
+
 let warnedMissingChart = false;
 
 /** Render all 5 "Estadísticas" charts from the current filtered record set. */
@@ -597,6 +650,7 @@ export function renderStatistics(records) {
   renderByEpoca(records);
   renderHabByComuna(records);
   renderTipologia(records);
+  renderColapsoEvac(records);
   renderHabDoughnut(records);
   renderSeveridad(records);
   renderUsoDoughnut(records);
