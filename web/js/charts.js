@@ -580,13 +580,13 @@ function renderTipologia(records) {
   });
 }
 
-// ── Colapso total y evacuación por tipología (Casa/Edificio) ────────────────
+// ── Colapso total y suspensión de servicios por tipología (Casa/Edificio) ───
 // Reusa tipologiaDe() (n_pisos <= 3 casa, > 3 edificación). Tres métricas por
 // tipología, cada una en registros y unidades habitacionales (n_residenciales):
-//   · Colapso total          = colapso_total == 'sí'  (informativo, NO entra a evacuar)
-//   · Evacuar · parcial hab.  = colapso_parcial == 'sí' Y habitable (H)
-//   · Evacuar · parcial no h. = colapso_parcial == 'sí' Y no habitable (R1/R2/I1/I2/I3)
-// Evacuar sale SOLO del cruce colapso parcial × habitabilidad; colapso total no interviene.
+//   · Colapso total            = colapso_total == 'sí'  (informativo)
+//   · Suspensión · parcial hab. = colapso_parcial == 'sí' Y habitable (H)
+//   · Suspensión · parcial no h.= colapso_parcial == 'sí' Y no habitable (R1/R2/I1/I2/I3)
+// Suspensión sale del cruce colapso parcial × habitabilidad; colapso total no interviene.
 const CE_METRICS = ['colapso', 'evacHab', 'evacNoHab'];
 function colapsoEvacCounts(records) {
   const acc = Object.fromEntries(TIPOLOGIAS.map(([t]) => [
@@ -608,8 +608,8 @@ function colapsoEvacCounts(records) {
 // Etiquetas de las 3 métricas (compartidas por tabla y reporte del alcalde).
 const CE_LABELS = {
   colapso: 'Colapso total',
-  evacHab: 'Evacuar · parcial + habitable',
-  evacNoHab: 'Evacuar · parcial + no habitable',
+  evacHab: 'Suspensión · parcial + habitable',
+  evacNoHab: 'Suspensión · parcial + no habitable',
 };
 // Filas que no son Casa/Edificación se atenúan para no distraer la lectura.
 const CE_MUTED = new Set(['sin_dato', 'erroneo']);
@@ -643,7 +643,7 @@ function renderColapsoEvac(records) {
     </thead>
     <tbody>${bodyRows}${footRow}</tbody>
   </table>
-  <p class="chart-note"><strong>Resumen sobre el total de registros (no depende de los filtros del tablero).</strong> Casa = 3 pisos o menos · Edificación = más de 3 pisos. Evacuar = cruce colapso parcial × habitabilidad (el colapso total NO interviene): habitable = H, no habitable = R1/R2/I1/I2/I3. Unid. hab. = unidades residenciales.</p>`;
+  <p class="chart-note"><strong>Resumen sobre el total de registros (no depende de los filtros del tablero).</strong> Casa = 3 pisos o menos · Edificación = más de 3 pisos. Suspensión de servicios = cruce colapso parcial × habitabilidad (el colapso total NO interviene): habitable = H, no habitable = R1/R2/I1/I2/I3. Unid. hab. = unidades residenciales.</p>`;
 }
 
 /** Filas planas (Casa/Edificación/… + TOTAL) para el "Reporte alcalde" xlsx.
@@ -655,10 +655,10 @@ export function colapsoEvacReport(records) {
     'Tipología': label,
     'Colapso total — Registros': c.colapso.reg,
     'Colapso total — Unidades habitacionales': c.colapso.unid,
-    'Evacuar · parcial + habitable — Registros': c.evacHab.reg,
-    'Evacuar · parcial + habitable — Unidades habitacionales': c.evacHab.unid,
-    'Evacuar · parcial + no habitable — Registros': c.evacNoHab.reg,
-    'Evacuar · parcial + no habitable — Unidades habitacionales': c.evacNoHab.unid,
+    'Suspensión servicios · parcial + habitable — Registros': c.evacHab.reg,
+    'Suspensión servicios · parcial + habitable — Unidades habitacionales': c.evacHab.unid,
+    'Suspensión servicios · parcial + no habitable — Registros': c.evacNoHab.reg,
+    'Suspensión servicios · parcial + no habitable — Unidades habitacionales': c.evacNoHab.unid,
   });
   const rows = TIPOLOGIAS.map(([t, label]) => {
     const c = acc[t];

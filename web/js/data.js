@@ -1,7 +1,7 @@
 // Data loading + global filter state (tiny pub/sub store, no framework).
 import {
   normalizeAddressText, buildSearchIndex, splitMultiValue, labelForField,
-  normalize, habCode, NO_HABITABLE_CODES,
+  normalize, habBinary,
 } from './utils.js';
 
 // Sidebar section order/labels for FILTER_FIELDS' `group` key.
@@ -69,11 +69,11 @@ function bucketNpisos(v) {
   return `${b * 3 + 1}–${b * 3 + 3} pisos`;
 }
 
-// Suspensión de servicios: colapso total declarado O criterio de habitabilidad
-// no habitable (I1–I3) — cualquiera de los dos amerita corte. Derivado en carga;
-// viaja en el export xlsx.
+// Suspensión de servicios: cruce colapso parcial × habitabilidad. Un registro
+// con colapso parcial y clasificación de habitabilidad (habitable H o no
+// habitable R1/R2/I1/I2/I3) amerita corte. Derivado en carga; viaja en el xlsx.
 function suspensionServicios(r) {
-  return normalize(r.colapso_total) === 'si' || NO_HABITABLE_CODES.includes(habCode(r))
+  return normalize(r.colapso_parcial) === 'si' && habBinary(r) !== ''
     ? 'si' : 'no';
 }
 
