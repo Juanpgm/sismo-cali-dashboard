@@ -1334,6 +1334,16 @@ td { padding: 10px 14px; vertical-align: top; color: var(--text-primary); max-wi
 .asig-badge-done { background: rgba(34, 197, 94, 0.18); color: var(--status-h); }
 .asig-badge-pending { background: rgba(249, 115, 22, 0.18); color: var(--status-r2); }
 
+/* ---- acciones view ---- */
+#view-acciones .card + .card { margin-top: 16px; }
+.accion-note { margin-bottom: 14px; font-size: 0.88rem; color: var(--text-secondary); }
+.accion-badge {
+  display: inline-block; padding: 2px 8px; border-radius: 999px;
+  font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
+}
+.accion-badge-demoler { background: rgba(239, 68, 68, 0.18); color: var(--status-i3); }
+.accion-badge-verificar { background: rgba(249, 115, 22, 0.18); color: var(--status-r2); }
+
 /* ---- roster table state accents ---- */
 #asig-table tbody tr { cursor: default; }
 #asig-table .asig-row-done td:first-child,

@@ -8,6 +8,7 @@ import {
   setChoroplethLevel, setChoroplethMetric, invalidateSize, highlightRecord, applyMapTheme,
 } from './mapview.js';
 import { initTable, renderTable, setTotalRecords, openDetailModal } from './table.js';
+import { renderAcciones } from './acciones.js';
 import { initTheme } from './theme.js';
 import { debounce, setSourceLabels, sourceLabel } from './utils.js';
 
@@ -91,6 +92,8 @@ function onStoreChange() {
     showToast('No se pudo cargar la capa geográfica.', 'error');
   });
   renderStatistics(store.filtered);
+  // Acciones works over ALL records: the filters sidebar only applies to Panel.
+  renderAcciones(document.getElementById('view-acciones'), store.records, { onRowClick: openDetailModal });
 }
 
 function openFiltersDrawer() {
