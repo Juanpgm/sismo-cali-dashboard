@@ -148,7 +148,7 @@ function render(root, store, chipsRoot) {
     rangeHandles[def.field] = renderRangeFilter(fieldRoot, {
       label: def.label,
       bounds: store.rangeBounds[def.field] || { min: null, max: null },
-      value: store.filters[def.field],
+      value: store.ranges[def.field],
       onChange: (part, val) => store.setRangeFilter(def.field, part, val),
     });
   });
@@ -197,7 +197,7 @@ function renderChips(chipsRoot, store) {
     }
   }
   for (const def of RANGE_FIELDS) {
-    const range = store.filters[def.field];
+    const range = store.ranges[def.field];
     if (range.min === null && range.max === null) continue;
     chips.push({
       text: rangeChipText(def, range),

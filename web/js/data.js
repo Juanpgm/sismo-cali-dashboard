@@ -27,19 +27,19 @@ export const FILTER_FIELDS = [
   { field: 'estado_edificacion', label: labelForField('estado_edificacion'), group: 'edificacion' },
   { field: 'tipo_propiedad', label: 'Tipo de propiedad', group: 'edificacion' },
   { field: 'epoca_construccion', label: 'Época de construcción', group: 'edificacion' },
-  { field: 'n_pisos', label: 'N.º de pisos', group: 'edificacion' },
+  // N.º de pisos como rangos de 3 (campo derivado n_pisos_rango, ver bucketNpisos).
+  { field: 'n_pisos_rango', label: 'N.º de pisos', emptyLabel: 'Sin dato', group: 'edificacion' },
   { field: 'comuna', label: 'Comuna', group: 'ubicacion' },
   { field: 'barrio_geo', label: 'Barrio', emptyLabel: 'Sin barrio asignado', group: 'ubicacion' },
   { field: 'entidad', label: labelForField('entidad'), group: 'contexto' },
 ];
 
-// Numeric range fields — the "Rangos" sidebar section. Intentionally empty:
-// numeric variables are explored on the map instead (size / heat / choropleth).
+// Numeric range fields — the "Rangos" sidebar section. Empty on purpose: n_pisos
+// is now a bucketed dropdown (n_pisos_rango, ranges of 3) in the Edificación group,
+// and the other numeric variables are explored on the map (size / heat / choropleth).
 // The store, chips and filters.js all guard on RANGE_FIELDS.length, so an empty
 // list simply drops the whole section.
-export const RANGE_FIELDS = [
-  { field: 'n_pisos', label: 'N.º de pisos' },
-];
+export const RANGE_FIELDS = [];
 
 const NONE = '__none__';
 
@@ -47,6 +47,19 @@ function cleanDate(v) {
   if (v === null || v === undefined) return null;
   const s = String(v).trim();
   return s === '' ? null : s;
+}
+
+// Rangos de "N.º de pisos" en buckets de 3 (1–3, 4–6, 7–9, …). El dato de origen
+// trae errores de captura (500, 91980…): valores fuera de un rango físico plausible
+// (>60 pisos) se ignoran como outliers → "sin dato". Las etiquetas empiezan por su
+// número menor para que el orden numérico (localeCompare numeric) las deje en orden.
+const NPISOS_OUTLIER_MAX = 60;
+function bucketNpisos(v) {
+  const n = Number(v);
+  if (v === null || v === undefined || v === '' || Number.isNaN(n)
+      || n < 1 || n > NPISOS_OUTLIER_MAX) return null;
+  const b = Math.floor((n - 1) / 3);
+  return `${b * 3 + 1}–${b * 3 + 3} pisos`;
 }
 
 /** Does `record` match the selected-value set for one FILTER_FIELDS entry? */
@@ -88,9 +101,12 @@ class Store {
       searchRaw: '', // original (non-normalized) text, for chip display
     };
     for (const def of FILTER_FIELDS) this.filters[def.field] = new Set();
-    // Range filters are mutated in place (not reassigned) so a held reference
-    // (e.g. a rendered control's closure) always sees the current value.
-    for (const def of RANGE_FIELDS) this.filters[def.field] = { min: null, max: null };
+    // Range filters live in their OWN namespace, not in this.filters: a field can
+    // be BOTH a dropdown and a range (e.g. n_pisos), and sharing the key would let
+    // the {min,max} object clobber the Set. Mutated in place (never reassigned) so
+    // a held reference (a rendered control's closure) always sees the current value.
+    this.ranges = {};
+    for (const def of RANGE_FIELDS) this.ranges[def.field] = { min: null, max: null };
     this.options = {}; // field -> sorted unique values present in data (+ '__none__' when applicable)
     this.dateBounds = { min: null, max: null };
     this.rangeBounds = {}; // field -> { min, max } observed in data, for input placeholders
@@ -119,7 +135,9 @@ class Store {
     const meta = await metaRes.json();
     const records = await dataRes.json();
     this.meta = meta;
-    this.records = records.map((r) => ({ ...r, _search: buildSearchIndex(r) }));
+    this.records = records.map((r) => ({
+      ...r, _search: buildSearchIndex(r), n_pisos_rango: bucketNpisos(r.n_pisos),
+    }));
     this.computeOptions();
     this.computeDateBounds();
     this.computeRangeBounds();
@@ -195,13 +213,13 @@ class Store {
   /** @param {string} field @param {'min'|'max'} part @param {string|number|null} value raw input value */
   setRangeFilter(field, part, value) {
     const num = value === null || value === '' ? null : Number(value);
-    this.filters[field][part] = (num === null || Number.isNaN(num)) ? null : num;
+    this.ranges[field][part] = (num === null || Number.isNaN(num)) ? null : num;
     this.applyFilters();
   }
 
   clearRangeFilter(field) {
-    this.filters[field].min = null;
-    this.filters[field].max = null;
+    this.ranges[field].min = null;
+    this.ranges[field].max = null;
     this.applyFilters();
   }
 
@@ -220,8 +238,8 @@ class Store {
     this.filters.searchRaw = '';
     for (const def of FILTER_FIELDS) this.filters[def.field].clear();
     for (const def of RANGE_FIELDS) {
-      this.filters[def.field].min = null;
-      this.filters[def.field].max = null;
+      this.ranges[def.field].min = null;
+      this.ranges[def.field].max = null;
     }
     this.applyFilters();
   }
@@ -233,7 +251,7 @@ class Store {
     if (this.filters.search.length) n++;
     for (const def of FILTER_FIELDS) n += this.filters[def.field].size > 0 ? 1 : 0;
     for (const def of RANGE_FIELDS) {
-      const r = this.filters[def.field];
+      const r = this.ranges[def.field];
       if (r.min !== null || r.max !== null) n++;
     }
     return n;
@@ -249,7 +267,7 @@ class Store {
     }
     // Same auto-swap for numeric ranges.
     for (const def of RANGE_FIELDS) {
-      const r = this.filters[def.field];
+      const r = this.ranges[def.field];
       if (r.min !== null && r.max !== null && r.min > r.max) {
         const tmp = r.min;
         r.min = r.max;
@@ -265,7 +283,7 @@ class Store {
         if (!matchesField(r, def, this.filters[def.field])) return false;
       }
       for (const def of RANGE_FIELDS) {
-        if (!matchesRange(r, def, this.filters[def.field])) return false;
+        if (!matchesRange(r, def, this.ranges[def.field])) return false;
       }
       if (search.length && !search.every((tok) => r._search.includes(tok))) return false;
       return true;
