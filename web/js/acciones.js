@@ -41,7 +41,7 @@ export function renderAcciones(root, records, { onRowClick } = {}) {
       <div class="table-scroll">
         <table id="acciones-table">
           <thead><tr>
-            <th>Acción</th><th>ID EDAN</th><th>Dirección</th><th>Barrio</th><th>Comuna</th>
+            <th>Acción</th><th>Dirección</th><th>Barrio</th><th>Comuna</th>
             <th>${escapeHtml(sourceLabel('criterio_habitabilidad', 'Habitabilidad'))}</th>
             ${P4_LABELS.map((l) => `<th>${l}</th>`).join('')}
           </tr></thead>
@@ -49,7 +49,6 @@ export function renderAcciones(root, records, { onRowClick } = {}) {
             ${rows.map(({ record: r, accion }, i) => `
               <tr data-row="${i}">
                 <td><span class="accion-badge accion-badge-${accion.toLowerCase()}">${accion}</span></td>
-                <td>${escapeHtml(r.id_edan ?? '—')}</td>
                 <td>${escapeHtml(r.direccion ?? '—')}</td>
                 <td>${escapeHtml(r.barrio_vereda ?? r.barrio_geo ?? '—')}</td>
                 <td>${escapeHtml(r.comuna ?? '—')}</td>
