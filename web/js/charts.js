@@ -462,6 +462,124 @@ function renderUsoDoughnut(records) {
   });
 }
 
+// ── Semáforo × tipología por número de pisos ────────────────────────────────
+// Verde = H, amarillo = R1+R2, rojo = I1+I2+I3 (criterio_habitabilidad).
+// Tipología: n_pisos <= 3 -> casa; > 3 -> edificación; vacío -> sin dato;
+// numérico fuera de rango (< 1 o > 60, mismo outlier max que data.js) -> erróneo.
+const SEMAFORO_DE = { h: 'verde', r1: 'amarillo', r2: 'amarillo', i1: 'rojo', i2: 'rojo', i3: 'rojo' };
+const SEMAFORO_COLS = [
+  ['verde', 'Verde', COLORS.status.h],
+  ['amarillo', 'Amarillo', COLORS.status.r2],
+  ['rojo', 'Rojo', COLORS.status.i2],
+];
+const TIPOLOGIAS = [
+  ['edificacion', 'EDIFICACIÓN (más de 3 pisos)'],
+  ['casa', 'CASA (3 pisos o menos)'],
+  ['sin_dato', 'Sin dato de pisos'],
+  ['erroneo', 'Dato de pisos erróneo'],
+];
+const NPISOS_MAX = 60;
+
+function tipologiaDe(r) {
+  const raw = r.n_pisos;
+  if (raw == null || String(raw).trim() === '') return 'sin_dato';
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1 || n > NPISOS_MAX) return 'erroneo';
+  return n <= 3 ? 'casa' : 'edificacion';
+}
+
+/** Conteos edificaciones + suma de unidades residenciales por tipología×semáforo.
+ *  Solo registros con semáforo conocido (H/R/I), así todas las filas cuadran. */
+function tipologiaCounts(records) {
+  const acc = Object.fromEntries(TIPOLOGIAS.map(([t]) => [
+    t, { verde: { edif: 0, unid: 0 }, amarillo: { edif: 0, unid: 0 }, rojo: { edif: 0, unid: 0 } },
+  ]));
+  for (const r of records) {
+    const sem = SEMAFORO_DE[habCode(r)];
+    if (!sem) continue;
+    const cell = acc[tipologiaDe(r)][sem];
+    cell.edif += 1;
+    const u = Number(r.n_residenciales);
+    if (!Number.isNaN(u)) cell.unid += u;
+  }
+  return acc;
+}
+
+function renderTipologia(records) {
+  const acc = tipologiaCounts(records);
+  const box = document.getElementById('tipologia-table');
+  if (box) {
+    const fmt = (n) => Math.round(n).toLocaleString('es-CO');
+    const dot = (color) => `<span class="sem-dot" style="background:${color}"></span>`;
+    const head = SEMAFORO_COLS.map(([, label, color]) => `<th>${dot(color)}${label} edif.</th>`).join('')
+      + '<th>Total edif.</th>'
+      + SEMAFORO_COLS.map(([, label, color]) => `<th>${dot(color)}${label} unid.</th>`).join('')
+      + '<th>Total unid.</th>';
+    const totals = { verde: { edif: 0, unid: 0 }, amarillo: { edif: 0, unid: 0 }, rojo: { edif: 0, unid: 0 } };
+    const bodyRows = TIPOLOGIAS.map(([t, label]) => {
+      const c = acc[t];
+      let te = 0; let tu = 0;
+      const cells = SEMAFORO_COLS.map(([k]) => {
+        te += c[k].edif; tu += c[k].unid;
+        totals[k].edif += c[k].edif; totals[k].unid += c[k].unid;
+        return c[k];
+      });
+      return `<tr><th scope="row">${label}</th>`
+        + cells.map((cell) => `<td>${fmt(cell.edif)}</td>`).join('')
+        + `<td class="tip-total">${fmt(te)}</td>`
+        + cells.map((cell) => `<td>${fmt(cell.unid)}</td>`).join('')
+        + `<td class="tip-total">${fmt(tu)}</td></tr>`;
+    }).join('');
+    const te = totals.verde.edif + totals.amarillo.edif + totals.rojo.edif;
+    const tu = totals.verde.unid + totals.amarillo.unid + totals.rojo.unid;
+    const footRow = '<tr class="tip-total-row"><th scope="row">TOTAL</th>'
+      + SEMAFORO_COLS.map(([k]) => `<td>${fmt(totals[k].edif)}</td>`).join('')
+      + `<td class="tip-total">${fmt(te)}</td>`
+      + SEMAFORO_COLS.map(([k]) => `<td>${fmt(totals[k].unid)}</td>`).join('')
+      + `<td class="tip-total">${fmt(tu)}</td></tr>`;
+    box.innerHTML = `<table class="tipologia-table">
+      <thead><tr><th scope="col">Tipología (pisos sobre el terreno)</th>${head}</tr></thead>
+      <tbody>${bodyRows}${footRow}</tbody>
+    </table>
+    <p class="chart-note">Semáforo: verde = H · amarillo = R1+R2 · rojo = I1+I2+I3. Solo registros con habitabilidad conocida.</p>`;
+  }
+
+  const surface = themeColor('--surface', '#12294a');
+  upsertChart('chart-tipologia', {
+    type: 'bar',
+    data: {
+      labels: TIPOLOGIAS.map(([, label]) => label.replace(/ \(.*\)/, '')),
+      datasets: SEMAFORO_COLS.map(([k, label, color]) => ({
+        label,
+        data: TIPOLOGIAS.map(([t]) => acc[t][k].edif),
+        backgroundColor: color,
+        borderColor: surface,
+        borderWidth: 2,
+        stack: 'sem',
+        maxBarThickness: 48,
+      })),
+    },
+    options: baseOptions({
+      scales: {
+        x: { stacked: true, grid: { display: false } },
+        y: { stacked: true, beginAtZero: true },
+      },
+      plugins: {
+        legend: { display: true },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const t = TIPOLOGIAS[ctx.dataIndex][0];
+              const k = SEMAFORO_COLS[ctx.datasetIndex][0];
+              return `${ctx.dataset.label}: ${ctx.parsed.y} edif. · ${Math.round(acc[t][k].unid)} unid.`;
+            },
+          },
+        },
+      },
+    }),
+  });
+}
+
 let warnedMissingChart = false;
 
 /** Render all 5 "Estadísticas" charts from the current filtered record set. */
@@ -478,6 +596,7 @@ export function renderStatistics(records) {
   renderByUso(records);
   renderByEpoca(records);
   renderHabByComuna(records);
+  renderTipologia(records);
   renderHabDoughnut(records);
   renderSeveridad(records);
   renderUsoDoughnut(records);

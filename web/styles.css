@@ -677,6 +677,34 @@ a { color: var(--accent); }
   font-weight: 600;
 }
 .chart-tile-wide { grid-column: 1 / -1; }
+.chart-tile-auto { height: auto; }
+
+/* Semáforo × tipología por número de pisos */
+.tipologia-table-wrap { overflow-x: auto; }
+.tipologia-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+.tipologia-table th, .tipologia-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.tipologia-table thead th { color: var(--text-secondary); font-weight: 600; }
+.tipologia-table th[scope="row"], .tipologia-table thead th:first-child { text-align: left; }
+.tipologia-table .tip-total { font-weight: 700; }
+.tipologia-table .tip-total-row th, .tipologia-table .tip-total-row td {
+  border-top: 2px solid var(--border);
+  border-bottom: none;
+  font-weight: 700;
+}
+.sem-dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: baseline;
+}
+.chart-note { margin: 6px 0 0; font-size: 0.72rem; color: var(--text-muted); }
 
 /* ============================================================
    Filters panel (desktop sidebar / mobile bottom sheet)
