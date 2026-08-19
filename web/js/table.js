@@ -20,7 +20,7 @@ const CANONICAL_ORDER = [
   'danos_contrapiso_entrepiso_muroscont', 'danos_muro_div', 'danos_cubierta', 'cielos_instalaciones',
   'alc_exterior', 'alc_interior', 'matriz_ref', 'afectacion_planta', 'afectacion_planta_calc',
   'severidad_danos', 'severidad_danos_calc', 'nivel_dano', 'riesgo_ab', 'riesgo_ac',
-  'habitabilidad_calc', 'criterio_habitabilidad', 'justificacion_criterio',
+  'habitabilidad_calc', 'criterio_habitabilidad', 'suspension_servicios', 'justificacion_criterio',
   'requiere_evaluacion_adicional', 'eval_estructural', 'eval_geotecnica', 'eval_otra',
   'recomendaciones', 'aislamiento', 'intervencion_entades', 'observaciones_generales',
   'evento_id', 'gps_precision_m', 'CreationDate', 'Creator', 'EditDate', 'Editor', 'x', 'y',
@@ -29,8 +29,8 @@ const CANONICAL_ORDER = [
 
 const DEFAULT_VISIBLE = [
   'fecha_inspeccion', 'nombre_edificacion', 'barrio_vereda', 'direccion', 'uso_edificacion',
-  'nivel_dano', 'criterio_habitabilidad', 'n_muertos', 'n_heridos', 'observaciones_generales',
-  'recomendaciones',
+  'nivel_dano', 'criterio_habitabilidad', 'suspension_servicios', 'n_muertos', 'n_heridos',
+  'observaciones_generales', 'recomendaciones',
 ];
 
 const LONG_TEXT_FIELDS = new Set([

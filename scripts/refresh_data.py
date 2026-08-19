@@ -431,6 +431,34 @@ def drop_pii(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=[c for c in PII_COLUMNS if c in df.columns])
 
 
+# No-habitable habitability codes (mirrors the frontend's NO_HABITABLE_CODES).
+NO_HABITABLE_CODES = ("i1", "i2", "i3")
+
+
+def _norm(value) -> str:
+    """Accent-strip + lowercase + trim, matching the frontend's normalize()."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    import unicodedata
+
+    stripped = unicodedata.normalize("NFD", str(value))
+    stripped = "".join(c for c in stripped if unicodedata.category(c) != "Mn")
+    return stripped.lower().strip()
+
+
+def add_suspension_servicios(df: pd.DataFrame) -> pd.DataFrame:
+    """Derived `suspension_servicios` (si/no): colapso total declarado Y criterio
+    de habitabilidad no habitable (I1–I3). Same rule the dashboard applies
+    client-side; deriving it here too keeps inspections.xlsx consistent."""
+    def _flag(row) -> str:
+        colapso = _norm(row.get("colapso_total")) in ("si", "sí")
+        hab = _norm(row.get("criterio_habitabilidad")) or _norm(row.get("habitabilidad_calc"))
+        return "si" if colapso and hab in NO_HABITABLE_CODES else "no"
+
+    df["suspension_servicios"] = [_flag(r) for r in df.to_dict("records")]
+    return df
+
+
 # --- Step 3b: photo-EXIF GPS coordinates ----------------------------------
 
 
@@ -836,6 +864,8 @@ def run_once(source: str, out_dir: Path) -> None:
     # Geocoded address as third opinion for photo centroids far from the form
     # pin — reverts to the form coordinate when the address sides with it.
     df = validate_photo_coords(df)
+    # Derived triage flag consumed by the dashboard and shipped in the xlsx.
+    df = add_suspension_servicios(df)
 
     inspections_path, meta_path, n = write_outputs(df, out_dir, source_used)
     log.info("Wrote %s (%d records) and %s.", inspections_path, n, meta_path)

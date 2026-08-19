@@ -1,5 +1,8 @@
 // Data loading + global filter state (tiny pub/sub store, no framework).
-import { normalizeAddressText, buildSearchIndex, splitMultiValue, labelForField } from './utils.js';
+import {
+  normalizeAddressText, buildSearchIndex, splitMultiValue, labelForField,
+  normalize, habCode, NO_HABITABLE_CODES,
+} from './utils.js';
 
 // Sidebar section order/labels for FILTER_FIELDS' `group` key.
 // Ordered so the severity-determining fields the assessor needs first come first.
@@ -16,6 +19,8 @@ export const FILTER_FIELDS = [
   { field: 'severidad_danos', label: labelForField('severidad_danos'), group: 'severidad' },
   { field: 'nivel_dano', label: 'Nivel de daño', group: 'severidad' },
   { field: 'criterio_habitabilidad', label: 'Habitabilidad', group: 'severidad' },
+  // Derived field (see suspensionServicios): not in inspections.json.
+  { field: 'suspension_servicios', label: 'Suspensión de servicios', group: 'severidad' },
   // NOTE: adjacent-building external risk (41_a / 42_a / riesgo_caida) is no
   // longer a filter group — it's now colorable directly on the map points
   // ("Colorear por" → Riesgo externo). See mapview.js RISK_FIELDS.
@@ -60,6 +65,13 @@ function bucketNpisos(v) {
       || n < 1 || n > NPISOS_OUTLIER_MAX) return null;
   const b = Math.floor((n - 1) / 3);
   return `${b * 3 + 1}–${b * 3 + 3} pisos`;
+}
+
+// Suspensión de servicios: colapso total declarado + criterio de habitabilidad
+// no habitable (I1–I3). Derivado en carga; viaja en el export xlsx.
+function suspensionServicios(r) {
+  return normalize(r.colapso_total) === 'si' && NO_HABITABLE_CODES.includes(habCode(r))
+    ? 'si' : 'no';
 }
 
 /** Does `record` match the selected-value set for one FILTER_FIELDS entry? */
@@ -136,7 +148,10 @@ class Store {
     const records = await dataRes.json();
     this.meta = meta;
     this.records = records.map((r) => ({
-      ...r, _search: buildSearchIndex(r), n_pisos_rango: bucketNpisos(r.n_pisos),
+      ...r,
+      _search: buildSearchIndex(r),
+      n_pisos_rango: bucketNpisos(r.n_pisos),
+      suspension_servicios: suspensionServicios(r),
     }));
     this.computeOptions();
     this.computeDateBounds();

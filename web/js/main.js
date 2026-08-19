@@ -391,8 +391,9 @@ async function triggerRefresh() {
 }
 
 /** Build the .xlsx client-side from store.filtered so active filters apply.
- *  The JSON records carry the same columns as the static export; only the
- *  derived fields (_search, n_pisos_rango) are stripped. */
+ *  The JSON records carry the same columns as the static export; the internal
+ *  derived fields (_search, n_pisos_rango) are stripped, but the derived
+ *  suspension_servicios column ships in the export on purpose. */
 el('#datos-download').addEventListener('click', () => {
   const rows = store.filtered.map(({ _search, n_pisos_rango, ...r }) => r);
   if (!rows.length) {

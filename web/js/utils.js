@@ -214,6 +214,7 @@ const FIELD_LABELS = {
   riesgo_ac: 'Riesgo A-C',
   habitabilidad_calc: 'Habitabilidad (calculada)',
   criterio_habitabilidad: 'Criterio de habitabilidad',
+  suspension_servicios: 'Suspensión de servicios',
   justificacion_criterio: 'Justificación del criterio',
   requiere_evaluacion_adicional: 'Requiere evaluación adicional',
   eval_estructural: 'Evaluación estructural',
@@ -269,7 +270,8 @@ export const DETAIL_GROUPS = {
     'n_muertos', 'n_heridos',
   ],
   'Evaluación': [
-    'riesgo_ab', 'riesgo_ac', 'habitabilidad_calc', 'criterio_habitabilidad', 'justificacion_criterio',
+    'riesgo_ab', 'riesgo_ac', 'habitabilidad_calc', 'criterio_habitabilidad', 'suspension_servicios',
+    'justificacion_criterio',
     'requiere_evaluacion_adicional', 'eval_estructural', 'eval_geotecnica', 'eval_otra',
     'intervencion_entades',
   ],
