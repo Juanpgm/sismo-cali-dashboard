@@ -15,6 +15,9 @@
 
 const RAILWAY_API = 'https://backboard.railway.com/graphql/v2';
 const SERVICE_ID = process.env.RAILWAY_SERVICE_ID || '156e97a2-596b-4861-95f4-4060dab408e2';
+// Cruce críticos↔survey (vista Gestión). El botón "Actualizar datos" refresca TODO:
+// datos del Panel (dashboard-refresh) + cruce de Gestión (cruce-gestion).
+const CRUCE_SERVICE_ID = process.env.RAILWAY_CRUCE_SERVICE_ID || 'b4c8fd15-aa3b-4157-b787-2034c89a108b';
 const ENVIRONMENT_ID = process.env.RAILWAY_ENVIRONMENT_ID || '4418f451-bd97-4d96-ba6e-b5ecbbd49c9b';
 
 // serviceInstanceRedeploy redeploys the service's latest deployment (i.e. runs
@@ -64,9 +67,18 @@ module.exports = async (req, res) => {
 
   try {
     const data = await railway(token, REDEPLOY, { s: SERVICE_ID, e: ENVIRONMENT_ID });
+    // Cruce de Gestión: fail-soft — si falla, el refresh del Panel ya quedó
+    // encolado y la Gestión se refresca sola con su cron de 15 min.
+    let cruceDeploymentId = null;
+    try {
+      const cruce = await railway(token, REDEPLOY, { s: CRUCE_SERVICE_ID, e: ENVIRONMENT_ID });
+      cruceDeploymentId = cruce.serviceInstanceRedeploy;
+    } catch (err) {
+      console.error('cruce-gestion redeploy failed (non-fatal):', err);
+    }
     // 202 Accepted: the refresh is running, but the fresh data lands minutes
-    // later (pipeline + Vercel redeploy), so nothing to return but the id.
-    return res.status(202).json({ ok: true, deploymentId: data.serviceInstanceRedeploy });
+    // later (pipeline + Vercel redeploy), so nothing to return but the ids.
+    return res.status(202).json({ ok: true, deploymentId: data.serviceInstanceRedeploy, cruceDeploymentId });
   } catch (err) {
     return res.status(502).json({ error: String((err && err.message) || err) });
   }
