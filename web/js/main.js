@@ -8,7 +8,6 @@ import {
   setChoroplethLevel, setChoroplethMetric, invalidateSize, highlightRecord, applyMapTheme,
 } from './mapview.js';
 import { initTable, renderTable, setTotalRecords, openDetailModal } from './table.js';
-import { initGestion, invalidateGestionSize, applyGestionTheme } from './cruce.js';
 import { initTheme } from './theme.js';
 import { debounce, setSourceLabels, sourceLabel } from './utils.js';
 
@@ -158,15 +157,8 @@ function switchView(view) {
     panel.hidden = panel.dataset.viewPanel !== view;
   });
   // The filters sidebar only applies to the Panel view; collapse it otherwise.
-  document.querySelector('.app-shell').classList.toggle('asig-active', view === 'gestion');
-  if (view === 'gestion') {
-    closeFiltersDrawer();
-    initGestion().catch((err) => {
-      console.error(err);
-      showToast('No se pudo cargar la vista de gestión.', 'error');
-    });
-    invalidateGestionSize();
-  }
+  document.querySelector('.app-shell').classList.toggle('asig-active', view !== 'panel');
+  if (view !== 'panel') closeFiltersDrawer();
 }
 
 function wireViewTabs() {
@@ -418,13 +410,11 @@ document.addEventListener('keydown', (e) => {
 });
 window.addEventListener('resize', debounce(() => {
   invalidateSize();
-  invalidateGestionSize();
 }, 200));
-// Theme toggle: swap map tiles (both maps) and rebuild charts so Chart.js picks
+// Theme toggle: swap map tiles and rebuild charts so Chart.js picks
 // up the new CSS-variable colors it bakes in at construction time.
 document.addEventListener('themechange', () => {
   applyMapTheme();
-  applyGestionTheme();
   if (store.records.length) renderStatistics(store.filtered);
 });
 
@@ -432,8 +422,7 @@ loadAndRender();
 
 // Auto-refresh cada 30 min. Silencioso: recarga el store (dispara el re-render
 // del Panel vía la suscripción) + actualiza la fecha del header, sin overlay de
-// error ni reconstruir el panel de filtros. La vista Gestión ya es tiempo real
-// (Firestore onSnapshot: se actualiza al instante con cada corrida del cron).
+// error ni reconstruir el panel de filtros.
 const AUTO_REFRESH_MS = 30 * 60 * 1000;
 setInterval(async () => {
   try {

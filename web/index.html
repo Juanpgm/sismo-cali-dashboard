@@ -71,7 +71,7 @@
 
     <nav class="view-tabs" role="tablist" aria-label="Vistas">
       <button type="button" class="view-tab is-active" data-view="panel" role="tab" aria-selected="true">Panel</button>
-      <button type="button" class="view-tab" data-view="gestion" role="tab" aria-selected="false">Gestión</button>
+      <button type="button" class="view-tab" data-view="acciones" role="tab" aria-selected="false">Acciones</button>
     </nav>
 
     <div id="view-panel" data-view-panel="panel">
@@ -242,46 +242,10 @@
 
     </div><!-- /#view-panel -->
 
-    <!-- ============ GESTIÓN VIEW (cruce críticos↔survey en vivo · Firestore) ============ -->
-    <section id="view-gestion" data-view-panel="gestion" aria-label="Gestión de asignaciones" hidden>
-      <section class="card asig-summary-card">
-        <div class="gestion-authbar" id="gestion-authbar"></div>
-        <div id="gestion-summary" class="asig-summary">Cargando gestión…</div>
-      </section>
-
-      <section class="card map-card" aria-label="Mapa de puntos críticos">
-        <div class="card-toolbar">
-          <h2 class="stats-title">Puntos críticos · levantados y pendientes</h2>
-          <div class="gestion-toolbar-actions">
-            <span class="gestion-updated" id="gestion-updated"></span>
-            <button type="button" class="btn-primary" id="gestion-despacho-btn" hidden>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
-              Registrar despacho
-            </button>
-          </div>
-        </div>
-        <div class="map-container" id="gestion-map"></div>
-      </section>
-
-      <section class="card table-card">
-        <div class="card-toolbar">
-          <h2 class="stats-title">Registro de gestión</h2>
-          <div class="gestion-toolbar-actions">
-            <label class="gestion-toggle"><input type="checkbox" id="gestion-solo-pendientes"> Solo pendientes sin asignar</label>
-            <button type="button" class="btn-secondary" id="gestion-download">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><line x1="5" y1="21" x2="19" y2="21"/></svg>
-              Descargar lista
-            </button>
-          </div>
-        </div>
-        <div class="table-scroll" id="gestion-table"></div>
-      </section>
-
-      <section class="card table-card">
-        <div class="card-toolbar">
-          <h2 class="stats-title">Despachos registrados</h2>
-        </div>
-        <div class="gestion-despachos" id="gestion-despachos"></div>
+    <!-- ============ ACCIONES VIEW (vacía por ahora) ============ -->
+    <section id="view-acciones" data-view-panel="acciones" aria-label="Acciones" hidden>
+      <section class="card">
+        <p class="asig-summary">Próximamente.</p>
       </section>
     </section>
 
@@ -305,99 +269,6 @@
   </div>
 </div>
 
-<!-- ============ PUNTO MODAL (detalle: dos IDs + datos del match) ============ -->
-<div class="modal" id="punto-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="punto-modal-title">
-  <div class="modal-backdrop" data-punto-close></div>
-  <div class="modal-panel">
-    <div class="modal-header">
-      <h2 id="punto-modal-title">Detalle del punto crítico</h2>
-      <button type="button" class="btn-icon" data-punto-close aria-label="Cerrar">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
-      </button>
-    </div>
-    <div class="modal-body" id="punto-modal-body"></div>
-  </div>
-</div>
-
-<!-- ============ ASIGNAR PUNTO MODAL (asignación punto a punto) ============ -->
-<div class="modal" id="asignar-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="asignar-modal-title">
-  <div class="modal-backdrop" data-asignar-close></div>
-  <div class="modal-panel">
-    <div class="modal-header">
-      <h2 id="asignar-modal-title">Asignar punto</h2>
-      <button type="button" class="btn-icon" data-asignar-close aria-label="Cerrar">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
-      </button>
-    </div>
-    <div class="modal-body">
-      <p class="punto-modal-dir" id="asignar-dir"></p>
-      <form id="asignar-form" class="despacho-form">
-        <label class="despacho-field"><span>Asignado a</span>
-          <input type="text" id="asignar-persona" list="lideres-list" placeholder="Nombre (elegí uno guardado o escribí uno nuevo)">
-        </label>
-        <label class="despacho-field"><span>Celular</span>
-          <input type="tel" id="asignar-telefono" placeholder="300…">
-        </label>
-        <label class="despacho-field"><span>Entidad</span>
-          <input type="text" id="asignar-entidad" placeholder="EDRU, Secretaría de Vivienda…">
-        </label>
-        <label class="despacho-field"><span>Fecha de visita</span>
-          <input type="date" id="asignar-fecha">
-        </label>
-        <label class="despacho-field despacho-field-full"><span>Observaciones (opcional)</span>
-          <textarea id="asignar-nota" rows="2"></textarea>
-        </label>
-        <div class="despacho-actions">
-          <span class="asig-error" id="asignar-err" hidden></span>
-          <button type="submit" class="btn-primary">Asignar punto</button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
-
-<!-- ============ DESPACHO MODAL (registrar despacho / asignar zona) ============ -->
-<div class="modal" id="despacho-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="despacho-modal-title">
-  <div class="modal-backdrop" data-despacho-close></div>
-  <div class="modal-panel">
-    <div class="modal-header">
-      <h2 id="despacho-modal-title">Registrar despacho</h2>
-      <button type="button" class="btn-icon" data-despacho-close aria-label="Cerrar">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
-      </button>
-    </div>
-    <div class="modal-body">
-      <form id="despacho-form" class="despacho-form">
-        <label class="despacho-field despacho-field-full">
-          <span>Zonas del despacho <small>(informativas — los puntos se asignan uno a uno con el botón Asignar)</small></span>
-          <select id="despacho-zona"><option value="">Agregar una zona…</option></select>
-          <div class="despacho-zone-list" id="despacho-zona-list"></div>
-        </label>
-        <label class="despacho-field"><span>Líder</span>
-          <input type="text" id="despacho-lider" list="lideres-list" placeholder="Nombre del líder" required></label>
-        <label class="despacho-field"><span>Celular</span>
-          <input type="tel" id="despacho-celular" placeholder="300…"></label>
-        <label class="despacho-field"><span>Entidad</span>
-          <input type="text" id="despacho-entidad" placeholder="EDRU, Secretaría de Vivienda…"></label>
-        <label class="despacho-field"><span>N.º de personas en la cuadrilla</span>
-          <input type="number" id="despacho-personas" min="0" step="1"></label>
-        <label class="despacho-field"><span>N.º de vehículos</span>
-          <input type="number" id="despacho-vehiculos" min="0" step="1"></label>
-        <label class="despacho-field despacho-field-full"><span>Profesionales sociales asignados (opcional)</span>
-          <input type="text" id="despacho-sociales"></label>
-        <label class="despacho-field"><span>Fecha</span>
-          <input type="date" id="despacho-fecha"></label>
-        <label class="despacho-field despacho-field-full"><span>Observaciones (opcional)</span>
-          <textarea id="despacho-observaciones" rows="2"></textarea></label>
-        <div class="despacho-actions">
-          <span class="asig-error" id="despacho-err" hidden></span>
-          <button type="submit" class="btn-primary" id="despacho-submit">Asignar zona</button>
-        </div>
-      </form>
-    </div>
-  </div>
-</div>
-
 <!-- ============ ERROR STATE (data fetch failure) ============ -->
 <div class="error-overlay" id="error-overlay" hidden>
   <div class="error-card">
@@ -407,9 +278,6 @@
     <button type="button" class="btn-primary" id="retry-btn">Reintentar</button>
   </div>
 </div>
-
-<!-- Directorio de líderes compartido por los modales de asignación -->
-<datalist id="lideres-list"></datalist>
 
 <!-- ============ TOASTS ============ -->
 <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
