@@ -305,6 +305,38 @@
   </div>
 </div>
 
+<!-- ============ ASIGNAR PUNTO MODAL (asignación punto a punto) ============ -->
+<div class="modal" id="asignar-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="asignar-modal-title">
+  <div class="modal-backdrop" data-asignar-close></div>
+  <div class="modal-panel">
+    <div class="modal-header">
+      <h2 id="asignar-modal-title">Asignar punto</h2>
+      <button type="button" class="btn-icon" data-asignar-close aria-label="Cerrar">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <p class="punto-modal-dir" id="asignar-dir"></p>
+      <form id="asignar-form" class="despacho-form">
+        <label class="despacho-field despacho-field-full"><span>Despacho existente (opcional)</span>
+          <select id="asignar-despacho"><option value="">Sin despacho — asignar solo a una persona</option></select>
+        </label>
+        <label class="despacho-field"><span>Asignado a</span>
+          <input type="text" id="asignar-persona" list="lideres-list" placeholder="Nombre (elegí uno guardado o escribí uno nuevo)">
+        </label>
+        <label class="despacho-field"><span>Celular</span>
+          <input type="tel" id="asignar-telefono" placeholder="300…">
+        </label>
+        <div class="despacho-actions">
+          <span class="asig-error" id="asignar-err" hidden></span>
+          <button type="button" class="btn-secondary" id="asignar-quitar">Quitar asignación</button>
+          <button type="submit" class="btn-primary">Asignar punto</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <!-- ============ DESPACHO MODAL (registrar despacho / asignar zona) ============ -->
 <div class="modal" id="despacho-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="despacho-modal-title">
   <div class="modal-backdrop" data-despacho-close></div>
@@ -323,7 +355,7 @@
           <div class="despacho-zone-list" id="despacho-zona-list"></div>
         </label>
         <label class="despacho-field"><span>Líder</span>
-          <input type="text" id="despacho-lider" placeholder="Nombre del líder" required></label>
+          <input type="text" id="despacho-lider" list="lideres-list" placeholder="Nombre del líder" required></label>
         <label class="despacho-field"><span>Celular</span>
           <input type="tel" id="despacho-celular" placeholder="300…"></label>
         <label class="despacho-field"><span>Entidad</span>
@@ -356,6 +388,9 @@
     <button type="button" class="btn-primary" id="retry-btn">Reintentar</button>
   </div>
 </div>
+
+<!-- Directorio de líderes compartido por los modales de asignación -->
+<datalist id="lideres-list"></datalist>
 
 <!-- ============ TOASTS ============ -->
 <div class="toast-stack" id="toast-stack" aria-live="polite"></div>

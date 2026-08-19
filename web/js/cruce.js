@@ -17,6 +17,7 @@ const FIREBASE_CONFIG = {
 };
 const COLLECTION = 'cruce_criticos_survey';
 const DESPACHOS_COLLECTION = 'despachos';
+const LIDERES_COLLECTION = 'lideres';
 const SDK = 'https://www.gstatic.com/firebasejs/10.12.2';
 
 const CALI_CENTER = [3.42, -76.53];
@@ -72,6 +73,7 @@ let despachoEditId = null; // id del despacho en edición (null = crear)
 let soloPendientes = false;// filtro rápido de tabla: solo pendientes sin asignar
 let filtroLider = null;    // filtro: mostrar solo los puntos de una persona (líder)
 let cruceMeta = null;      // _meta/resumen: fecha de CORRIDA del pipeline
+let lideres = [];          // directorio de líderes: [{ id, nombre, telefono }]
 
 const el = (sel) => document.querySelector(sel);
 
@@ -95,6 +97,7 @@ async function loadFirebase() {
     doc: fsMod.doc,
     updateDoc: fsMod.updateDoc,
     addDoc: fsMod.addDoc,
+    setDoc: fsMod.setDoc,
     deleteDoc: fsMod.deleteDoc,
     writeBatch: fsMod.writeBatch,
     serverTimestamp: fsMod.serverTimestamp,
@@ -303,14 +306,15 @@ function renderTable() {
       const v = r[key] == null ? '' : String(r[key]);
       return `<td>${escapeHtml(v)}</td>`;
     }).join('');
-    // Botón Asignar como acción de fila (precarga la zona en el modal de despacho).
+    // Botón Asignar como acción de fila: asigna SOLO ESE PUNTO (uno a uno).
+    // La asignación masiva por zona vive en "Registrar despacho".
     let asignar = '';
     if (canEdit) {
-      const already = r.gestion_estado && r.gestion_estado !== 'sin_asignar';
+      const already = effectiveEstado(r) !== 'sin_asignar';
       const done = r.estado === 'levantado';
       asignar = done
         ? '<td>—</td>'
-        : `<td><button type="button" class="btn-mini gestion-asignar" data-zona="${escapeHtml(r.zona_id || '')}">${already ? 'Reasignar' : 'Asignar'}</button></td>`;
+        : `<td><button type="button" class="btn-mini gestion-asignar" data-id="${escapeHtml(r.id)}">${already ? 'Reasignar' : 'Asignar'}</button></td>`;
     }
     const stateClass = r.estado === 'levantado' ? 'asig-row-done' : 'asig-row-pending';
     return `<tr class="${stateClass}">${detalle}${cells}${asignar}</tr>`;
@@ -325,7 +329,139 @@ function renderTable() {
   t.querySelectorAll('.gestion-eye').forEach((btn) =>
     btn.addEventListener('click', () => openPunto(btn.dataset.id)));
   t.querySelectorAll('.gestion-asignar').forEach((btn) =>
-    btn.addEventListener('click', () => openDespacho({ prefillZona: btn.dataset.zona || '' })));
+    btn.addEventListener('click', () => openAsignarPunto(btn.dataset.id)));
+}
+
+// ── Directorio de líderes (autocompletar nombre + teléfono) ──────────────────
+function subscribeLideres() {
+  fb.onSnapshot(fb.collection(fb.db, LIDERES_COLLECTION), (snap) => {
+    lideres = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => String(a.nombre || '').localeCompare(String(b.nombre || ''), 'es'));
+    refreshLideresDatalist();
+  }, (err) => console.error('Firestore lideres', err));
+}
+
+function refreshLideresDatalist() {
+  const dl = el('#lideres-list');
+  if (!dl) return;
+  dl.innerHTML = lideres.map((l) =>
+    `<option value="${escapeHtml(l.nombre || '')}">${escapeHtml(l.telefono || '')}</option>`).join('');
+}
+
+function liderPorNombre(nombre) {
+  const n = String(nombre || '').trim().toLowerCase();
+  return lideres.find((l) => String(l.nombre || '').trim().toLowerCase() === n) || null;
+}
+
+/** Guarda/actualiza el líder en el directorio (id = nombre normalizado).
+ *  Best-effort: un fallo acá nunca bloquea la asignación. */
+async function upsertLider(nombre, telefono) {
+  const n = String(nombre || '').trim();
+  if (!canEdit || !n) return;
+  const id = n.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'lider';
+  try {
+    await fb.setDoc(fb.doc(fb.db, LIDERES_COLLECTION, id), {
+      nombre: n,
+      ...(String(telefono || '').trim() ? { telefono: String(telefono).trim() } : {}),
+      actualizado_utc: Date.now(),
+    }, { merge: true });
+  } catch (ex) {
+    console.error('No se pudo guardar el líder en el directorio', ex);
+  }
+}
+
+// ── Modal Asignar punto (asignación punto a punto) ───────────────────────────
+// El override individual (gestion_estado/gestion_asignado_a/gestion_despacho_id)
+// GANA sobre la derivación por zona (ver effectiveEstado/asignadoDe), así que
+// asignar un punto no toca a los demás de la zona.
+let asignarPuntoId = null;
+
+function openAsignarPunto(id) {
+  if (!canEdit) return;
+  const r = records.find((x) => x.id === id);
+  if (!r) return;
+  asignarPuntoId = id;
+  el('#asignar-dir').textContent = `${r.direccion || r.registro_id} · zona ${r.zona_id || '—'}`;
+  el('#asignar-despacho').innerHTML = '<option value="">Sin despacho — asignar solo a una persona</option>'
+    + despachos.map((d) => `<option value="${escapeHtml(d.id)}"${r.gestion_despacho_id === d.id ? ' selected' : ''}>${escapeHtml(d.lider || '—')} · ${escapeHtml((d.zonas || []).join(', ') || 'sin zona')}</option>`).join('');
+  el('#asignar-persona').value = r.gestion_asignado_a || '';
+  el('#asignar-telefono').value = liderPorNombre(r.gestion_asignado_a)?.telefono || '';
+  refreshLideresDatalist();
+  el('#asignar-err').hidden = true;
+  const m = el('#asignar-modal');
+  m.classList.add('is-open');
+  m.setAttribute('aria-hidden', 'false');
+}
+
+function closeAsignarPunto() {
+  asignarPuntoId = null;
+  const m = el('#asignar-modal');
+  m.classList.remove('is-open');
+  m.setAttribute('aria-hidden', 'true');
+}
+
+async function submitAsignarPunto(e) {
+  e.preventDefault();
+  if (!canEdit || !asignarPuntoId) return;
+  const err = el('#asignar-err');
+  err.hidden = true;
+  const despId = el('#asignar-despacho').value;
+  const desp = despId ? despachos.find((d) => d.id === despId) : null;
+  const persona = el('#asignar-persona').value.trim() || (desp ? (desp.lider || '') : '');
+  if (!persona) {
+    err.textContent = 'Poné la persona o elegí un despacho.';
+    err.hidden = false;
+    return;
+  }
+  try {
+    await fb.updateDoc(fb.doc(fb.db, COLLECTION, asignarPuntoId), {
+      gestion_estado: 'asignado',
+      gestion_asignado_a: persona,
+      gestion_despacho_id: despId || '',
+      gestion_actualizado_utc: Date.now(),
+      gestion_actualizado_por: user?.email || '',
+    });
+    // Guarda el líder en el directorio (nombre + tel) para la próxima asignación.
+    upsertLider(persona, el('#asignar-telefono').value);
+    closeAsignarPunto();
+  } catch (ex) {
+    console.error('No se pudo asignar el punto', ex);
+    err.textContent = 'No se pudo guardar. ¿Tenés permiso de edición?';
+    err.hidden = false;
+  }
+}
+
+async function quitarAsignacionPunto() {
+  if (!canEdit || !asignarPuntoId) return;
+  try {
+    // Limpia el override: el punto vuelve a derivar su estado de la zona.
+    await fb.updateDoc(fb.doc(fb.db, COLLECTION, asignarPuntoId), {
+      gestion_estado: 'sin_asignar',
+      gestion_asignado_a: '',
+      gestion_despacho_id: '',
+      gestion_actualizado_utc: Date.now(),
+      gestion_actualizado_por: user?.email || '',
+    });
+    closeAsignarPunto();
+  } catch (ex) {
+    console.error('No se pudo quitar la asignación', ex);
+  }
+}
+
+function wireAsignarModal() {
+  el('#asignar-form').addEventListener('submit', submitAsignarPunto);
+  el('#asignar-quitar').addEventListener('click', quitarAsignacionPunto);
+  document.querySelectorAll('[data-asignar-close]').forEach((b) => b.addEventListener('click', closeAsignarPunto));
+  // Autocompletar teléfono al elegir un líder guardado (en ambos modales).
+  el('#asignar-persona').addEventListener('input', (e) => {
+    const l = liderPorNombre(e.target.value);
+    if (l?.telefono) el('#asignar-telefono').value = l.telefono;
+  });
+  el('#despacho-lider').addEventListener('input', (e) => {
+    const l = liderPorNombre(e.target.value);
+    if (l?.telefono) el('#despacho-celular').value = l.telefono;
+  });
 }
 
 // ── Modal de detalle del punto (dos IDs + datos del match) ───────────────────
@@ -393,7 +529,7 @@ function openPunto(id) {
           <textarea id="punto-edit-nota" rows="2" placeholder="nota…">${escapeHtml(r.gestion_nota || '')}</textarea>
         </label>
         <div class="punto-edit-actions">
-          <button type="button" class="btn-secondary" id="punto-asignar">Asignar a despacho</button>
+          <button type="button" class="btn-secondary" id="punto-asignar">Asignar este punto</button>
           <button type="button" class="btn-primary" id="punto-edit-save">Guardar gestión</button>
           <span class="asig-error" id="punto-edit-msg" hidden></span>
         </div>
@@ -405,7 +541,7 @@ function openPunto(id) {
       </dl>`}`;
   if (canEdit) {
     el('#punto-edit-save').addEventListener('click', () => saveGestion(id));
-    el('#punto-asignar').addEventListener('click', () => { closePunto(); openDespacho({ prefillZona: r.zona_id || '' }); });
+    el('#punto-asignar').addEventListener('click', () => { closePunto(); openAsignarPunto(id); });
   }
   const m = el('#punto-modal');
   m.classList.add('is-open');
@@ -565,6 +701,7 @@ async function submitDespacho(e) {
       despacho.creado_por = user?.email || '';
       await fb.addDoc(fb.collection(fb.db, DESPACHOS_COLLECTION), despacho);
     }
+    upsertLider(lider, despacho.celular);  // directorio para próximas asignaciones
     closeDespacho();
   } catch (ex) {
     console.error('No se pudo guardar el despacho', ex);
@@ -711,6 +848,7 @@ export async function initGestion() {
   }
 
   wireDespachoModal();
+  wireAsignarModal();
 
   // Filtro rápido: solo pendientes sin asignar (agilidad, evitar repetir).
   const toggle = el('#gestion-solo-pendientes');
@@ -732,5 +870,6 @@ export async function initGestion() {
   subscribe();
   subscribeDespachos();
   subscribeMeta();
+  subscribeLideres();
   invalidateGestionSize();
 }
