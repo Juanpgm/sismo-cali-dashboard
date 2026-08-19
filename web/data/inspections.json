@@ -123,7 +123,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "HIUH8",
@@ -249,7 +250,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "DOUR8",
@@ -375,7 +377,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "TTU0Z",
@@ -501,7 +504,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "GGU3B",
@@ -627,7 +631,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "BQ3FM",
@@ -753,7 +758,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "QDWT8",
@@ -879,7 +885,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "XGMVX",
@@ -1005,7 +1012,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.427508,
     "geocode_lon": -76.541123,
-    "dist_geocode_m": 32.2
+    "dist_geocode_m": 32.2,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "DSBRL",
@@ -1131,7 +1139,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "P7SPJ",
@@ -1257,7 +1266,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "L37IW",
@@ -1383,7 +1393,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "R1LRU",
@@ -1509,7 +1520,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "5TE0Q",
@@ -1635,7 +1647,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "RXO8D",
@@ -1761,7 +1774,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FYRCJ",
@@ -1887,7 +1901,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "ISI29",
@@ -2013,7 +2028,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "H4I0S",
@@ -2139,7 +2155,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JZ49B",
@@ -2265,7 +2282,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "BASLP",
@@ -2391,7 +2409,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "HVFH1",
@@ -2517,7 +2536,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "MJ7YR",
@@ -2643,7 +2663,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "6PFE7",
@@ -2769,7 +2790,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "si"
   },
   {
     "id_edan": "P68PV",
@@ -2895,7 +2917,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "I0YAR",
@@ -3021,7 +3044,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "95LZS",
@@ -3147,7 +3171,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "KAIE5",
@@ -3273,7 +3298,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "CWIDD",
@@ -3399,7 +3425,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "GYFIM",
@@ -3525,7 +3552,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "6L7TO",
@@ -3651,7 +3679,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "TNTVJ",
@@ -3777,7 +3806,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JZLD4",
@@ -3903,7 +3933,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "LMIIR",
@@ -4029,7 +4060,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "7TVGZ",
@@ -4155,7 +4187,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "52J75",
@@ -4281,7 +4314,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "GGNK1",
@@ -4407,7 +4441,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "LWXXM",
@@ -4533,7 +4568,8 @@
     "coords_validacion": "sin_geocode",
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FE6AR",
@@ -4659,7 +4695,8 @@
     "coords_validacion": "sin_geocode",
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "AJ4Z4",
@@ -4785,7 +4822,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "2BZBR",
@@ -4911,7 +4949,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "TD38A",
@@ -5037,7 +5076,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "3NFXO",
@@ -5163,7 +5203,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "RM47L",
@@ -5289,7 +5330,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "LPH5Y",
@@ -5415,7 +5457,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "339LD",
@@ -5541,7 +5584,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "P09QE",
@@ -5667,7 +5711,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "462QD",
@@ -5793,7 +5838,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "A00CA",
@@ -5919,7 +5965,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "3ROX5",
@@ -6045,7 +6092,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "ETZTB",
@@ -6171,7 +6219,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4PZO1",
@@ -6297,7 +6346,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "2CH2N",
@@ -6423,7 +6473,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4EUJE",
@@ -6549,7 +6600,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.450792,
     "geocode_lon": -76.540886,
-    "dist_geocode_m": 4211.1
+    "dist_geocode_m": 4211.1,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "SGO4N",
@@ -6675,7 +6727,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "MEYWP",
@@ -6801,7 +6854,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "ID69P",
@@ -6927,7 +6981,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "M6ECF",
@@ -7053,7 +7108,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "Q459N",
@@ -7179,7 +7235,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.389066,
     "geocode_lon": -76.552605,
-    "dist_geocode_m": 62.8
+    "dist_geocode_m": 62.8,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "K5KET",
@@ -7305,7 +7362,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "6MRO0",
@@ -7431,7 +7489,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "3NL1V",
@@ -7557,7 +7616,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "IH8UD",
@@ -7683,7 +7743,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "T2PXD",
@@ -7809,7 +7870,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "SAETR",
@@ -7935,7 +7997,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "QL52E",
@@ -8061,7 +8124,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "NMB3W",
@@ -8187,7 +8251,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "CH16H",
@@ -8313,7 +8378,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "F92UZ",
@@ -8439,7 +8505,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "1O1JO",
@@ -8565,7 +8632,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "HRLMJ",
@@ -8691,7 +8759,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "F5FR8",
@@ -8817,7 +8886,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "R0IBF",
@@ -8943,7 +9013,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "1SEY3",
@@ -9069,7 +9140,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "K3WCT",
@@ -9195,7 +9267,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "TW74X",
@@ -9321,7 +9394,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "BV40C",
@@ -9447,7 +9521,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "46O55",
@@ -9573,7 +9648,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "si"
   },
   {
     "id_edan": "UXCF0",
@@ -9699,7 +9775,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "6P7I5",
@@ -9825,7 +9902,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "3ED4X",
@@ -9951,7 +10029,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "si"
   },
   {
     "id_edan": "40VW0",
@@ -10077,7 +10156,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.389066,
     "geocode_lon": -76.552605,
-    "dist_geocode_m": 50.0
+    "dist_geocode_m": 50.0,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "AYDDY",
@@ -10203,7 +10283,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "E7MHM",
@@ -10329,7 +10410,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FGNUI",
@@ -10455,7 +10537,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "1US3E",
@@ -10581,7 +10664,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "M2JOV",
@@ -10707,7 +10791,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "5Q47U",
@@ -10833,7 +10918,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JW693",
@@ -10959,7 +11045,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "L4VNT",
@@ -11085,7 +11172,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "ITW9N",
@@ -11211,7 +11299,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.3891,
     "geocode_lon": -76.552977,
-    "dist_geocode_m": 40.1
+    "dist_geocode_m": 40.1,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "OO22C",
@@ -11337,7 +11426,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "7AZ55",
@@ -11463,7 +11553,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "MFQSS",
@@ -11589,7 +11680,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "N78EW",
@@ -11715,7 +11807,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4ZRE1",
@@ -11841,7 +11934,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "TFN44",
@@ -11967,7 +12061,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "E6GQK",
@@ -12093,7 +12188,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4Q230",
@@ -12219,7 +12315,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "DGD03",
@@ -12345,7 +12442,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "QC37K",
@@ -12471,7 +12569,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "29ULT",
@@ -12597,7 +12696,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "38IEL",
@@ -12723,7 +12823,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "N6FHU",
@@ -12849,7 +12950,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "ITLYJ",
@@ -12975,7 +13077,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "G13G3",
@@ -13101,7 +13204,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4L8YJ",
@@ -13227,7 +13331,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "9LV1E",
@@ -13353,7 +13458,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FOPRK",
@@ -13479,7 +13585,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "MIFX6",
@@ -13605,7 +13712,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "DYENN",
@@ -13731,7 +13839,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FYTNP",
@@ -13857,7 +13966,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FWOLU",
@@ -13983,7 +14093,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "CBBXG",
@@ -14109,7 +14220,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "9NOQF",
@@ -14235,7 +14347,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "2MUNN",
@@ -14361,7 +14474,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "RAXZW",
@@ -14487,7 +14601,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "DGX61",
@@ -14613,7 +14728,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "7H3EA",
@@ -14739,7 +14855,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "OYILS",
@@ -14865,7 +14982,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "33HY5",
@@ -14991,7 +15109,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "N84OM",
@@ -15117,7 +15236,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "LGH3X",
@@ -15243,7 +15363,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "PMXBD",
@@ -15369,7 +15490,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "1XTT9",
@@ -15495,7 +15617,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "AHT6U",
@@ -15621,7 +15744,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "N64YL",
@@ -15747,7 +15871,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "30HKF",
@@ -15873,7 +15998,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "89DHO",
@@ -15999,7 +16125,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "69NL7",
@@ -16125,7 +16252,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "MBDT3",
@@ -16251,7 +16379,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.450792,
     "geocode_lon": -76.540886,
-    "dist_geocode_m": 4558.3
+    "dist_geocode_m": 4558.3,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "LZHXN",
@@ -16377,7 +16506,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "6DGWV",
@@ -16503,7 +16633,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "N3EYC",
@@ -16629,7 +16760,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "KQXBM",
@@ -16755,7 +16887,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "OVU5P",
@@ -16881,7 +17014,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "9CQ6F",
@@ -17007,7 +17141,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "OJ3ZK",
@@ -17133,7 +17268,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "DPXQ3",
@@ -17259,7 +17395,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.425171,
     "geocode_lon": -76.555709,
-    "dist_geocode_m": 1513.8
+    "dist_geocode_m": 1513.8,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "7MOL7",
@@ -17385,7 +17522,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.434572,
     "geocode_lon": -76.463057,
-    "dist_geocode_m": 10340.8
+    "dist_geocode_m": 10340.8,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "D8UC7",
@@ -17511,7 +17649,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "CRRM1",
@@ -17637,7 +17776,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "F0BP4",
@@ -17763,7 +17903,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "DP6WZ",
@@ -17889,7 +18030,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "A9TQT",
@@ -18015,7 +18157,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "S74CO",
@@ -18141,7 +18284,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "P0MC7",
@@ -18267,7 +18411,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "9H71R",
@@ -18393,7 +18538,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.389066,
     "geocode_lon": -76.552605,
-    "dist_geocode_m": 85.6
+    "dist_geocode_m": 85.6,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "CZPAK",
@@ -18519,7 +18665,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "2SNR0",
@@ -18645,7 +18792,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "AHK78",
@@ -18771,7 +18919,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "23RVX",
@@ -18897,7 +19046,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.389066,
     "geocode_lon": -76.552605,
-    "dist_geocode_m": 36.0
+    "dist_geocode_m": 36.0,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "BZKU1",
@@ -19023,7 +19173,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "D85W3",
@@ -19149,7 +19300,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "8YXV5",
@@ -19275,7 +19427,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.389066,
     "geocode_lon": -76.552605,
-    "dist_geocode_m": 36.0
+    "dist_geocode_m": 36.0,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "8HVOT",
@@ -19401,7 +19554,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "6ZAXH",
@@ -19527,7 +19681,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "OD9GW",
@@ -19653,7 +19808,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JXB6L",
@@ -19779,7 +19935,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JR6U3",
@@ -19905,7 +20062,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "DGABC",
@@ -20031,7 +20189,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "MDVF2",
@@ -20157,7 +20316,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "SKGIY",
@@ -20283,7 +20443,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "3HTMA",
@@ -20409,7 +20570,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "OMRLM",
@@ -20535,7 +20697,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "63R2H",
@@ -20661,7 +20824,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "si"
   },
   {
     "id_edan": "R9STZ",
@@ -20787,7 +20951,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "1032F",
@@ -20913,7 +21078,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "TSOJU",
@@ -21039,7 +21205,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "QLOYM",
@@ -21165,7 +21332,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4FAAR",
@@ -21291,7 +21459,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "KD6R4",
@@ -21417,7 +21586,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "IGOTH",
@@ -21543,7 +21713,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "MEGWG",
@@ -21669,7 +21840,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "2R2S1",
@@ -21795,7 +21967,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.422088,
     "geocode_lon": -76.542542,
-    "dist_geocode_m": 171.1
+    "dist_geocode_m": 171.1,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "RTC9N",
@@ -21921,7 +22094,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "PVIMD",
@@ -22047,7 +22221,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FXKL1",
@@ -22173,7 +22348,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "SHGNB",
@@ -22299,7 +22475,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "Q49SP",
@@ -22425,7 +22602,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "8KWM6",
@@ -22551,7 +22729,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "1EFK6",
@@ -22677,7 +22856,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "5O4UH",
@@ -22803,7 +22983,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "N0I5S",
@@ -22929,7 +23110,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "IH3OK",
@@ -23055,7 +23237,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "DW4TQ",
@@ -23181,7 +23364,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "31PI5",
@@ -23307,7 +23491,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "B93B1",
@@ -23433,7 +23618,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "T9VYR",
@@ -23559,7 +23745,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "EJMQ5",
@@ -23685,7 +23872,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "2HD90",
@@ -23811,7 +23999,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "QWDDT",
@@ -23937,7 +24126,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "EEJF3",
@@ -24063,7 +24253,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "D6D2D",
@@ -24189,7 +24380,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "S941O",
@@ -24315,7 +24507,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "OXJUB",
@@ -24441,7 +24634,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "K3KR5",
@@ -24567,7 +24761,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "3QE2L",
@@ -24693,7 +24888,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "BWJUZ",
@@ -24819,7 +25015,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "93QE0",
@@ -24945,7 +25142,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "52XOB",
@@ -25071,7 +25269,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "SNT1W",
@@ -25197,7 +25396,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "S2WYK",
@@ -25323,7 +25523,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "8KWJP",
@@ -25449,7 +25650,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "C0WCP",
@@ -25575,7 +25777,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "N9L9S",
@@ -25701,7 +25904,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "Y4RFN",
@@ -25827,7 +26031,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "si"
   },
   {
     "id_edan": "KV6QX",
@@ -25953,7 +26158,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "1L5J2",
@@ -26079,7 +26285,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "BLEKJ",
@@ -26205,7 +26412,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "5SJ9M",
@@ -26331,7 +26539,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "R3J5H",
@@ -26457,7 +26666,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "S4NEP",
@@ -26583,7 +26793,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "DYFYR",
@@ -26709,7 +26920,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FRA43",
@@ -26835,7 +27047,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "ERPC6",
@@ -26961,7 +27174,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "CKPY3",
@@ -27087,7 +27301,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "N2BIC",
@@ -27213,7 +27428,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "NRXBE",
@@ -27339,7 +27555,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "APWK3",
@@ -27465,7 +27682,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "LILNG",
@@ -27591,7 +27809,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "HJ4T5",
@@ -27717,7 +27936,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "TOJNR",
@@ -27843,7 +28063,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "Q75LS",
@@ -27969,7 +28190,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "7ZT1R",
@@ -28095,7 +28317,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "TILOX",
@@ -28221,7 +28444,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "MLX42",
@@ -28347,7 +28571,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "CJZ42",
@@ -28473,7 +28698,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "7IFEM",
@@ -28599,7 +28825,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "1QCKB",
@@ -28725,7 +28952,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "HZ1U9",
@@ -28851,7 +29079,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "5JH0P",
@@ -28977,7 +29206,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "SLFNN",
@@ -29103,7 +29333,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "KK5T7",
@@ -29229,7 +29460,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "C3LAB",
@@ -29355,7 +29587,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "LUWNH",
@@ -29481,7 +29714,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "EJRQU",
@@ -29607,7 +29841,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "SO9O5",
@@ -29733,7 +29968,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "8RBHQ",
@@ -29859,7 +30095,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "A43WA",
@@ -29985,7 +30222,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "I62YN",
@@ -30111,7 +30349,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "5QM78",
@@ -30237,7 +30476,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "R6RT5",
@@ -30363,7 +30603,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "23Z9T",
@@ -30489,7 +30730,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "si"
   },
   {
     "id_edan": "HHREK",
@@ -30615,7 +30857,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "ADEBV",
@@ -30741,7 +30984,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "47430",
@@ -30867,7 +31111,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "RSXG6",
@@ -30993,7 +31238,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.444887,
     "geocode_lon": -76.507085,
-    "dist_geocode_m": 3769.0
+    "dist_geocode_m": 3769.0,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "5H358",
@@ -31119,7 +31365,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "7IXSI",
@@ -31245,7 +31492,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "67V5N",
@@ -31371,7 +31619,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "CMM5F",
@@ -31497,7 +31746,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "AIGN2",
@@ -31623,7 +31873,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "IMORJ",
@@ -31749,7 +32000,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "DLAOV",
@@ -31875,7 +32127,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "CP66V",
@@ -32001,7 +32254,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "7JLLM",
@@ -32127,7 +32381,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "6N3NL",
@@ -32253,7 +32508,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JLU6Z",
@@ -32379,7 +32635,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JOCP8",
@@ -32505,7 +32762,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "AD13T",
@@ -32631,7 +32889,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "SXYFS",
@@ -32757,7 +33016,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FEJFM",
@@ -32883,7 +33143,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JQOT2",
@@ -33009,7 +33270,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "S0UCC",
@@ -33135,7 +33397,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "P3G38",
@@ -33261,7 +33524,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "IVQJJ",
@@ -33387,7 +33651,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "9F9JQ",
@@ -33513,7 +33778,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "GR1CU",
@@ -33639,7 +33905,8 @@
     "coords_validacion": "sin_geocode",
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4X5NA",
@@ -33765,7 +34032,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4YK67",
@@ -33891,7 +34159,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "HSL0X",
@@ -34017,7 +34286,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "NN2JV",
@@ -34143,7 +34413,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "DMZNJ",
@@ -34269,7 +34540,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "F4YTY",
@@ -34395,7 +34667,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "NYOLS",
@@ -34521,7 +34794,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "8LIH3",
@@ -34647,7 +34921,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "GMHDX",
@@ -34773,7 +35048,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.486834,
     "geocode_lon": -76.492007,
-    "dist_geocode_m": 973.6
+    "dist_geocode_m": 973.6,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JWUXU",
@@ -34899,7 +35175,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "45UJ8",
@@ -35025,7 +35302,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "HXGSU",
@@ -35151,7 +35429,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "P8MP9",
@@ -35277,7 +35556,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FIAHC",
@@ -35403,7 +35683,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "5B9BR",
@@ -35529,7 +35810,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "PUJ0T",
@@ -35655,7 +35937,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "340PG",
@@ -35781,7 +36064,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "IKN45",
@@ -35907,7 +36191,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "L11FF",
@@ -36033,7 +36318,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "ELJCC",
@@ -36159,7 +36445,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "6ZB0G",
@@ -36285,7 +36572,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "D9176",
@@ -36411,7 +36699,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "6OOI4",
@@ -36537,7 +36826,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "C3IFR",
@@ -36663,7 +36953,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "2PNV5",
@@ -36789,7 +37080,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "M6FC2",
@@ -36915,7 +37207,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JCTFJ",
@@ -37041,7 +37334,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "O9QC8",
@@ -37167,7 +37461,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "GJ3W3",
@@ -37293,7 +37588,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "J999A",
@@ -37419,7 +37715,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "62M5P",
@@ -37545,7 +37842,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "A54QJ",
@@ -37671,7 +37969,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "K5EO5",
@@ -37797,7 +38096,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "J7BJB",
@@ -37923,7 +38223,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4IP0Q",
@@ -38049,7 +38350,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "9ZW0H",
@@ -38175,7 +38477,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4KLII",
@@ -38301,7 +38604,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "OEQHM",
@@ -38427,7 +38731,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "1PDJM",
@@ -38553,7 +38858,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "2Z8EO",
@@ -38679,7 +38985,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "1RI70",
@@ -38805,7 +39112,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "OBH27",
@@ -38931,7 +39239,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "KFMVK",
@@ -39057,7 +39366,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "EQAR4",
@@ -39183,7 +39493,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "QLOWH",
@@ -39309,7 +39620,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "5DDVY",
@@ -39435,7 +39747,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "96XWV",
@@ -39561,7 +39874,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "DUV8O",
@@ -39687,7 +40001,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JOIWE",
@@ -39813,7 +40128,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "GY04M",
@@ -39939,7 +40255,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.488531,
     "geocode_lon": -76.520307,
-    "dist_geocode_m": 60.0
+    "dist_geocode_m": 60.0,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "SKFXA",
@@ -40065,7 +40382,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.452361,
     "geocode_lon": -76.543491,
-    "dist_geocode_m": 4847.1
+    "dist_geocode_m": 4847.1,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "TNO88",
@@ -40191,7 +40509,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "PD8MI",
@@ -40317,7 +40636,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4NFGY",
@@ -40443,7 +40763,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "J3BWA",
@@ -40569,7 +40890,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "QUO59",
@@ -40695,7 +41017,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "EYKMG",
@@ -40821,7 +41144,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.488531,
     "geocode_lon": -76.520307,
-    "dist_geocode_m": 70.0
+    "dist_geocode_m": 70.0,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "T003R",
@@ -40947,7 +41271,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "RZUB8",
@@ -41073,7 +41398,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "C4AH2",
@@ -41199,7 +41525,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "RFYAU",
@@ -41325,7 +41652,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "MBB8J",
@@ -41451,7 +41779,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "2UBUL",
@@ -41577,7 +41906,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "M9TX8",
@@ -41703,7 +42033,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "KIUR4",
@@ -41829,7 +42160,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "BJPJN",
@@ -41955,7 +42287,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FIOLU",
@@ -42081,7 +42414,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "QT9QR",
@@ -42207,7 +42541,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "7KKZQ",
@@ -42333,7 +42668,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "6442F",
@@ -42459,7 +42795,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "CS7XU",
@@ -42585,7 +42922,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "PSKIT",
@@ -42711,7 +43049,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "3QVUM",
@@ -42837,7 +43176,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "NEGC8",
@@ -42963,7 +43303,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4C1K6",
@@ -43089,7 +43430,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "PCNB2",
@@ -43215,7 +43557,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "SWUMT",
@@ -43341,7 +43684,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "J7ROB",
@@ -43467,7 +43811,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "ODKVG",
@@ -43593,7 +43938,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "G4F00",
@@ -43719,7 +44065,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "C839Z",
@@ -43845,7 +44192,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.453202,
     "geocode_lon": -76.568682,
-    "dist_geocode_m": 5.7
+    "dist_geocode_m": 5.7,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "MWSC3",
@@ -43971,7 +44319,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "9GJAY",
@@ -44097,7 +44446,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "N3FFM",
@@ -44223,7 +44573,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "RVATD",
@@ -44349,7 +44700,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.493321,
     "geocode_lon": -76.487513,
-    "dist_geocode_m": 2324.8
+    "dist_geocode_m": 2324.8,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "2BTE9",
@@ -44475,7 +44827,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JRFAJ",
@@ -44601,7 +44954,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "EV7IK",
@@ -44727,7 +45081,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "SZZCE",
@@ -44853,7 +45208,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "R1W6U",
@@ -44979,7 +45335,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "5THMR",
@@ -45105,7 +45462,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "41YD9",
@@ -45231,7 +45589,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "RW8W4",
@@ -45357,7 +45716,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "OJRS2",
@@ -45483,7 +45843,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "GKP5U",
@@ -45609,7 +45970,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "C42BV",
@@ -45735,7 +46097,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "NL3AY",
@@ -45861,7 +46224,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "RQSOZ",
@@ -45987,7 +46351,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "T5207",
@@ -46113,7 +46478,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "5RGC7",
@@ -46239,7 +46605,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.471201,
     "geocode_lon": -76.499715,
-    "dist_geocode_m": 27.6
+    "dist_geocode_m": 27.6,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FYALL",
@@ -46365,7 +46732,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "GBUQ3",
@@ -46491,7 +46859,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "82S8R",
@@ -46617,7 +46986,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "F0TBF",
@@ -46743,7 +47113,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "F2K2F",
@@ -46869,7 +47240,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.409029,
     "geocode_lon": -76.549463,
-    "dist_geocode_m": 348.9
+    "dist_geocode_m": 348.9,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "SGEYD",
@@ -46995,7 +47367,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.397753,
     "geocode_lon": -76.534755,
-    "dist_geocode_m": 58.1
+    "dist_geocode_m": 58.1,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "6MPSU",
@@ -47121,7 +47494,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "MWGLI",
@@ -47247,7 +47621,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "9TKO5",
@@ -47373,7 +47748,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "3RIGJ",
@@ -47499,7 +47875,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "B6LTM",
@@ -47625,7 +48002,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "523NO",
@@ -47751,7 +48129,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "NB0E0",
@@ -47877,7 +48256,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JND5D",
@@ -48003,7 +48383,8 @@
     "coords_validacion": "sin_geocode",
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "ETXQ0",
@@ -48129,7 +48510,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "MB1Y2",
@@ -48255,7 +48637,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "G4RAA",
@@ -48381,7 +48764,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.462775,
     "geocode_lon": -76.527856,
-    "dist_geocode_m": 19.2
+    "dist_geocode_m": 19.2,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FO2AJ",
@@ -48507,7 +48891,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.465206,
     "geocode_lon": -76.526717,
-    "dist_geocode_m": 136.3
+    "dist_geocode_m": 136.3,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "PER34",
@@ -48633,7 +49018,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "5K7RF",
@@ -48759,7 +49145,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "OGEB7",
@@ -48885,7 +49272,8 @@
     "coords_validacion": "sin_geocode",
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "NG308",
@@ -49011,7 +49399,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "175NH",
@@ -49137,7 +49526,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "30CNN",
@@ -49263,7 +49653,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "32FQ4",
@@ -49389,7 +49780,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "6Z16W",
@@ -49515,7 +49907,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "RNX6X",
@@ -49641,7 +50034,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "O3UCB",
@@ -49767,7 +50161,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.46232,
     "geocode_lon": -76.526464,
-    "dist_geocode_m": 14.9
+    "dist_geocode_m": 14.9,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "82U56",
@@ -49893,7 +50288,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "QIGDU",
@@ -50019,7 +50415,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "NH30Y",
@@ -50145,7 +50542,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "PEENM",
@@ -50271,7 +50669,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "GBCHO",
@@ -50397,7 +50796,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "2R73F",
@@ -50523,7 +50923,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "ILJU5",
@@ -50649,7 +51050,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "HDFEZ",
@@ -50775,7 +51177,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.412577,
     "geocode_lon": -76.522386,
-    "dist_geocode_m": 5608.8
+    "dist_geocode_m": 5608.8,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "I5O76",
@@ -50901,7 +51304,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "BWOWU",
@@ -51027,7 +51431,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4ZCH8",
@@ -51153,7 +51558,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "LTHSS",
@@ -51279,7 +51685,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "LAUCF",
@@ -51405,7 +51812,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.464171,
     "geocode_lon": -76.525607,
-    "dist_geocode_m": 39.5
+    "dist_geocode_m": 39.5,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JJ8SZ",
@@ -51531,7 +51939,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "M7ZAS",
@@ -51657,7 +52066,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FM4P2",
@@ -51783,7 +52193,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "OWTZU",
@@ -51909,7 +52320,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.493465,
     "geocode_lon": -76.48429,
-    "dist_geocode_m": 427.4
+    "dist_geocode_m": 427.4,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "8LWPT",
@@ -52035,7 +52447,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "437SY",
@@ -52161,7 +52574,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "P6JX7",
@@ -52287,7 +52701,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "EUQDV",
@@ -52413,7 +52828,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "S9DSF",
@@ -52539,7 +52955,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "LYK9M",
@@ -52665,7 +53082,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "5MR3E",
@@ -52791,7 +53209,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "2F8J7",
@@ -52917,7 +53336,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "LITJC",
@@ -53043,7 +53463,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "1QELB",
@@ -53169,7 +53590,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "RXCGH",
@@ -53295,7 +53717,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "45AWR",
@@ -53421,7 +53844,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "YVRHY",
@@ -53547,7 +53971,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "1ZRMQ",
@@ -53673,7 +54098,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.396496,
     "geocode_lon": -76.54371,
-    "dist_geocode_m": 40.3
+    "dist_geocode_m": 40.3,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "DYM8V",
@@ -53799,7 +54225,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "TKKI7",
@@ -53925,7 +54352,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "7FY1F",
@@ -54051,7 +54479,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "P10B9",
@@ -54177,7 +54606,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "67L27",
@@ -54303,7 +54733,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "6AX8S",
@@ -54429,7 +54860,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "SODO9",
@@ -54555,7 +54987,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "OK39A",
@@ -54681,7 +55114,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "QG7KR",
@@ -54807,7 +55241,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "5S3UV",
@@ -54933,7 +55368,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "COX6S",
@@ -55059,7 +55495,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4VBO5",
@@ -55185,7 +55622,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "OFG37",
@@ -55311,7 +55749,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "RXXYZ",
@@ -55437,7 +55876,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "C082R",
@@ -55563,7 +56003,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "GVCER",
@@ -55689,7 +56130,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "IXKM9",
@@ -55815,7 +56257,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "PDUCW",
@@ -55941,7 +56384,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "AYD4C",
@@ -56067,7 +56511,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "9CDL5",
@@ -56193,7 +56638,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "3RO59",
@@ -56319,7 +56765,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "si"
   },
   {
     "id_edan": "G5F0J",
@@ -56445,7 +56892,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "DLBHG",
@@ -56571,7 +57019,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "8RWOZ",
@@ -56697,7 +57146,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "7L67G",
@@ -56823,7 +57273,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FKQAR",
@@ -56949,7 +57400,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "O8B33",
@@ -57075,7 +57527,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "HOCPN",
@@ -57201,7 +57654,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.39972,
     "geocode_lon": -76.55127,
-    "dist_geocode_m": 8.3
+    "dist_geocode_m": 8.3,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "8D525",
@@ -57327,7 +57781,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "6PAV1",
@@ -57453,7 +57908,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "si"
   },
   {
     "id_edan": "SJRJL",
@@ -57579,7 +58035,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "OPEEM",
@@ -57705,7 +58162,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JLHWX",
@@ -57831,7 +58289,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "6OFCR",
@@ -57957,7 +58416,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "9DC9J",
@@ -58083,7 +58543,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "7IDVD",
@@ -58209,7 +58670,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.432947,
     "geocode_lon": -76.5414,
-    "dist_geocode_m": 5.5
+    "dist_geocode_m": 5.5,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4HGVF",
@@ -58335,7 +58797,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FVFAA",
@@ -58461,7 +58924,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "5KA5Y",
@@ -58587,7 +59051,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.427313,
     "geocode_lon": -76.541464,
-    "dist_geocode_m": 32.8
+    "dist_geocode_m": 32.8,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FDP9V",
@@ -58713,7 +59178,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.427508,
     "geocode_lon": -76.541123,
-    "dist_geocode_m": 17.4
+    "dist_geocode_m": 17.4,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "38FCP",
@@ -58839,7 +59305,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "QL7EO",
@@ -58965,7 +59432,8 @@
     "coords_validacion": "sin_geocode",
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "IPSM9",
@@ -59091,7 +59559,8 @@
     "coords_validacion": "sin_geocode",
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "2PTQL",
@@ -59217,7 +59686,8 @@
     "coords_validacion": "sin_geocode",
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "SSW7Z",
@@ -59343,7 +59813,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "F1M7C",
@@ -59469,7 +59940,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.428641,
     "geocode_lon": -76.543158,
-    "dist_geocode_m": 6.2
+    "dist_geocode_m": 6.2,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "9CXJA",
@@ -59595,7 +60067,8 @@
     "coords_validacion": "sin_geocode",
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "J1UI5",
@@ -59721,7 +60194,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "EGAZ9",
@@ -59847,7 +60321,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "A0K42",
@@ -59973,7 +60448,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.429551,
     "geocode_lon": -76.542409,
-    "dist_geocode_m": 7.7
+    "dist_geocode_m": 7.7,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "SEJRA",
@@ -60099,7 +60575,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.429525,
     "geocode_lon": -76.542339,
-    "dist_geocode_m": 31.4
+    "dist_geocode_m": 31.4,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "S7BBG",
@@ -60225,7 +60702,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "OUDCH",
@@ -60351,7 +60829,8 @@
     "coords_validacion": "foto_descartada_geocode",
     "geocode_lat": 3.429525,
     "geocode_lon": -76.542339,
-    "dist_geocode_m": 41.2
+    "dist_geocode_m": 41.2,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4BCTZ",
@@ -60477,7 +60956,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "NEJ9N",
@@ -60603,7 +61083,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "323YI",
@@ -60729,7 +61210,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.413394,
     "geocode_lon": -76.557125,
-    "dist_geocode_m": 219.0
+    "dist_geocode_m": 219.0,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "RN28K",
@@ -60855,7 +61337,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JS6V7",
@@ -60981,7 +61464,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "DJRFB",
@@ -61107,7 +61591,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "3YYO2",
@@ -61233,7 +61718,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JHI20",
@@ -61359,7 +61845,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "A40FB",
@@ -61485,7 +61972,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "53NQ6",
@@ -61611,7 +62099,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "9G5B2",
@@ -61737,7 +62226,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "QSPMK",
@@ -61863,7 +62353,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "PPSW3",
@@ -61989,7 +62480,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "MVHU6",
@@ -62115,7 +62607,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "N8SHV",
@@ -62241,7 +62734,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "L82BO",
@@ -62367,7 +62861,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "HZ4WD",
@@ -62493,7 +62988,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "5W146",
@@ -62619,7 +63115,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "44ZCY",
@@ -62745,7 +63242,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.433585,
     "geocode_lon": -76.541349,
-    "dist_geocode_m": 34.0
+    "dist_geocode_m": 34.0,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "PD0LM",
@@ -62871,7 +63369,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "410AD",
@@ -62997,7 +63496,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.387621,
     "geocode_lon": -76.554404,
-    "dist_geocode_m": 8.2
+    "dist_geocode_m": 8.2,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "CHYFP",
@@ -63123,7 +63623,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "CS1GY",
@@ -63249,7 +63750,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.387689,
     "geocode_lon": -76.551173,
-    "dist_geocode_m": 2151.1
+    "dist_geocode_m": 2151.1,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "H7K9M",
@@ -63375,7 +63877,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "EC51V",
@@ -63501,7 +64004,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "si"
   },
   {
     "id_edan": "AVN2P",
@@ -63627,7 +64131,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "K75B6",
@@ -63753,7 +64258,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "HHIGT",
@@ -63879,7 +64385,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "E1OA7",
@@ -64005,7 +64512,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FATJJ",
@@ -64131,7 +64639,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "MZGHJ",
@@ -64257,7 +64766,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "5XEO6",
@@ -64383,7 +64893,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "ND86F",
@@ -64509,7 +65020,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.369859,
     "geocode_lon": -76.554411,
-    "dist_geocode_m": 92.6
+    "dist_geocode_m": 92.6,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "OQS9T",
@@ -64635,7 +65147,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "OMDK0",
@@ -64761,7 +65274,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "A9UU8",
@@ -64887,7 +65401,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "8LDIN",
@@ -65013,7 +65528,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "8PPN5",
@@ -65139,7 +65655,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "AU4B2",
@@ -65265,7 +65782,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JWEJQ",
@@ -65391,7 +65909,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "KMCFP",
@@ -65517,7 +66036,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "7ZUUW",
@@ -65643,7 +66163,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "G8LG9",
@@ -65769,7 +66290,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "QQ2JN",
@@ -65895,7 +66417,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.417483,
     "geocode_lon": -76.548074,
-    "dist_geocode_m": 66.2
+    "dist_geocode_m": 66.2,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "KX0ME",
@@ -66021,7 +66544,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "GBC0T",
@@ -66147,7 +66671,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "LFK7P",
@@ -66273,7 +66798,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JNGLK",
@@ -66399,7 +66925,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "7X3XV",
@@ -66525,7 +67052,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "9YUU3",
@@ -66651,7 +67179,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "EXVK7",
@@ -66777,7 +67306,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "MI87J",
@@ -66903,7 +67433,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JDFS1",
@@ -67029,7 +67560,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "15HOE",
@@ -67155,7 +67687,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "BJ7M5",
@@ -67281,7 +67814,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "2D0KA",
@@ -67407,7 +67941,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "DUYFN",
@@ -67533,7 +68068,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "B91W6",
@@ -67659,7 +68195,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "PJZXN",
@@ -67785,7 +68322,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "BKVHS",
@@ -67911,7 +68449,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "S99A7",
@@ -68037,7 +68576,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "RXZ02",
@@ -68163,7 +68703,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "KNFZJ",
@@ -68289,7 +68830,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "D2XFN",
@@ -68415,7 +68957,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "M7L5C",
@@ -68541,7 +69084,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "A4YVR",
@@ -68667,7 +69211,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "IUKEG",
@@ -68793,7 +69338,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "CJPHU",
@@ -68919,7 +69465,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "2TVRR",
@@ -69045,7 +69592,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "MXTV2",
@@ -69171,7 +69719,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "F29L4",
@@ -69297,7 +69846,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "402EB",
@@ -69423,7 +69973,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "35QGB",
@@ -69549,7 +70100,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "G9313",
@@ -69675,7 +70227,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "LDN9I",
@@ -69801,7 +70354,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "IUOF4",
@@ -69927,7 +70481,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "CN1PS",
@@ -70053,7 +70608,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "LP89J",
@@ -70179,7 +70735,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "8JOJD",
@@ -70305,7 +70862,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "si"
   },
   {
     "id_edan": "1X4GF",
@@ -70431,7 +70989,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JKVSN",
@@ -70557,7 +71116,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4F49A",
@@ -70683,7 +71243,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "I02N4",
@@ -70809,7 +71370,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "7GUBN",
@@ -70935,7 +71497,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "BHEFK",
@@ -71061,7 +71624,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.41537,
     "geocode_lon": -76.546605,
-    "dist_geocode_m": 137.6
+    "dist_geocode_m": 137.6,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "THYXR",
@@ -71187,7 +71751,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "M9KMR",
@@ -71313,7 +71878,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "GMMKJ",
@@ -71439,7 +72005,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "SP4WL",
@@ -71565,7 +72132,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "BRT53",
@@ -71691,7 +72259,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4IHED",
@@ -71817,7 +72386,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "TFYW0",
@@ -71943,7 +72513,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "S56T2",
@@ -72069,7 +72640,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "JXFTA",
@@ -72195,7 +72767,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "si"
   },
   {
     "id_edan": "LFER9",
@@ -72321,7 +72894,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "H4MY2",
@@ -72447,7 +73021,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.398273,
     "geocode_lon": -76.534602,
-    "dist_geocode_m": 97.6
+    "dist_geocode_m": 97.6,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "L3P3T",
@@ -72573,7 +73148,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "4N7W9",
@@ -72699,7 +73275,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "7H9IY",
@@ -72825,7 +73402,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "O0NPV",
@@ -72951,7 +73529,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "F2DBH",
@@ -73077,7 +73656,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "FZJMY",
@@ -73203,7 +73783,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "7ZC7D",
@@ -73329,7 +73910,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "TVFP2",
@@ -73455,7 +74037,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.414959,
     "geocode_lon": -76.537978,
-    "dist_geocode_m": 27.8
+    "dist_geocode_m": 27.8,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "LKB2D",
@@ -73581,7 +74164,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "HVVQH",
@@ -73707,7 +74291,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "ED14S",
@@ -73833,7 +74418,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "NCHJM",
@@ -73959,7 +74545,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "SXKEP",
@@ -74085,7 +74672,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "6YQQY",
@@ -74211,7 +74799,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "3630N",
@@ -74337,7 +74926,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "IS5RM",
@@ -74463,7 +75053,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "P4OMF",
@@ -74589,7 +75180,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "si"
   },
   {
     "id_edan": "S5YE8",
@@ -74715,7 +75307,8 @@
     "coords_validacion": "foto_confirmada",
     "geocode_lat": 3.408088,
     "geocode_lon": -76.54901,
-    "dist_geocode_m": 34.4
+    "dist_geocode_m": 34.4,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "50IR8",
@@ -74841,7 +75434,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "176XP",
@@ -74967,7 +75561,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "2ZG9Q",
@@ -75093,7 +75688,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "6M5ZH",
@@ -75219,7 +75815,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "6X2K7",
@@ -75345,7 +75942,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "BFLK4",
@@ -75471,7 +76069,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "3VR5V",
@@ -75597,7 +76196,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "843Q2",
@@ -75723,7 +76323,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "si"
   },
   {
     "id_edan": "HXU2X",
@@ -75849,7 +76450,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "Q9G88",
@@ -75975,7 +76577,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "QTB9N",
@@ -76101,7 +76704,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "TT1T8",
@@ -76227,7 +76831,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "64346",
@@ -76353,7 +76958,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "si"
   },
   {
     "id_edan": "7ZW8V",
@@ -76479,7 +77085,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "N4KLD",
@@ -76605,7 +77212,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "MF442",
@@ -76731,7 +77339,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "C5919",
@@ -76857,7 +77466,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "B2CAW",
@@ -76983,7 +77593,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "EQUGH",
@@ -77109,7 +77720,8 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   },
   {
     "id_edan": "CIT02",
@@ -77235,6 +77847,388 @@
     "coords_validacion": null,
     "geocode_lat": null,
     "geocode_lon": null,
-    "dist_geocode_m": null
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
+  },
+  {
+    "id_edan": "N5VFD",
+    "ObjectID": 615,
+    "GlobalID": "c1a3cea0-762b-48af-85e3-3a5321621930",
+    "fecha_inspeccion": "2026-08-19",
+    "hora": "10:10",
+    "nombre_evaluador": "Faber Albeiro Gaviria Salazar",
+    "id_grupo": "otro",
+    "entidad": "Secretaria de Vivienda Social y Habitat",
+    "tipo_evento": "sismo",
+    "nombre_edificacion": "Conjunto Residencial Camino Real",
+    "municipio": "Cali",
+    "barrio_vereda": "Fundadores",
+    "direccion": "Carrera 56 # 5-152",
+    "direccion_norm": "KR 56 # 5-152",
+    "coords": "3.408378, -76.545961",
+    "tipo_propiedad": "privada",
+    "relacion_edificacion": "otro",
+    "otro": "Administrador",
+    "epoca_construccion": "antes_1984",
+    "n_pisos": 4.0,
+    "n_sotanos": 1.0,
+    "n_ocupantes": 36.0,
+    "frente": 22.0,
+    "fondo": 30.0,
+    "n_residenciales": 12.0,
+    "n_comerciales": 0.0,
+    "n_no_habitadas": 0.0,
+    "n_muertos": null,
+    "n_heridos": null,
+    "acceso_edificacion": "libre",
+    "uso_edificacion": "residencial",
+    "uso_cual": null,
+    "sistema_estructural": "porticos",
+    "sistema_estructural_cual": null,
+    "material_estructura": "conc_no_arr",
+    "material_entrepiso": "concreto",
+    "sistema_entrepiso": null,
+    "sistema_entrepiso_cual": null,
+    "existen_sistemas_combinados": "si",
+    "observaciones": "Bloque J\nAcero arriostrado solo el sotano ",
+    "sistema_cubierta": "vigas_acero",
+    "sistema_cubierta_cual": null,
+    "revestimiento_cubierta": "teja_asbesto",
+    "revestimiento_cubierta_cual": null,
+    "sistema_muros_divisorios": "mamposteria",
+    "sistema_muros_divisorios_cual": null,
+    "fachadas": "mamposteria",
+    "fachadas_cual": null,
+    "escaleras": "concreto",
+    "escaleras_cual": null,
+    "calidad_construccion": "bueno",
+    "estado_edificacion": "regular",
+    "41_a": "no",
+    "41_b": null,
+    "41_c": null,
+    "42_a": "no",
+    "42_b": null,
+    "42_c": null,
+    "43_a": "no",
+    "43_b": null,
+    "43_c": null,
+    "44_a": "no",
+    "44_b": null,
+    "44_c": null,
+    "45_a": "no",
+    "45_b": null,
+    "45_c": null,
+    "46_a": "no",
+    "46_b": null,
+    "46_c": null,
+    "46_especifique_cual": null,
+    "colapso_total": "no",
+    "colapso_parcial": "no",
+    "asentamiento_severo": "no",
+    "inclinacion_importante": "no",
+    "suelo_inestable": "no",
+    "riesgo_caida": "si",
+    "danos_estructura": "sin_dano",
+    "danos_contrapiso_entrepiso_muroscont": "leve",
+    "danos_muro_div": "moderado",
+    "danos_cubierta": "sin_dano",
+    "cielos_instalaciones": "moderado",
+    "alc_exterior": "completa",
+    "alc_interior": "completa",
+    "matriz_ref": null,
+    "afectacion_planta": "de_10_a_40",
+    "afectacion_planta_calc": "medio_alto",
+    "severidad_danos": "medio_alto",
+    "severidad_danos_calc": "alto",
+    "nivel_dano": "alto",
+    "riesgo_ab": "no",
+    "riesgo_ac": "no",
+    "habitabilidad_calc": "i2",
+    "criterio_habitabilidad": "i2",
+    "justificacion_criterio": null,
+    "requiere_evaluacion_adicional": "estructural",
+    "eval_estructural": "Desprendimiento de material de mamposteria en fachadas, interno y puntis fijos",
+    "eval_geotecnica": null,
+    "eval_otra": null,
+    "recomendaciones": "restringir_peatones,evacuar_total,demoler,seguimiento,intervencion",
+    "aislamiento": null,
+    "intervencion_entades": "Gestion del riesgo\nSecretaria de infraestructura",
+    "observaciones_generales": "Las afectaciones mas recurrentes son en elementos no estructurales ",
+    "evento_id": "SISMO_2026_08_10",
+    "gps_precision_m": null,
+    "CreationDate": "2026-08-19T15:46:10.879",
+    "Creator": "unidad.gestion.riesgo3",
+    "EditDate": "2026-08-19T15:46:10.879",
+    "Editor": "unidad.gestion.riesgo3",
+    "x": -76.5459605556,
+    "y": 3.4083777778,
+    "fecha_hora": "2026-08-19T10:10",
+    "comuna": "COMUNA 19",
+    "barrio_geo": "Camino Real - Joaquin Borrero Sinisterra",
+    "x_form": -76.5458970573,
+    "y_form": 3.4084814556,
+    "n_fotos_gps": 3,
+    "gps_error_m": 11.4,
+    "desplazamiento_m": 13.5,
+    "coords_fuente": "foto_exif",
+    "coords_validacion": null,
+    "geocode_lat": null,
+    "geocode_lon": null,
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
+  },
+  {
+    "id_edan": "DRUB0",
+    "ObjectID": 616,
+    "GlobalID": "7f417ffd-603b-4507-a3c5-eb369601b392",
+    "fecha_inspeccion": "2026-08-19",
+    "hora": "10:45",
+    "nombre_evaluador": "Faber Albeiro Gaviria Salazar",
+    "id_grupo": "otro",
+    "entidad": "Secretaria de Vivienda Social y Habitat",
+    "tipo_evento": "sismo",
+    "nombre_edificacion": "Conjunto Residencial Camino Real",
+    "municipio": "Cali",
+    "barrio_vereda": "Fundadores",
+    "direccion": "Carrera 56 # 5-152",
+    "direccion_norm": "KR 56 # 5-152",
+    "coords": "3.408301, -76.546329",
+    "tipo_propiedad": "privada",
+    "relacion_edificacion": "otro",
+    "otro": "Administrador",
+    "epoca_construccion": "antes_1984",
+    "n_pisos": 4.0,
+    "n_sotanos": 1.0,
+    "n_ocupantes": 36.0,
+    "frente": 22.0,
+    "fondo": 30.0,
+    "n_residenciales": 12.0,
+    "n_comerciales": 0.0,
+    "n_no_habitadas": 0.0,
+    "n_muertos": null,
+    "n_heridos": null,
+    "acceso_edificacion": "libre",
+    "uso_edificacion": "residencial",
+    "uso_cual": null,
+    "sistema_estructural": "porticos",
+    "sistema_estructural_cual": null,
+    "material_estructura": "conc_no_arr",
+    "material_entrepiso": "concreto",
+    "sistema_entrepiso": null,
+    "sistema_entrepiso_cual": null,
+    "existen_sistemas_combinados": "si",
+    "observaciones": "Bloque H\nAcero arriostrado solo el sotano ",
+    "sistema_cubierta": "vigas_acero",
+    "sistema_cubierta_cual": null,
+    "revestimiento_cubierta": "teja_asbesto",
+    "revestimiento_cubierta_cual": null,
+    "sistema_muros_divisorios": "mamposteria",
+    "sistema_muros_divisorios_cual": null,
+    "fachadas": "mamposteria",
+    "fachadas_cual": null,
+    "escaleras": "concreto",
+    "escaleras_cual": null,
+    "calidad_construccion": "bueno",
+    "estado_edificacion": "regular",
+    "41_a": "no",
+    "41_b": null,
+    "41_c": null,
+    "42_a": "no",
+    "42_b": null,
+    "42_c": null,
+    "43_a": "no",
+    "43_b": null,
+    "43_c": null,
+    "44_a": "no",
+    "44_b": null,
+    "44_c": null,
+    "45_a": "no",
+    "45_b": null,
+    "45_c": null,
+    "46_a": "no",
+    "46_b": null,
+    "46_c": null,
+    "46_especifique_cual": null,
+    "colapso_total": "no",
+    "colapso_parcial": "no",
+    "asentamiento_severo": "no",
+    "inclinacion_importante": "no",
+    "suelo_inestable": "no",
+    "riesgo_caida": "si",
+    "danos_estructura": "sin_dano",
+    "danos_contrapiso_entrepiso_muroscont": "leve",
+    "danos_muro_div": "moderado",
+    "danos_cubierta": "sin_dano",
+    "cielos_instalaciones": "moderado",
+    "alc_exterior": "completa",
+    "alc_interior": "completa",
+    "matriz_ref": null,
+    "afectacion_planta": "de_10_a_40",
+    "afectacion_planta_calc": "medio_alto",
+    "severidad_danos": "medio_alto",
+    "severidad_danos_calc": "alto",
+    "nivel_dano": "alto",
+    "riesgo_ab": "no",
+    "riesgo_ac": "no",
+    "habitabilidad_calc": "i2",
+    "criterio_habitabilidad": "i2",
+    "justificacion_criterio": null,
+    "requiere_evaluacion_adicional": "estructural",
+    "eval_estructural": "Desprendimiento de material de mamposteria en fachadas, interno y puntis fijos",
+    "eval_geotecnica": null,
+    "eval_otra": null,
+    "recomendaciones": "restringir_peatones,evacuar_total,demoler,seguimiento,intervencion",
+    "aislamiento": null,
+    "intervencion_entades": "Gestion del riesgo\nSecretaria de infraestructura",
+    "observaciones_generales": "Las afectaciones mas recurrentes son en elementos no estructurales ",
+    "evento_id": "SISMO_2026_08_10",
+    "gps_precision_m": null,
+    "CreationDate": "2026-08-19T15:55:56.910",
+    "Creator": "unidad.gestion.riesgo3",
+    "EditDate": "2026-08-19T15:55:56.910",
+    "Editor": "unidad.gestion.riesgo3",
+    "x": -76.5463294444,
+    "y": 3.4083007407,
+    "fecha_hora": "2026-08-19T10:45",
+    "comuna": "COMUNA 19",
+    "barrio_geo": "Camino Real - Joaquin Borrero Sinisterra",
+    "x_form": -76.5458970573,
+    "y_form": 3.4084814556,
+    "n_fotos_gps": 9,
+    "gps_error_m": 6.6,
+    "desplazamiento_m": 52.0,
+    "coords_fuente": "foto_exif",
+    "coords_validacion": null,
+    "geocode_lat": null,
+    "geocode_lon": null,
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
+  },
+  {
+    "id_edan": "D3NQ4",
+    "ObjectID": 617,
+    "GlobalID": "4ac99257-0982-44bb-87c2-e9c98bf04856",
+    "fecha_inspeccion": "2026-08-19",
+    "hora": "10:58",
+    "nombre_evaluador": "Carlos Eduardo Rivera",
+    "id_grupo": "amva",
+    "entidad": null,
+    "tipo_evento": "sismo",
+    "nombre_edificacion": "Torre 7",
+    "municipio": "Cali",
+    "barrio_vereda": "Refugio ",
+    "direccion": "Cra 100 1b O 110",
+    "direccion_norm": "KR 100 1B O 110",
+    "coords": "3.372457, -76.555422",
+    "tipo_propiedad": "privada",
+    "relacion_edificacion": "otro",
+    "otro": "Lider de Torre ",
+    "epoca_construccion": "despues_2010",
+    "n_pisos": 6.0,
+    "n_sotanos": 0.0,
+    "n_ocupantes": 60.0,
+    "frente": 15.0,
+    "fondo": 17.0,
+    "n_residenciales": 20.0,
+    "n_comerciales": 0.0,
+    "n_no_habitadas": 20.0,
+    "n_muertos": 0.0,
+    "n_heridos": 0.0,
+    "acceso_edificacion": "libre",
+    "uso_edificacion": "residencial",
+    "uso_cual": null,
+    "sistema_estructural": "muros_carga",
+    "sistema_estructural_cual": null,
+    "material_estructura": "mamp_reforzada",
+    "material_entrepiso": "concreto",
+    "sistema_entrepiso": null,
+    "sistema_entrepiso_cual": null,
+    "existen_sistemas_combinados": "no",
+    "observaciones": "De manera preventiva se pidio la evacuacion de la torre por agrietamiento en fachada en elementos aparentemente estructurales.",
+    "sistema_cubierta": "vigas_acero",
+    "sistema_cubierta_cual": null,
+    "revestimiento_cubierta": "teja_asbesto",
+    "revestimiento_cubierta_cual": null,
+    "sistema_muros_divisorios": "mamposteria",
+    "sistema_muros_divisorios_cual": null,
+    "fachadas": "mamposteria",
+    "fachadas_cual": null,
+    "escaleras": "concreto",
+    "escaleras_cual": null,
+    "calidad_construccion": "bueno",
+    "estado_edificacion": "regular",
+    "41_a": "no",
+    "41_b": null,
+    "41_c": null,
+    "42_a": "no",
+    "42_b": null,
+    "42_c": null,
+    "43_a": "no",
+    "43_b": null,
+    "43_c": null,
+    "44_a": "no",
+    "44_b": null,
+    "44_c": null,
+    "45_a": "no",
+    "45_b": null,
+    "45_c": null,
+    "46_a": null,
+    "46_b": null,
+    "46_c": null,
+    "46_especifique_cual": null,
+    "colapso_total": "no",
+    "colapso_parcial": "no",
+    "asentamiento_severo": "no",
+    "inclinacion_importante": "no",
+    "suelo_inestable": "no",
+    "riesgo_caida": "si",
+    "danos_estructura": "sin_dano",
+    "danos_contrapiso_entrepiso_muroscont": "sin_dano",
+    "danos_muro_div": "moderado",
+    "danos_cubierta": "sin_dano",
+    "cielos_instalaciones": "leve",
+    "alc_exterior": "completa",
+    "alc_interior": "parcial",
+    "matriz_ref": null,
+    "afectacion_planta": "ninguno",
+    "afectacion_planta_calc": "medio_alto",
+    "severidad_danos": "medio_alto",
+    "severidad_danos_calc": "medio",
+    "nivel_dano": "medio",
+    "riesgo_ab": "no",
+    "riesgo_ac": "no",
+    "habitabilidad_calc": "r1",
+    "criterio_habitabilidad": "r1",
+    "justificacion_criterio": null,
+    "requiere_evaluacion_adicional": "estructural",
+    "eval_estructural": "Punto Fijo ",
+    "eval_geotecnica": null,
+    "eval_otra": null,
+    "recomendaciones": "evacuar_total",
+    "aislamiento": null,
+    "intervencion_entades": null,
+    "observaciones_generales": "Agrietamiento en zonas de punto fijo",
+    "evento_id": "SISMO_2026_08_10",
+    "gps_precision_m": 1.7999999523,
+    "CreationDate": "2026-08-19T16:00:14.143",
+    "Creator": "unidad.gestion.riesgo2",
+    "EditDate": "2026-08-19T16:00:14.143",
+    "Editor": "unidad.gestion.riesgo2",
+    "x": -76.5554216667,
+    "y": 3.3724566667,
+    "fecha_hora": "2026-08-19T10:58",
+    "comuna": "COMUNA 18",
+    "barrio_geo": "Polvorines",
+    "x_form": -76.5555733333,
+    "y_form": 3.3723066667,
+    "n_fotos_gps": 2,
+    "gps_error_m": 3.0,
+    "desplazamiento_m": 23.7,
+    "coords_fuente": "foto_exif",
+    "coords_validacion": null,
+    "geocode_lat": null,
+    "geocode_lon": null,
+    "dist_geocode_m": null,
+    "suspension_servicios": "no"
   }
 ]
