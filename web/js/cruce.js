@@ -356,6 +356,7 @@ function openPunto(id) {
     <h5 class="punto-modal-sect">Identificadores</h5>
     <dl class="punto-modal-dl">
       ${row('ID crítico (API atencionsismo)', mono(r.registro_id))}
+      ${row('ID evaluación (API)', mono(r.evaluacion_id))}
       ${row('ID survey EDE (GlobalID)', mono(r.survey_globalid))}
       ${row('Llave de integración', mono(r.clave_integracion))}
     </dl>
@@ -368,6 +369,14 @@ function openPunto(id) {
       ${row('Fecha EDE · evaluador', `${escapeHtml(r.survey_fecha || '—')} · ${escapeHtml(r.survey_evaluador || '—')}`)}
       ${row('Nivel de riesgo', escapeHtml(r.nivel_riesgo || '—'))}
       ${row('Requiere demolición', escapeHtml(r.requiere_demolicion || '—'))}
+    </dl>
+    <h5 class="punto-modal-sect">Datos técnicos (API)</h5>
+    <dl class="punto-modal-dl">
+      ${row('Habitabilidad', escapeHtml(r.habitabilidad || '—'))}
+      ${row('Tipo · nombre estructura', `${escapeHtml(r.tipo_estructura || '—')}${r.nombre_estructura ? ' · ' + escapeHtml(r.nombre_estructura) : ''}`)}
+      ${row('Víctimas (fall. / atrap. / resc.)', `${r.n_fallecidos ?? 0} / ${r.n_atrapamientos ?? 0} / ${r.n_rescatados ?? 0}`)}
+      ${r.descripcion_visita ? row('Concepto técnico (visita)', escapeHtml(r.descripcion_visita)) : ''}
+      ${r.descripcion_edan ? row('Descripción de ingreso', escapeHtml(r.descripcion_edan)) : ''}
     </dl>
     ${despachoBlock}
     <h5 class="punto-modal-sect">Gestión</h5>
