@@ -32,26 +32,23 @@ const DONE_COLOR = COLORS.status.h;       // verde — levantado en campo
 const ESTADOS = ['sin_asignar', 'asignado', 'en_campo'];   // override manual por punto
 const ESTADO_LABEL = { sin_asignar: 'Pendiente', asignado: 'Asignado', en_campo: 'En campo', completado: 'Completado' };
 
-/** Despacho (el más reciente) que CUBRE una zona. La asignación es por zona:
- *  un despacho toma un conjunto de puntos (los de sus zonas), no punto a punto. */
-function zoneDespacho(zonaId) {
-  if (!zonaId) return null;
-  return despachos.find((d) => (d.zonas || []).includes(zonaId)) || null; // despachos ordenado desc
+/** Despacho enganchado a ESTE punto (gestion_despacho_id). La asignación es
+ *  PUNTO A PUNTO: cada asignación cubre un solo punto; el despacho es solo el
+ *  registro de la cuadrilla, no asigna nada por sí mismo. */
+function puntoDespacho(r) {
+  if (!r.gestion_despacho_id) return null;
+  return despachos.find((d) => d.id === r.gestion_despacho_id) || null;
 }
 
-/** Estado efectivo (auto): levantado ⇒ Completado; override manual del punto;
- *  si su zona está cubierta por un despacho ⇒ Asignado; si no ⇒ Pendiente. */
+/** Estado efectivo: levantado ⇒ Completado (auto); si no, el estado del punto. */
 function effectiveEstado(r) {
   if (r.estado === 'levantado') return 'completado';
-  if (r.gestion_estado && r.gestion_estado !== 'sin_asignar') return r.gestion_estado;
-  return zoneDespacho(r.zona_id) ? 'asignado' : 'sin_asignar';
+  return r.gestion_estado || 'sin_asignar';
 }
 
-/** Responsable efectivo: override manual del punto, o el líder del despacho de su zona. */
+/** Responsable del punto: su asignación individual (o el líder de su despacho). */
 function asignadoDe(r) {
-  if (r.gestion_asignado_a) return r.gestion_asignado_a;
-  const d = zoneDespacho(r.zona_id);
-  return d ? d.lider : '';
+  return r.gestion_asignado_a || (puntoDespacho(r)?.lider ?? '');
 }
 
 let map = null;
@@ -473,10 +470,10 @@ function openPunto(id) {
   const matchTxt = r.estado === 'levantado'
     ? `${escapeHtml(r.match || '—')}${r.dist_m != null ? ` · ${r.dist_m} m` : (r.match === 'globalid' ? ' · por GlobalID' : '')}`
     : 'sin match (falta EDE)';
-  // Despacho que cubre la ZONA del punto (asignación por zona).
-  const desp = zoneDespacho(r.zona_id);
+  // Despacho enganchado a ESTE punto (asignación punto a punto).
+  const desp = puntoDespacho(r);
   const despachoBlock = desp ? `
-    <h5 class="punto-modal-sect">Despacho de la zona ${escapeHtml(r.zona_id || '')}</h5>
+    <h5 class="punto-modal-sect">Despacho asignado a este punto</h5>
     <dl class="punto-modal-dl">
       ${row('Líder', escapeHtml(desp.lider || '—'))}
       ${row('Entidad · cuadrilla', `${escapeHtml(desp.entidad || '—')} · ${Number(desp.n_personas) || 0} pers · ${Number(desp.n_vehiculos) || 0} veh`)}
@@ -748,9 +745,10 @@ function renderDespachos() {
     return;
   }
   const rows = despachos.map((d) => {
-    const enZonas = records.filter((r) => (d.zonas || []).includes(r.zona_id));
-    const nPuntos = enZonas.length;
-    const nPend = enZonas.filter((r) => r.estado !== 'levantado').length;
+    // Puntos ENGANCHADOS a este despacho uno a uno (no por zona).
+    const propios = records.filter((r) => r.gestion_despacho_id === d.id);
+    const nPuntos = propios.length;
+    const nPend = propios.filter((r) => r.estado !== 'levantado').length;
     const acciones = canEdit
       ? `<div class="despacho-card-actions">
            <button type="button" class="btn-mini despacho-edit" data-id="${escapeHtml(d.id)}">Editar</button>
