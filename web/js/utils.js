@@ -301,6 +301,14 @@ export function formatDateTime(iso) {
   });
 }
 
+/** Short day/month/hour:minute timestamp (roster "corte" / gestión "corte" notes). */
+export function formatTs(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? String(iso)
+    : d.toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
 export function formatValue(field, value) {
   if (value === null || value === undefined || value === '') return 'Sin dato';
   if (field === 'fecha_inspeccion') return formatDate(value);

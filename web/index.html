@@ -72,6 +72,7 @@
     <nav class="view-tabs" role="tablist" aria-label="Vistas">
       <button type="button" class="view-tab is-active" data-view="panel" role="tab" aria-selected="true">Panel</button>
       <button type="button" class="view-tab" data-view="asignaciones" role="tab" aria-selected="false">Asignaciones</button>
+      <button type="button" class="view-tab" data-view="gestion" role="tab" aria-selected="false">Gestión</button>
     </nav>
 
     <div id="view-panel" data-view-panel="panel">
@@ -248,6 +249,35 @@
           <h2 class="stats-title">Roster de asignaciones</h2>
         </div>
         <div class="table-scroll" id="asig-table"></div>
+      </section>
+    </section>
+
+    <!-- ============ GESTIÓN VIEW (cruce con el Gestor de Zonas — PMU Cali) ============ -->
+    <section id="view-gestion" data-view-panel="gestion" aria-label="Gestión de zonas" hidden>
+      <section class="card asig-summary-card">
+        <div id="gestion-summary" class="asig-summary">Cargando gestión…</div>
+      </section>
+
+      <section class="card map-card" aria-label="Mapa de gestión de zonas">
+        <div class="card-toolbar">
+          <h2 class="stats-title">Zonas y puntos críticos</h2>
+          <div class="gestion-toolbar-actions">
+            <span class="asig-error" id="gestion-error" hidden></span>
+            <span class="gestion-updated" id="gestion-updated"></span>
+            <button type="button" class="btn-secondary" id="gestion-refresh">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
+              Actualizar desde gestor
+            </button>
+          </div>
+        </div>
+        <div class="map-container" id="gestion-map"></div>
+      </section>
+
+      <section class="card table-card">
+        <div class="card-toolbar">
+          <h2 class="stats-title">Zonas — avance F3</h2>
+        </div>
+        <div class="table-scroll" id="gestion-table"></div>
       </section>
     </section>
 

@@ -3,7 +3,7 @@
 // already visited (F3 done), a progress summary, and a CSV download of the
 // full roster. Data comes from the static artifacts asignar_f3.py exports:
 //   data/asignaciones.json  · data/zonas_asignacion.geojson
-import { COLORS, escapeHtml, interpolateRamp, basemapTileUrl } from './utils.js';
+import { COLORS, escapeHtml, interpolateRamp, basemapTileUrl, formatTs } from './utils.js';
 
 const ASIG_URL = 'data/asignaciones.json';
 const ZONES_URL = 'data/zonas_asignacion.geojson';
@@ -169,13 +169,6 @@ function renderSummary() {
       <p class="asig-progress-note">${data.zonas ?? '—'} zonas de asignación · corte ${escapeHtml(formatTs(data.generated_at))}</p>
     </div>
   `;
-}
-
-function formatTs(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? String(iso)
-    : d.toLocaleString('es-CO', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
 const TABLE_COLS = [
