@@ -433,29 +433,8 @@ async function submitAsignarPunto(e) {
   }
 }
 
-async function quitarAsignacionPunto() {
-  if (!canEdit || !asignarPuntoId) return;
-  try {
-    // Limpia la asignación completa: el punto vuelve a Pendiente.
-    await fb.updateDoc(fb.doc(fb.db, COLLECTION, asignarPuntoId), {
-      gestion_estado: 'sin_asignar',
-      gestion_asignado_a: '',
-      gestion_despacho_id: '',
-      gestion_entidad: '',
-      gestion_fecha: '',
-      gestion_nota: '',
-      gestion_actualizado_utc: Date.now(),
-      gestion_actualizado_por: user?.email || '',
-    });
-    closeAsignarPunto();
-  } catch (ex) {
-    console.error('No se pudo quitar la asignación', ex);
-  }
-}
-
 function wireAsignarModal() {
   el('#asignar-form').addEventListener('submit', submitAsignarPunto);
-  el('#asignar-quitar').addEventListener('click', quitarAsignacionPunto);
   document.querySelectorAll('[data-asignar-close]').forEach((b) => b.addEventListener('click', closeAsignarPunto));
   // Autocompletar teléfono al elegir un líder guardado (en ambos modales).
   el('#asignar-persona').addEventListener('input', (e) => {
