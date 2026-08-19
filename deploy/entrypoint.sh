@@ -57,7 +57,12 @@ fi
 
 git config user.email "sismo-refresh-bot@users.noreply.github.com"
 git config user.name "sismo-refresh-bot"
+# inspections.xlsx is fail-soft in refresh_data.py, so it may be absent — add it
+# only if it exists, or `git add` on a missing path aborts the publish (set -e).
 git add web/data/inspections.json web/data/meta.json
+[ -f web/data/inspections.xlsx ] && git add web/data/inspections.xlsx
+# Commit the geocode cache so future runs pay 0 API calls for known addresses.
+[ -f web/data/geocode/geocode_cache.json ] && git add web/data/geocode/geocode_cache.json
 git commit -m "chore: refresh dashboard data (auto)"
 git push origin "HEAD:${BRANCH}" 2>&1 | _scrub
 echo "Publicado: Vercel redesplegará desde ${BRANCH}."

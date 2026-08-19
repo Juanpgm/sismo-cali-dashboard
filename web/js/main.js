@@ -371,6 +371,15 @@ async function triggerRefresh() {
   }
 }
 
+/** Download the static .xlsx that refresh_data.py exports alongside the JSON. */
+el('#datos-download').addEventListener('click', () => {
+  const a = document.createElement('a');
+  a.href = `data/inspections.xlsx?t=${Date.now()}`;
+  a.download = `inspecciones_${(store.meta?.generated_at || '').slice(0, 10) || 'export'}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+});
 searchInput.addEventListener('input', debounce((e) => store.setSearch(e.target.value), 250));
 refreshBtn.addEventListener('click', () => triggerRefresh());
 retryBtn.addEventListener('click', () => loadAndRender({ isRefresh: true }));

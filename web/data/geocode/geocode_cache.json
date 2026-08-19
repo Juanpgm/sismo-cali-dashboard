@@ -1,0 +1,505 @@
+{
+ "KR 36 B # 5B3 29": {
+  "accepted": true,
+  "lat": 3.427508,
+  "lon": -76.541123,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 36b # 3-5, San Fernando, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115885,
+  "direccion": "KR 36 B # 5B3 29"
+ },
+ "AV 5N CL 49": {
+  "accepted": false,
+  "reason": "precision_insuficiente",
+  "location_type": "GEOMETRIC_CENTER",
+  "ts": 1787115885,
+  "direccion": "AV 5N CL 49"
+ },
+ "DANUBIO KR 77 N1 C 140": {
+  "accepted": false,
+  "reason": "precision_insuficiente",
+  "location_type": "GEOMETRIC_CENTER",
+  "ts": 1787115886,
+  "direccion": "DANUBIO KR 77 N1 C 140"
+ },
+ "CL 1 RA. D OESTE # 100 BIS 76 TORRE 87": {
+  "accepted": true,
+  "lat": 3.450792,
+  "lon": -76.540886,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cl. 1 Oe. #100 torre 87, Normandia Sebastian de Belalcazar, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115886,
+  "direccion": "CL 1 RA. D OESTE # 100 BIS 76 TORRE 87"
+ },
+ "KR 77 # 1C 140": {
+  "accepted": true,
+  "lat": 3.389066,
+  "lon": -76.552605,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 77 #1C140, Las Farallones, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115887,
+  "direccion": "KR 77 # 1C 140"
+ },
+ "KR 77 # 1C- 140": {
+  "accepted": true,
+  "lat": 3.389066,
+  "lon": -76.552605,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 77 #1C140, Las Farallones, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115887,
+  "direccion": "KR 77 # 1C- 140"
+ },
+ "TV 2A 1C -140 TORRE 5": {
+  "accepted": true,
+  "lat": 3.3891,
+  "lon": -76.552977,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Tv. 2a #1C-140 torre 5, Las Farallones, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115888,
+  "direccion": "TV 2A 1C -140 TORRE 5"
+ },
+ "CL 1A OESTE # 100A-48": {
+  "accepted": true,
+  "lat": 3.450792,
+  "lon": -76.540886,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cl. 1 Oe. #100, Normandia Sebastian de Belalcazar, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115889,
+  "direccion": "CL 1A OESTE # 100A-48"
+ },
+ "CL 1C OESTE # 72": {
+  "accepted": true,
+  "lat": 3.425171,
+  "lon": -76.555709,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cl. 1c Oe. # 40B-72, Siloe, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115889,
+  "direccion": "CL 1C OESTE # 72"
+ },
+ "KR 100 A # 1A - 38": {
+  "accepted": true,
+  "lat": 3.434572,
+  "lon": -76.463057,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cl. 100a # 20-1, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115890,
+  "direccion": "KR 100 A # 1A - 38"
+ },
+ "KR 77 1C 140": {
+  "accepted": true,
+  "lat": 3.389066,
+  "lon": -76.552605,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 77 #1C140, Las Farallones, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115890,
+  "direccion": "KR 77 1C 140"
+ },
+ "KR 39 # 5E-02": {
+  "accepted": true,
+  "lat": 3.422088,
+  "lon": -76.542542,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 39 #5E - 02, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115891,
+  "direccion": "KR 39 # 5E-02"
+ },
+ "CL 62 B # 2A9-365 SECTOR 4 AGRUPACIÓN 5 TORRE A, B,C,D Y E": {
+  "accepted": true,
+  "lat": 3.444887,
+  "lon": -76.507085,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 15 #36A-55, Comuna 8, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115891,
+  "direccion": "CL 62 B # 2A9-365 SECTOR 4 AGRUPACIÓN 5 TORRE A, B,C,D Y E"
+ },
+ "KR PRIMERA B1 # 63-09 BLOQUE 26A": {
+  "accepted": false,
+  "reason": "precision_insuficiente",
+  "location_type": "GEOMETRIC_CENTER",
+  "ts": 1787115891,
+  "direccion": "KR PRIMERA B1 # 63-09 BLOQUE 26A"
+ },
+ "KR PRIMERA B1 # 63-09 BLOQUE 28": {
+  "accepted": true,
+  "lat": 3.486834,
+  "lon": -76.492007,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cl. 70a #1a3 - 11 bloque 28, COMUNA 6, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115892,
+  "direccion": "KR PRIMERA B1 # 63-09 BLOQUE 28"
+ },
+ "AV 4 B NORTE # 52 N - 56 TORRE 5⁹": {
+  "accepted": true,
+  "lat": 3.488531,
+  "lon": -76.520307,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Av. 4b Nte. #52 torre 5⁹, Menga, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115892,
+  "direccion": "AV 4 B NORTE # 52 N - 56 TORRE 5⁹"
+ },
+ "AV 4B N # 52N-76 TORRE 3": {
+  "accepted": true,
+  "lat": 3.452361,
+  "lon": -76.543491,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Av. 4b Oe. #3-52 torre 3, Normandia Sebastian de Belalcazar, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115892,
+  "direccion": "AV 4B N # 52N-76 TORRE 3"
+ },
+ "AV 4 B NORTE # 52 N -76 TORRE 4.": {
+  "accepted": true,
+  "lat": 3.488531,
+  "lon": -76.520307,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Av. 4b Nte. #52 torre 4, Menga, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115893,
+  "direccion": "AV 4 B NORTE # 52 N -76 TORRE 4."
+ },
+ "AV 5 OESTE # 25-25": {
+  "accepted": true,
+  "lat": 3.453202,
+  "lon": -76.568682,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Av. 5 Oe. #25, Vista Hermosa, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115893,
+  "direccion": "AV 5 OESTE # 25-25"
+ },
+ "KR 1 D N 58 - 69": {
+  "accepted": true,
+  "lat": 3.493321,
+  "lon": -76.487513,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 1d Nte. # 80-58, COMUNA 6, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115893,
+  "direccion": "KR 1 D N 58 - 69"
+ },
+ "KR 1 D1 53 140": {
+  "accepted": true,
+  "lat": 3.471201,
+  "lon": -76.499715,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 1D1 #53-140, Los Andes, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115894,
+  "direccion": "KR 1 D1 53 140"
+ },
+ "KR 56 # 3-26": {
+  "accepted": true,
+  "lat": 3.409029,
+  "lon": -76.549463,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 56 # 3-26, Cuarto de Legua, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115894,
+  "direccion": "KR 56 # 3-26"
+ },
+ "KR 66 13 B - 64": {
+  "accepted": true,
+  "lat": 3.397753,
+  "lon": -76.534755,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 66 #13b-64, Quintas De Don Simon, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115894,
+  "direccion": "KR 66 13 B - 64"
+ },
+ "CL 23A NTE # 5AAN -33": {
+  "accepted": false,
+  "reason": "precision_insuficiente",
+  "location_type": "GEOMETRIC_CENTER",
+  "ts": 1787115895,
+  "direccion": "CL 23A NTE # 5AAN -33"
+ },
+ "ZUMOS AV 5TA NORTE # 22 24": {
+  "accepted": true,
+  "lat": 3.462775,
+  "lon": -76.527856,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Av. 5 Nte. #22-24, San Vicente, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115895,
+  "direccion": "ZUMOS AV 5TA NORTE # 22 24"
+ },
+ "AV 5NTE # 23N-50": {
+  "accepted": true,
+  "lat": 3.465206,
+  "lon": -76.526717,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Av. 5 Nte. #23BN35, San Vicente, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115895,
+  "direccion": "AV 5NTE # 23N-50"
+ },
+ "CL 23 DN # 1AN-73 AV ESTACIÓN": {
+  "accepted": false,
+  "reason": "precision_insuficiente",
+  "location_type": "GEOMETRIC_CENTER",
+  "ts": 1787115896,
+  "direccion": "CL 23 DN # 1AN-73 AV ESTACIÓN"
+ },
+ "AV 3ERA NORTE # 22 55": {
+  "accepted": true,
+  "lat": 3.46232,
+  "lon": -76.526464,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Av. de las Americas # 22 NORTE-55, San Vicente, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115896,
+  "direccion": "AV 3ERA NORTE # 22 55"
+ },
+ "CL 23 N 3 N 71": {
+  "accepted": true,
+  "lat": 3.412577,
+  "lon": -76.522386,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cl. 23 #3, Comuna 10, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115896,
+  "direccion": "CL 23 N 3 N 71"
+ },
+ "CL 23 BN # 3N 14": {
+  "accepted": true,
+  "lat": 3.464171,
+  "lon": -76.525607,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cl. 23b Nte. #3n52, San Vicente, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115897,
+  "direccion": "CL 23 BN # 3N 14"
+ },
+ "CL 84 # 1A1-238": {
+  "accepted": true,
+  "lat": 3.493465,
+  "lon": -76.48429,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cl. 84 #1n16, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115897,
+  "direccion": "CL 84 # 1A1-238"
+ },
+ "CL 10 # 66B - 50 BLOQUE B": {
+  "accepted": true,
+  "lat": 3.396496,
+  "lon": -76.54371,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cl. 10 #66b-50 bloque b, Comuna 17, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115897,
+  "direccion": "CL 10 # 66B - 50 BLOQUE B"
+ },
+ "KR 65 # 2B-14": {
+  "accepted": true,
+  "lat": 3.39972,
+  "lon": -76.55127,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 65 #2b-14, La Cascada, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115897,
+  "direccion": "KR 65 # 2B-14"
+ },
+ "KR 30 # 5A-05": {
+  "accepted": true,
+  "lat": 3.432947,
+  "lon": -76.5414,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 30 #5A-05 Esquina, San Fernando, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115898,
+  "direccion": "KR 30 # 5A-05"
+ },
+ "KR 36B # 5B3 46": {
+  "accepted": true,
+  "lat": 3.427313,
+  "lon": -76.541464,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 36b # 5B3-46, San Fernando, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115898,
+  "direccion": "KR 36B # 5B3 46"
+ },
+ "KR 36B # 5B3 29": {
+  "accepted": true,
+  "lat": 3.427508,
+  "lon": -76.541123,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 36b # 3-5, San Fernando, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115898,
+  "direccion": "KR 36B # 5B3 29"
+ },
+ "CL 5B3 # 36B 06": {
+  "accepted": false,
+  "reason": "precision_insuficiente",
+  "location_type": "GEOMETRIC_CENTER",
+  "ts": 1787115899,
+  "direccion": "CL 5B3 # 36B 06"
+ },
+ "CL 5B3 # 36B 27": {
+  "accepted": false,
+  "reason": "precision_insuficiente",
+  "location_type": "GEOMETRIC_CENTER",
+  "ts": 1787115899,
+  "direccion": "CL 5B3 # 36B 27"
+ },
+ "CL 5B3 # 36B 19": {
+  "accepted": false,
+  "reason": "precision_insuficiente",
+  "location_type": "GEOMETRIC_CENTER",
+  "ts": 1787115899,
+  "direccion": "CL 5B3 # 36B 19"
+ },
+ "KR 37 # 5B1 37": {
+  "accepted": true,
+  "lat": 3.428641,
+  "lon": -76.543158,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 37 # 5B1-37, San Fernando, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115899,
+  "direccion": "KR 37 # 5B1 37"
+ },
+ "CL 5B1 # 36B 06": {
+  "accepted": false,
+  "reason": "precision_insuficiente",
+  "location_type": "GEOMETRIC_CENTER",
+  "ts": 1787115900,
+  "direccion": "CL 5B1 # 36B 06"
+ },
+ "KR 36A # 5B1 09": {
+  "accepted": true,
+  "lat": 3.429551,
+  "lon": -76.542409,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 36a #5B1-09, San Fernando, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115900,
+  "direccion": "KR 36A # 5B1 09"
+ },
+ "KR 36A # 5B1 53": {
+  "accepted": true,
+  "lat": 3.429525,
+  "lon": -76.542339,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 36a # 5B-1, San Fernando, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115900,
+  "direccion": "KR 36A # 5B1 53"
+ },
+ "KR 54 OESTE # 3-50": {
+  "accepted": true,
+  "lat": 3.413394,
+  "lon": -76.557125,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 54 #3-50, Belisario Caicedo, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115901,
+  "direccion": "KR 54 OESTE # 3-50"
+ },
+ "CL 5A # 27 - 056": {
+  "accepted": true,
+  "lat": 3.433585,
+  "lon": -76.541349,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cl. 5a #27-26, 3 de Julio, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115901,
+  "direccion": "CL 5A # 27 - 056"
+ },
+ "KR 77 # 1B-63": {
+  "accepted": true,
+  "lat": 3.387621,
+  "lon": -76.554404,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 74 # 1B-63, Prados Del Sur, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115901,
+  "direccion": "KR 77 # 1B-63"
+ },
+ "KR 100A 2O # 1BIS OESTE-38": {
+  "accepted": true,
+  "lat": 3.387689,
+  "lon": -76.551173,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cl. 2a #78-1, Las Farallones, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115901,
+  "direccion": "KR 100A 2O # 1BIS OESTE-38"
+ },
+ "CL 1 BIS OESTE # 100A-07": {
+  "accepted": true,
+  "lat": 3.369859,
+  "lon": -76.554411,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cl. 1 Bis Oe. #100 A 12, Bajo Jordan, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115902,
+  "direccion": "CL 1 BIS OESTE # 100A-07"
+ },
+ "CL 5 # 45A-125": {
+  "accepted": true,
+  "lat": 3.417483,
+  "lon": -76.548074,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cl. 5 #45A-125, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115902,
+  "direccion": "CL 5 # 45A-125"
+ },
+ "KR 50 # 5-173": {
+  "accepted": true,
+  "lat": 3.41537,
+  "lon": -76.546605,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 50 #5-173, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115902,
+  "direccion": "KR 50 # 5-173"
+ },
+ "KR 66 # 13B-29": {
+  "accepted": true,
+  "lat": 3.398273,
+  "lon": -76.534602,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 66 #13b-29, Comuna 17, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115903,
+  "direccion": "KR 66 # 13B-29"
+ },
+ "CLINICA COLOMBIA": {
+  "accepted": true,
+  "lat": 3.414959,
+  "lon": -76.537978,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 46 #9c-85, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115903,
+  "direccion": "CLINICA COLOMBIA"
+ },
+ "KR 57 # 3-74": {
+  "accepted": true,
+  "lat": 3.408088,
+  "lon": -76.54901,
+  "location_type": "ROOFTOP",
+  "precision_m": 15.0,
+  "formatted": "Cra. 57 # 3-74, Cuarto de Legua, Cali, Valle del Cauca, Colombia",
+  "ts": 1787115903,
+  "direccion": "KR 57 # 3-74"
+ }
+}

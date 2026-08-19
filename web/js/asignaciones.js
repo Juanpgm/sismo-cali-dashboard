@@ -163,6 +163,14 @@ function renderSummary() {
       <span class="asig-stat-value tabular" style="color:${VISITED_COLOR}">${visitados}</span>
       <span class="asig-stat-label">Visitados</span>
     </div>
+    <div class="asig-stat">
+      <span class="asig-stat-value tabular" style="color:${VISITED_COLOR}">${data.ede_hechas ?? '—'}</span>
+      <span class="asig-stat-label">EDE hechas</span>
+    </div>
+    <div class="asig-stat">
+      <span class="asig-stat-value tabular" style="color:${COLORS.status.r2}">${data.ede_pendientes ?? '—'}</span>
+      <span class="asig-stat-label">EDE pendientes</span>
+    </div>
     <div class="asig-progress-wrap">
       <div class="asig-progress-head"><span>Avance</span><span class="tabular">${pct}%</span></div>
       <div class="asig-progress"><div class="asig-progress-fill" style="width:${pct}%"></div></div>
@@ -172,16 +180,25 @@ function renderSummary() {
 }
 
 const TABLE_COLS = [
-  ['prioridad', 'Prio'], ['estado_visita', 'Estado'], ['id_asignacion', 'Código'],
+  ['prioridad', 'Prio'], ['estado_visita', 'Estado'], ['ede_hecha', 'EDE'],
+  ['id_asignacion', 'Código'],
   ['score', 'Score'], ['direccion', 'Dirección'], ['barrio_vereda', 'Barrio'],
   ['comuna_corregimiento', 'Comuna'], ['zona_id', 'Zona'], ['nivel_riesgo', 'Riesgo'],
   ['grafo_severidad', 'Sev.'], ['n_fallecidos', 'Fall.'], ['n_atrapamientos', 'Atrap.'],
 ];
 
+/** EDE cross-reference badge: done / missing / unknown (fetch unavailable). */
+function edeBadge(r) {
+  if (r.ede_hecha === true) return `<span class="asig-badge asig-badge-done" title="EDE ${escapeHtml(r.ede_fecha || '')}">EDE ✓</span>`;
+  if (r.ede_hecha === false) return '<span class="asig-badge asig-badge-pending">Falta EDE</span>';
+  return '—';
+}
+
 function renderTable() {
   const head = TABLE_COLS.map(([, label]) => `<th>${escapeHtml(label)}</th>`).join('');
   const rows = data.records.map((r) => {
     const cells = TABLE_COLS.map(([key]) => {
+      if (key === 'ede_hecha') return `<td>${edeBadge(r)}</td>`;
       const v = r[key] == null ? '' : String(r[key]);
       const cls = ['prioridad', 'score', 'id_asignacion', 'grafo_severidad', 'n_fallecidos', 'n_atrapamientos'].includes(key) ? ' class="tabular"' : '';
       return `<td${cls}>${escapeHtml(v)}</td>`;

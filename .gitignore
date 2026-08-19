@@ -4,6 +4,9 @@
 # Exception: the assignments roster is a published dashboard artifact (no PII),
 # downloaded by the "Descargar tabla (Excel)" button.
 !web/data/asignaciones.xlsx
+# Exception: the full published dataset (already PII-stripped by refresh_data.py),
+# downloaded by the "Descargar datos (xlsx)" button.
+!web/data/inspections.xlsx
 
 # Python
 __pycache__/

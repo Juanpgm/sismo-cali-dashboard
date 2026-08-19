@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import io
 import json
 import logging
@@ -34,6 +35,16 @@ from shapely.geometry import Point, shape
 from shapely.strtree import STRtree
 
 from address_norm import normalize_address
+from geocode_validate import (
+    API_KEY_ENV,
+    cache_key,
+    closer_candidate,
+    geocode_address,
+    haversine_m,
+    load_cache,
+    save_cache,
+    to_google_address,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("refresh_data")
@@ -61,6 +72,26 @@ XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 # Tab (worksheet) in the same Sheet where the normalized table is written back.
 NORMALIZED_TAB = "tabla_normalizada"
+
+# Public Survey123 feature layer behind the form. Read-only: we only call
+# queryAttachments to harvest photo EXIF GPS metadata (no image downloads,
+# nothing is ever written to ArcGIS).
+SURVEY_LAYER_URL = (
+    "https://services6.arcgis.com/EF6OTqvE0RxR2jwj/arcgis/rest/services/"
+    "service_d108cb3c79e242eabe99b458798936d1/FeatureServer/0"
+)
+
+# Generous Cali bounding box for sanity-filtering photo GPS fixes.
+CALI_LAT_RANGE = (2.9, 3.9)
+CALI_LON_RANGE = (-77.2, -76.0)
+
+# Tuning knob: photo-vs-form displacement (m) beyond which the photo centroid
+# is suspicious enough to arbitrate with a geocoded address.
+VALIDATION_DIST_M = 300
+
+# Committed geocode cache — lives in the dashboard repo so it seeds the
+# publish container and reruns cost 0 API calls.
+GEOCODE_CACHE_PATH = REPO_ROOT / "web" / "data" / "geocode" / "geocode_cache.json"
 
 # Service-account scopes: read (export the raw tab) + write (update the normalized tab).
 SA_SCOPES = [
@@ -400,6 +431,256 @@ def drop_pii(df: pd.DataFrame) -> pd.DataFrame:
     return df.drop(columns=[c for c in PII_COLUMNS if c in df.columns])
 
 
+# --- Step 3b: photo-EXIF GPS coordinates ----------------------------------
+
+
+def _dms_to_decimal(dms, ref) -> float:
+    """[deg, min, sec] + hemisphere ref → signed decimal degrees. The EXIF
+    value array is unsigned; the sign comes entirely from the S/W ref."""
+    deg, minutes, seconds = (float(v) for v in dms)
+    decimal = deg + minutes / 60.0 + seconds / 3600.0
+    return -decimal if str(ref).strip().upper() in ("S", "W") else decimal
+
+
+def _query_attachment_groups(definition_expression: str) -> dict:
+    resp = requests.get(
+        f"{SURVEY_LAYER_URL}/queryAttachments",
+        params={
+            "definitionExpression": definition_expression,
+            "returnMetadata": "true",
+            "f": "json",
+        },
+        timeout=180,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if "error" in data:
+        raise RuntimeError(f"queryAttachments error: {data['error']}")
+    return data
+
+
+def fetch_photo_coords() -> dict[int, dict]:
+    """Per-record GPS centroid from the photo attachments' EXIF metadata.
+
+    Everything comes from queryAttachments with returnMetadata=true — no image
+    downloads. Attachments without a GPS IFD (signatures, GPS-less photos) are
+    skipped. Returns {objectid: {lat, lon, n_fotos_gps, gps_error_m}}.
+    """
+    data = _query_attachment_groups("1=1")
+    groups = data.get("attachmentGroups", [])
+    if data.get("exceededTransferLimit"):
+        # Verified: all 609 groups fit one ~5 MB response today. If the layer
+        # ever grows past the transfer limit, re-fetch in objectid batches.
+        log.info("queryAttachments truncated; re-fetching in objectid batches.")
+        resp = requests.get(
+            f"{SURVEY_LAYER_URL}/query",
+            params={"where": "1=1", "returnIdsOnly": "true", "f": "json"},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        ids = sorted(resp.json().get("objectIds") or [])
+        groups = []
+        batch = 200
+        for start in range(0, len(ids), batch):
+            chunk = ids[start:start + batch]
+            expr = f"objectid >= {chunk[0]} AND objectid <= {chunk[-1]}"
+            groups.extend(_query_attachment_groups(expr).get("attachmentGroups", []))
+    if not groups:
+        # An empty result is indistinguishable from a broken endpoint — treat
+        # it as failure rather than silently marking every record photo-less.
+        raise RuntimeError("queryAttachments returned 0 attachment groups.")
+
+    points: dict[int, list[tuple[float, float, float | None]]] = {}
+    n_photos_gps = 0
+    n_dropped = 0
+    for group in groups:
+        oid = group.get("parentObjectId")
+        if oid is None:
+            continue
+        for info in group.get("attachmentInfos", []):
+            gps = None
+            for ifd in info.get("exifInfo") or []:
+                if ifd.get("name") == "GPS":
+                    gps = {t.get("name"): t.get("value") for t in ifd.get("tags", [])}
+                    break
+            if not gps or gps.get("GPS Latitude") is None or gps.get("GPS Longitude") is None:
+                continue  # no GPS IFD → signature or GPS-less photo
+            try:
+                lat = _dms_to_decimal(gps["GPS Latitude"], gps.get("GPS Latitude Ref", "N"))
+                lon = _dms_to_decimal(gps["GPS Longitude"], gps.get("GPS Longitude Ref", "W"))
+            except (TypeError, ValueError):
+                continue
+            n_photos_gps += 1
+            if not (CALI_LAT_RANGE[0] <= lat <= CALI_LAT_RANGE[1]
+                    and CALI_LON_RANGE[0] <= lon <= CALI_LON_RANGE[1]):
+                n_dropped += 1
+                continue
+            err = gps.get("GPS Horizontal Positioning Error")
+            err_m = float(err) if isinstance(err, (int, float)) else None
+            points.setdefault(int(oid), []).append((lat, lon, err_m))
+
+    centroids: dict[int, dict] = {}
+    for oid, pts in points.items():
+        errs = [p[2] for p in pts if p[2] is not None]
+        centroids[oid] = {
+            "lat": sum(p[0] for p in pts) / len(pts),
+            "lon": sum(p[1] for p in pts) / len(pts),
+            "n_fotos_gps": len(pts),
+            "gps_error_m": round(sum(errs) / len(errs), 1) if errs else None,
+        }
+    log.info(
+        "Photo EXIF GPS: %d groups, %d photos with GPS (%d outliers dropped), %d record centroids.",
+        len(groups), n_photos_gps, n_dropped, len(centroids),
+    )
+    return centroids
+
+
+def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in meters."""
+    rlat1, rlat2 = math.radians(lat1), math.radians(lat2)
+    dlat = rlat2 - rlat1
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(rlat1) * math.cos(rlat2) * math.sin(dlon / 2) ** 2
+    return 6371000.0 * 2 * math.asin(math.sqrt(a))
+
+
+def apply_photo_coords(df: pd.DataFrame) -> pd.DataFrame:
+    """Override the form x/y with the photo-EXIF GPS centroid where available,
+    keeping the originals in x_form/y_form. Fail-soft: any attachments-endpoint
+    failure logs a warning and publishes form coordinates unchanged — the
+    refresh is never blocked by ArcGIS."""
+    df["x_form"] = df["x"]
+    df["y_form"] = df["y"]
+    df["n_fotos_gps"] = 0
+    df["gps_error_m"] = None
+    df["desplazamiento_m"] = None
+    has_xy = df["x"].notna() & df["y"].notna()
+    df["coords_fuente"] = None
+    df.loc[has_xy, "coords_fuente"] = "formulario"
+
+    try:
+        centroids = fetch_photo_coords()
+    except Exception as exc:  # noqa: BLE001 - fail-soft by design
+        log.warning("Photo-EXIF coords unavailable (%s); publishing form coordinates.", exc)
+        return df
+
+    oids = pd.to_numeric(df.get("ObjectID"), errors="coerce")
+    corrected = pd.Series(False, index=df.index)
+    for i in df.index:
+        oid = oids[i]
+        if pd.isna(oid) or int(oid) not in centroids:
+            continue
+        c = centroids[int(oid)]
+        df.at[i, "x"] = c["lon"]
+        df.at[i, "y"] = c["lat"]
+        df.at[i, "coords_fuente"] = "foto_exif"
+        df.at[i, "n_fotos_gps"] = c["n_fotos_gps"]
+        df.at[i, "gps_error_m"] = c["gps_error_m"]
+        xf, yf = df.at[i, "x_form"], df.at[i, "y_form"]
+        if pd.notna(xf) and pd.notna(yf):
+            df.at[i, "desplazamiento_m"] = round(
+                _haversine_m(float(yf), float(xf), c["lat"], c["lon"]), 1
+            )
+        corrected[i] = True
+
+    if corrected.any():
+        # Keep the derived columns consistent with the corrected position:
+        # the "lat, lon" string and the comuna/barrio_geo spatial join.
+        if "coords" in df.columns:
+            df.loc[corrected, "coords"] = [
+                f"{y:.6f}, {x:.6f}"
+                for x, y in zip(df.loc[corrected, "x"], df.loc[corrected, "y"])
+            ]
+        df = spatial_join(df, mask=corrected)
+    log.info("Photo-EXIF centroid applied to %d/%d records.", int(corrected.sum()), len(df))
+    return df
+
+
+def validate_photo_coords(df: pd.DataFrame) -> pd.DataFrame:
+    """Arbitrate suspicious photo-EXIF corrections with a geocoded address.
+
+    Only records whose photo centroid landed > VALIDATION_DIST_M from the form
+    pin are evaluated (a handful — photos taken away from the building would
+    otherwise move it kilometers). The geocode point is the ARBITER, never the
+    published coordinate: whichever candidate (form pin or photo centroid) is
+    closer to it wins. Fail-soft: any failure logs a warning and keeps the
+    photo corrections as-is — the publish never breaks over geocoding.
+    """
+    for col in ("coords_validacion", "geocode_lat", "geocode_lon", "dist_geocode_m"):
+        df[col] = None
+
+    suspicious = (
+        (df["coords_fuente"] == "foto_exif")
+        & pd.to_numeric(df["desplazamiento_m"], errors="coerce").gt(VALIDATION_DIST_M)
+    )
+    if not suspicious.any():
+        return df
+
+    try:
+        cache = load_cache(GEOCODE_CACHE_PATH)
+        api_key = os.environ.get(API_KEY_ENV, "").strip()
+        session = requests.Session()
+        dirty = False
+        reverted = pd.Series(False, index=df.index)
+        counts = Counter()
+        for i in df.index[suspicious]:
+            addr = None
+            for col in ("direccion_norm", "direccion"):
+                v = df.at[i, col] if col in df.columns else None
+                if isinstance(v, str) and v.strip():
+                    addr = v.strip()
+                    break
+            rec = cache.get(cache_key(addr)) if addr else None
+            if rec is None and addr and api_key:
+                try:
+                    rec = geocode_address(to_google_address(addr), session, api_key)
+                except Exception as exc:  # noqa: BLE001 - keep prior arbitrations consistent
+                    log.warning("Geocode API failed (%s); remaining rows left unvalidated.", exc)
+                    break
+                rec["ts"] = int(time.time())
+                rec["direccion"] = addr
+                cache[cache_key(addr)] = rec
+                dirty = True
+                time.sleep(0.05)  # stay far under Google's QPS cap
+            if not rec or not rec.get("accepted"):
+                df.at[i, "coords_validacion"] = "sin_geocode"
+                counts["sin_geocode"] += 1
+                continue
+            glat, glon = float(rec["lat"]), float(rec["lon"])
+            xf, yf = float(df.at[i, "x_form"]), float(df.at[i, "y_form"])
+            xp, yp = float(df.at[i, "x"]), float(df.at[i, "y"])
+            if closer_candidate(glat, glon, yf, xf, yp, xp) == "formulario":
+                df.at[i, "x"], df.at[i, "y"] = xf, yf
+                df.at[i, "coords_fuente"] = "formulario"
+                df.at[i, "coords_validacion"] = "foto_descartada_geocode"
+                reverted[i] = True
+            else:
+                df.at[i, "coords_validacion"] = "foto_confirmada"
+            counts[df.at[i, "coords_validacion"]] += 1
+            df.at[i, "geocode_lat"] = glat
+            df.at[i, "geocode_lon"] = glon
+            df.at[i, "dist_geocode_m"] = round(
+                haversine_m(glat, glon, float(df.at[i, "y"]), float(df.at[i, "x"])), 1
+            )
+        if dirty:
+            save_cache(cache, GEOCODE_CACHE_PATH)
+        if reverted.any():
+            if "coords" in df.columns:
+                df.loc[reverted, "coords"] = [
+                    f"{y:.6f}, {x:.6f}"
+                    for x, y in zip(df.loc[reverted, "x"], df.loc[reverted, "y"])
+                ]
+            df = spatial_join(df, mask=reverted)
+        log.info(
+            "Geocode validation: %d suspicious (> %dm), %s.",
+            int(suspicious.sum()), VALIDATION_DIST_M,
+            dict(counts) or "none resolved",
+        )
+    except Exception as exc:  # noqa: BLE001 - fail-soft by design
+        log.warning("Geocode validation failed (%s); keeping photo coords as-is.", exc)
+    return df
+
+
 def _base36(n: int) -> str:
     if n == 0:
         return "0"
@@ -458,7 +739,10 @@ def load_prepared_polygons(geojson_path: Path):
     return geoms, names
 
 
-def spatial_join(df: pd.DataFrame) -> pd.DataFrame:
+def spatial_join(df: pd.DataFrame, mask: pd.Series | None = None) -> pd.DataFrame:
+    """Assign comuna/barrio_geo from the prepared basemaps. With `mask`, only
+    those rows are (re)joined and every other row keeps its existing values —
+    used to refresh just the records whose x/y were corrected."""
     comunas_geoms, comunas_names = load_prepared_polygons(PREPARED_BASEMAPS_DIR / "comunas.geojson")
     barrios_geoms, barrios_names = load_prepared_polygons(PREPARED_BASEMAPS_DIR / "barrios.geojson")
 
@@ -475,14 +759,14 @@ def spatial_join(df: pd.DataFrame) -> pd.DataFrame:
                 return names[idx]
         return None
 
-    comuna_vals = []
-    barrio_geo_vals = []
-    for x, y in zip(df["x"], df["y"]):
-        comuna_vals.append(match(comunas_tree, comunas_geoms, comunas_names, x, y))
-        barrio_geo_vals.append(match(barrios_tree, barrios_geoms, barrios_names, x, y))
-
-    df["comuna"] = comuna_vals
-    df["barrio_geo"] = barrio_geo_vals
+    for col in ("comuna", "barrio_geo"):
+        if col not in df.columns:
+            df[col] = None
+    rows = df.index if mask is None else df.index[mask]
+    for i in rows:
+        x, y = df.at[i, "x"], df.at[i, "y"]
+        df.at[i, "comuna"] = match(comunas_tree, comunas_geoms, comunas_names, x, y)
+        df.at[i, "barrio_geo"] = match(barrios_tree, barrios_geoms, barrios_names, x, y)
     return df
 
 
@@ -520,6 +804,13 @@ def write_outputs(df: pd.DataFrame, out_dir: Path, source_used: str) -> tuple[Pa
     meta_path = out_dir / "meta.json"
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    # Full dataset as xlsx for the dashboard's download button (same columns
+    # as inspections.json). Optional: never block the JSON publish over it.
+    try:
+        df.to_excel(out_dir / "inspections.xlsx", index=False)
+    except Exception as exc:  # noqa: BLE001 - openpyxl may be absent; xlsx is optional
+        log.warning("inspections.xlsx not written: %s", exc)
+
     return inspections_path, meta_path, len(records)
 
 
@@ -539,6 +830,12 @@ def run_once(source: str, out_dir: Path) -> None:
     # re-derive, re-key, or write anything back to the Sheet.
     df = coerce_numeric(df)
     df = drop_pii(df)
+    # Photo-EXIF GPS centroids beat hand-placed form pins; every dashboard map
+    # reads x/y, so correcting them here corrects every view at once.
+    df = apply_photo_coords(df)
+    # Geocoded address as third opinion for photo centroids far from the form
+    # pin — reverts to the form coordinate when the address sides with it.
+    df = validate_photo_coords(df)
 
     inspections_path, meta_path, n = write_outputs(df, out_dir, source_used)
     log.info("Wrote %s (%d records) and %s.", inspections_path, n, meta_path)

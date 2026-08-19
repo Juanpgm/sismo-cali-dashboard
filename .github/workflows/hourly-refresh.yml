@@ -7,7 +7,7 @@ name: Hourly dashboard refresh
 # the Vercel function.
 on:
   schedule:
-    - cron: '0 * * * *' # every hour, on the hour (UTC)
+    - cron: '0,30 * * * *' # every 30 minutes (UTC)
   workflow_dispatch: {} # allow a manual run from the Actions tab
 
 jobs:
