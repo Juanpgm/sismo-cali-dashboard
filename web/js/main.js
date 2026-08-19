@@ -396,3 +396,17 @@ document.addEventListener('themechange', () => {
 });
 
 loadAndRender();
+
+// Auto-refresh cada 30 min. Silencioso: recarga el store (dispara el re-render
+// del Panel vía la suscripción) + actualiza la fecha del header, sin overlay de
+// error ni reconstruir el panel de filtros. La vista Gestión ya es tiempo real
+// (Firestore onSnapshot: se actualiza al instante con cada corrida del cron).
+const AUTO_REFRESH_MS = 30 * 60 * 1000;
+setInterval(async () => {
+  try {
+    await store.load();
+    renderHeaderMeta();
+  } catch (err) {
+    console.error('auto-refresh falló (se reintenta en 30 min):', err);
+  }
+}, AUTO_REFRESH_MS);
