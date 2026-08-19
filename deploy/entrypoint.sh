@@ -48,13 +48,9 @@ if int(d.get("row_count", 0)) <= 0:
 print(f"meta OK: {d['row_count']} filas, source={d.get('source')}")
 PY
 
-# Only publish when the actual data changed. meta.json's generated_at bumps
-# every run, so gating on inspections.json avoids hourly no-op deploys.
-if git diff --quiet -- web/data/inspections.json; then
-  echo "inspections.json sin cambios; no publico (evito churn de deploy)."
-  exit 0
-fi
-
+# Publish EVERY run so the dashboard's "última actualización" refleja la fecha de
+# corrida del script aunque los datos no cambien. meta.json.generated_at avanza
+# siempre, así que siempre hay algo que commitear (asumimos deploy cada corrida).
 git config user.email "sismo-refresh-bot@users.noreply.github.com"
 git config user.name "sismo-refresh-bot"
 # inspections.xlsx is fail-soft in refresh_data.py, so it may be absent — add it
@@ -63,6 +59,10 @@ git add web/data/inspections.json web/data/meta.json
 [ -f web/data/inspections.xlsx ] && git add web/data/inspections.xlsx
 # Commit the geocode cache so future runs pay 0 API calls for known addresses.
 [ -f web/data/geocode/geocode_cache.json ] && git add web/data/geocode/geocode_cache.json
+if git diff --cached --quiet; then
+  echo "nada que publicar (ni meta.json cambió); salgo limpio."
+  exit 0
+fi
 git commit -m "chore: refresh dashboard data (auto)"
 git push origin "HEAD:${BRANCH}" 2>&1 | _scrub
 echo "Publicado: Vercel redesplegará desde ${BRANCH}."
