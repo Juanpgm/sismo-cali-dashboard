@@ -27,6 +27,7 @@ export const FILTER_FIELDS = [
   { field: 'estado_edificacion', label: labelForField('estado_edificacion'), group: 'edificacion' },
   { field: 'tipo_propiedad', label: 'Tipo de propiedad', group: 'edificacion' },
   { field: 'epoca_construccion', label: 'Época de construcción', group: 'edificacion' },
+  { field: 'n_pisos', label: 'N.º de pisos', group: 'edificacion' },
   { field: 'comuna', label: 'Comuna', group: 'ubicacion' },
   { field: 'barrio_geo', label: 'Barrio', emptyLabel: 'Sin barrio asignado', group: 'ubicacion' },
   { field: 'entidad', label: labelForField('entidad'), group: 'contexto' },
@@ -36,7 +37,9 @@ export const FILTER_FIELDS = [
 // numeric variables are explored on the map instead (size / heat / choropleth).
 // The store, chips and filters.js all guard on RANGE_FIELDS.length, so an empty
 // list simply drops the whole section.
-export const RANGE_FIELDS = [];
+export const RANGE_FIELDS = [
+  { field: 'n_pisos', label: 'N.º de pisos' },
+];
 
 const NONE = '__none__';
 
