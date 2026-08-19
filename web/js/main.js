@@ -320,7 +320,19 @@ async function pollForFreshData(baseline) {
   }
 }
 
+// Guard: mientras hay una actualización en vuelo, más clicks NO deben disparar
+// otro redeploy — cada redeploy MATA la corrida en curso en Railway y la fecha
+// nunca avanza. El botón queda ocupado hasta que el dato fresco aterriza (o el
+// poll agota su ventana).
+let refreshInFlight = false;
+
 async function triggerRefresh() {
+  if (refreshInFlight) {
+    showToast('Ya hay una actualización en curso; los datos llegan en unos minutos.');
+    return;
+  }
+  refreshInFlight = true;
+  let heldByPoll = false; // el camino exitoso transfiere la liberación al poll
   const baseline = store.meta?.generated_at ?? null;
   setRefreshChrome(true);
   setProgress(12, 'Enviando solicitud…');
@@ -353,19 +365,33 @@ async function triggerRefresh() {
       // instead of freezing the button.
       setProgress(45, res.status === 409 ? 'Ya había una actualización en curso…' : 'Encolado en el servidor…');
       await animateProgress(88, 'Procesando datos…', 7000);
-      setProgress(100, 'Solicitud enviada — se publicará en breve', 'done');
+      setProgress(92, 'Esperando datos frescos…');
       showToast('Actualización encolada. El dashboard se refrescará en unos minutos.');
-      pollForFreshData(baseline).catch(() => {});
-    } else {
-      // Trigger unavailable (endpoint missing, token not set, Railway error):
-      // never leave the user worse off — re-read the published JSON.
-      setProgress(100, 'No se pudo disparar — recargando', 'error');
-      await loadAndRender();
-      showToast(`No se pudo disparar la actualización (${body.error || res.status}); recargué los datos publicados.`, 'error');
+      // El botón sigue ocupado hasta que el dato aterrice (o el poll expire):
+      // así un segundo click no mata la corrida en el servidor.
+      heldByPoll = true;
+      pollForFreshData(baseline)
+        .catch(() => {})
+        .finally(() => {
+          refreshInFlight = false;
+          setRefreshChrome(false);
+          setTimeout(clearProgress, 2200);
+        });
+      return;
     }
+    // Trigger unavailable (endpoint missing, token not set, Railway error):
+    // never leave the user worse off — re-read the published JSON.
+    setProgress(100, 'No se pudo disparar — recargando', 'error');
+    await loadAndRender();
+    showToast(`No se pudo disparar la actualización (${body.error || res.status}); recargué los datos publicados.`, 'error');
   } finally {
-    setRefreshChrome(false);
-    setTimeout(clearProgress, 2200);
+    // Los caminos fallidos liberan el botón ya; el camino exitoso lo libera el
+    // poll (heldByPoll) para bloquear clicks que matarían la corrida.
+    if (!heldByPoll) {
+      refreshInFlight = false;
+      setRefreshChrome(false);
+      setTimeout(clearProgress, 2200);
+    }
   }
 }
 
