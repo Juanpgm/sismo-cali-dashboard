@@ -21,6 +21,8 @@ export const FILTER_FIELDS = [
   { field: 'criterio_habitabilidad', label: 'Habitabilidad', group: 'severidad' },
   // Derived field (see suspensionServicios): not in inspections.json.
   { field: 'suspension_servicios', label: 'Suspensión de servicios', group: 'severidad' },
+  { field: 'colapso_total', label: 'Colapso total', group: 'severidad' },
+  { field: 'colapso_parcial', label: 'Colapso parcial', group: 'severidad' },
   // NOTE: adjacent-building external risk (41_a / 42_a / riesgo_caida) is no
   // longer a filter group — it's now colorable directly on the map points
   // ("Colorear por" → Riesgo externo). See mapview.js RISK_FIELDS.
