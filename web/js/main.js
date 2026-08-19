@@ -10,7 +10,7 @@ import {
 import { initTable, renderTable, setTotalRecords, openDetailModal } from './table.js';
 import { renderAcciones } from './acciones.js';
 import { initTheme } from './theme.js';
-import { debounce, setSourceLabels, sourceLabel } from './utils.js';
+import { debounce, setSourceLabels, sourceLabel, habBinary, labelForCode } from './utils.js';
 
 const el = (sel) => document.querySelector(sel);
 
@@ -395,7 +395,10 @@ async function triggerRefresh() {
  *  derived fields (_search, n_pisos_rango) are stripped, but the derived
  *  suspension_servicios column ships in the export on purpose. */
 el('#datos-download').addEventListener('click', () => {
-  const rows = store.filtered.map(({ _search, n_pisos_rango, ...r }) => r);
+  const rows = store.filtered.map(({ _search, n_pisos_rango, ...r }) => {
+    const bin = habBinary(r); // 'habitable' | 'no_habitable' | '' (sin dato)
+    return { ...r, habitable_no_habitable: bin ? labelForCode(bin) : 'Sin dato' };
+  });
   if (!rows.length) {
     showToast('No hay registros con los filtros aplicados.', 'error');
     return;
