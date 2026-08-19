@@ -8,8 +8,7 @@ import {
   setChoroplethLevel, setChoroplethMetric, invalidateSize, highlightRecord, applyMapTheme,
 } from './mapview.js';
 import { initTable, renderTable, setTotalRecords, openDetailModal } from './table.js';
-import { initAsignaciones, invalidateAsigSize, applyAsigTheme } from './asignaciones.js';
-import { initGestion, invalidateGestionSize, applyGestionTheme } from './gestion.js';
+import { initGestion, invalidateGestionSize, applyGestionTheme } from './cruce.js';
 import { initTheme } from './theme.js';
 import { debounce, setSourceLabels, sourceLabel } from './utils.js';
 
@@ -159,15 +158,7 @@ function switchView(view) {
     panel.hidden = panel.dataset.viewPanel !== view;
   });
   // The filters sidebar only applies to the Panel view; collapse it otherwise.
-  document.querySelector('.app-shell').classList.toggle('asig-active', view === 'asignaciones' || view === 'gestion');
-  if (view === 'asignaciones') {
-    closeFiltersDrawer();
-    initAsignaciones().catch((err) => {
-      console.error(err);
-      showToast('No se pudo cargar la vista de asignaciones.', 'error');
-    });
-    invalidateAsigSize();
-  }
+  document.querySelector('.app-shell').classList.toggle('asig-active', view === 'gestion');
   if (view === 'gestion') {
     closeFiltersDrawer();
     initGestion().catch((err) => {
@@ -394,14 +385,12 @@ document.addEventListener('keydown', (e) => {
 });
 window.addEventListener('resize', debounce(() => {
   invalidateSize();
-  invalidateAsigSize();
   invalidateGestionSize();
 }, 200));
 // Theme toggle: swap map tiles (both maps) and rebuild charts so Chart.js picks
 // up the new CSS-variable colors it bakes in at construction time.
 document.addEventListener('themechange', () => {
   applyMapTheme();
-  applyAsigTheme();
   applyGestionTheme();
   if (store.records.length) renderStatistics(store.filtered);
 });

@@ -1321,3 +1321,29 @@ td { padding: 10px 14px; vertical-align: top; color: var(--text-primary); max-wi
 .gestion-progress-cell { display: flex; align-items: center; gap: 8px; min-width: 120px; }
 .gestion-progress-cell .asig-progress { flex: 1; }
 .gestion-progress-pct { width: 3.2em; text-align: right; font-size: 0.78rem; color: var(--text-secondary); }
+
+/* ── Gestión: barra de login + edición inline + modal de despacho ── */
+.gestion-authbar { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.gestion-user { font-size: 0.85rem; color: var(--text-secondary); display: inline-flex; align-items: center; gap: 8px; }
+.gestion-login { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.gestion-login input { padding: 7px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text-primary); font-size: 0.85rem; }
+.gestion-login input:focus { outline: none; border-color: var(--accent); }
+
+select.gestion-edit, input.gestion-edit { padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text-primary); font-size: 0.82rem; width: 100%; min-width: 96px; }
+select.gestion-edit:focus, input.gestion-edit:focus { outline: none; border-color: var(--accent); }
+
+.despacho-form { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 16px; }
+.despacho-field { display: flex; flex-direction: column; gap: 5px; font-size: 0.85rem; color: var(--text-secondary); }
+.despacho-field-full { grid-column: 1 / -1; }
+.despacho-field input, .despacho-field select, .despacho-field textarea { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text-primary); font-size: 0.9rem; font-family: inherit; }
+.despacho-field input:focus, .despacho-field select:focus, .despacho-field textarea:focus { outline: none; border-color: var(--accent); }
+.despacho-zone-row { display: flex; gap: 8px; }
+.despacho-zone-row select { flex: 1; }
+.despacho-zone-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.despacho-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 999px; background: var(--accent-dim); color: var(--text-primary); font-size: 0.8rem; }
+.despacho-chip button { border: none; background: none; color: var(--text-muted); cursor: pointer; font-size: 1rem; line-height: 1; padding: 0; }
+.despacho-actions { grid-column: 1 / -1; display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
+@media (max-width: 640px) { .despacho-form { grid-template-columns: 1fr; } }
+
+/* [hidden] debe ganar sobre display:flex/inline-flex de botones y cards */
+[hidden] { display: none !important; }
