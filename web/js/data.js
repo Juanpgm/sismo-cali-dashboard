@@ -110,10 +110,10 @@ class Store {
     this.meta = null;
     this.records = []; // raw records + _search index
     this.filtered = [];
-    // Total de reportes ciudadanos, leído EN VIVO de la API atencionsismo vía
-    // /api/reportados (proxy serverless, caché CDN de 15 min). Fallback: el
-    // agregado estático del pipeline. Global, no depende de los filtros del
-    // tablero. null si ninguna fuente está disponible.
+    // Reportes ciudadanos en estado "Reportado", leído EN VIVO de la API
+    // atencionsismo vía /api/reportados (proxy serverless, caché CDN de 15 min).
+    // Fallback: el agregado estático del pipeline. Global, no depende de los
+    // filtros del tablero. null si ninguna fuente está disponible.
     this.reportados = null;
     this.filters = {
       dateFrom: null,
@@ -165,18 +165,17 @@ class Store {
     const meta = await metaRes.json();
     const caliRecords = await dataRes.json();
     this.meta = meta;
-    // KPI "Reportados" = TOTAL de reportes en el sistema (no solo los que
-    // siguen en estado "Reportado": ese conteo baja a medida que se asignan
-    // y visitan, y hacía parecer el KPI congelado).
+    // KPI "Reportados" = solo los reportes en estado "Reportado" (decisión del
+    // usuario 2026-08-20), leídos en vivo de la API; el estático es fallback.
     this.reportados = null;
     if (liveRes && liveRes.ok) {
       try {
-        this.reportados = (await liveRes.json())?.total ?? null;
+        this.reportados = (await liveRes.json())?.por_estadoVerificacion?.Reportado ?? null;
       } catch { /* respuesta malformada: probamos el fallback */ }
     }
     if (this.reportados == null && aggRes && aggRes.ok) {
       try {
-        this.reportados = (await aggRes.json())?.total ?? null;
+        this.reportados = (await aggRes.json())?.por_estadoVerificacion?.Reportado ?? null;
       } catch { /* agregado malformado: se queda en null */ }
     }
     // Cali = 'cali', Israel ya viene con fuente:'israel'. Ambos se procesan igual

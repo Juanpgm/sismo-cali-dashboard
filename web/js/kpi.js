@@ -138,7 +138,7 @@ function usoTilesHtml(records, total) {
 }
 
 /** @param {HTMLElement} container @param {object[]} filteredRecords @param {object[]} allRecords
- *  @param {number|null} reportados Total de reportes ciudadanos de la API atencionsismo (global, no filtrable) */
+ *  @param {number|null} reportados Reportes en estado "Reportado" de la API atencionsismo, en vivo (global, no filtrable) */
 export function renderKpis(container, filteredRecords, allRecords, reportados = null) {
   const values = computeKpis(filteredRecords);
   const total = filteredRecords.length;
