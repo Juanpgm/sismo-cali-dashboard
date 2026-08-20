@@ -112,6 +112,12 @@ const TIPOLOGIA_COLORS = {
 const TIPOLOGIA_LABELS = { casa: 'Casa (≤3 pisos)', edificacion: 'Edificación (>3 pisos)', sin_dato: 'Sin dato de pisos' };
 function tipologiaColor(r) { return TIPOLOGIA_COLORS[tipologiaDe(r)]; }
 
+// Fuente de datos: distingue el levantamiento inicial de Cali del survey del
+// equipo de Israel (colección Firestore aparte). 2 colores categóricos CVD-safe.
+const FUENTE_COLORS = { cali: COLORS.categorical[0], israel: COLORS.categorical[1] };
+const FUENTE_LABELS = { cali: 'Levantamiento Cali', israel: 'Inspectores de Israel' };
+function fuenteColor(r) { return FUENTE_COLORS[normalize(r.fuente)] || COLORS.unknown; }
+
 function pointColor(record) {
   switch (state.colorBy) {
     case 'nivel_dano':
@@ -122,6 +128,8 @@ function pointColor(record) {
       return tipologiaColor(record);
     case 'uso_edificacion':
       return dynamicColor('uso_edificacion', record.uso_edificacion);
+    case 'fuente':
+      return fuenteColor(record);
     case '41_a':
     case '42_a':
     case 'riesgo_caida':
@@ -242,6 +250,9 @@ function renderPointsLegend(records) {
     entries = dynamicScaleCache.field === state.colorBy
       ? dynamicScaleCache.scale.legend.map((e) => ({ label: e.label, color: e.color }))
       : [];
+  } else if (state.colorBy === 'fuente') {
+    title = 'Fuente de datos';
+    entries = Object.entries(FUENTE_COLORS).map(([code, color]) => ({ label: FUENTE_LABELS[code], color }));
   } else if (RISK_FIELDS.has(state.colorBy)) {
     title = labelForField(state.colorBy);
     entries = [

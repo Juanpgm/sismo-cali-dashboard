@@ -86,6 +86,9 @@ const KNOWN_LABELS = {
   si: 'Sí',
   'sí': 'Sí',
   no: 'No',
+  // fuente de datos (origen del levantamiento)
+  cali: 'Levantamiento Cali',
+  israel: 'Inspectores de Israel',
 };
 
 /** Strip accents + lowercase, for case/accent-insensitive matching. */

@@ -425,6 +425,17 @@ el('#datos-download').addEventListener('click', () => {
     showToast('No hay registros con los filtros aplicados.', 'error');
     return;
   }
+  // TODAS las columnas disponibles: sheet_add_json toma el encabezado de la
+  // PRIMERA fila, así que con registros de esquemas distintos (Cali completo vs
+  // Israel sparse) se perderían columnas. Construimos la unión de claves de todas
+  // las filas y la pasamos como `header` para que ninguna columna quede afuera.
+  const header = [];
+  const seen = new Set();
+  for (const row of rows) {
+    for (const k of Object.keys(row)) {
+      if (!seen.has(k)) { seen.add(k); header.push(k); }
+    }
+  }
   // Fecha de descarga (momento del clic) como metadato SOBRE los datos + en el
   // nombre del archivo, para dejar claro cuándo se bajó este export.
   const { legible, slug } = downloadStamp();
@@ -432,7 +443,7 @@ el('#datos-download').addEventListener('click', () => {
     ['Descargado el:', legible],
     [],
   ]);
-  XLSX.utils.sheet_add_json(ws, rows, { origin: 'A3' });
+  XLSX.utils.sheet_add_json(ws, rows, { origin: 'A3', header });
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'inspecciones');
   XLSX.writeFile(wb, `inspecciones_${slug}.xlsx`);
@@ -507,7 +518,7 @@ function startApp() {
       await store.load();
       renderHeaderMeta();
     } catch (err) {
-      console.error('auto-refresh falló (se reintenta en 30 min):', err);
+      console.error('auto-refresh falló (se reintenta en 15 min):', err);
     }
   }, AUTO_REFRESH_MS);
 }

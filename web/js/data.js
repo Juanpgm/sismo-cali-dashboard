@@ -3,6 +3,7 @@ import {
   normalizeAddressText, buildSearchIndex, splitMultiValue, labelForField,
   normalize, habBinary,
 } from './utils.js';
+import { fetchIsraelRecords } from './israel-source.js';
 
 // Sidebar section order/labels for FILTER_FIELDS' `group` key.
 // Ordered so the severity-determining fields the assessor needs first come first.
@@ -143,17 +144,21 @@ class Store {
 
   async load() {
     const bust = `?t=${Date.now()}`;
-    const [metaRes, dataRes, aggRes] = await Promise.all([
+    // israelRecords: colección Firestore SEPARADA (Inspectores de Israel). Se trae
+    // en paralelo y nunca lanza (devuelve [] ante cualquier fallo), así el tablero
+    // de Cali carga aunque Firestore no responda.
+    const [metaRes, dataRes, aggRes, israelRecords] = await Promise.all([
       fetch(`data/meta.json${bust}`, { cache: 'no-store' }),
       fetch(`data/inspections.json${bust}`, { cache: 'no-store' }),
       // Agregado de reportes: opcional. Su fallo no debe tumbar el tablero.
       fetch(`data/reportes_agg.json${bust}`, { cache: 'no-store' }).catch(() => null),
+      fetchIsraelRecords(),
     ]);
     if (!metaRes.ok || !dataRes.ok) {
       throw new Error(`HTTP ${metaRes.status}/${dataRes.status}`);
     }
     const meta = await metaRes.json();
-    const records = await dataRes.json();
+    const caliRecords = await dataRes.json();
     this.meta = meta;
     this.reportados = null;
     if (aggRes && aggRes.ok) {
@@ -161,6 +166,12 @@ class Store {
         this.reportados = (await aggRes.json())?.por_estadoVerificacion?.Reportado ?? null;
       } catch { /* agregado malformado: se queda en null */ }
     }
+    // Cali = 'cali', Israel ya viene con fuente:'israel'. Ambos se procesan igual
+    // (índice de búsqueda, buckets, suspensión) para que se comporten idéntico.
+    const records = [
+      ...caliRecords.map((r) => ({ ...r, fuente: 'cali' })),
+      ...israelRecords,
+    ];
     this.records = records.map((r) => ({
       ...r,
       _search: buildSearchIndex(r),
