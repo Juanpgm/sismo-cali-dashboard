@@ -27,11 +27,20 @@ const CONCURRENCY = 4; // parallel day windows; the API tolerates this fine
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Last upstream failure seen by any window, surfaced in the 502 body so a
+// misconfigured credential (401) is distinguishable from an API outage.
+let lastFailure = null;
+
 async function fetchWindow(auth, d0, d1) {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const res = await fetch(`${API_URL}?desde_utc=${d0}&hasta_utc=${d1}`, {
-        headers: { Authorization: `Basic ${auth}` },
+        headers: {
+          Authorization: `Basic ${auth}`,
+          // Cloudflare answers 403 to requests without a User-Agent (same
+          // workaround as api/refresh.js); Node's fetch sends none by default.
+          'User-Agent': 'sismo-cali-dashboard/1.0',
+        },
         signal: AbortSignal.timeout(90_000),
       });
       if ((res.status === 413 || res.status === 504) && d1 - d0 > MIN_WINDOW_MS) {
@@ -42,7 +51,10 @@ async function fetchWindow(auth, d0, d1) {
         ]);
         return a.concat(b);
       }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        lastFailure = `HTTP ${res.status}`;
+        throw new Error(lastFailure);
+      }
       const json = await res.json();
       return (json.reportes || []).map((r) => ({
         id: r.id,
@@ -100,7 +112,9 @@ module.exports = async (req, res) => {
     if (counts.total === 0) {
       // Never cache/serve an empty count over a transient API failure; the
       // frontend falls back to the static aggregate.
-      return res.status(502).json({ error: 'la API devolvió 0 reportes' });
+      return res.status(502).json({
+        error: `la API devolvió 0 reportes${lastFailure ? ` (último fallo upstream: ${lastFailure})` : ''}`,
+      });
     }
     // ponytail: the day walk grows with the date range (~150s today); if it
     // ever nears the 300s function limit, persist a checkpoint or narrow desde.
