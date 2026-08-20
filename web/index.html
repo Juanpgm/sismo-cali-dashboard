@@ -165,9 +165,19 @@
         <h2 class="stats-title">Estadísticas</h2>
       </div>
       <div class="stats-grid">
-        <div class="chart-tile chart-tile-wide">
-          <h3 class="chart-tile-title">Inspecciones por comuna</h3>
-          <canvas id="chart-comuna"></canvas>
+        <div class="chart-tile chart-tile-wide chart-tile-auto">
+          <h3 class="chart-tile-title">Habitabilidad y colapso por tipología (Casa / Edificio)</h3>
+          <div class="tipologia-table-wrap" id="colapso-hab-table"></div>
+        </div>
+        <div class="chart-row">
+          <div class="chart-tile chart-row-main">
+            <h3 class="chart-tile-title">Inspecciones por comuna</h3>
+            <canvas id="chart-comuna"></canvas>
+          </div>
+          <div class="chart-tile chart-row-side">
+            <h3 class="chart-tile-title">Distribución por uso de la edificación</h3>
+            <canvas id="chart-uso-doughnut"></canvas>
+          </div>
         </div>
         <div class="chart-tile">
           <h3 class="chart-tile-title">Inspecciones por nivel de daño</h3>
@@ -185,6 +195,10 @@
           <h3 class="chart-tile-title">Habitabilidad por comuna</h3>
           <canvas id="chart-hab-comuna"></canvas>
         </div>
+        <div class="chart-tile chart-tile-wide chart-tile-auto">
+          <h3 class="chart-tile-title">Semáforo × tipología por número de pisos</h3>
+          <div class="tipologia-table-wrap" id="tipologia-table"></div>
+        </div>
         <div class="chart-tile">
           <h3 class="chart-tile-title">Distribución de habitabilidad</h3>
           <canvas id="chart-hab-doughnut"></canvas>
@@ -193,21 +207,9 @@
           <h3 class="chart-tile-title">Severidad de daños</h3>
           <canvas id="chart-severidad"></canvas>
         </div>
-        <div class="chart-tile chart-tile-wide">
-          <h3 class="chart-tile-title">Distribución por uso de la edificación</h3>
-          <canvas id="chart-uso-doughnut"></canvas>
-        </div>
         <div class="chart-tile">
           <h3 class="chart-tile-title">Suspensión de servicios</h3>
           <canvas id="chart-suspension"></canvas>
-        </div>
-        <div class="chart-tile chart-tile-wide chart-tile-auto">
-          <h3 class="chart-tile-title">Semáforo × tipología por número de pisos</h3>
-          <div class="tipologia-table-wrap" id="tipologia-table"></div>
-        </div>
-        <div class="chart-tile chart-tile-wide chart-tile-auto">
-          <h3 class="chart-tile-title">Habitabilidad y colapso por tipología (Casa / Edificio)</h3>
-          <div class="tipologia-table-wrap" id="colapso-hab-table"></div>
         </div>
         <div class="chart-tile">
           <h3 class="chart-tile-title">Casas y edificios por semáforo</h3>

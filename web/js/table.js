@@ -237,15 +237,15 @@ async function loadPhotos(objectId, container) {
       container.innerHTML = '<span class="detail-photos-empty">Sin fotos en el survey.</span>';
       return;
     }
-    container.innerHTML = ordered.map((a) => {
-      const url = `${SURVEY_LAYER_URL}/${objectId}/attachments/${a.id}`;
+    const urls = ordered.map((a) => `${SURVEY_LAYER_URL}/${objectId}/attachments/${a.id}`);
+    container.innerHTML = ordered.map((a, i) => {
       const firma = isFirma(a);
-      return `<button type="button" class="detail-photo${firma ? ' detail-photo-firma' : ''}" data-full="${escapeHtml(url)}" title="${firma ? 'Firma del evaluador' : 'Foto de la inspección'}">
-        <img src="${escapeHtml(url)}" alt="${firma ? 'Firma del evaluador' : 'Foto de la inspección'}" loading="lazy">
+      return `<button type="button" class="detail-photo${firma ? ' detail-photo-firma' : ''}" data-idx="${i}" title="${firma ? 'Firma del evaluador' : 'Foto de la inspección'}">
+        <img src="${escapeHtml(urls[i])}" alt="${firma ? 'Firma del evaluador' : 'Foto de la inspección'}" loading="lazy">
       </button>`;
     }).join('');
     container.querySelectorAll('.detail-photo').forEach((btn) => {
-      btn.addEventListener('click', () => openLightbox(btn.dataset.full));
+      btn.addEventListener('click', () => openLightbox(urls, Number(btn.dataset.idx)));
     });
   } catch {
     container.innerHTML = '<span class="detail-photos-empty">No se pudieron cargar las fotos.</span>';
@@ -253,13 +253,35 @@ async function loadPhotos(objectId, container) {
 }
 
 let lightboxEl = null;
-function openLightbox(url) {
+const lbState = { urls: [], idx: 0 };
+
+function lbShow() {
+  if (!lightboxEl) return;
+  lightboxEl.querySelector('img').src = lbState.urls[lbState.idx] || '';
+  const multi = lbState.urls.length > 1;
+  lightboxEl.querySelectorAll('[data-lb-prev], [data-lb-next], .photo-lightbox-count')
+    .forEach((el) => { el.style.display = multi ? '' : 'none'; });
+  const count = lightboxEl.querySelector('.photo-lightbox-count');
+  if (count) count.textContent = `${lbState.idx + 1} / ${lbState.urls.length}`;
+}
+function lbStep(delta) {
+  if (!lbState.urls.length) return;
+  lbState.idx = (lbState.idx + delta + lbState.urls.length) % lbState.urls.length;
+  lbShow();
+}
+
+function openLightbox(urls, startIndex) {
+  lbState.urls = Array.isArray(urls) ? urls : [urls];
+  lbState.idx = startIndex || 0;
   if (!lightboxEl) {
     lightboxEl = document.createElement('div');
     lightboxEl.className = 'photo-lightbox';
     lightboxEl.innerHTML = `
+      <button type="button" class="photo-lightbox-nav" data-lb-prev aria-label="Anterior" title="Anterior">‹</button>
       <img alt="Foto ampliada">
+      <button type="button" class="photo-lightbox-nav" data-lb-next aria-label="Siguiente" title="Siguiente">›</button>
       <div class="photo-lightbox-actions">
+        <span class="photo-lightbox-count"></span>
         <button type="button" data-lb-full aria-label="Pantalla completa" title="Pantalla completa">⛶</button>
         <button type="button" data-lb-close aria-label="Cerrar" title="Cerrar">✕</button>
       </div>`;
@@ -267,15 +289,22 @@ function openLightbox(url) {
     const close = () => lightboxEl.classList.remove('is-open');
     lightboxEl.addEventListener('click', (e) => {
       if (e.target === lightboxEl || e.target.closest('[data-lb-close]')) close();
+      else if (e.target.closest('[data-lb-prev]')) lbStep(-1);
+      else if (e.target.closest('[data-lb-next]')) lbStep(1);
     });
     lightboxEl.querySelector('[data-lb-full]').addEventListener('click', () => {
       const img = lightboxEl.querySelector('img');
       if (lightboxEl.requestFullscreen) lightboxEl.requestFullscreen().catch(() => {});
       else if (img.requestFullscreen) img.requestFullscreen().catch(() => {});
     });
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+    document.addEventListener('keydown', (e) => {
+      if (!lightboxEl.classList.contains('is-open')) return;
+      if (e.key === 'Escape') close();
+      else if (e.key === 'ArrowLeft') lbStep(-1);
+      else if (e.key === 'ArrowRight') lbStep(1);
+    });
   }
-  lightboxEl.querySelector('img').src = url;
+  lbShow();
   lightboxEl.classList.add('is-open');
 }
 

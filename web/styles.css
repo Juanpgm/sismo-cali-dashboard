@@ -678,6 +678,10 @@ a { color: var(--accent); }
   font-weight: 600;
 }
 .chart-tile-wide { grid-column: 1 / -1; }
+/* Fila 70/30: gráfico principal ancho + uno lateral angosto */
+.chart-row { grid-column: 1 / -1; display: flex; gap: 14px; flex-wrap: wrap; }
+.chart-row-main { flex: 3 1 340px; }
+.chart-row-side { flex: 1 1 200px; }
 .chart-tile-auto { height: auto; }
 
 /* Semáforo × tipología por número de pisos */
@@ -1181,6 +1185,18 @@ td { padding: 10px 14px; vertical-align: top; color: var(--text-primary); max-wi
   font-size: 1.1rem; cursor: pointer;
 }
 .photo-lightbox-actions button:hover { background: rgba(255, 255, 255, 0.15); }
+.photo-lightbox-count { color: rgba(255, 255, 255, 0.85); font-size: 0.82rem; align-self: center; margin-right: 4px; }
+.photo-lightbox-nav {
+  position: fixed; top: 50%; transform: translateY(-50%);
+  width: 48px; height: 64px; border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(0, 0, 0, 0.5); color: #fff;
+  font-size: 2rem; line-height: 1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.photo-lightbox-nav:hover { background: rgba(255, 255, 255, 0.15); }
+.photo-lightbox-nav[data-lb-prev] { left: 16px; }
+.photo-lightbox-nav[data-lb-next] { right: 16px; }
 
 .detail-group { margin-bottom: 20px; }
 .detail-group h3 {
