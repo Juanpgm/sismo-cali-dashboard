@@ -110,8 +110,10 @@ class Store {
     this.meta = null;
     this.records = []; // raw records + _search index
     this.filtered = [];
-    // Total "Reportado" de la API de reportes (reportes_agg.json). Global, no
-    // depende de los filtros del tablero. null si el agregado no está disponible.
+    // Total de reportes ciudadanos, leído EN VIVO de la API atencionsismo vía
+    // /api/reportados (proxy serverless, caché CDN de 15 min). Fallback: el
+    // agregado estático del pipeline. Global, no depende de los filtros del
+    // tablero. null si ninguna fuente está disponible.
     this.reportados = null;
     this.filters = {
       dateFrom: null,
@@ -147,10 +149,13 @@ class Store {
     // israelRecords: colección Firestore SEPARADA (Inspectores de Israel). Se trae
     // en paralelo y nunca lanza (devuelve [] ante cualquier fallo), así el tablero
     // de Cali carga aunque Firestore no responda.
-    const [metaRes, dataRes, aggRes, israelRecords] = await Promise.all([
+    const [metaRes, dataRes, liveRes, aggRes, israelRecords] = await Promise.all([
       fetch(`data/meta.json${bust}`, { cache: 'no-store' }),
       fetch(`data/inspections.json${bust}`, { cache: 'no-store' }),
-      // Agregado de reportes: opcional. Su fallo no debe tumbar el tablero.
+      // Reportados en vivo desde la API atencionsismo. SIN cache-bust: la caché
+      // CDN (s-maxage=900) es la que limita la lectura a cada 15 min. Opcional.
+      fetch('/api/reportados').catch(() => null),
+      // Agregado estático de reportes: fallback. Su fallo no debe tumbar el tablero.
       fetch(`data/reportes_agg.json${bust}`, { cache: 'no-store' }).catch(() => null),
       fetchIsraelRecords(),
     ]);
@@ -160,10 +165,18 @@ class Store {
     const meta = await metaRes.json();
     const caliRecords = await dataRes.json();
     this.meta = meta;
+    // KPI "Reportados" = TOTAL de reportes en el sistema (no solo los que
+    // siguen en estado "Reportado": ese conteo baja a medida que se asignan
+    // y visitan, y hacía parecer el KPI congelado).
     this.reportados = null;
-    if (aggRes && aggRes.ok) {
+    if (liveRes && liveRes.ok) {
       try {
-        this.reportados = (await aggRes.json())?.por_estadoVerificacion?.Reportado ?? null;
+        this.reportados = (await liveRes.json())?.total ?? null;
+      } catch { /* respuesta malformada: probamos el fallback */ }
+    }
+    if (this.reportados == null && aggRes && aggRes.ok) {
+      try {
+        this.reportados = (await aggRes.json())?.total ?? null;
       } catch { /* agregado malformado: se queda en null */ }
     }
     // Cali = 'cali', Israel ya viene con fuente:'israel'. Ambos se procesan igual

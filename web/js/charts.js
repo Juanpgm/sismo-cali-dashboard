@@ -384,7 +384,7 @@ function renderTimeSeries(records, reportados) {
       _totalLabel: fmt(totalApp), // etiqueta de dato sobre el último punto
     },
   ];
-  // Momento 2 (histórico): total "Reportado" de reportes_agg.json como línea de
+  // Momento 2 (histórico): total de reportes de la API atencionsismo como línea de
   // referencia plana, para comparar el avance de la app contra el universo de
   // Momento 2 en escala logarítmica. Se actualiza con store.reportados (refresh).
   if (reportados != null && reportados > 0) {
