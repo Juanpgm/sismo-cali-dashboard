@@ -18,6 +18,11 @@ REPO="${DASHBOARD_REPO:-Juanpgm/sismo-cali-dashboard}"
 BRANCH="${DASHBOARD_BRANCH:-main}"
 
 echo "Clonando ${REPO}@${BRANCH}…"
+# Railway re-ejecuta el MISMO contenedor en cada tick del cron y el filesystem
+# PERSISTE entre corridas, así que /repo del run anterior queda ahí y `git clone`
+# falla con "destination path already exists". Limpiar siempre = clone idempotente
+# (no-op si el contenedor es fresco, salva si persiste).
+rm -rf /repo
 git clone --depth 1 --branch "$BRANCH" \
   "https://x-access-token:${DASHBOARD_REPO_TOKEN}@github.com/${REPO}.git" /repo \
   2>&1 | sed "s/${DASHBOARD_REPO_TOKEN}/***/g"
