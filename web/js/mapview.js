@@ -46,7 +46,7 @@ let highlightMarker = null;
 const state = {
   mode: 'points', // points | heat | choropleth
   colorBy: 'criterio_habitabilidad',
-  sizeBy: 'none', // none | n_ocupantes | n_pisos | n_sotanos
+  sizeBy: 'n_ocupantes', // none | n_ocupantes | n_pisos | n_sotanos
   heatWeight: 'count', // count | victims | damage | n_ocupantes | n_pisos | n_sotanos
   choroplethLevel: 'comuna', // comuna | barrio
   choroplethMetric: 'count', // count | no_habitables | victims | n_ocupantes | n_pisos | n_sotanos
