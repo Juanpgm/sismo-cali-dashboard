@@ -2,6 +2,7 @@
 // Chart.js 4 (UMD global via CDN, same pattern as Leaflet's `L`) — "Estadísticas" charts.
 import {
   COLORS, themeColor, labelForCode, labelForField, splitMultiValue, habCode, habBinary, normalize, formatDate,
+  buildCategoricalScale,
 } from './utils.js';
 
 const registry = new Map();
@@ -494,18 +495,25 @@ function renderSeveridad(records) {
  *  count get the validated categorical palette; the rest fold into "Otros",
  *  same convention as the map's categorical color-by for this field. */
 function renderUsoDoughnut(records) {
+  // Mismo criterio y colores que el mapa de puntos por "Uso de la edificación":
+  // categoría = valor crudo de uso_edificacion (no se parte), escala categórica
+  // amplia (buildCategoricalScale con categoricalWide), top-N + "Otros".
+  const scale = buildCategoricalScale(records.map((r) => r.uso_edificacion), COLORS.categoricalWide);
   const counts = new Map();
   for (const r of records) {
-    for (const part of splitMultiValue(r.uso_edificacion)) {
-      counts.set(part, (counts.get(part) || 0) + 1);
-    }
+    const v = r.uso_edificacion;
+    if (v == null || String(v).trim() === '') continue;
+    counts.set(String(v), (counts.get(String(v)) || 0) + 1);
   }
-  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  const top = sorted.slice(0, COLORS.categorical.length);
-  const otherCount = sorted.slice(COLORS.categorical.length).reduce((sum, [, v]) => sum + v, 0);
-  const labels = top.map(([k]) => labelForCode(k));
-  const data = top.map(([, v]) => v);
-  const colors = top.map((_, i) => COLORS.categorical[i]);
+  // buildCategoricalScale ya mete su propia entrada "Otros" (__other__); la
+  // filtramos y recomputamos el conteo agregado de los overflow acá.
+  const realLegend = scale.legend.filter((e) => e.value !== '__other__');
+  const topValues = new Set(realLegend.map((e) => e.value));
+  const labels = realLegend.map((e) => e.label);
+  const data = realLegend.map((e) => counts.get(e.value) || 0);
+  const colors = realLegend.map((e) => e.color);
+  let otherCount = 0;
+  for (const [v, c] of counts) if (!topValues.has(v)) otherCount += c;
   if (otherCount > 0) {
     labels.push('Otros');
     data.push(otherCount);
@@ -668,9 +676,13 @@ const CH_METRICS = [
   ['colapso_total', 'Colapso total', COLORS.status.i3],
   ['colapso_parcial', 'Colapso parcial', COLORS.status.r2],
 ];
+// Métricas de las BARRAS: agrega "No colapsadas" (ni total ni parcial). No va en
+// la tabla (que se queda en las 4 de CH_METRICS), solo en el gráfico de colapso
+// para dar el contraste contra las colapsadas.
+const CH_BAR_METRICS = [...CH_METRICS, ['no_colapso', 'No colapsadas', COLORS.status.h]];
 function colapsoHabCounts(records) {
   const acc = Object.fromEntries(TIPOLOGIAS.map(([t]) => [
-    t, Object.fromEntries(CH_METRICS.map(([m]) => [m, { reg: 0, unid: 0 }])),
+    t, Object.fromEntries(CH_BAR_METRICS.map(([m]) => [m, { reg: 0, unid: 0 }])),
   ]));
   for (const r of records) {
     const cell = acc[tipologiaDe(r)];
@@ -678,8 +690,11 @@ function colapsoHabCounts(records) {
     const unid = Number.isNaN(u) ? 0 : u;
     const bin = habBinary(r); // 'habitable' | 'no_habitable' | '' (sin dato)
     if (bin) { cell[bin].reg += 1; cell[bin].unid += unid; }
-    if (normalize(r.colapso_total) === 'si') { cell.colapso_total.reg += 1; cell.colapso_total.unid += unid; }
-    if (normalize(r.colapso_parcial) === 'si') { cell.colapso_parcial.reg += 1; cell.colapso_parcial.unid += unid; }
+    const ct = normalize(r.colapso_total) === 'si';
+    const cp = normalize(r.colapso_parcial) === 'si';
+    if (ct) { cell.colapso_total.reg += 1; cell.colapso_total.unid += unid; }
+    if (cp) { cell.colapso_parcial.reg += 1; cell.colapso_parcial.unid += unid; }
+    if (!ct && !cp) { cell.no_colapso.reg += 1; cell.no_colapso.unid += unid; }
   }
   return acc;
 }
@@ -712,7 +727,7 @@ function renderColapsoHab(records) {
   }
 
   renderTipologiaBar('chart-hab-tipologia', records, ['habitable', 'no_habitable']);
-  renderTipologiaBar('chart-colapso-tipologia', records, ['colapso_total', 'colapso_parcial']);
+  renderTipologiaBar('chart-colapso-tipologia', records, ['colapso_total', 'colapso_parcial', 'no_colapso']);
 }
 
 /** Barras agrupadas Casa vs. Edificación para un subconjunto de CH_METRICS. */
@@ -720,7 +735,7 @@ function renderTipologiaBar(canvasId, records, metricKeys) {
   const acc = colapsoHabCounts(records);
   const tips = [['casa', 'Casa'], ['edificacion', 'Edificación']];
   const surface = themeColor('--surface', '#12294a');
-  const metrics = CH_METRICS.filter(([m]) => metricKeys.includes(m));
+  const metrics = CH_BAR_METRICS.filter(([m]) => metricKeys.includes(m));
   upsertChart(canvasId, {
     type: 'bar',
     data: {

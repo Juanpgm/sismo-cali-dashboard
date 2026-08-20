@@ -403,10 +403,25 @@ el('#datos-download').addEventListener('click', () => {
     showToast('No hay registros con los filtros aplicados.', 'error');
     return;
   }
-  const ws = XLSX.utils.json_to_sheet(rows);
+  // Timestamp de generación (fecha de los datos, no la de descarga) como metadato
+  // SOBRE los datos + en el nombre del archivo, para dejar claro el momento y
+  // advertir que pueden haber cambiado si pasó mucho tiempo.
+  const genAtRaw = store.meta?.generated_at || '';
+  const genAtLegible = genAtRaw
+    ? new Date(genAtRaw).toLocaleString('es-CO', { dateStyle: 'long', timeStyle: 'short' })
+    : 'desconocido';
+  const stamp = genAtRaw
+    ? `${genAtRaw.slice(0, 10)}_${genAtRaw.slice(11, 16).replace(':', '-')}`
+    : 'export';
+  const ws = XLSX.utils.aoa_to_sheet([
+    ['Generado (fecha de los datos):', genAtLegible],
+    ['Advertencia:', 'Los datos pueden haber cambiado si ha pasado mucho tiempo desde esta fecha de generación.'],
+    [],
+  ]);
+  XLSX.utils.sheet_add_json(ws, rows, { origin: 'A4' });
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'inspecciones');
-  XLSX.writeFile(wb, `inspecciones_${(store.meta?.generated_at || '').slice(0, 10) || 'export'}.xlsx`);
+  XLSX.writeFile(wb, `inspecciones_${stamp}.xlsx`);
 });
 
 searchInput.addEventListener('input', debounce((e) => store.setSearch(e.target.value), 250));

@@ -34,10 +34,23 @@ export const COLORS = {
     medio: '#f97316',
     alto: '#ef4444',
   },
+  // Severidad de daños (severidad_danos) — ordinal, mismo esquema cálido que
+  // damage pero con 5 niveles (agrega medio_alto): verde -> amarillo -> naranja
+  // -> rojo -> rojo oscuro.
+  severidad: {
+    sin_dano: '#22c55e',
+    bajo: '#eab308',
+    medio: '#f97316',
+    medio_alto: '#ef4444',
+    alto: '#b91c1c',
+  },
   // Nominal categorical (uso_edificacion, severidad_danos fallback, etc.)
   // First 3 slots are validated all-pairs CVD-safe on the navy dark surface;
   // anything past the 3rd real category folds into "Otros" (muted gray).
   categorical: ['#3987e5', '#d95926', '#199e70'],
+  // Paleta cualitativa amplia (Okabe-Ito, CVD-safe) para variables nominales con
+  // muchas categorías, p.ej. uso_edificacion en el mapa de puntos.
+  categoricalWide: ['#56b4e9', '#e69f00', '#009e73', '#cc79a7', '#0072b2', '#d55e00', '#f0e442', '#994f00'],
   categoricalOther: '#64748b',
   // Sequential ramp for choropleth (dark navy -> yellow), 5 discrete classes.
   choropleth: ['#12294a', '#2c4468', '#6b6142', '#c99a1a', '#FFC400'],
@@ -350,6 +363,12 @@ export function habitabilityColor(code) {
 export function damageColor(code) {
   const key = normalize(code);
   return COLORS.damage[key] || COLORS.unknown;
+}
+
+/** Color for a severidad_danos code (ordinal, warm ramp). */
+export function severidadColor(code) {
+  const key = normalize(code);
+  return COLORS.severidad[key] || COLORS.unknown;
 }
 
 /**

@@ -1,6 +1,6 @@
-// Map centerpiece: Puntos / Calor / Coropletas modes over Leaflet + leaflet.heat.
+// Map centerpiece: Puntos / Calor / Coroplético modes over Leaflet + leaflet.heat.
 import {
-  COLORS, habitabilityColor, damageColor, buildCategoricalScale,
+  COLORS, habitabilityColor, damageColor, severidadColor, buildCategoricalScale,
   interpolateRamp, labelForCode, labelForField, formatValue, escapeHtml, normalize,
   isNoHabitableBinary, basemapTileUrl,
 } from './utils.js';
@@ -103,7 +103,7 @@ function pointColor(record) {
     case 'nivel_dano':
       return damageColor(record.nivel_dano);
     case 'severidad_danos':
-      return dynamicColor('severidad_danos', record.severidad_danos);
+      return severidadColor(record.severidad_danos);
     case 'uso_edificacion':
       return dynamicColor('uso_edificacion', record.uso_edificacion);
     case '41_a':
@@ -176,10 +176,12 @@ function renderPoints(records) {
   pointsLayer.clearLayers();
   const withCoords = records.filter((r) => r.x != null && r.y != null && !Number.isNaN(Number(r.x)) && !Number.isNaN(Number(r.y)));
 
-  if (state.colorBy === 'severidad_danos' || state.colorBy === 'uso_edificacion') {
+  if (state.colorBy === 'uso_edificacion') {
     dynamicScaleCache = {
       field: state.colorBy,
-      scale: buildCategoricalScale(withCoords.map((r) => r[state.colorBy])),
+      // Paleta amplia (8 hues CVD-safe) en vez de las 3 categóricas por defecto:
+      // el uso tiene muchas categorías y la paleta corta apelmazaba casi todo en gris.
+      scale: buildCategoricalScale(withCoords.map((r) => r[state.colorBy]), COLORS.categoricalWide),
     };
   }
 
@@ -213,7 +215,10 @@ function renderPointsLegend(records) {
   if (state.colorBy === 'nivel_dano') {
     title = 'Nivel de daño';
     entries = Object.entries(COLORS.damage).map(([code, color]) => ({ label: labelForCode(code), color }));
-  } else if (state.colorBy === 'severidad_danos' || state.colorBy === 'uso_edificacion') {
+  } else if (state.colorBy === 'severidad_danos') {
+    title = labelForField('severidad_danos');
+    entries = Object.entries(COLORS.severidad).map(([code, color]) => ({ label: labelForCode(code), color }));
+  } else if (state.colorBy === 'uso_edificacion') {
     title = labelForField(state.colorBy);
     entries = dynamicScaleCache.field === state.colorBy
       ? dynamicScaleCache.scale.legend.map((e) => ({ label: e.label, color: e.color }))
@@ -324,11 +329,23 @@ async function renderChoropleth(records) {
     if (v > maxVal) maxVal = v;
   }
 
+  // Mapeo por RANGO (rank) en vez de lineal v/maxVal: reparte la rampa por la
+  // posición relativa del área entre las que tienen dato, así áreas con conteos
+  // parecidos quedan visualmente diferenciables (el lineal apelmazaba casi todo
+  // en el extremo oscuro con distribución sesgada). Piso 0.2 para que hasta la
+  // más baja se despegue del fondo. Misma rampa de colores, solo cambia el mapeo.
+  const nonzero = [...values.values()].filter((x) => x > 0).sort((a, b) => a - b);
+  const rankT = (v) => {
+    if (v <= 0 || nonzero.length === 0) return 0;
+    if (nonzero.length === 1) return 1;
+    return 0.2 + 0.8 * (nonzero.indexOf(v) / (nonzero.length - 1));
+  };
+
   const layer = L.geoJSON(geo, {
     style: (feature) => {
       const name = feature.properties && feature.properties.name;
       const v = values.get(name) || 0;
-      const t = maxVal > 0 ? v / maxVal : 0;
+      const t = rankT(v);
       return {
         color: 'rgba(255,255,255,0.25)',
         weight: 1,
@@ -348,10 +365,16 @@ async function renderChoropleth(records) {
   });
   layer.addTo(choroplethLayer);
 
+  // Leyenda coherente con el mapeo por rango: valor bajo / medio / alto entre las
+  // áreas con dato, en su color de rango.
+  const lo = nonzero[0] ?? 0;
+  const mid = nonzero[Math.floor(nonzero.length / 2)] ?? 0;
+  const hi = nonzero[nonzero.length - 1] ?? maxVal;
   setLegend(`${metricLabel(state.choroplethMetric)} por ${state.choroplethLevel === 'comuna' ? 'comuna' : 'barrio'}`, [
     { label: '0', color: COLORS.choropleth[0], shape: 'square' },
-    { label: `${Math.round(maxVal * 0.5)}`, color: interpolateRamp(COLORS.choropleth, 0.5), shape: 'square' },
-    { label: `${maxVal}`, color: interpolateRamp(COLORS.choropleth, 1), shape: 'square' },
+    { label: `${lo}`, color: interpolateRamp(COLORS.choropleth, 0.2), shape: 'square' },
+    { label: `${mid}`, color: interpolateRamp(COLORS.choropleth, 0.6), shape: 'square' },
+    { label: `${hi}`, color: interpolateRamp(COLORS.choropleth, 1), shape: 'square' },
   ]);
 }
 
