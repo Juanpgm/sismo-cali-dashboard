@@ -149,10 +149,13 @@ class Store {
     // israelRecords: colección Firestore SEPARADA (Inspectores de Israel). Se trae
     // en paralelo y nunca lanza (devuelve [] ante cualquier fallo), así el tablero
     // de Cali carga aunque Firestore no responda.
-    const [metaRes, dataRes, , israelRecords] = await Promise.all([
+    // Reportados: fire-and-forget A PROPÓSITO. /api/reportados puede tardar
+    // ~1-2 min cuando la caché CDN está fría (camina toda la API) y esperarlo
+    // acá dejaba el tablero en blanco. Cuando llega, notify() pinta el KPI.
+    this.refreshReportados().catch(() => {});
+    const [metaRes, dataRes, israelRecords] = await Promise.all([
       fetch(`data/meta.json${bust}`, { cache: 'no-store' }),
       fetch(`data/inspections.json${bust}`, { cache: 'no-store' }),
-      this.refreshReportados(),
       fetchIsraelRecords(),
     ]);
     if (!metaRes.ok || !dataRes.ok) {

@@ -163,6 +163,8 @@ export function renderKpis(container, filteredRecords, allRecords, reportados = 
       sub = subLine(`<span class="kpi-sub">${pct(values[def.key], total)}% del filtrado</span>`);
     } else if (def.key === 'ocupantes_riesgo') {
       sub = subLine(`<span class="kpi-sub">${pct(values.ocupantes_riesgo, ocupantesTotalFiltrados)}% de ocupantes totales</span>`);
+    } else if (def.key === 'colapso_total') {
+      sub = subLine('<span class="kpi-sub">Esta cifra puede variar debido a las validaciones técnicas y cruces de información que se hacen de manera recurrente</span>');
     }
     return `
       <div class="kpi-tile" style="${def.accent ? `--kpi-accent:${def.accent}` : ''}">
