@@ -742,6 +742,7 @@ a { color: var(--accent); }
   background: var(--surface-2);
   color: var(--text-muted);
   font-size: 0.66rem; font-weight: 700; font-style: italic; line-height: 1;
+  text-transform: none; /* la "i" NO hereda el uppercase del título de sección */
   cursor: pointer; vertical-align: middle;
   display: inline-flex; align-items: center; justify-content: center;
   transition: background 0.15s ease, color 0.15s ease;
@@ -761,6 +762,8 @@ a { color: var(--accent); }
   font-size: 0.72rem;
   line-height: 1.35;
   color: var(--text-secondary);
+  text-transform: none; /* el texto de ayuda es prosa normal, no hereda uppercase */
+  letter-spacing: normal;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
@@ -1555,3 +1558,170 @@ select.gestion-edit:focus, input.gestion-edit:focus { outline: none; border-colo
 .gestion-filter-banner { display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin-bottom: 10px; border-radius: var(--radius-sm); background: var(--accent-dim); font-size: 0.85rem; color: var(--text-primary); }
 .despacho-card-foot { margin-top: 8px; }
 .despacho-field small, .punto-edit small { color: var(--text-muted); font-weight: 400; }
+
+/* ============================================================
+   AUTH — login overlay, signed-in chip, role-based chrome
+   ============================================================ */
+
+/* Role gating: viewers (Google @cali.gov.co) don't get the Acciones tab
+   nor the "Actualizar datos" button. The refresh endpoint is ALSO enforced
+   server-side, so this is presentation, not the only guard. */
+body[data-role="viewer"] #refresh-btn,
+body[data-role="viewer"] .view-tab[data-view="acciones"] { display: none !important; }
+
+/* ---- Login overlay ---- */
+.auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background:
+    radial-gradient(1200px 600px at 50% -10%, var(--accent-dim), transparent 60%),
+    var(--bg);
+  background-image:
+    radial-gradient(1200px 600px at 50% -10%, var(--accent-dim), transparent 60%),
+    linear-gradient(var(--bg-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px);
+  background-size: auto, 40px 40px, 40px 40px;
+  background-color: var(--bg);
+  opacity: 1;
+  transition: opacity 0.32s ease;
+}
+.auth-overlay.is-authed { opacity: 0; pointer-events: none; }
+.auth-overlay.is-busy { cursor: progress; }
+
+.auth-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-modal);
+  padding: 28px 26px 22px;
+}
+
+.auth-brand { margin-bottom: 18px; }
+.auth-card h1 { font-size: 1.2rem; line-height: 1.25; letter-spacing: -0.01em; }
+.auth-sub { font-size: 0.82rem; color: var(--text-muted); margin-top: 2px; }
+.auth-lead { font-size: 0.92rem; color: var(--text-secondary); margin-bottom: 18px; }
+
+.auth-google {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 11px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.05s ease;
+}
+.auth-google b { font-weight: 700; color: var(--accent); }
+.auth-google:hover { background: var(--surface-3); border-color: var(--accent); }
+.auth-google:active { transform: translateY(1px); }
+
+.auth-divider {
+  display: flex; align-items: center; gap: 12px;
+  margin: 18px 0; color: var(--text-muted); font-size: 0.75rem;
+}
+.auth-divider::before, .auth-divider::after {
+  content: ""; flex: 1; height: 1px; background: var(--border);
+}
+
+.auth-form { display: flex; flex-direction: column; gap: 12px; }
+.auth-field { display: flex; flex-direction: column; gap: 5px; }
+.auth-field span { font-size: 0.78rem; color: var(--text-secondary); }
+.auth-field input {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface-3);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+.auth-field input:focus { outline: none; border-color: var(--accent); }
+
+.auth-submit {
+  margin-top: 4px;
+  padding: 11px 14px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.92rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter 0.15s ease, transform 0.05s ease;
+}
+.auth-submit:hover { filter: brightness(1.06); }
+.auth-submit:active { transform: translateY(1px); }
+.auth-overlay.is-busy .auth-submit { opacity: 0.6; }
+
+.auth-error {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(239, 68, 68, 0.14);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: var(--text-primary);
+  font-size: 0.83rem;
+}
+.auth-foot { margin-top: 16px; font-size: 0.74rem; color: var(--text-muted); line-height: 1.5; }
+.auth-foot b { color: var(--text-secondary); }
+
+.auth-overlay button:disabled, .auth-overlay input:disabled { opacity: 0.7; cursor: not-allowed; }
+
+/* ---- Signed-in chip in the header ---- */
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  max-width: 220px;
+}
+.user-chip-info { display: flex; flex-direction: column; line-height: 1.15; min-width: 0; }
+.user-chip-role {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.user-chip-role[data-role="viewer"] { color: var(--text-secondary); }
+.user-chip-email {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 150px;
+}
+.user-chip-logout {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px; height: 30px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.user-chip-logout:hover { background: var(--surface-3); color: var(--accent); }
+
+@media (max-width: 640px) {
+  .user-chip-info { display: none; }
+  .user-chip { padding: 4px; }
+}

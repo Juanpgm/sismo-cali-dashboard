@@ -13,7 +13,46 @@
 //   RAILWAY_SERVICE_ID
 //   RAILWAY_ENVIRONMENT_ID
 
+const crypto = require('crypto');
+
 const RAILWAY_API = 'https://backboard.railway.com/graphql/v2';
+
+// Firebase project that issues the ID tokens (public identifier). Env override
+// only if it ever changes.
+const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'dagma-85aad';
+const FIREBASE_CERTS_URL =
+  'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
+
+const b64urlToBuf = (s) => Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+
+// Verify a Firebase ID token with zero dependencies: RS256 signature against
+// Google's rotating x509 certs + the standard Firebase claim checks. Returns the
+// decoded payload, or throws.
+async function verifyFirebaseToken(idToken, projectId) {
+  const parts = String(idToken || '').split('.');
+  if (parts.length !== 3) throw new Error('token malformado');
+  const [h, p, s] = parts;
+  const header = JSON.parse(b64urlToBuf(h).toString('utf8'));
+  const payload = JSON.parse(b64urlToBuf(p).toString('utf8'));
+
+  const certRes = await fetch(FIREBASE_CERTS_URL);
+  const certs = await certRes.json();
+  const pem = certs[header.kid];
+  if (!pem) throw new Error('kid desconocido');
+
+  const verifier = crypto.createVerify('RSA-SHA256');
+  verifier.update(`${h}.${p}`);
+  verifier.end();
+  if (!verifier.verify(pem, b64urlToBuf(s))) throw new Error('firma inválida');
+
+  const now = Math.floor(Date.now() / 1000);
+  if (payload.aud !== projectId) throw new Error('aud inválido');
+  if (payload.iss !== `https://securetoken.google.com/${projectId}`) throw new Error('iss inválido');
+  if (typeof payload.exp !== 'number' || payload.exp < now) throw new Error('token expirado');
+  if (typeof payload.iat !== 'number' || payload.iat > now + 300) throw new Error('iat inválido');
+  return payload;
+}
+
 const SERVICE_ID = process.env.RAILWAY_SERVICE_ID || '156e97a2-596b-4861-95f4-4060dab408e2';
 // Cruce críticos↔survey (vista Gestión). El botón "Actualizar datos" refresca TODO:
 // datos del Panel (dashboard-refresh) + cruce de Gestión (cruce-gestion).
@@ -58,6 +97,24 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
+  // Solo administradores (login por usuario/contraseña) pueden disparar el
+  // refresh. Verificamos el ID token de Firebase y exigimos que la sesión sea
+  // por proveedor "password". Fail-closed: sin token válido → 401/403.
+  const authHeader = req.headers.authorization || '';
+  const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  if (!idToken) {
+    return res.status(401).json({ error: 'Autenticación requerida.' });
+  }
+  try {
+    const claims = await verifyFirebaseToken(idToken, FIREBASE_PROJECT_ID);
+    const provider = claims.firebase && claims.firebase.sign_in_provider;
+    if (provider !== 'password') {
+      return res.status(403).json({ error: 'Solo administradores pueden actualizar los datos.' });
+    }
+  } catch (err) {
+    return res.status(401).json({ error: `Token inválido: ${(err && err.message) || err}` });
+  }
+
   const token = process.env.RAILWAY_API_TOKEN;
   if (!token) {
     return res
@@ -83,3 +140,6 @@ module.exports = async (req, res) => {
     return res.status(502).json({ error: String((err && err.message) || err) });
   }
 };
+
+// Exposed for the self-check (api/refresh.test.js); Vercel uses the default export.
+module.exports.verifyFirebaseToken = verifyFirebaseToken;

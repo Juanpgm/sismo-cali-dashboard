@@ -10,6 +10,7 @@ import {
 import { initTable, renderTable, setTotalRecords, openDetailModal } from './table.js';
 import { renderAcciones } from './acciones.js';
 import { initTheme } from './theme.js';
+import { initAuth, getIdToken, isAdmin } from './auth.js';
 import { debounce, setSourceLabels, sourceLabel, habBinary, labelForCode } from './utils.js';
 
 const el = (sel) => document.querySelector(sel);
@@ -28,7 +29,6 @@ const errorOverlay = el('#error-overlay');
 const errorMessage = el('[data-error-message]');
 const toastStack = el('#toast-stack');
 const lastUpdateEl = el('[data-last-update]');
-const eventBadgeEl = el('[data-event-badge]');
 const filtersPanel = el('#filters-panel');
 const filtersOpenBtn = el('#filters-open-btn');
 const drawerBackdrop = el('#drawer-backdrop');
@@ -60,7 +60,6 @@ function formatGeneratedAt(iso) {
 function renderHeaderMeta() {
   if (!store.meta) return;
   lastUpdateEl.textContent = `Última actualización: ${formatGeneratedAt(store.meta.generated_at)}`;
-  eventBadgeEl.textContent = `Evento ${store.meta.event_id ?? '—'}`;
 }
 
 // "Colorear por" options that map to a real EDAN-F3 variable get the original
@@ -93,7 +92,10 @@ function onStoreChange() {
   });
   renderStatistics(store.filtered, store.records, store.reportados);
   // Acciones works over ALL records: the filters sidebar only applies to Panel.
-  renderAcciones(document.getElementById('view-acciones'), store.records, { onRowClick: openDetailModal });
+  // Solo admin: los viewers ni siquiera reciben ese contenido en el DOM.
+  if (isAdmin()) {
+    renderAcciones(document.getElementById('view-acciones'), store.records, { onRowClick: openDetailModal });
+  }
 }
 
 function openFiltersDrawer() {
@@ -322,6 +324,13 @@ async function pollForFreshData(baseline) {
 let refreshInFlight = false;
 
 async function triggerRefresh() {
+  // Solo los administradores pueden disparar el refresh. El botón ya está oculto
+  // para viewers, pero esto cierra el llamado directo desde la consola. El
+  // endpoint también verifica el token en el servidor (defensa en profundidad).
+  if (!isAdmin()) {
+    showToast('No tenés permisos para actualizar los datos.', 'error');
+    return;
+  }
   if (refreshInFlight) {
     showToast('Ya hay una actualización en curso; los datos llegan en unos minutos.');
     return;
@@ -329,6 +338,8 @@ async function triggerRefresh() {
   refreshInFlight = true;
   let heldByPoll = false; // el camino exitoso transfiere la liberación al poll
   const baseline = store.meta?.generated_at ?? null;
+  const idToken = await getIdToken();
+  const authHeaders = idToken ? { Authorization: `Bearer ${idToken}` } : {};
   setRefreshChrome(true);
   setProgress(12, 'Enviando solicitud…');
   try {
@@ -336,11 +347,11 @@ async function triggerRefresh() {
     // 5xx/501 por un instante: reintentamos una vez tras una pausa corta.
     let res;
     try {
-      res = await fetch(REFRESH_ENDPOINT, { method: 'POST' });
+      res = await fetch(REFRESH_ENDPOINT, { method: 'POST', headers: authHeaders });
       if (!res.ok && res.status !== 409) {
         setProgress(25, 'Reintentando…');
         await new Promise((r) => setTimeout(r, 3000));
-        res = await fetch(REFRESH_ENDPOINT, { method: 'POST' });
+        res = await fetch(REFRESH_ENDPOINT, { method: 'POST', headers: authHeaders });
       }
     } catch {
       // No backend reachable: degrade to re-reading the published JSON.
@@ -446,18 +457,26 @@ document.addEventListener('themechange', () => {
   if (store.records.length) renderStatistics(store.filtered, store.records, store.reportados);
 });
 
-loadAndRender();
-
 // Auto-refresh cada 15 min, alineado con el cron de Railway (*/15) que publica
 // los datos. Silencioso: recarga el store (dispara el re-render del Panel vía la
 // suscripción) + actualiza la fecha del header, sin overlay de error ni
 // reconstruir el panel de filtros.
 const AUTO_REFRESH_MS = 15 * 60 * 1000;
-setInterval(async () => {
-  try {
-    await store.load();
-    renderHeaderMeta();
-  } catch (err) {
-    console.error('auto-refresh falló (se reintenta en 30 min):', err);
-  }
-}, AUTO_REFRESH_MS);
+
+// El dashboard NO carga datos hasta que haya una sesión válida. initAuth muestra
+// el login y llama startApp una sola vez cuando el usuario queda autorizado; el
+// rol (admin/viewer) ya lo aplicó auth.js sobre document.body para ocultar el
+// chrome de admin (tab Acciones + botón Actualizar).
+function startApp() {
+  loadAndRender();
+  setInterval(async () => {
+    try {
+      await store.load();
+      renderHeaderMeta();
+    } catch (err) {
+      console.error('auto-refresh falló (se reintenta en 30 min):', err);
+    }
+  }, AUTO_REFRESH_MS);
+}
+
+initAuth(startApp);
