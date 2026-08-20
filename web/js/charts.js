@@ -7,6 +7,43 @@ import {
 
 const registry = new Map();
 
+// Ayuda orientativa por gráfico: un ⓘ discreto junto al título que despliega una
+// explicación breve de cómo interpretar el elemento. Se inyecta una sola vez.
+const CHART_HELP = {
+  'chart-timeseries': 'Ritmo de inspecciones en el tiempo. "Diarias" = inspecciones por día · "Acumuladas" = total corrido · "Momento 2 · Reportados" = universo de reportes ciudadanos, como referencia. El eje Y es logarítmico para que convivan magnitudes muy distintas; los totales van rotulados sobre cada línea.',
+  'chart-tipologia': 'Cuántas casas (3 pisos o menos) y edificaciones (más de 3) hay en cada color del semáforo: verde = habitable (H) · amarillo = uso restringido (R1/R2) · rojo = no habitable (I1/I2/I3).',
+  'chart-hab-tipologia': 'Registros habitables vs. no habitables, separando casas de edificaciones. Habitable = H · No habitable = R1/R2/I1/I2/I3.',
+  'chart-colapso-tipologia': 'Registros con colapso total, colapso parcial y sin colapso ("No colapsadas"), por casa y edificación.',
+  'chart-severidad': 'Cómo se reparten las inspecciones según la severidad de los daños observados.',
+  'chart-hab-doughnut': 'Distribución de la habitabilidad (H · R1 · R2 · I1 · I2 · I3) sobre las inspecciones filtradas.',
+  'chart-uso-doughnut': 'Cuántas inspecciones por uso de la edificación. Usa los mismos colores que el mapa coloreado por uso.',
+  'chart-suspension': 'Cuántas edificaciones requieren suspensión de servicios (colapso parcial cruzado con habitabilidad) frente al total visitado. La cifra central es requieren / total.',
+  'chart-flags': 'Cuántas inspecciones marcaron "Sí" en cada riesgo o afectación, ordenadas de mayor a menor.',
+  'chart-hab-comuna': 'Habitabilidad por comuna: cada barra es una comuna, segmentada por criterio de habitabilidad.',
+  'chart-epoca': 'Inspecciones agrupadas por la época de construcción declarada de la edificación.',
+};
+
+function injectChartHelp() {
+  for (const [id, text] of Object.entries(CHART_HELP)) {
+    const canvas = document.getElementById(id);
+    const tile = canvas && canvas.closest('.chart-tile');
+    const title = tile && tile.querySelector('.chart-tile-title');
+    if (!title || title.querySelector('.tile-help-btn')) continue;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'tile-help-btn';
+    btn.setAttribute('aria-label', 'Cómo interpretar este gráfico');
+    btn.textContent = 'i';
+    title.appendChild(btn);
+    const body = document.createElement('div');
+    body.className = 'tile-help-body';
+    body.hidden = true;
+    body.textContent = text;
+    title.after(body);
+    btn.addEventListener('click', () => { body.hidden = !body.hidden; });
+  }
+}
+
 /** Destroy-and-recreate per render (fine at 91 rows; revisit with chart.update() if data grows). */
 export function upsertChart(canvasId, config) {
   const canvas = document.getElementById(canvasId);
@@ -98,16 +135,15 @@ function renderByComuna(records) {
         data: sorted.map(([, v]) => v),
         backgroundColor: themeColor('--accent', '#FFC400'),
         borderRadius: 4,
-        maxBarThickness: 22,
-        categoryPercentage: 0.7,
-        barPercentage: 0.8,
+        maxBarThickness: 40,
+        categoryPercentage: 0.8,
+        barPercentage: 0.85,
       }],
     },
     options: baseOptions({
-      indexAxis: 'y',
       scales: {
-        x: { beginAtZero: true, grid: { color: themeColor('--border', 'rgba(255,255,255,0.10)') } },
-        y: { grid: { display: false } },
+        x: { grid: { display: false } },
+        y: { beginAtZero: true, grid: { color: themeColor('--border', 'rgba(255,255,255,0.10)') } },
       },
     }),
   });
@@ -519,18 +555,35 @@ function renderUsoDoughnut(records) {
     data.push(otherCount);
     colors.push(COLORS.categoricalOther);
   }
+  const total = data.reduce((s, v) => s + v, 0);
   upsertChart('chart-uso-doughnut', {
-    type: 'doughnut',
+    type: 'bar',
     data: {
       labels,
       datasets: [{
+        label: 'Registros',
         data,
         backgroundColor: colors,
-        borderColor: themeColor('--surface', '#12294a'),
-        borderWidth: 2,
+        borderRadius: 4,
+        maxBarThickness: 22,
       }],
     },
-    options: baseOptions({ cutout: '55%', plugins: { legend: { display: true } } }),
+    options: baseOptions({
+      indexAxis: 'y',
+      scales: { x: { beginAtZero: true }, y: { grid: { display: false } } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const v = ctx.parsed.x;
+              const pct = total ? Math.round((v / total) * 1000) / 10 : 0;
+              return `${v} (${pct}%)`;
+            },
+          },
+        },
+      },
+    }),
   });
 }
 
@@ -756,6 +809,58 @@ function renderTipologiaBar(canvasId, records, metricKeys) {
   });
 }
 
+/** Doughnut: edificaciones que requieren suspensión de servicios vs. el total
+ *  visitado. suspension_servicios es un flag derivado (colapso parcial ×
+ *  habitabilidad). Cifra central = requieren / total (%). */
+function renderSuspension(records) {
+  const total = records.length;
+  const requieren = records.filter((r) => isYes(r.suspension_servicios)).length;
+  const noReq = Math.max(0, total - requieren);
+  const pct = total ? Math.round((requieren / total) * 1000) / 10 : 0;
+  const centerText = {
+    id: 'suspCenter',
+    afterDraw(chart) {
+      const { ctx, chartArea } = chart;
+      const cx = (chartArea.left + chartArea.right) / 2;
+      const cy = (chartArea.top + chartArea.bottom) / 2;
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = themeColor('--text-primary', '#f4f7fb');
+      ctx.font = '700 22px system-ui, -apple-system, sans-serif';
+      ctx.fillText(`${requieren}/${total}`, cx, cy - 7);
+      ctx.font = '600 12px system-ui, -apple-system, sans-serif';
+      ctx.fillStyle = themeColor('--text-muted', '#7c8ca3');
+      ctx.fillText(`${pct}% requiere`, cx, cy + 14);
+      ctx.restore();
+    },
+  };
+  upsertChart('chart-suspension', {
+    type: 'doughnut',
+    data: {
+      labels: ['Requieren suspensión', 'No requieren'],
+      datasets: [{
+        data: [requieren, noReq],
+        backgroundColor: [COLORS.status.i3, COLORS.status.h],
+        borderColor: themeColor('--surface', '#12294a'),
+        borderWidth: 2,
+      }],
+    },
+    plugins: [centerText],
+    options: baseOptions({
+      cutout: '64%',
+      plugins: {
+        legend: { display: true },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => `${ctx.label}: ${ctx.parsed} (${total ? Math.round((ctx.parsed / total) * 1000) / 10 : 0}%)`,
+          },
+        },
+      },
+    }),
+  });
+}
+
 let warnedMissingChart = false;
 
 /** Render all "Estadísticas" charts from the current filtered record set.
@@ -779,6 +884,8 @@ export function renderStatistics(records, allRecords, reportados = null) {
   renderHabDoughnut(records);
   renderSeveridad(records);
   renderUsoDoughnut(records);
+  renderSuspension(records);
   renderFlags(records);
   renderTimeSeries(records, reportados);
+  injectChartHelp();
 }
