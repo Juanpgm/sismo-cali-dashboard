@@ -577,14 +577,13 @@ function renderUsoDoughnut(records) {
       }],
     },
     options: baseOptions({
-      indexAxis: 'y',
-      scales: { x: { beginAtZero: true }, y: { grid: { display: false } } },
+      scales: { x: { grid: { display: false } }, y: { beginAtZero: true } },
       plugins: {
         legend: { display: false },
         tooltip: {
           callbacks: {
             label: (ctx) => {
-              const v = ctx.parsed.x;
+              const v = ctx.parsed.y;
               const pct = total ? Math.round((v / total) * 1000) / 10 : 0;
               return `${v} (${pct}%)`;
             },

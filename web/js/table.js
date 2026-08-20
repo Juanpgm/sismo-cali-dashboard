@@ -219,6 +219,66 @@ function groupForField(field) {
   return 'Otros';
 }
 
+// Layer público de Survey123: sus adjuntos (fotos) son accesibles sin token en
+// {LAYER}/{objectid}/attachments. Se muestran en el modal, junto al minimapa.
+const SURVEY_LAYER_URL = 'https://services6.arcgis.com/EF6OTqvE0RxR2jwj/arcgis/rest/services/service_d108cb3c79e242eabe99b458798936d1/FeatureServer/0';
+
+async function loadPhotos(objectId, container) {
+  if (!container || objectId == null) return;
+  try {
+    const res = await fetch(`${SURVEY_LAYER_URL}/${objectId}/attachments?f=json`);
+    const json = await res.json();
+    const infos = (json.attachmentInfos || []).filter((a) => (a.contentType || '').startsWith('image'));
+    // Las fotos del formulario se llaman foto_*; la firma del evaluador es firma-*
+    // (pequeña). Mostramos las fotos primero y grandes, la firma al final y chica.
+    const isFirma = (a) => /^firma/i.test(a.name || '');
+    const ordered = [...infos.filter((a) => !isFirma(a)), ...infos.filter(isFirma)];
+    if (!ordered.length) {
+      container.innerHTML = '<span class="detail-photos-empty">Sin fotos en el survey.</span>';
+      return;
+    }
+    container.innerHTML = ordered.map((a) => {
+      const url = `${SURVEY_LAYER_URL}/${objectId}/attachments/${a.id}`;
+      const firma = isFirma(a);
+      return `<button type="button" class="detail-photo${firma ? ' detail-photo-firma' : ''}" data-full="${escapeHtml(url)}" title="${firma ? 'Firma del evaluador' : 'Foto de la inspección'}">
+        <img src="${escapeHtml(url)}" alt="${firma ? 'Firma del evaluador' : 'Foto de la inspección'}" loading="lazy">
+      </button>`;
+    }).join('');
+    container.querySelectorAll('.detail-photo').forEach((btn) => {
+      btn.addEventListener('click', () => openLightbox(btn.dataset.full));
+    });
+  } catch {
+    container.innerHTML = '<span class="detail-photos-empty">No se pudieron cargar las fotos.</span>';
+  }
+}
+
+let lightboxEl = null;
+function openLightbox(url) {
+  if (!lightboxEl) {
+    lightboxEl = document.createElement('div');
+    lightboxEl.className = 'photo-lightbox';
+    lightboxEl.innerHTML = `
+      <img alt="Foto ampliada">
+      <div class="photo-lightbox-actions">
+        <button type="button" data-lb-full aria-label="Pantalla completa" title="Pantalla completa">⛶</button>
+        <button type="button" data-lb-close aria-label="Cerrar" title="Cerrar">✕</button>
+      </div>`;
+    document.body.appendChild(lightboxEl);
+    const close = () => lightboxEl.classList.remove('is-open');
+    lightboxEl.addEventListener('click', (e) => {
+      if (e.target === lightboxEl || e.target.closest('[data-lb-close]')) close();
+    });
+    lightboxEl.querySelector('[data-lb-full]').addEventListener('click', () => {
+      const img = lightboxEl.querySelector('img');
+      if (lightboxEl.requestFullscreen) lightboxEl.requestFullscreen().catch(() => {});
+      else if (img.requestFullscreen) img.requestFullscreen().catch(() => {});
+    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+  }
+  lightboxEl.querySelector('img').src = url;
+  lightboxEl.classList.add('is-open');
+}
+
 export function openDetailModal(record) {
   const modal = document.getElementById('detail-modal');
   const body = modal.querySelector('[data-modal-body]');
@@ -237,7 +297,10 @@ export function openDetailModal(record) {
   const orderedGroupNames = [...Object.keys(DETAIL_GROUPS), 'Otros'].filter((g) => groups[g] && groups[g].length);
 
   body.innerHTML = `
-    <div class="detail-minimap" data-minimap></div>
+    <div class="detail-media">
+      <div class="detail-minimap" data-minimap></div>
+      <div class="detail-photos" data-photos><span class="detail-photos-empty">Cargando fotos…</span></div>
+    </div>
     ${orderedGroupNames.map((group) => `
       <section class="detail-group">
         <h3>${escapeHtml(group)}</h3>
@@ -255,6 +318,7 @@ export function openDetailModal(record) {
 
   const miniMapEl = body.querySelector('[data-minimap]');
   buildMiniMap(miniMapEl, record);
+  loadPhotos(record.ObjectID, body.querySelector('[data-photos]'));
 
   modal.classList.add('is-open');
   modal.setAttribute('aria-hidden', 'false');
