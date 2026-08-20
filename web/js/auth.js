@@ -27,9 +27,23 @@ import { firebaseConfig, ALLOWED_DOMAIN, isConfigured } from './firebase-config.
 
 let auth = null;
 let currentRole = null; // 'admin' | 'viewer' | null
+let overlayEl = null;   // referencia al overlay para cubrir desde cualquier lado
 
 export const getRole = () => currentRole;
 export const isAdmin = () => currentRole === 'admin';
+
+// Cubrir el contenido AL INSTANTE (sin transición de opacidad): así al cerrar
+// sesión no queda ni un frame donde se vea el contenido restringido detrás.
+function coverInstant() {
+  const o = overlayEl;
+  if (!o) return;
+  o.style.transition = 'none';
+  o.style.display = '';
+  o.classList.remove('is-authed');
+  o.style.opacity = '1';
+  void o.offsetWidth;          // fuerza el commit del estado opaco
+  o.style.transition = '';     // restaura la transición para el fade-out del próximo login
+}
 
 /** Firebase ID token for the signed-in user (or null). Attached to /api/refresh. */
 export async function getIdToken() {
@@ -37,7 +51,16 @@ export async function getIdToken() {
 }
 
 export async function signOutUser() {
-  if (auth) await signOut(auth);
+  // 1) tapar el contenido de inmediato (antes de que nada más corra).
+  coverInstant();
+  // 2) cerrar la sesión de Firebase y 3) recargar: la recarga BORRA de memoria y
+  //    del DOM cualquier dato restringido; al volver, sin sesión, la app no
+  //    arranca y solo se ve el login. A prueba de flashes y de fugas en el DOM.
+  try {
+    if (auth) await signOut(auth);
+  } finally {
+    window.location.reload();
+  }
 }
 
 function roleForUser(user) {
@@ -134,6 +157,7 @@ function friendlyError(err) {
  */
 export function initAuth(onFirstAuthorized) {
   const overlay = buildOverlay();
+  overlayEl = overlay;
 
   if (!isConfigured()) {
     overlay.querySelector('.auth-lead').textContent =
@@ -181,12 +205,7 @@ export function initAuth(onFirstAuthorized) {
     if (!user) {
       currentRole = null;
       delete document.body.dataset.role;
-      // Reponer el overlay: al autenticar le pusimos display:none inline, así que
-      // sin esto el overlay queda oculto tras cerrar sesión y se ve el contenido.
-      overlay.style.display = '';
-      // Reflow para que la transición de opacidad corra al re-mostrarlo.
-      void overlay.offsetWidth;
-      overlay.classList.remove('is-authed');
+      coverInstant(); // overlay opaco YA, sin fade → nunca se ve el contenido detrás
       const form = overlay.querySelector('#auth-form');
       if (form) form.reset();
       showError(overlay, '');
@@ -206,6 +225,7 @@ export function initAuth(onFirstAuthorized) {
     currentRole = role;
     document.body.dataset.role = role;
     mountUserChip(user, role);
+    overlay.style.opacity = ''; // soltar el opacity inline de coverInstant para que el fade-out corra
     overlay.classList.add('is-authed');
     setBusy(overlay, false);
     // Remove the overlay from the a11y tree once hidden.
