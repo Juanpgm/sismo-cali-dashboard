@@ -1,0 +1,17 @@
+name: Manual dashboard refresh
+
+# Disparo MANUAL del refresh, sin schedule: las corridas automáticas las maneja
+# el cron de Railway (*/15 en horario diurno Colombia). Esto solo agrega un botón
+# "Run workflow" en la pestaña Actions que redespliega el servicio a demanda —
+# equivalente al botón "Actualizar datos" del dashboard, útil como respaldo.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger dashboard refresh
+        run: |
+          curl -fsS -X POST https://sismo-cali-dashboard.vercel.app/api/refresh \
+            -w '\nHTTP %{http_code}\n'
