@@ -890,7 +890,6 @@ export function renderStatistics(records, allRecords, reportados = null) {
   renderColapsoHab(records);
   renderHabDoughnut(records);
   renderSeveridad(records);
-  renderUsoDoughnut(records);
   renderSuspension(records);
   renderFlags(records);
   renderTimeSeries(records, reportados);

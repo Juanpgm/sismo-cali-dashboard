@@ -76,11 +76,6 @@
 
     <div id="view-panel" data-view-panel="panel">
 
-    <div class="search-bar">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-      <input type="search" id="search-input" placeholder="Buscar por dirección, barrio, edificación, evaluador, observaciones…" aria-label="Buscar en todos los campos">
-    </div>
-
     <div class="active-chips" id="active-chips" aria-label="Filtros activos"></div>
 
     <section class="kpi-row" id="kpi-row" aria-label="Indicadores clave"></section>
@@ -102,6 +97,7 @@
               <option value="nivel_dano">Nivel de daño</option>
               <option value="severidad_danos">Severidad de daños</option>
               <option value="uso_edificacion">Uso de la edificación</option>
+              <option value="tipologia">Casa / Edificación</option>
               <optgroup label="Riesgo externo">
                 <option value="41_a">Caída de objetos adyacentes</option>
                 <option value="42_a">Colapso de edificios adyacentes</option>
@@ -146,6 +142,8 @@
             Métrica
             <select id="choropleth-metric-select">
               <option value="count">N.º de inspecciones</option>
+              <option value="casas">N.º de casas (≤3 pisos)</option>
+              <option value="edificaciones">N.º de edificaciones (&gt;3 pisos)</option>
               <option value="no_habitables">N.º de no habitables</option>
               <option value="victims">Muertos + heridos</option>
               <option value="n_ocupantes">Total habitantes</option>
@@ -165,18 +163,14 @@
         <h2 class="stats-title">Estadísticas</h2>
       </div>
       <div class="stats-grid">
-        <div class="chart-tile chart-tile-wide chart-tile-auto">
-          <h3 class="chart-tile-title">Habitabilidad y colapso por tipología (Casa / Edificio)</h3>
-          <div class="tipologia-table-wrap" id="colapso-hab-table"></div>
-        </div>
         <div class="chart-row">
-          <div class="chart-tile chart-row-main">
+          <div class="chart-tile chart-tile-auto chart-row-half">
+            <h3 class="chart-tile-title">Habitabilidad y colapso por tipología (Casa / Edificio)</h3>
+            <div class="tipologia-table-wrap" id="colapso-hab-table"></div>
+          </div>
+          <div class="chart-tile chart-row-half">
             <h3 class="chart-tile-title">Inspecciones por comuna</h3>
             <canvas id="chart-comuna"></canvas>
-          </div>
-          <div class="chart-tile chart-row-side">
-            <h3 class="chart-tile-title">Distribución por uso de la edificación</h3>
-            <canvas id="chart-uso-doughnut"></canvas>
           </div>
         </div>
         <div class="chart-tile">
@@ -238,6 +232,10 @@
     <!-- ============ TABLE CARD ============ -->
     <section class="card table-card" id="table-card" aria-label="Tabla de inspecciones">
       <div class="card-toolbar">
+        <div class="search-bar table-search">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="search" id="search-input" placeholder="Buscar dirección, barrio, edificación, evaluador…" aria-label="Buscar en todos los campos">
+        </div>
         <span class="row-count" data-row-count>Mostrando 0 de 0</span>
         <button type="button" class="btn-secondary" id="datos-download">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><line x1="5" y1="21" x2="19" y2="21"/></svg>

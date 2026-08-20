@@ -98,12 +98,28 @@ export function applyMapTheme() {
   baseTile.bringToBack();
 }
 
+// Casa = 3 pisos o menos · Edificación = más de 3 · sin dato de pisos = sin_dato.
+function tipologiaDe(r) {
+  const n = Number(r.n_pisos);
+  if (!Number.isFinite(n) || n < 1) return 'sin_dato';
+  return n <= 3 ? 'casa' : 'edificacion';
+}
+const TIPOLOGIA_COLORS = {
+  casa: COLORS.categoricalWide[0],        // azul
+  edificacion: COLORS.categoricalWide[1], // naranja
+  sin_dato: COLORS.unknown,
+};
+const TIPOLOGIA_LABELS = { casa: 'Casa (≤3 pisos)', edificacion: 'Edificación (>3 pisos)', sin_dato: 'Sin dato de pisos' };
+function tipologiaColor(r) { return TIPOLOGIA_COLORS[tipologiaDe(r)]; }
+
 function pointColor(record) {
   switch (state.colorBy) {
     case 'nivel_dano':
       return damageColor(record.nivel_dano);
     case 'severidad_danos':
       return severidadColor(record.severidad_danos);
+    case 'tipologia':
+      return tipologiaColor(record);
     case 'uso_edificacion':
       return dynamicColor('uso_edificacion', record.uso_edificacion);
     case '41_a':
@@ -218,6 +234,9 @@ function renderPointsLegend(records) {
   } else if (state.colorBy === 'severidad_danos') {
     title = labelForField('severidad_danos');
     entries = Object.entries(COLORS.severidad).map(([code, color]) => ({ label: labelForCode(code), color }));
+  } else if (state.colorBy === 'tipologia') {
+    title = 'Tipología (Casa / Edificación)';
+    entries = Object.entries(TIPOLOGIA_COLORS).map(([code, color]) => ({ label: TIPOLOGIA_LABELS[code], color }));
   } else if (state.colorBy === 'uso_edificacion') {
     title = labelForField(state.colorBy);
     entries = dynamicScaleCache.field === state.colorBy
@@ -296,6 +315,12 @@ async function ensureGeo(level) {
 function metricValue(records, metric) {
   if (metric === 'no_habitables') {
     return records.filter(isNoHabitableBinary).length;
+  }
+  if (metric === 'casas') {
+    return records.filter((r) => tipologiaDe(r) === 'casa').length;
+  }
+  if (metric === 'edificaciones') {
+    return records.filter((r) => tipologiaDe(r) === 'edificacion').length;
   }
   if (metric === 'victims') {
     return records.reduce((sum, r) => sum + (Number(r.n_muertos) || 0) + (Number(r.n_heridos) || 0), 0);
@@ -380,6 +405,8 @@ async function renderChoropleth(records) {
 
 function metricLabel(metric) {
   if (metric === 'no_habitables') return 'No habitables';
+  if (metric === 'casas') return 'Casas (≤3 pisos)';
+  if (metric === 'edificaciones') return 'Edificaciones (>3 pisos)';
   if (metric === 'victims') return 'Muertos + heridos';
   if (NUM_FIELDS[metric]) return `Total ${NUM_FIELDS[metric]}`;
   return 'N° inspecciones';

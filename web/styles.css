@@ -682,6 +682,9 @@ a { color: var(--accent); }
 .chart-row { grid-column: 1 / -1; display: flex; gap: 14px; flex-wrap: wrap; }
 .chart-row-main { flex: 3 1 340px; }
 .chart-row-side { flex: 1 1 200px; }
+.chart-row-half { flex: 1 1 340px; }
+/* Búsqueda ahora vive en la barra de la tabla y crece para llenar el espacio */
+.table-search { flex: 1 1 240px; margin: 0; min-width: 200px; }
 .chart-tile-auto { height: auto; }
 
 /* Semáforo × tipología por número de pisos */
