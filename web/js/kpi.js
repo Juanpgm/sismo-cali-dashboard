@@ -1,7 +1,7 @@
 // KPI tile row — recomputed from the currently filtered record set.
 // Habitability uses the granular criterio_habitabilidad scale (H · R1 · R2 ·
 // I1 · I2 · I3): green for H, yellow shades for R, red shades for I.
-import { COLORS, isNoHabitableBinary, habBinary, habCode, labelForCode, normalize, splitMultiValue, escapeHtml } from './utils.js';
+import { COLORS, isNoHabitableBinary, habCode, labelForCode, normalize, splitMultiValue, escapeHtml } from './utils.js';
 
 function sumField(records, field) {
   let total = 0;
@@ -43,7 +43,6 @@ const TILE_DEFS = [
   { key: 'hab_i', label: 'No habitable (I1 + I2 + I3)', accent: COLORS.status.i2, group: 'headline', section: 'registros' },
   { key: 'colapso_total', label: 'Colapso total', accent: COLORS.status.i3, group: 'headline', section: 'registros' },
   { key: 'colapso_parcial', label: 'Colapso parcial', accent: COLORS.status.r2, group: 'headline', section: 'registros' },
-  { key: 'suspension_servicios', label: 'Suspensión de servicios', accent: COLORS.status.i3, group: 'headline', section: 'registros' },
   { key: 'u_residenciales', label: 'Total unidades habitacionales', accent: null, group: 'headline', section: 'residenciales' },
   { key: 'hab_h_res', label: 'Habitable (H)', accent: COLORS.status.h, group: 'headline', section: 'residenciales' },
   { key: 'hab_r_res', label: 'Uso restringido (R1 + R2)', accent: COLORS.status.r2, group: 'headline', section: 'residenciales' },
@@ -90,12 +89,6 @@ export function computeKpis(records) {
     hab_i_res: resByCode.i1 + resByCode.i2 + resByCode.i3,
     colapso_total: records.filter((r) => isYes(r.colapso_total)).length,
     colapso_parcial: records.filter((r) => isYes(r.colapso_parcial)).length,
-    // Suspensión de servicios = cruce colapso parcial × habitabilidad (el flag
-    // derivado ya codifica esto). El desglose habitable/no habitable alimenta el
-    // subtexto del tile.
-    suspension_servicios: records.filter((r) => isYes(r.suspension_servicios)).length,
-    suspension_hab: records.filter((r) => isYes(r.colapso_parcial) && habBinary(r) === 'habitable').length,
-    suspension_nohab: records.filter((r) => isYes(r.colapso_parcial) && habBinary(r) === 'no_habitable').length,
     ocupantes_riesgo: sumField(noHab, 'n_ocupantes'),
     ocupantes_total: sumField(records, 'n_ocupantes'),
     u_residenciales: sumField(records, 'n_residenciales'),
@@ -170,8 +163,6 @@ export function renderKpis(container, filteredRecords, allRecords, reportados = 
       sub = subLine(`<span class="kpi-sub">${pct(values[def.key], total)}% del filtrado</span>`);
     } else if (def.key === 'ocupantes_riesgo') {
       sub = subLine(`<span class="kpi-sub">${pct(values.ocupantes_riesgo, ocupantesTotalFiltrados)}% de ocupantes totales</span>`);
-    } else if (def.key === 'suspension_servicios') {
-      sub = subLine(`<span class="kpi-sub">${values.suspension_hab} habitable + ${values.suspension_nohab} no habitable (colapso parcial)</span>`);
     }
     return `
       <div class="kpi-tile" style="${def.accent ? `--kpi-accent:${def.accent}` : ''}">
