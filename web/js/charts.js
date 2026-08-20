@@ -2,8 +2,16 @@
 // Chart.js 4 (UMD global via CDN, same pattern as Leaflet's `L`) — "Estadísticas" charts.
 import {
   COLORS, themeColor, labelForCode, labelForField, splitMultiValue, habCode, habBinary, normalize, formatDate,
-  buildCategoricalScale,
+  buildCategoricalScale, interpolateRamp,
 } from './utils.js';
+
+/** Colores de un set de valores por INTENSIDAD de un mismo hue (el acento):
+ *  mayor valor = más intenso. Reusa interpolateRamp con una rampa de 2 paradas. */
+function intensityColors(values) {
+  const max = Math.max(1, ...values);
+  const ramp = ['#4a3f14', themeColor('--accent', '#FFC400')]; // gold apagado → acento
+  return values.map((v) => interpolateRamp(ramp, v / max));
+}
 
 const registry = new Map();
 
@@ -133,7 +141,7 @@ function renderByComuna(records) {
       datasets: [{
         label: 'Inspecciones',
         data: sorted.map(([, v]) => v),
-        backgroundColor: themeColor('--accent', '#FFC400'),
+        backgroundColor: intensityColors(sorted.map(([, v]) => v)),
         borderRadius: 4,
         maxBarThickness: 40,
         categoryPercentage: 0.8,
@@ -188,7 +196,7 @@ function renderByUso(records) {
       datasets: [{
         label: 'Inspecciones',
         data: sorted.map(([, v]) => v),
-        backgroundColor: themeColor('--accent', '#FFC400'),
+        backgroundColor: intensityColors(sorted.map(([, v]) => v)),
         borderRadius: 4,
         maxBarThickness: 32,
         categoryPercentage: 0.7,
@@ -229,7 +237,7 @@ function renderByEpoca(records) {
       datasets: [{
         label: 'Inspecciones',
         data,
-        backgroundColor: themeColor('--accent', '#FFC400'),
+        backgroundColor: intensityColors(data),
         borderRadius: 4,
         maxBarThickness: 40,
         categoryPercentage: 0.7,
