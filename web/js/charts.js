@@ -262,6 +262,28 @@ function clearChartEmpty(canvasId) {
   if (note) note.remove();
 }
 
+// Plugin inline: dibuja el valor total (ds._totalLabel) como etiqueta de dato
+// sobre el último punto de la serie, en vez de meterlo en la leyenda.
+const totalDataLabelPlugin = {
+  id: 'totalDataLabel',
+  afterDatasetsDraw(chart) {
+    const { ctx } = chart;
+    chart.data.datasets.forEach((ds, i) => {
+      if (ds._totalLabel == null) return;
+      const meta = chart.getDatasetMeta(i);
+      const pt = meta.data[meta.data.length - 1];
+      if (!pt) return;
+      ctx.save();
+      ctx.font = '700 12px system-ui, -apple-system, sans-serif';
+      ctx.fillStyle = ds.borderColor;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(ds._totalLabel, pt.x - 4, pt.y - 5);
+      ctx.restore();
+    });
+  },
+};
+
 function renderTimeSeries(records, reportados) {
   const byDay = new Map();
   let undated = 0; // registros del survey sin fecha_inspeccion (aún cuentan al total)
@@ -292,7 +314,7 @@ function renderTimeSeries(records, reportados) {
   const fmt = (n) => Math.round(n).toLocaleString('es-CO');
   const datasets = [
     {
-      label: 'Diarias (app)',
+      label: 'Diarias',
       data: daily,
       borderColor: accent,
       backgroundColor: 'transparent',
@@ -304,7 +326,7 @@ function renderTimeSeries(records, reportados) {
       tension: 0.15,
     },
     {
-      label: `Acumuladas app (${fmt(totalApp)})`,
+      label: 'Acumuladas',
       data: cumulative,
       borderColor: secondary,
       backgroundColor: 'transparent',
@@ -314,6 +336,7 @@ function renderTimeSeries(records, reportados) {
       pointBorderColor: surface,
       pointBorderWidth: 2,
       tension: 0.15,
+      _totalLabel: fmt(totalApp), // etiqueta de dato sobre el último punto
     },
   ];
   // Momento 2 (histórico): total "Reportado" de reportes_agg.json como línea de
@@ -321,7 +344,7 @@ function renderTimeSeries(records, reportados) {
   // Momento 2 en escala logarítmica. Se actualiza con store.reportados (refresh).
   if (reportados != null && reportados > 0) {
     datasets.push({
-      label: `Momento 2 · Reportados (${fmt(reportados)})`,
+      label: 'Momento 2 · Reportados',
       data: labels.map(() => reportados),
       borderColor: COLORS.status.i2,
       backgroundColor: 'transparent',
@@ -329,11 +352,13 @@ function renderTimeSeries(records, reportados) {
       borderDash: [6, 4],
       pointRadius: 0,
       tension: 0,
+      _totalLabel: fmt(reportados), // etiqueta de dato sobre la línea de referencia
     });
   }
   upsertChart('chart-timeseries', {
     type: 'line',
     data: { labels, datasets },
+    plugins: [totalDataLabelPlugin],
     // Escala logarítmica: deja convivir el conteo diario (decenas), el acumulado
     // de la app (cientos) y el total Momento 2 (miles) en el mismo eje.
     // interaction mode 'index': al pasar/tocar cualquier punto del día se ven los
@@ -359,6 +384,17 @@ const FLAG_FIELDS = [
   'existen_sistemas_combinados',
 ];
 
+// Paleta propia del chart de flags, tomada de los tokens del front (severidad
+// roja→amarilla + categóricos + gris) para que cada barra tenga color distinto
+// pero coherente con el resto del tablero. Las barras van ordenadas por conteo,
+// así que la más frecuente toma el rojo más intenso.
+const FLAG_PALETTE = [
+  COLORS.status.i3, COLORS.status.i2, COLORS.status.i1,
+  COLORS.status.r2, COLORS.status.r1,
+  COLORS.categorical[0], COLORS.categorical[1], COLORS.categorical[2],
+  COLORS.categoricalOther,
+];
+
 /** Horizontal bar: count of "Sí" for every meaningful binary flag. */
 function renderFlags(records) {
   const rows = FLAG_FIELDS
@@ -372,7 +408,7 @@ function renderFlags(records) {
       datasets: [{
         label: 'Casos con "Sí"',
         data: rows.map((r) => r.count),
-        backgroundColor: COLORS.status.i2,
+        backgroundColor: rows.map((_, i) => FLAG_PALETTE[i % FLAG_PALETTE.length]),
         borderRadius: 4,
         maxBarThickness: 22,
       }],
