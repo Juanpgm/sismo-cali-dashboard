@@ -62,6 +62,17 @@ function renderHeaderMeta() {
   lastUpdateEl.textContent = `Última actualización: ${formatGeneratedAt(store.meta.generated_at)}`;
 }
 
+// Fecha de generación del Excel = momento del clic (fecha de descarga). Devuelve
+// dos formas: `legible` para una celda dentro del archivo y `slug` para el nombre.
+function downloadStamp() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return {
+    legible: d.toLocaleString('es-CO', { dateStyle: 'long', timeStyle: 'short' }),
+    slug: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}`,
+  };
+}
+
 // "Colorear por" options that map to a real EDAN-F3 variable get the original
 // (pre-normalization) source name, like the filter titles.
 const COLOR_BY_SOURCE_FIELDS = {
@@ -414,25 +425,47 @@ el('#datos-download').addEventListener('click', () => {
     showToast('No hay registros con los filtros aplicados.', 'error');
     return;
   }
-  // Timestamp de generación (fecha de los datos, no la de descarga) como metadato
-  // SOBRE los datos + en el nombre del archivo, para dejar claro el momento y
-  // advertir que pueden haber cambiado si pasó mucho tiempo.
-  const genAtRaw = store.meta?.generated_at || '';
-  const genAtLegible = genAtRaw
-    ? new Date(genAtRaw).toLocaleString('es-CO', { dateStyle: 'long', timeStyle: 'short' })
-    : 'desconocido';
-  const stamp = genAtRaw
-    ? `${genAtRaw.slice(0, 10)}_${genAtRaw.slice(11, 16).replace(':', '-')}`
-    : 'export';
+  // Fecha de descarga (momento del clic) como metadato SOBRE los datos + en el
+  // nombre del archivo, para dejar claro cuándo se bajó este export.
+  const { legible, slug } = downloadStamp();
   const ws = XLSX.utils.aoa_to_sheet([
-    ['Generado (fecha de los datos):', genAtLegible],
-    ['Advertencia:', 'Los datos pueden haber cambiado si ha pasado mucho tiempo desde esta fecha de generación.'],
+    ['Descargado el:', legible],
     [],
   ]);
-  XLSX.utils.sheet_add_json(ws, rows, { origin: 'A4' });
+  XLSX.utils.sheet_add_json(ws, rows, { origin: 'A3' });
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'inspecciones');
-  XLSX.writeFile(wb, `inspecciones_${stamp}.xlsx`);
+  XLSX.writeFile(wb, `inspecciones_${slug}.xlsx`);
+});
+
+/** Reporte para la Secretaría de Tránsito (solo admin): edificaciones con
+ *  colapso (parcial o total) Y nivel de daño alto — las que pueden comprometer
+ *  la vía. El filtro es FIJO (no usa los filtros del Panel) porque es un
+ *  documento con criterio propio que se entrega a otra entidad. */
+el('#transito-download').addEventListener('click', () => {
+  if (!isAdmin()) return; // el botón está oculto para viewers; guardia por si acaso
+  const yes = (v) => String(v).toLowerCase() === 'si';
+  const rows = store.records
+    .filter((r) => (yes(r.colapso_parcial) || yes(r.colapso_total))
+      && String(r.nivel_dano).toLowerCase() === 'alto')
+    .map(({ _search, n_pisos_rango, ...r }) => r);
+  if (!rows.length) {
+    showToast('No hay edificaciones que cumplan el filtro de Tránsito.', 'error');
+    return;
+  }
+  const { legible, slug } = downloadStamp();
+  const ws = XLSX.utils.aoa_to_sheet([
+    ['Reporte para la Secretaría de Tránsito'],
+    ['Filtro aplicado:', 'Colapso (parcial o total) y nivel de daño alto'],
+    ['Fecha de generación:', legible],
+    ['Registros:', rows.length],
+    ['Aviso:', 'Los cierres o intervenciones viales son a criterio de la Secretaría de Tránsito.'],
+    [],
+  ]);
+  XLSX.utils.sheet_add_json(ws, rows, { origin: 'A7' });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'transito');
+  XLSX.writeFile(wb, `reporte_transito_${slug}.xlsx`);
 });
 
 searchInput.addEventListener('input', debounce((e) => store.setSearch(e.target.value), 250));

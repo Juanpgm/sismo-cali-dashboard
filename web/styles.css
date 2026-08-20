@@ -1567,6 +1567,7 @@ select.gestion-edit:focus, input.gestion-edit:focus { outline: none; border-colo
    nor the "Actualizar datos" button. The refresh endpoint is ALSO enforced
    server-side, so this is presentation, not the only guard. */
 body[data-role="viewer"] #refresh-btn,
+body[data-role="viewer"] #transito-download,
 body[data-role="viewer"] .view-tab[data-view="acciones"] { display: none !important; }
 
 /* ---- Login overlay ---- */
