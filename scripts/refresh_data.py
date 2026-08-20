@@ -383,7 +383,12 @@ def normalize_municipio(series: pd.Series) -> pd.Series:
 
 
 def add_date_fields(df: pd.DataFrame) -> pd.DataFrame:
-    fecha_dt = pd.to_datetime(df["fecha_inspeccion"], errors="coerce")
+    # dayfirst=True: las fechas de la hoja EDAN-F3 llegan como texto DD/MM/YYYY
+    # (formato colombiano). Sin esto, pandas las lee mes-primero (US) y "10/08"
+    # (10 ago) se convierte en 08-oct, "11/08" en 08-nov, etc. Las fechas del
+    # survey ya llegan como datetime (epoch ms en normalize_sync), así que este
+    # flag las deja intactas.
+    fecha_dt = pd.to_datetime(df["fecha_inspeccion"], errors="coerce", dayfirst=True)
     df["fecha_inspeccion"] = fecha_dt.dt.strftime("%Y-%m-%d")
 
     hora_str = df["hora"].astype("string")

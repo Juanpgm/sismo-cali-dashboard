@@ -262,59 +262,84 @@ function clearChartEmpty(canvasId) {
   if (note) note.remove();
 }
 
-function renderTimeSeries(records) {
+function renderTimeSeries(records, reportados) {
   const byDay = new Map();
+  let undated = 0; // registros del survey sin fecha_inspeccion (aún cuentan al total)
   for (const r of records) {
     const d = (r.fecha_inspeccion || '').trim();
-    if (!d) continue;
+    if (!d) { undated += 1; continue; }
     byDay.set(d, (byDay.get(d) || 0) + 1);
   }
   const days = [...byDay.keys()].sort();
-  // The source EDAN sheet ships every inspection date as "##########" (a stale
-  // Sheets display artifact), so there is nothing to plot. Degrade to a clear
-  // note rather than an empty axis until the date column is fixed at the source.
-  if (!days.length) {
-    setChartEmpty('chart-timeseries', 'Sin fechas de inspección en el origen: la columna llega vacía o como «##########».');
+  if (!days.length && !undated) {
+    setChartEmpty('chart-timeseries', 'Sin registros en el survey para estos filtros.');
     return;
   }
   clearChartEmpty('chart-timeseries');
+  // Etiquetas + conteo diario. Se agrega un bucket final "Sin fecha" con los
+  // registros del survey sin fecha_inspeccion, para que el ACUMULADO llegue al
+  // total real (= records.length, el mismo del KPI "Total registros"), no solo
+  // a los que traen fecha. Todo se recomputa en cada render (se actualiza).
+  const labels = days.map(formatDate);
+  const daily = days.map((d) => byDay.get(d));
+  if (undated > 0) { labels.push('Sin fecha'); daily.push(undated); }
   let running = 0;
-  const cumulative = days.map((d) => (running += byDay.get(d)));
+  const cumulative = daily.map((n) => (running += n));
+  const totalApp = running;
   const surface = themeColor('--surface', '#12294a');
   const accent = themeColor('--accent', '#FFC400');
   const secondary = COLORS.categorical[0];
+  const fmt = (n) => Math.round(n).toLocaleString('es-CO');
+  const datasets = [
+    {
+      label: 'Diarias (app)',
+      data: daily,
+      borderColor: accent,
+      backgroundColor: 'transparent',
+      borderWidth: 2,
+      pointRadius: 4,
+      pointBackgroundColor: accent,
+      pointBorderColor: surface,
+      pointBorderWidth: 2,
+      tension: 0.15,
+    },
+    {
+      label: `Acumuladas app (${fmt(totalApp)})`,
+      data: cumulative,
+      borderColor: secondary,
+      backgroundColor: 'transparent',
+      borderWidth: 2,
+      pointRadius: 4,
+      pointBackgroundColor: secondary,
+      pointBorderColor: surface,
+      pointBorderWidth: 2,
+      tension: 0.15,
+    },
+  ];
+  // Momento 2 (histórico): total "Reportado" de reportes_agg.json como línea de
+  // referencia plana, para comparar el avance de la app contra el universo de
+  // Momento 2 en escala logarítmica. Se actualiza con store.reportados (refresh).
+  if (reportados != null && reportados > 0) {
+    datasets.push({
+      label: `Momento 2 · Reportados (${fmt(reportados)})`,
+      data: labels.map(() => reportados),
+      borderColor: COLORS.status.i2,
+      backgroundColor: 'transparent',
+      borderWidth: 2,
+      borderDash: [6, 4],
+      pointRadius: 0,
+      tension: 0,
+    });
+  }
   upsertChart('chart-timeseries', {
     type: 'line',
-    data: {
-      labels: days.map(formatDate),
-      datasets: [
-        {
-          label: 'Diarias',
-          data: days.map((d) => byDay.get(d)),
-          borderColor: accent,
-          backgroundColor: 'transparent',
-          borderWidth: 2,
-          pointRadius: 4,
-          pointBackgroundColor: accent,
-          pointBorderColor: surface,
-          pointBorderWidth: 2,
-          tension: 0.15,
-        },
-        {
-          label: 'Acumuladas',
-          data: cumulative,
-          borderColor: secondary,
-          backgroundColor: 'transparent',
-          borderWidth: 2,
-          pointRadius: 4,
-          pointBackgroundColor: secondary,
-          pointBorderColor: surface,
-          pointBorderWidth: 2,
-          tension: 0.15,
-        },
-      ],
-    },
-    options: baseOptions({ plugins: { legend: { display: true } } }),
+    data: { labels, datasets },
+    // Escala logarítmica: deja convivir el conteo diario (decenas), el acumulado
+    // de la app (cientos) y el total Momento 2 (miles) en el mismo eje.
+    options: baseOptions({
+      scales: { y: { type: 'logarithmic' } },
+      plugins: { legend: { display: true } },
+    }),
   });
 }
 
@@ -537,11 +562,21 @@ function renderTipologia(records) {
       + `<td class="tip-total">${fmt(te)}</td>`
       + SEMAFORO_COLS.map(([k]) => `<td>${fmt(totals[k].unid)}</td>`).join('')
       + `<td class="tip-total">${fmt(tu)}</td></tr>`;
+    const dotL = (color) => `<span class="sem-dot" style="background:${color}"></span>`;
     box.innerHTML = `<table class="tipologia-table">
       <thead><tr><th scope="col">Tipología (pisos sobre el terreno)</th>${head}</tr></thead>
       <tbody>${bodyRows}${footRow}</tbody>
     </table>
-    <p class="chart-note">Semáforo: verde = H · amarillo = R1+R2 · rojo = I1+I2+I3. Solo registros con habitabilidad conocida.</p>`;
+    <dl class="tip-legend">
+      <div><dt>${dotL(COLORS.status.h)}Verde</dt><dd>Habitable (H)</dd></div>
+      <div><dt>${dotL(COLORS.status.r2)}Amarillo</dt><dd>Uso restringido (R1 + R2)</dd></div>
+      <div><dt>${dotL(COLORS.status.i2)}Rojo</dt><dd>No habitable (I1 + I2 + I3)</dd></div>
+      <div><dt>edif.</dt><dd>número de edificaciones (registros)</dd></div>
+      <div><dt>unid.</dt><dd>unidades habitacionales (viviendas)</dd></div>
+      <div><dt>Casa</dt><dd>3 pisos o menos</dd></div>
+      <div><dt>Edificación</dt><dd>más de 3 pisos</dd></div>
+    </dl>
+    <p class="chart-note">Solo registros con habitabilidad conocida.</p>`;
   }
 
   const surface = themeColor('--surface', '#12294a');
@@ -580,93 +615,91 @@ function renderTipologia(records) {
   });
 }
 
-// ── Colapso total y suspensión de servicios por tipología (Casa/Edificio) ───
-// Reusa tipologiaDe() (n_pisos <= 3 casa, > 3 edificación). Tres métricas por
-// tipología, cada una en registros y unidades habitacionales (n_residenciales):
-//   · Colapso total            = colapso_total == 'sí'  (informativo)
-//   · Suspensión · parcial hab. = colapso_parcial == 'sí' Y habitable (H)
-//   · Suspensión · parcial no h.= colapso_parcial == 'sí' Y no habitable (R1/R2/I1/I2/I3)
-// Suspensión sale del cruce colapso parcial × habitabilidad; colapso total no interviene.
-const CE_METRICS = ['colapso', 'evacHab', 'evacNoHab'];
-function colapsoEvacCounts(records) {
+// ── Habitabilidad y colapso por tipología (Casa/Edificio) ───────────────────
+// Reusa tipologiaDe() (n_pisos <= 3 casa, > 3 edificación) y habBinary()
+// (habitable = H · no habitable = R1/R2/I1/I2/I3). Cuatro métricas por tipología,
+// en número de registros:
+//   · Habitable      = habBinary == 'habitable'
+//   · No habitable   = habBinary == 'no_habitable'
+//   · Colapso total  = colapso_total == 'sí'
+//   · Colapso parcial= colapso_parcial == 'sí'
+const CH_METRICS = [
+  ['habitable', 'Habitable', COLORS.status.h],
+  ['no_habitable', 'No habitable', COLORS.status.i2],
+  ['colapso_total', 'Colapso total', COLORS.status.i3],
+  ['colapso_parcial', 'Colapso parcial', COLORS.status.r2],
+];
+function colapsoHabCounts(records) {
   const acc = Object.fromEntries(TIPOLOGIAS.map(([t]) => [
-    t, Object.fromEntries(CE_METRICS.map((m) => [m, { reg: 0, unid: 0 }])),
+    t, Object.fromEntries(CH_METRICS.map(([m]) => [m, { reg: 0, unid: 0 }])),
   ]));
   for (const r of records) {
     const cell = acc[tipologiaDe(r)];
     const u = Number(r.n_residenciales);
     const unid = Number.isNaN(u) ? 0 : u;
-    const parcial = normalize(r.colapso_parcial) === 'si';
     const bin = habBinary(r); // 'habitable' | 'no_habitable' | '' (sin dato)
-    if (normalize(r.colapso_total) === 'si') { cell.colapso.reg += 1; cell.colapso.unid += unid; }
-    if (parcial && bin === 'habitable') { cell.evacHab.reg += 1; cell.evacHab.unid += unid; }
-    if (parcial && bin === 'no_habitable') { cell.evacNoHab.reg += 1; cell.evacNoHab.unid += unid; }
+    if (bin) { cell[bin].reg += 1; cell[bin].unid += unid; }
+    if (normalize(r.colapso_total) === 'si') { cell.colapso_total.reg += 1; cell.colapso_total.unid += unid; }
+    if (normalize(r.colapso_parcial) === 'si') { cell.colapso_parcial.reg += 1; cell.colapso_parcial.unid += unid; }
   }
   return acc;
 }
 
-// Etiquetas de las 3 métricas (compartidas por tabla y reporte del alcalde).
-const CE_LABELS = {
-  colapso: 'Colapso total',
-  evacHab: 'Suspensión · parcial + habitable',
-  evacNoHab: 'Suspensión · parcial + no habitable',
-};
 // Filas que no son Casa/Edificación se atenúan para no distraer la lectura.
-const CE_MUTED = new Set(['sin_dato', 'erroneo']);
+const CH_MUTED = new Set(['sin_dato', 'erroneo']);
 
-function renderColapsoEvac(records) {
-  const box = document.getElementById('colapso-evac-table');
-  if (!box) return;
-  const acc = colapsoEvacCounts(records);
-  const fmt = (n) => Math.round(n).toLocaleString('es-CO');
-  const totals = Object.fromEntries(CE_METRICS.map((m) => [m, { reg: 0, unid: 0 }]));
-  // Un borde vertical separa cada grupo de 2 columnas (Reg. + Unid. hab.).
-  const cells = (c) => CE_METRICS.map((m, i) => {
-    const g = i > 0 ? ' class="ce-group"' : '';
-    return `<td${g}>${fmt(c[m].reg)}</td><td>${fmt(c[m].unid)}</td>`;
-  }).join('');
-  const bodyRows = TIPOLOGIAS.map(([t, label]) => {
-    const c = acc[t];
-    CE_METRICS.forEach((m) => { totals[m].reg += c[m].reg; totals[m].unid += c[m].unid; });
-    const rowCls = CE_MUTED.has(t) ? ' class="ce-muted"' : '';
-    return `<tr${rowCls}><th scope="row">${label}</th>${cells(c)}</tr>`;
-  }).join('');
-  const footRow = `<tr class="tip-total-row"><th scope="row">TOTAL</th>${cells(totals)}</tr>`;
-  const groupHead = (m) => `<th class="ce-group" colspan="2" scope="colgroup">${CE_LABELS[m]}</th>`;
-  const subHead = (i) => `<th${i > 0 ? ' class="ce-group"' : ''} scope="col">Reg.</th><th scope="col">Unid. hab.</th>`;
-  box.innerHTML = `<table class="tipologia-table ce-table">
-    <thead>
-      <tr><th rowspan="2" scope="col">Tipología (pisos sobre el terreno)</th>
-          <th colspan="2" scope="colgroup">${CE_LABELS.colapso}</th>
-          ${groupHead('evacHab')}${groupHead('evacNoHab')}</tr>
-      <tr>${CE_METRICS.map((m, i) => subHead(i)).join('')}</tr>
-    </thead>
-    <tbody>${bodyRows}${footRow}</tbody>
-  </table>
-  <p class="chart-note"><strong>Resumen sobre el total de registros (no depende de los filtros del tablero).</strong> Casa = 3 pisos o menos · Edificación = más de 3 pisos. Suspensión de servicios = cruce colapso parcial × habitabilidad (el colapso total NO interviene): habitable = H, no habitable = R1/R2/I1/I2/I3. Unid. hab. = unidades residenciales.</p>`;
+function renderColapsoHab(records) {
+  const box = document.getElementById('colapso-hab-table');
+  if (box) {
+    const acc = colapsoHabCounts(records);
+    const fmt = (n) => Math.round(n).toLocaleString('es-CO');
+    const totals = Object.fromEntries(CH_METRICS.map(([m]) => [m, { reg: 0, unid: 0 }]));
+    // Cada celda: registros (valor principal) + unidades habitacionales (secundario).
+    const cells = (c) => CH_METRICS.map(([m]) =>
+      `<td><span class="ce-reg">${fmt(c[m].reg)}</span><span class="ce-unid">${fmt(c[m].unid)} unid. hab.</span></td>`).join('');
+    const bodyRows = TIPOLOGIAS.map(([t, label]) => {
+      const c = acc[t];
+      CH_METRICS.forEach(([m]) => { totals[m].reg += c[m].reg; totals[m].unid += c[m].unid; });
+      const rowCls = CH_MUTED.has(t) ? ' class="ce-muted"' : '';
+      return `<tr${rowCls}><th scope="row">${label}</th>${cells(c)}</tr>`;
+    }).join('');
+    const footRow = `<tr class="tip-total-row"><th scope="row">TOTAL</th>${cells(totals)}</tr>`;
+    const head = CH_METRICS.map(([, label]) => `<th scope="col">${label}</th>`).join('');
+    box.innerHTML = `<table class="tipologia-table ch-table">
+      <thead><tr><th scope="col">Tipología (pisos sobre el terreno)</th>${head}</tr></thead>
+      <tbody>${bodyRows}${footRow}</tbody>
+    </table>
+    <p class="chart-note">Valor principal = registros · valor secundario = unidades habitacionales (viviendas, n_residenciales). Habitable = H · No habitable = R1/R2/I1/I2/I3. Casa = 3 pisos o menos · Edificación = más de 3 pisos. Un registro puede sumar en colapso y en habitabilidad a la vez.</p>`;
+  }
+
+  renderTipologiaBar('chart-hab-tipologia', records, ['habitable', 'no_habitable']);
+  renderTipologiaBar('chart-colapso-tipologia', records, ['colapso_total', 'colapso_parcial']);
 }
 
-/** Filas planas (Casa/Edificación/… + TOTAL) para el "Reporte alcalde" xlsx.
- *  Mismos conteos que la tabla, encabezados en español legibles. */
-export function colapsoEvacReport(records) {
-  const acc = colapsoEvacCounts(records);
-  const totals = Object.fromEntries(CE_METRICS.map((m) => [m, { reg: 0, unid: 0 }]));
-  const row = (label, c) => ({
-    'Tipología': label,
-    'Colapso total — Registros': c.colapso.reg,
-    'Colapso total — Unidades habitacionales': c.colapso.unid,
-    'Suspensión servicios · parcial + habitable — Registros': c.evacHab.reg,
-    'Suspensión servicios · parcial + habitable — Unidades habitacionales': c.evacHab.unid,
-    'Suspensión servicios · parcial + no habitable — Registros': c.evacNoHab.reg,
-    'Suspensión servicios · parcial + no habitable — Unidades habitacionales': c.evacNoHab.unid,
+/** Barras agrupadas Casa vs. Edificación para un subconjunto de CH_METRICS. */
+function renderTipologiaBar(canvasId, records, metricKeys) {
+  const acc = colapsoHabCounts(records);
+  const tips = [['casa', 'Casa'], ['edificacion', 'Edificación']];
+  const surface = themeColor('--surface', '#12294a');
+  const metrics = CH_METRICS.filter(([m]) => metricKeys.includes(m));
+  upsertChart(canvasId, {
+    type: 'bar',
+    data: {
+      labels: tips.map(([, label]) => label),
+      datasets: metrics.map(([m, label, color]) => ({
+        label,
+        data: tips.map(([t]) => acc[t][m].reg),
+        backgroundColor: color,
+        borderColor: surface,
+        borderWidth: 2,
+        maxBarThickness: 64,
+      })),
+    },
+    options: baseOptions({
+      scales: { x: { grid: { display: false } }, y: { beginAtZero: true } },
+      plugins: { legend: { display: true } },
+    }),
   });
-  const rows = TIPOLOGIAS.map(([t, label]) => {
-    const c = acc[t];
-    CE_METRICS.forEach((m) => { totals[m].reg += c[m].reg; totals[m].unid += c[m].unid; });
-    return row(label, c);
-  });
-  rows.push(row('TOTAL', totals));
-  return rows;
 }
 
 let warnedMissingChart = false;
@@ -674,7 +707,7 @@ let warnedMissingChart = false;
 /** Render all "Estadísticas" charts from the current filtered record set.
  *  allRecords (sin filtrar) alimenta el reporte alcalde, que es un resumen fijo
  *  sobre el total y NO debe moverse con los filtros del tablero. */
-export function renderStatistics(records, allRecords) {
+export function renderStatistics(records, allRecords, reportados = null) {
   if (typeof Chart === 'undefined') {
     if (!warnedMissingChart) {
       console.warn('Chart.js no está disponible (falló la carga del CDN) — se omite "Estadísticas".');
@@ -688,10 +721,10 @@ export function renderStatistics(records, allRecords) {
   renderByEpoca(records);
   renderHabByComuna(records);
   renderTipologia(records);
-  renderColapsoEvac(allRecords || records); // reporte alcalde: siempre sobre el total
+  renderColapsoHab(records);
   renderHabDoughnut(records);
   renderSeveridad(records);
   renderUsoDoughnut(records);
   renderFlags(records);
-  renderTimeSeries(records);
+  renderTimeSeries(records, reportados);
 }

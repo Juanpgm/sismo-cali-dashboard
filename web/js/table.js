@@ -106,11 +106,11 @@ function wireColumnsToggle() {
   });
 }
 
+const isEmptyVal = (v) => v === null || v === undefined || String(v).trim() === '';
+
 function compareValues(a, b, field) {
   const va = a[field];
   const vb = b[field];
-  if (va === null || va === undefined || va === '') return 1;
-  if (vb === null || vb === undefined || vb === '') return -1;
   const na = Number(va);
   const nb = Number(vb);
   if (!Number.isNaN(na) && !Number.isNaN(nb) && String(va).trim() !== '' && String(vb).trim() !== '') {
@@ -156,6 +156,13 @@ export function renderTable(records) {
   lastRecords = records;
   renderHeader();
   const sorted = [...records].sort((a, b) => {
+    // Empties always sink to the bottom, regardless of sort direction, so the
+    // ~123 registros sin fecha_inspeccion no tapan las fechas reales al ordenar desc.
+    const ea = isEmptyVal(a[sortField]);
+    const eb = isEmptyVal(b[sortField]);
+    if (ea && eb) return 0;
+    if (ea) return 1;
+    if (eb) return -1;
     const cmp = compareValues(a, b, sortField);
     return sortDir === 'asc' ? cmp : -cmp;
   });

@@ -2,7 +2,7 @@
 import { store } from './data.js';
 import { initFilters } from './filters.js';
 import { renderKpis } from './kpi.js';
-import { renderStatistics, colapsoEvacReport } from './charts.js';
+import { renderStatistics } from './charts.js';
 import {
   initMap, render as renderMap, setMode, setColorBy, setSizeBy, setHeatWeight,
   setChoroplethLevel, setChoroplethMetric, invalidateSize, highlightRecord, applyMapTheme,
@@ -91,7 +91,7 @@ function onStoreChange() {
     console.error(err);
     showToast('No se pudo cargar la capa geográfica.', 'error');
   });
-  renderStatistics(store.filtered, store.records);
+  renderStatistics(store.filtered, store.records, store.reportados);
   // Acciones works over ALL records: the filters sidebar only applies to Panel.
   renderAcciones(document.getElementById('view-acciones'), store.records, { onRowClick: openDetailModal });
 }
@@ -409,18 +409,6 @@ el('#datos-download').addEventListener('click', () => {
   XLSX.writeFile(wb, `inspecciones_${(store.meta?.generated_at || '').slice(0, 10) || 'export'}.xlsx`);
 });
 
-// Reporte alcalde: resumen colapso/evacuación por tipología sobre el TOTAL
-// de registros (no depende de los filtros del tablero).
-el('#reporte-alcalde-download').addEventListener('click', () => {
-  if (!store.records.length) {
-    showToast('Aún no hay registros cargados.', 'error');
-    return;
-  }
-  const ws = XLSX.utils.json_to_sheet(colapsoEvacReport(store.records));
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'reporte_alcalde');
-  XLSX.writeFile(wb, `reporte_alcalde_${(store.meta?.generated_at || '').slice(0, 10) || 'export'}.xlsx`);
-});
 searchInput.addEventListener('input', debounce((e) => store.setSearch(e.target.value), 250));
 refreshBtn.addEventListener('click', () => triggerRefresh());
 retryBtn.addEventListener('click', () => loadAndRender({ isRefresh: true }));
@@ -440,7 +428,7 @@ window.addEventListener('resize', debounce(() => {
 // up the new CSS-variable colors it bakes in at construction time.
 document.addEventListener('themechange', () => {
   applyMapTheme();
-  if (store.records.length) renderStatistics(store.filtered, store.records);
+  if (store.records.length) renderStatistics(store.filtered, store.records, store.reportados);
 });
 
 loadAndRender();

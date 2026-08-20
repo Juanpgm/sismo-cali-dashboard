@@ -12,13 +12,15 @@ function sumField(records, field) {
   return total;
 }
 
-/** Mean over records with a numeric value, rounded to 1 decimal (0 if none). */
-function avgField(records, field) {
+/** Mean over records with a numeric value, rounded to 1 decimal (0 if none).
+ *  `max` descarta outliers de captura (p.ej. n_pisos=91980) que reventaban el
+ *  promedio; mismo criterio que NPISOS_MAX en charts.js. */
+function avgField(records, field, max = Infinity) {
   let total = 0;
   let n = 0;
   for (const r of records) {
     const v = Number(r[field]);
-    if (!Number.isNaN(v)) { total += v; n += 1; }
+    if (!Number.isNaN(v) && v >= 0 && v <= max) { total += v; n += 1; }
   }
   return n ? Math.round((total / n) * 10) / 10 : 0;
 }
@@ -42,7 +44,7 @@ const TILE_DEFS = [
   { key: 'colapso_total', label: 'Colapso total', accent: COLORS.status.i3, group: 'headline', section: 'registros' },
   { key: 'colapso_parcial', label: 'Colapso parcial', accent: COLORS.status.r2, group: 'headline', section: 'registros' },
   { key: 'suspension_servicios', label: 'Suspensión de servicios', accent: COLORS.status.i3, group: 'headline', section: 'registros' },
-  { key: 'u_residenciales', label: 'Total unidades residenciales', accent: null, group: 'headline', section: 'residenciales' },
+  { key: 'u_residenciales', label: 'Total unidades habitacionales', accent: null, group: 'headline', section: 'residenciales' },
   { key: 'hab_h_res', label: 'Habitable (H)', accent: COLORS.status.h, group: 'headline', section: 'residenciales' },
   { key: 'hab_r_res', label: 'Uso restringido (R1 + R2)', accent: COLORS.status.r2, group: 'headline', section: 'residenciales' },
   { key: 'hab_i_res', label: 'No habitable (I1 + I2 + I3)', accent: COLORS.status.i2, group: 'headline', section: 'residenciales' },
@@ -99,7 +101,7 @@ export function computeKpis(records) {
     u_residenciales: sumField(records, 'n_residenciales'),
     u_comerciales: sumField(records, 'n_comerciales'),
     u_no_habitadas: sumField(records, 'n_no_habitadas'),
-    pisos_prom: avgField(records, 'n_pisos'),
+    pisos_prom: avgField(records, 'n_pisos', 60),
     sotanos_total: sumField(records, 'n_sotanos'),
   };
 }
@@ -136,7 +138,7 @@ function usoTilesHtml(records, total) {
       <span class="kpi-value">${count}</span>
       <div class="kpi-sub-row">
         <span class="kpi-sub">${pct(count, total)}% del filtrado</span>
-        <span class="kpi-sub">${Math.round(resSums.get(uso) || 0)} unid. residenciales</span>
+        <span class="kpi-sub">${Math.round(resSums.get(uso) || 0)} unid. habitacionales</span>
       </div>
     </div>
   `).join('');
@@ -163,7 +165,7 @@ export function renderKpis(container, filteredRecords, allRecords, reportados = 
   const tileHtml = (def) => {
     let sub = '';
     if (def.key.startsWith('hab_') && def.key.endsWith('_res')) {
-      sub = subLine(`<span class="kpi-sub">${pct(values[def.key], values.u_residenciales)}% de unid. residenciales</span>`);
+      sub = subLine(`<span class="kpi-sub">${pct(values[def.key], values.u_residenciales)}% de unid. habitacionales</span>`);
     } else if (def.key.startsWith('hab_')) {
       sub = subLine(`<span class="kpi-sub">${pct(values[def.key], total)}% del filtrado</span>`);
     } else if (def.key === 'ocupantes_riesgo') {
@@ -187,7 +189,7 @@ export function renderKpis(container, filteredRecords, allRecords, reportados = 
   const headlineHtml = sectionTitle('Por número de registros')
     + reportadosTile
     + tilesFor('registros')
-    + sectionTitle('Por unidades residenciales (n_residenciales)')
+    + sectionTitle('Por unidades habitacionales (viviendas)')
     + tilesFor('residenciales')
     + sectionTitle('Por uso de la edificación')
     + usoTilesHtml(filteredRecords, total);

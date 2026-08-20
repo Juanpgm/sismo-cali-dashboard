@@ -706,21 +706,26 @@ a { color: var(--accent); }
 }
 .chart-note { margin: 6px 0 0; font-size: 0.72rem; color: var(--text-muted); }
 
-/* Tile con acción a la derecha del título (p. ej. "Descargar reporte alcalde") */
-.chart-tile-head {
+/* Leyenda de variables bajo la tabla del semáforo */
+.tip-legend {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
   flex-wrap: wrap;
-  margin-bottom: 8px;
+  gap: 6px 18px;
+  margin: 10px 0 0;
+  font-size: 0.72rem;
 }
-.chart-tile-head .chart-tile-title { margin: 0; }
-.chart-tile-head .btn-secondary { flex: 0 0 auto; }
+.tip-legend > div { display: flex; gap: 6px; align-items: baseline; }
+.tip-legend dt { font-weight: 700; color: var(--text-secondary); white-space: nowrap; }
+.tip-legend dd { margin: 0; color: var(--text-muted); }
 
-/* Colapso/evacuación: borde entre grupos de columnas + filas secundarias tenues */
-.ce-table th.ce-group, .ce-table td.ce-group { border-left: 2px solid var(--border); }
-.ce-table .ce-muted th[scope="row"], .ce-table .ce-muted td { color: var(--text-muted); }
+/* Filas que no son Casa/Edificación se atenúan para no distraer la lectura */
+.tipologia-table .ce-muted th[scope="row"], .tipologia-table .ce-muted td { color: var(--text-muted); }
+
+/* Celda con doble lectura: registros (principal) + unidades habitacionales (secundario) */
+.ch-table td { vertical-align: top; }
+.ch-table .ce-reg { display: block; font-variant-numeric: tabular-nums; }
+.ch-table .ce-unid { display: block; font-size: 0.68rem; color: var(--text-muted); margin-top: 1px; }
+.ch-table .ce-muted .ce-reg { color: var(--text-muted); }
 
 /* ============================================================
    Filters panel (desktop sidebar / mobile bottom sheet)

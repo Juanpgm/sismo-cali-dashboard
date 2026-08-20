@@ -202,18 +202,20 @@
           <div class="tipologia-table-wrap" id="tipologia-table"></div>
         </div>
         <div class="chart-tile chart-tile-wide chart-tile-auto">
-          <div class="chart-tile-head">
-            <h3 class="chart-tile-title">Colapso total y suspensión de servicios por tipología (Casa/Edificio)</h3>
-            <button type="button" class="btn-secondary" id="reporte-alcalde-download">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><line x1="5" y1="21" x2="19" y2="21"/></svg>
-              Descargar reporte alcalde
-            </button>
-          </div>
-          <div class="tipologia-table-wrap" id="colapso-evac-table"></div>
+          <h3 class="chart-tile-title">Habitabilidad y colapso por tipología (Casa / Edificio)</h3>
+          <div class="tipologia-table-wrap" id="colapso-hab-table"></div>
         </div>
         <div class="chart-tile">
           <h3 class="chart-tile-title">Casas y edificios por semáforo</h3>
           <canvas id="chart-tipologia"></canvas>
+        </div>
+        <div class="chart-tile">
+          <h3 class="chart-tile-title">Habitable vs. no habitable por tipología</h3>
+          <canvas id="chart-hab-tipologia"></canvas>
+        </div>
+        <div class="chart-tile">
+          <h3 class="chart-tile-title">Colapso total y parcial por tipología</h3>
+          <canvas id="chart-colapso-tipologia"></canvas>
         </div>
         <div class="chart-tile chart-tile-wide">
           <h3 class="chart-tile-title">Riesgos y afectaciones (conteo de "Sí")</h3>
