@@ -380,6 +380,11 @@ async function triggerRefresh() {
       // data lands later (the hourly job syncs + publishes), so we advance the
       // bar through the server-side phases and keep watching in the background
       // instead of freezing the button.
+      // El KPI "Reportados" viene de la API atencionsismo detrás de una caché
+      // CDN de 15 min: el botón también la saltea para releer la API YA. Es
+      // fire-and-forget (la lectura en vivo puede tardar ~2 min en frío); al
+      // aterrizar, store.notify() re-renderiza el KPI solo.
+      store.refreshReportados({ bust: true }).catch(() => {});
       setProgress(45, res.status === 409 ? 'Ya había una actualización en curso…' : 'Encolado en el servidor…');
       await animateProgress(88, 'Procesando datos…', 7000);
       setProgress(92, 'Esperando datos frescos…');

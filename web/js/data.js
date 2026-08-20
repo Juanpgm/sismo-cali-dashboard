@@ -149,14 +149,10 @@ class Store {
     // israelRecords: colección Firestore SEPARADA (Inspectores de Israel). Se trae
     // en paralelo y nunca lanza (devuelve [] ante cualquier fallo), así el tablero
     // de Cali carga aunque Firestore no responda.
-    const [metaRes, dataRes, liveRes, aggRes, israelRecords] = await Promise.all([
+    const [metaRes, dataRes, , israelRecords] = await Promise.all([
       fetch(`data/meta.json${bust}`, { cache: 'no-store' }),
       fetch(`data/inspections.json${bust}`, { cache: 'no-store' }),
-      // Reportados en vivo desde la API atencionsismo. SIN cache-bust: la caché
-      // CDN (s-maxage=900) es la que limita la lectura a cada 15 min. Opcional.
-      fetch('/api/reportados').catch(() => null),
-      // Agregado estático de reportes: fallback. Su fallo no debe tumbar el tablero.
-      fetch(`data/reportes_agg.json${bust}`, { cache: 'no-store' }).catch(() => null),
+      this.refreshReportados(),
       fetchIsraelRecords(),
     ]);
     if (!metaRes.ok || !dataRes.ok) {
@@ -165,19 +161,6 @@ class Store {
     const meta = await metaRes.json();
     const caliRecords = await dataRes.json();
     this.meta = meta;
-    // KPI "Reportados" = solo los reportes en estado "Reportado" (decisión del
-    // usuario 2026-08-20), leídos en vivo de la API; el estático es fallback.
-    this.reportados = null;
-    if (liveRes && liveRes.ok) {
-      try {
-        this.reportados = (await liveRes.json())?.por_estadoVerificacion?.Reportado ?? null;
-      } catch { /* respuesta malformada: probamos el fallback */ }
-    }
-    if (this.reportados == null && aggRes && aggRes.ok) {
-      try {
-        this.reportados = (await aggRes.json())?.por_estadoVerificacion?.Reportado ?? null;
-      } catch { /* agregado malformado: se queda en null */ }
-    }
     // Cali = 'cali', Israel ya viene con fuente:'israel'. Ambos se procesan igual
     // (índice de búsqueda, buckets, suspensión) para que se comporten idéntico.
     const records = [
@@ -194,6 +177,31 @@ class Store {
     this.computeDateBounds();
     this.computeRangeBounds();
     this.applyFilters();
+  }
+
+  // KPI "Reportados" = solo los reportes en estado "Reportado" (decisión del
+  // usuario 2026-08-20), leídos en vivo de /api/reportados; el agregado
+  // estático del pipeline es fallback. Con bust=true agrega un query param
+  // único que saltea la caché CDN de 15 min (botón "Actualizar datos"); sin
+  // bust, la caché manda y la API se relee como máximo cada 15 min. Si ambas
+  // fuentes fallan, conserva el último valor conocido.
+  async refreshReportados({ bust = false } = {}) {
+    let val = null;
+    try {
+      const res = await fetch(bust ? `/api/reportados?refresh=${Date.now()}` : '/api/reportados');
+      if (res.ok) val = (await res.json())?.por_estadoVerificacion?.Reportado ?? null;
+    } catch { /* respuesta malformada o sin red: probamos el fallback */ }
+    if (val == null) {
+      try {
+        const res = await fetch(`data/reportes_agg.json?t=${Date.now()}`, { cache: 'no-store' });
+        if (res.ok) val = (await res.json())?.por_estadoVerificacion?.Reportado ?? null;
+      } catch { /* agregado malformado: se conserva el valor previo */ }
+    }
+    if (val != null && val !== this.reportados) {
+      this.reportados = val;
+      this.notify();
+    }
+    return val;
   }
 
   computeOptions() {
