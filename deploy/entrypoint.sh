@@ -1,23 +1,20 @@
 #!/usr/bin/env bash
-# Cron entrypoint: regenerate the dashboard's static JSON from the F3 Google
-# Sheet and publish by pushing to the connected repo (Vercel auto-redeploys).
+# Cron entrypoint: regenerate the dashboard's static JSON directly from the
+# public Survey123 layer (no Google Sheets) and publish by pushing to the
+# connected repo (Vercel auto-redeploys).
 #
-# Required env (set in Railway, both secret):
-#   GOOGLE_SERVICE_ACCOUNT_JSON  full service-account key JSON (reader+editor on the Sheet)
-#   DASHBOARD_REPO_TOKEN         GitHub token with contents:write on the dashboard repo
+# Required env (set in Railway, secret):
+#   DASHBOARD_REPO_TOKEN  GitHub token with contents:write on the dashboard repo
 # Optional:
+#   GOOGLE_MAPS_API_KEY   habilita el arbitraje por geocodificación (fail-soft si falta)
+#   VISITADOS_API_PASS    habilita el pull de reportes de la API (fail-soft si falta)
 #   DASHBOARD_REPO   (default Juanpgm/sismo-cali-dashboard)
 #   DASHBOARD_BRANCH (default main)
 set -euo pipefail
 
-: "${GOOGLE_SERVICE_ACCOUNT_JSON:?falta el env GOOGLE_SERVICE_ACCOUNT_JSON (JSON de la service account)}"
 : "${DASHBOARD_REPO_TOKEN:?falta el env DASHBOARD_REPO_TOKEN (token GitHub con contents:write)}"
 REPO="${DASHBOARD_REPO:-Juanpgm/sismo-cali-dashboard}"
 BRANCH="${DASHBOARD_BRANCH:-main}"
-
-# refresh_data.py reads credentials from a file path, not inline JSON.
-printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > /tmp/sa.json
-export GOOGLE_APPLICATION_CREDENTIALS=/tmp/sa.json
 
 _scrub() { sed "s/${DASHBOARD_REPO_TOKEN}/***/g"; }   # never echo the token
 
@@ -26,14 +23,9 @@ git clone --depth 1 --branch "$BRANCH" \
   "https://x-access-token:${DASHBOARD_REPO_TOKEN}@github.com/${REPO}.git" /repo 2>&1 | _scrub
 
 cd /repo/scripts
-# Sync new/edited form responses (raw_data) into the curated tabla_normalizada
-# BEFORE reading it. Non-fatal: if the upsert fails, still publish whatever the
-# table currently holds rather than blocking the dashboard refresh.
-echo "Sincronizando raw_data → tabla_normalizada (upsert)…"
-python normalize_sync.py 2>&1 | _scrub || echo "normalize_sync falló; sigo con la tabla actual."
-
-echo "Corriendo refresh_data.py --source drive…"
-python refresh_data.py --source drive
+# Fuente única: layer público de Survey123 (sin Google Sheets).
+echo "Corriendo refresh_data.py (fuente: Survey123)…"
+python refresh_data.py
 
 # Trae TODOS los reportes de la API atencionsismo (informe/json) → reportes.json
 # + agregaciones, para el mapa/analítica del dashboard. Non-fatal: si faltan las

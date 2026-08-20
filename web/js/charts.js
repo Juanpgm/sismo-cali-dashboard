@@ -336,9 +336,12 @@ function renderTimeSeries(records, reportados) {
     data: { labels, datasets },
     // Escala logarítmica: deja convivir el conteo diario (decenas), el acumulado
     // de la app (cientos) y el total Momento 2 (miles) en el mismo eje.
+    // interaction mode 'index': al pasar/tocar cualquier punto del día se ven los
+    // valores de las tres series a la vez (no hay que apuntar al punto exacto).
     options: baseOptions({
+      interaction: { mode: 'index', intersect: false },
       scales: { y: { type: 'logarithmic' } },
-      plugins: { legend: { display: true } },
+      plugins: { legend: { display: true }, tooltip: { mode: 'index', intersect: false } },
     }),
   });
 }
@@ -669,7 +672,7 @@ function renderColapsoHab(records) {
       <thead><tr><th scope="col">Tipología (pisos sobre el terreno)</th>${head}</tr></thead>
       <tbody>${bodyRows}${footRow}</tbody>
     </table>
-    <p class="chart-note">Valor principal = registros · valor secundario = unidades habitacionales (viviendas, n_residenciales). Habitable = H · No habitable = R1/R2/I1/I2/I3. Casa = 3 pisos o menos · Edificación = más de 3 pisos. Un registro puede sumar en colapso y en habitabilidad a la vez.</p>`;
+    <p class="chart-note">Valor principal = registros · valor secundario = unidades habitacionales (viviendas), un <strong>aproximado según los datos de la inspección</strong> (n_residenciales). Habitable = H · No habitable = R1/R2/I1/I2/I3. Casa = 3 pisos o menos · Edificación = más de 3 pisos. Un registro puede sumar en colapso y en habitabilidad a la vez.</p>`;
   }
 
   renderTipologiaBar('chart-hab-tipologia', records, ['habitable', 'no_habitable']);

@@ -383,12 +383,24 @@ def normalize_municipio(series: pd.Series) -> pd.Series:
 
 
 def add_date_fields(df: pd.DataFrame) -> pd.DataFrame:
-    # dayfirst=True: las fechas de la hoja EDAN-F3 llegan como texto DD/MM/YYYY
-    # (formato colombiano). Sin esto, pandas las lee mes-primero (US) y "10/08"
-    # (10 ago) se convierte en 08-oct, "11/08" en 08-nov, etc. Las fechas del
-    # survey ya llegan como datetime (epoch ms en normalize_sync), así que este
-    # flag las deja intactas.
+    # dayfirst=True por si alguna fecha llegara como texto DD/MM/YYYY (colombiano);
+    # las del layer ya vienen como datetime (epoch ms), así que el flag las deja
+    # intactas.
     fecha_dt = pd.to_datetime(df["fecha_inspeccion"], errors="coerce", dayfirst=True)
+
+    # Corrección de fechas imposibles: una inspección NO puede ser posterior a su
+    # envío al sistema. Cuando fecha_inspeccion queda después de CreationDate
+    # (timestamp de envío) —p.ej. el bug de "+7 días" del formulario, o fechas
+    # futuras— se usa la fecha de CreationDate, que es la verdad del sistema y
+    # nunca es futura. Las inspecciones enviadas días después (fecha < Creation)
+    # no se tocan.
+    if "CreationDate" in df.columns:
+        creation_dt = pd.to_datetime(df["CreationDate"], errors="coerce")
+        bad = (fecha_dt.notna() & creation_dt.notna()
+               & (fecha_dt.dt.normalize() > creation_dt.dt.normalize()))
+        if bad.any():
+            log.info("Fechas posteriores al envío corregidas a CreationDate: %d.", int(bad.sum()))
+        fecha_dt = fecha_dt.where(~bad, creation_dt)
     df["fecha_inspeccion"] = fecha_dt.dt.strftime("%Y-%m-%d")
 
     hora_str = df["hora"].astype("string")
@@ -405,70 +417,6 @@ def add_date_fields(df: pd.DataFrame) -> pd.DataFrame:
     df["fecha_hora"] = [
         _combine(d, h) for d, h in zip(df["fecha_inspeccion"], hora_str)
     ]
-    return df
-
-
-def backfill_missing_dates(df: pd.DataFrame) -> pd.DataFrame:
-    """Recover blank fecha_inspeccion from the public Survey123 layer by GlobalID.
-
-    Some curated/legacy tabla_normalizada rows ship without a date even though the
-    live layer holds it (epoch ms), which would leave them out of the time series.
-    We look those GlobalIDs up in the public layer and fill fecha_inspeccion (UTC
-    date, same as normalize_sync's unit="ms" conversion) plus fecha_hora. Best
-    effort: a layer failure logs a warning and leaves the rows blank rather than
-    breaking the refresh.
-    """
-    if "fecha_inspeccion" not in df.columns or "GlobalID" not in df.columns:
-        return df
-    fecha = df["fecha_inspeccion"].astype("string")
-    gid = df["GlobalID"].astype("string")
-    missing_mask = (fecha.isna() | (fecha.str.strip() == "")) & gid.notna() & (gid.str.strip() != "")
-    gids = df.loc[missing_mask, "GlobalID"].tolist()
-    if not gids:
-        return df
-
-    date_by_gid: dict[str, str] = {}
-    try:
-        for start in range(0, len(gids), 60):
-            chunk = gids[start:start + 60]
-            where = "globalid IN (" + ",".join("'%s'" % g for g in chunk) + ")"
-            resp = requests.post(
-                f"{SURVEY_LAYER_URL}/query",
-                data={"where": where, "outFields": "globalid,fecha_inspeccion",
-                      "returnGeometry": "false", "f": "json"},
-                timeout=60,
-            )
-            resp.raise_for_status()
-            for feat in resp.json().get("features", []):
-                attrs = feat.get("attributes", {})
-                epoch, g = attrs.get("fecha_inspeccion"), attrs.get("globalid")
-                if epoch is not None and g:
-                    date_by_gid[g.lower()] = datetime.fromtimestamp(
-                        epoch / 1000, timezone.utc).strftime("%Y-%m-%d")
-    except Exception:  # noqa: BLE001 - backfill is best-effort; never break the refresh
-        log.warning("Date backfill from Survey123 layer failed; leaving %d rows blank.",
-                    len(gids), exc_info=True)
-        return df
-
-    def _combine(date_str, hora_val):
-        if not isinstance(hora_val, str) or not hora_val.strip():
-            return None
-        m = re.match(r"^(\d{1,2}):(\d{2})", hora_val.strip())
-        return f"{date_str}T{int(m.group(1)):02d}:{m.group(2)}" if m else None
-
-    filled = 0
-    for idx in df.index[missing_mask]:
-        g = df.at[idx, "GlobalID"]
-        d = date_by_gid.get(g.lower()) if isinstance(g, str) else None
-        if not d:
-            continue
-        df.at[idx, "fecha_inspeccion"] = d
-        if "fecha_hora" in df.columns:
-            hora = df.at[idx, "hora"] if "hora" in df.columns else None
-            df.at[idx, "fecha_hora"] = _combine(d, hora)
-        filled += 1
-    log.info("Date backfill: filled %d/%d rows missing fecha_inspeccion from the layer.",
-             filled, len(gids))
     return df
 
 
@@ -913,22 +861,227 @@ def write_outputs(df: pd.DataFrame, out_dir: Path, source_used: str) -> tuple[Pa
     return inspections_path, meta_path, len(records)
 
 
+# --- Survey123 source (fuente única) ----------------------------------------
+# El dashboard se alimenta directo del layer público de Survey123 (sin Google
+# Sheets). fetch_survey_raw() trae el layer con el contrato exacto de raw_data y
+# normalize() aplica el mismo pipeline que antes construía tabla_normalizada, así
+# que todo lo downstream es idéntico.
+
+# Layer date fields arrive as Unix epoch milliseconds.
+SURVEY_DATE_FIELDS = ["fecha_inspeccion", "CreationDate", "EditDate"]
+
+# Layer field name -> raw_data column label (Survey123 xlsx export headers,
+# including pandas' ".N" suffixes for the duplicated "¿Cuál?" columns). Geometry
+# supplies x/y.
+LAYER_TO_RAW = {
+    "objectid": "ObjectID",
+    "globalid": "GlobalID",
+    "fecha_inspeccion": "Fecha de Inspección:",
+    "hora_inspeccion": "Hora:",
+    "nombre_evaluador": "Nombre Evaluador:",
+    "id_grupo": "ID Grupo:",
+    "id_grupo_otro": "Especifique la entidad:",
+    "tipo_evento": "Tipo de evento:",
+    "nombre_edif": "Nombre de la edificación:",
+    "municipio": "Municipio:",
+    "barrio": "Barrio/vereda:",
+    "direccion": "Dirección:",
+    "codigo_predial": "2.2 Código predial / catastral (si se tiene):",
+    "propiedad": "Tipo de propiedad:",
+    "contacto_nombre": "Nombre de contacto:",
+    "contacto_rol": "Relación con la edificación:",
+    "contacto_rol_otro": "Especifique otro:",
+    "contacto_email": "E-mail:",
+    "contacto_tel": "Teléfono:",
+    "epoca_const_p": "3.1 Época de construcción",
+    "pisos_sobre": "Número de pisos sobre el terreno",
+    "sotanos": "Número de sótanos",
+    "ocupantes": "Número aproximado de ocupantes",
+    "frente_m": "Dimensiones — Frente (m):",
+    "fondo_m": "Dimensiones — Fondo (m):",
+    "unidades_residenciales": "Número de unidades residenciales:",
+    "unidades_comerciales": "Número de unidades comerciales:",
+    "unidades_no_habitadas": "Número de unidades no habitadas:",
+    "estado_victimas": "¿Se conoce el número de muertos y heridos?",
+    "muertos": "Muertos:",
+    "heridos": "Heridos:",
+    "acceso": "Acceso a la edificación",
+    "uso_edif": "3.2 Uso de la edificación",
+    "uso_otro": "¿Cuál?",
+    "sis_estructural_p": "3.3.1 Sistema estructural:",
+    "sis_estructural_otro": "¿Cuál?.1",
+    "material_p": "3.3.2 Material:",
+    "entrepiso_material": "3.4.1 Material del entrepiso:",
+    "entrepiso_p": "3.4.2 Sistema de entrepiso:",
+    "entrepiso_otro": "¿Cuál?.2",
+    "sistemas_combinados": "¿Existen sistemas combinados?",
+    "observ_sistemas": "Observaciones:",
+    "cubierta_soporte_p": "3.5.1 Sistema de soporte de cubierta:",
+    "cubierta_soporte_otro": "¿Cuál?.3",
+    "cubierta_revest_p": "3.5.2 Revestimiento de cubierta:",
+    "cubierta_revest_otro": "¿Cuál?.4",
+    "muros_divisorios_p": "3.6.1 Muros divisorios:",
+    "muros_div_otro": "¿Cuál?.5",
+    "fachadas_p": "3.6.2 Fachadas:",
+    "fachadas_otro": "¿Cuál?.6",
+    "escaleras_p": "3.6.3 Escaleras:",
+    "escaleras_otro": "¿Cuál?.7",
+    "calidad_diseno_p": "3.7 Calidad del diseño y la construcción:",
+    "estado_conservacion_p": "3.8 Estado de la edificación (conservación):",
+    "r_41_a": "4.1 Caída de objetos de edificios adyacentes — a) Existe riesgo externo",
+    "r_41_b": "4.1 — b) Compromete estabilidad de la edificación",
+    "r_41_c": "4.1 — c) Compromete accesos y/o ocupantes",
+    "r_42_a": "4.2 Colapso o probable colapso de edificios adyacentes — a) Existe riesgo externo",
+    "r_42_b": "4.2 — b) Compromete estabilidad de la edificación",
+    "r_42_c": "4.2 — c) Compromete accesos y/o ocupantes",
+    "r_43_a": "4.3 Falla en sistemas de distribución de servicios — a) Existe riesgo externo",
+    "r_43_b": "4.3 — b) Compromete estabilidad de la edificación",
+    "r_43_c": "4.3 — c) Compromete accesos y/o ocupantes",
+    "r_44_a": "4.4 Inestabilidad del terreno, movimientos en masa — a) Existe riesgo externo",
+    "r_44_b": "4.4 — b) Compromete estabilidad de la edificación",
+    "r_44_c": "4.4 — c) Compromete accesos y/o ocupantes",
+    "r_45_a": "4.5 Accesos y salidas — a) Existe riesgo externo",
+    "r_45_b": "4.5 — b) Compromete estabilidad de la edificación",
+    "r_45_c": "4.5 — c) Compromete accesos y/o ocupantes",
+    "r_46_a": "4.6 Otro — a) Existe riesgo externo",
+    "r_46_b": "4.6 — b) Compromete estabilidad de la edificación",
+    "r_46_c": "4.6 — c) Compromete accesos y/o ocupantes",
+    "r_46_desc": "4.6 Especifique cuál:",
+    "d_colapso_total": "5.1 Colapso total",
+    "d_colapso_parcial": "5.2 Colapso parcial",
+    "d_asentamiento": "5.3 Asentamiento severo en elementos estructurales",
+    "d_inclinacion": "5.4 Inclinación o desviación importante",
+    "d_inestabilidad_suelo": "5.5 Problemas de inestabilidad en el suelo de cimentación",
+    "d_riesgo_caidas": "5.6 Riesgo de caída de elementos de la edificación",
+    "d_estructurales": "5.7 Daño en muros de carga, columnas y otros elementos",
+    "d_contrapiso": "5.8 Daño en contrapiso, entrepiso, muros de contención",
+    "d_muros_div": "5.9 Daño en muros divisorios, fachada, antepechos",
+    "d_cubierta": "5.10 Cubierta (recubrimiento y estructura de soporte)",
+    "d_cielorrasos": "5.11 Cielo rasos, luminarias, instalaciones",
+    "alcance_exterior": "Alcance — Exterior:",
+    "alcance_interior": "Alcance — Interior:",
+    "nota_matriz": "Matriz de referencia (6.2 y 6.3)",
+    "afectacion_planta": "6.1 Porcentaje de afectación en planta:",
+    "severidad_calc": "severidad_calc",
+    "severidad_final": "6.2 Severidad de daños:",
+    "nivel_dano_calc": "nivel_dano_calc",
+    "nivel_dano_final": "6.3 Nivel de daño en la edificación:",
+    "riesgo_ab": "riesgo_ab",
+    "riesgo_ac": "riesgo_ac",
+    "habitabilidad_calc": "habitabilidad_calc",
+    "habitabilidad_final": "7. Criterio de habitabilidad:",
+    "justif_habitabilidad": "Justifique el cambio respecto al criterio sugerido:",
+    "eval_adicional_p": "8.1 Evaluación adicional requerida:",
+    "eval_estructural_obs": "8.1 Evaluación estructural — detalle:",
+    "eval_geotecnica_obs": "8.1 Evaluación geotécnica — detalle:",
+    "eval_otra_obs": "8.1 Otra evaluación — ¿cuál?",
+    "recomendaciones_p": "8.2 Recomendaciones y medidas:",
+    "aislamiento_areas": "Aislamiento — indique las áreas:",
+    "intervencion_cual": "Intervención de entidades — ¿cuáles?",
+    "observaciones_generales": "Observaciones generales:",
+    "evento_id": "evento_id",
+    "gps_precision_m": "gps_precision_m",
+    "CreationDate": "CreationDate",
+    "Creator": "Creator",
+    "EditDate": "EditDate",
+    "Editor": "Editor",
+    "note_alcance": "Alcance de la evaluación:Exterior: qué tanto del perímetro externo de la "
+    "edificación se logró observar — Parcial (solo una parte visible) o Completa "
+    "(se recorrió todo el contorno).Interior: si se pudo ingresar a la edificación "
+    "— No Ingreso (no fue posible entrar), Parcial (se inspeccionaron algunas "
+    "áreas) o Completa (se recorrió toda la edificación por dentro).",
+    "matricula_profesional": "Matrícula Profesional:",
+}
+
+
+def fetch_survey_raw() -> pd.DataFrame:
+    """Fetch every record from the live Survey123 feature layer and return a
+    DataFrame with the exact raw_data column contract (labels, dtypes, GlobalID
+    format), so normalize() behaves identically to the old sheet path. Any fetch
+    or pagination failure raises — the refresh must never run on partial data."""
+    features: list[dict] = []
+    offset = 0
+    while True:
+        resp = requests.get(
+            f"{SURVEY_LAYER_URL}/query",
+            params={
+                "where": "1=1",
+                "orderByFields": "objectid ASC",
+                "outFields": "*",
+                "returnGeometry": "true",
+                "outSR": "4326",
+                "f": "json",
+                "resultOffset": offset,
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        if "error" in payload:
+            raise RuntimeError(f"Survey123 layer query failed: {payload['error']}")
+        page = payload.get("features", [])
+        if not page:
+            if payload.get("exceededTransferLimit"):
+                raise RuntimeError("Survey123 pagination returned an empty page mid-stream.")
+            break
+        features.extend(page)
+        if not payload.get("exceededTransferLimit"):
+            break
+        offset = len(features)
+    if not features:
+        raise RuntimeError("Survey123 layer returned 0 records; refusing to publish.")
+
+    rows = []
+    for ft in features:
+        attrs = dict(ft["attributes"])
+        geom = ft.get("geometry") or {}
+        attrs["x"], attrs["y"] = geom.get("x"), geom.get("y")
+        rows.append(attrs)
+    df = pd.DataFrame(rows).rename(columns=LAYER_TO_RAW)
+
+    # Raw contract fidelity: epoch ms -> naive datetime, '' -> NA (blank cells),
+    # GlobalID lowercase without braces (the layer serves that format already).
+    for field in SURVEY_DATE_FIELDS:
+        col = LAYER_TO_RAW[field]
+        df[col] = pd.to_datetime(df[col], unit="ms", errors="coerce")
+    df = df.replace("", pd.NA)
+    df["GlobalID"] = df["GlobalID"].astype("string").str.strip("{}").str.lower()
+
+    # Same column order as the xlsx export: survey order, then x/y.
+    df = df[list(LAYER_TO_RAW.values()) + ["x", "y"]]
+    log.info("Fetched %d record(s) from the Survey123 layer.", len(df))
+    return df
+
+
+def normalize(rows_raw: pd.DataFrame) -> pd.DataFrame:
+    """Apply the exact contract that used to build tabla_normalizada, straight on
+    the live layer: rename columns, derive dates/comuna/barrio/id_edan/dirección."""
+    df = rows_raw.drop(columns=[c for c in COLS_A_ELIMINAR if c in rows_raw.columns])
+    df = df.rename(columns=RENAME_MAP)
+    if "municipio" in df.columns:
+        df["municipio"] = normalize_municipio(df["municipio"])
+    df = add_date_fields(df)
+    df = coerce_numeric(df)
+    df = drop_pii(df)
+    df = spatial_join(df)
+    df = add_id_edan(df)
+    df = add_address_norm(df)
+    return df
+
+
 # --- Orchestration ----------------------------------------------------------
 
 
-def run_once(source: str, out_dir: Path) -> None:
-    log.info("=== refresh_data run start (source=%s, out=%s) ===", source, out_dir)
+def run_once(out_dir: Path) -> None:
+    log.info("=== refresh_data run start (source=survey123, out=%s) ===", out_dir)
 
-    content, local_path, source_used = acquire_xlsx(source)
-    df = load_normalized_table(content, local_path)
-    log.info("Read '%s': %d rows, %d columns.", NORMALIZED_TAB, len(df), len(df.columns))
+    # Fuente única: el layer público de Survey123 (sin Google Sheets). normalize()
+    # aplica el mismo contrato que antes construía tabla_normalizada, así que todo
+    # lo downstream es idéntico. dedup por GlobalID como guard de idempotencia.
+    df = normalize(fetch_survey_raw())
+    df = dedup_latest_by_globalid(df)
+    log.info("Survey123: %d rows, %d columns.", len(df), len(df.columns))
 
-    # tabla_normalizada is already curated/dashboard-shaped; only enforce two
-    # invariants before publishing: numeric dtypes survive the Sheet round-trip,
-    # and PII is never exposed even if a column slipped into the table. We do NOT
-    # re-derive, re-key, or write anything back to the Sheet.
-    df = coerce_numeric(df)
-    df = drop_pii(df)
     # Photo-EXIF GPS centroids beat hand-placed form pins; every dashboard map
     # reads x/y, so correcting them here corrects every view at once.
     df = apply_photo_coords(df)
@@ -937,18 +1090,14 @@ def run_once(source: str, out_dir: Path) -> None:
     df = validate_photo_coords(df)
     # Derived triage flag consumed by the dashboard and shipped in the xlsx.
     df = add_suspension_servicios(df)
-    # Recover fecha_inspeccion for curated rows that shipped without a date; the
-    # live Survey123 layer still holds it, so the time series stays complete.
-    df = backfill_missing_dates(df)
 
-    inspections_path, meta_path, n = write_outputs(df, out_dir, source_used)
+    inspections_path, meta_path, n = write_outputs(df, out_dir, "survey123")
     log.info("Wrote %s (%d records) and %s.", inspections_path, n, meta_path)
-    log.info("=== refresh_data run complete (source_used=%s) ===", source_used)
+    log.info("=== refresh_data run complete ===")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Refresh the seismic dashboard data files.")
-    parser.add_argument("--source", choices=["auto", "drive", "local"], default="auto")
     parser.add_argument("--loop", type=int, default=0, help="Re-run every N seconds forever. Default: run once.")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT_DIR, help="Output directory for JSON files.")
     parser.add_argument(
@@ -984,14 +1133,14 @@ def main() -> None:
         log.info("Looping every %d seconds. Press Ctrl+C to stop.", args.loop)
         while True:
             try:
-                run_once(args.source, args.out)
+                run_once(args.out)
                 if args.deploy:
                     deploy_to_vercel()
             except Exception:  # noqa: BLE001 - keep the loop alive across failures
                 log.exception("Run failed; will retry on next loop iteration.")
             time.sleep(args.loop)
     else:
-        run_once(args.source, args.out)
+        run_once(args.out)
         if args.deploy:
             deploy_to_vercel()
 
