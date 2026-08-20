@@ -408,6 +408,70 @@ def add_date_fields(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def backfill_missing_dates(df: pd.DataFrame) -> pd.DataFrame:
+    """Recover blank fecha_inspeccion from the public Survey123 layer by GlobalID.
+
+    Some curated/legacy tabla_normalizada rows ship without a date even though the
+    live layer holds it (epoch ms), which would leave them out of the time series.
+    We look those GlobalIDs up in the public layer and fill fecha_inspeccion (UTC
+    date, same as normalize_sync's unit="ms" conversion) plus fecha_hora. Best
+    effort: a layer failure logs a warning and leaves the rows blank rather than
+    breaking the refresh.
+    """
+    if "fecha_inspeccion" not in df.columns or "GlobalID" not in df.columns:
+        return df
+    fecha = df["fecha_inspeccion"].astype("string")
+    gid = df["GlobalID"].astype("string")
+    missing_mask = (fecha.isna() | (fecha.str.strip() == "")) & gid.notna() & (gid.str.strip() != "")
+    gids = df.loc[missing_mask, "GlobalID"].tolist()
+    if not gids:
+        return df
+
+    date_by_gid: dict[str, str] = {}
+    try:
+        for start in range(0, len(gids), 60):
+            chunk = gids[start:start + 60]
+            where = "globalid IN (" + ",".join("'%s'" % g for g in chunk) + ")"
+            resp = requests.post(
+                f"{SURVEY_LAYER_URL}/query",
+                data={"where": where, "outFields": "globalid,fecha_inspeccion",
+                      "returnGeometry": "false", "f": "json"},
+                timeout=60,
+            )
+            resp.raise_for_status()
+            for feat in resp.json().get("features", []):
+                attrs = feat.get("attributes", {})
+                epoch, g = attrs.get("fecha_inspeccion"), attrs.get("globalid")
+                if epoch is not None and g:
+                    date_by_gid[g.lower()] = datetime.fromtimestamp(
+                        epoch / 1000, timezone.utc).strftime("%Y-%m-%d")
+    except Exception:  # noqa: BLE001 - backfill is best-effort; never break the refresh
+        log.warning("Date backfill from Survey123 layer failed; leaving %d rows blank.",
+                    len(gids), exc_info=True)
+        return df
+
+    def _combine(date_str, hora_val):
+        if not isinstance(hora_val, str) or not hora_val.strip():
+            return None
+        m = re.match(r"^(\d{1,2}):(\d{2})", hora_val.strip())
+        return f"{date_str}T{int(m.group(1)):02d}:{m.group(2)}" if m else None
+
+    filled = 0
+    for idx in df.index[missing_mask]:
+        g = df.at[idx, "GlobalID"]
+        d = date_by_gid.get(g.lower()) if isinstance(g, str) else None
+        if not d:
+            continue
+        df.at[idx, "fecha_inspeccion"] = d
+        if "fecha_hora" in df.columns:
+            hora = df.at[idx, "hora"] if "hora" in df.columns else None
+            df.at[idx, "fecha_hora"] = _combine(d, hora)
+        filled += 1
+    log.info("Date backfill: filled %d/%d rows missing fecha_inspeccion from the layer.",
+             filled, len(gids))
+    return df
+
+
 def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
     for col in NUMERIC_COLUMNS:
         if col in df.columns:
@@ -873,6 +937,9 @@ def run_once(source: str, out_dir: Path) -> None:
     df = validate_photo_coords(df)
     # Derived triage flag consumed by the dashboard and shipped in the xlsx.
     df = add_suspension_servicios(df)
+    # Recover fecha_inspeccion for curated rows that shipped without a date; the
+    # live Survey123 layer still holds it, so the time series stays complete.
+    df = backfill_missing_dates(df)
 
     inspections_path, meta_path, n = write_outputs(df, out_dir, source_used)
     log.info("Wrote %s (%d records) and %s.", inspections_path, n, meta_path)
