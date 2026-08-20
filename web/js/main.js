@@ -84,7 +84,7 @@ function onStoreChange() {
   if (searchInput.value !== (store.filters.searchRaw || '')) {
     searchInput.value = store.filters.searchRaw || '';
   }
-  renderKpis(kpiRow, store.filtered, store.records);
+  renderKpis(kpiRow, store.filtered, store.records, store.reportados);
   setTotalRecords(store.records.length);
   renderTable(store.filtered);
   renderMap(store.filtered).catch((err) => {
@@ -445,10 +445,11 @@ document.addEventListener('themechange', () => {
 
 loadAndRender();
 
-// Auto-refresh cada 30 min. Silencioso: recarga el store (dispara el re-render
-// del Panel vía la suscripción) + actualiza la fecha del header, sin overlay de
-// error ni reconstruir el panel de filtros.
-const AUTO_REFRESH_MS = 30 * 60 * 1000;
+// Auto-refresh cada 15 min, alineado con el cron de Railway (*/15) que publica
+// los datos. Silencioso: recarga el store (dispara el re-render del Panel vía la
+// suscripción) + actualiza la fecha del header, sin overlay de error ni
+// reconstruir el panel de filtros.
+const AUTO_REFRESH_MS = 15 * 60 * 1000;
 setInterval(async () => {
   try {
     await store.load();

@@ -142,10 +142,21 @@ function usoTilesHtml(records, total) {
   `).join('');
 }
 
-/** @param {HTMLElement} container @param {object[]} filteredRecords @param {object[]} allRecords */
-export function renderKpis(container, filteredRecords, allRecords) {
+/** @param {HTMLElement} container @param {object[]} filteredRecords @param {object[]} allRecords
+ *  @param {number|null} reportados Total "Reportado" de la API de reportes (global, no filtrable) */
+export function renderKpis(container, filteredRecords, allRecords, reportados = null) {
   const values = computeKpis(filteredRecords);
   const total = filteredRecords.length;
+
+  // Encabeza la sección: total de reportes ciudadanos "Reportado" (dataset de
+  // reportes, independiente de los registros EDAN-F3 y de los filtros).
+  const reportadosTile = reportados == null ? '' : `
+    <div class="kpi-tile">
+      <span class="kpi-label">Reportados</span>
+      <span class="kpi-value">${reportados}</span>
+      <div class="kpi-sub-row"><span class="kpi-sub">reportes ciudadanos en el sistema</span></div>
+    </div>
+  `;
 
   const ocupantesTotalFiltrados = sumField(filteredRecords, 'n_ocupantes');
 
@@ -174,6 +185,7 @@ export function renderKpis(container, filteredRecords, allRecords) {
     .filter((d) => d.group === 'headline' && d.section === section)
     .map(tileHtml).join('');
   const headlineHtml = sectionTitle('Por número de registros')
+    + reportadosTile
     + tilesFor('registros')
     + sectionTitle('Por unidades residenciales (n_residenciales)')
     + tilesFor('residenciales')

@@ -109,6 +109,9 @@ class Store {
     this.meta = null;
     this.records = []; // raw records + _search index
     this.filtered = [];
+    // Total "Reportado" de la API de reportes (reportes_agg.json). Global, no
+    // depende de los filtros del tablero. null si el agregado no está disponible.
+    this.reportados = null;
     this.filters = {
       dateFrom: null,
       dateTo: null,
@@ -140,9 +143,11 @@ class Store {
 
   async load() {
     const bust = `?t=${Date.now()}`;
-    const [metaRes, dataRes] = await Promise.all([
+    const [metaRes, dataRes, aggRes] = await Promise.all([
       fetch(`data/meta.json${bust}`, { cache: 'no-store' }),
       fetch(`data/inspections.json${bust}`, { cache: 'no-store' }),
+      // Agregado de reportes: opcional. Su fallo no debe tumbar el tablero.
+      fetch(`data/reportes_agg.json${bust}`, { cache: 'no-store' }).catch(() => null),
     ]);
     if (!metaRes.ok || !dataRes.ok) {
       throw new Error(`HTTP ${metaRes.status}/${dataRes.status}`);
@@ -150,6 +155,12 @@ class Store {
     const meta = await metaRes.json();
     const records = await dataRes.json();
     this.meta = meta;
+    this.reportados = null;
+    if (aggRes && aggRes.ok) {
+      try {
+        this.reportados = (await aggRes.json())?.por_estadoVerificacion?.Reportado ?? null;
+      } catch { /* agregado malformado: se queda en null */ }
+    }
     this.records = records.map((r) => ({
       ...r,
       _search: buildSearchIndex(r),
