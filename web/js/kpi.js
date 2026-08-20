@@ -182,16 +182,19 @@ export function renderKpis(container, filteredRecords, allRecords, reportados = 
     `;
   };
 
-  const sectionTitle = (t) => `<h3 class="kpi-section-title">${t}</h3>`;
+  const kpiHelpBtn = (text) => (text
+    ? `<button type="button" class="tile-help-btn" aria-label="Cómo interpretar">i</button><div class="tile-help-body kpi-help-body" hidden>${text}</div>`
+    : '');
+  const sectionTitle = (t, help) => `<h3 class="kpi-section-title">${t}${kpiHelpBtn(help)}</h3>`;
   const tilesFor = (section) => TILE_DEFS
     .filter((d) => d.group === 'headline' && d.section === section)
     .map(tileHtml).join('');
-  const headlineHtml = sectionTitle('Por número de registros')
+  const headlineHtml = sectionTitle('Por número de registros', 'Cada tarjeta cuenta INSPECCIONES (un registro por edificación evaluada). "Reportados" es el universo de reportes ciudadanos (Momento 2), independiente de las inspecciones. Todo se recalcula con los filtros.')
     + reportadosTile
     + tilesFor('registros')
-    + sectionTitle('Por unidades habitacionales (viviendas)')
+    + sectionTitle('Por unidades habitacionales (viviendas)', 'Aquí se suman VIVIENDAS (n_residenciales), un aproximado según cada inspección — no inspecciones. Sirve para dimensionar cuántos hogares hay detrás de cada estado de habitabilidad.')
     + tilesFor('residenciales')
-    + sectionTitle('Por uso de la edificación')
+    + sectionTitle('Por uso de la edificación', 'Cuántas inspecciones por uso (residencial, comercial, etc.). Un registro con varios usos cuenta en cada uno, así que pueden sumar más que el total.')
     + usoTilesHtml(filteredRecords, total);
   const secondaryHtml = TILE_DEFS.filter((d) => d.group === 'secondary').map(tileHtml).join('');
 
@@ -214,9 +217,21 @@ export function renderKpis(container, filteredRecords, allRecords, reportados = 
   const secondaryDetailsHtml = `
     <details class="kpi-secondary">
       <summary>Víctimas, ocupación y conteos detallados</summary>
+      <p class="chart-note">Muertos y heridos son la SUMA de lo declarado en cada inspección (n_muertos, n_heridos); es una cifra estimada por los evaluadores y se recalcula con los filtros. Ocupantes y unidades siguen el mismo criterio.</p>
       <div class="kpi-secondary-grid">${secondaryHtml}</div>
     </details>
   `;
 
   container.innerHTML = headlineHtml + habBarHtml + secondaryDetailsHtml;
+
+  // Toggle de los ⓘ (delegado, una sola vez): muestra/oculta el popover de ayuda.
+  if (!container._helpWired) {
+    container.addEventListener('click', (e) => {
+      const btn = e.target.closest('.tile-help-btn');
+      if (!btn) return;
+      const body = btn.parentElement.querySelector('.tile-help-body');
+      if (body) body.hidden = !body.hidden;
+    });
+    container._helpWired = true;
+  }
 }

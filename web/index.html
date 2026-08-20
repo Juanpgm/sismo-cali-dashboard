@@ -158,20 +158,19 @@
     </section>
 
     <!-- ============ STATISTICS CARD ============ -->
-    <section class="card stats-card" id="stats-card" aria-label="Estadísticas">
-      <div class="card-toolbar">
+    <details class="card stats-card" id="stats-card" aria-label="Estadísticas" open>
+      <summary class="card-toolbar stats-summary">
         <h2 class="stats-title">Estadísticas</h2>
-      </div>
+        <span class="stats-summary-hint">Mostrar u ocultar para trabajar con la tabla</span>
+      </summary>
       <div class="stats-grid">
-        <div class="chart-row">
-          <div class="chart-tile chart-tile-auto chart-row-half">
-            <h3 class="chart-tile-title">Habitabilidad y colapso por tipología (Casa / Edificio)</h3>
-            <div class="tipologia-table-wrap" id="colapso-hab-table"></div>
-          </div>
-          <div class="chart-tile chart-row-half">
-            <h3 class="chart-tile-title">Inspecciones por comuna</h3>
-            <canvas id="chart-comuna"></canvas>
-          </div>
+        <div class="chart-tile chart-tile-wide chart-tile-auto">
+          <h3 class="chart-tile-title">Habitabilidad y colapso por tipología (Casa / Edificio)</h3>
+          <div class="tipologia-table-wrap" id="colapso-hab-table"></div>
+        </div>
+        <div class="chart-tile chart-tile-wide">
+          <h3 class="chart-tile-title">Inspecciones por comuna</h3>
+          <canvas id="chart-comuna"></canvas>
         </div>
         <div class="chart-tile">
           <h3 class="chart-tile-title">Inspecciones por nivel de daño</h3>
@@ -227,7 +226,7 @@
           <p class="chart-note">Eje Y en <strong>escala logarítmica</strong>: permite comparar en un mismo gráfico magnitudes muy distintas (decenas por día · cientos acumulados de inspecciones · miles de Momento 2). Los totales van rotulados sobre cada línea.</p>
         </div>
       </div>
-    </section>
+    </details>
 
     <!-- ============ TABLE CARD ============ -->
     <section class="card table-card" id="table-card" aria-label="Tabla de inspecciones">

@@ -682,9 +682,28 @@ a { color: var(--accent); }
 .chart-row { grid-column: 1 / -1; display: flex; gap: 14px; flex-wrap: wrap; }
 .chart-row-main { flex: 3 1 340px; }
 .chart-row-side { flex: 1 1 200px; }
-.chart-row-half { flex: 1 1 340px; }
+/* Fila tabla+gráfico: la TABLA (ancha) recibe ~62% para caber sin scroll
+   horizontal; el gráfico el ~38% restante. Ambos igual alto (300px). */
+.chart-row-wide { flex: 5 1 0; min-width: 0; }
+.chart-row-narrow { flex: 3 1 0; min-width: 0; }
+.chart-row-wide .tipologia-table-wrap { flex: 1; min-height: 0; overflow-x: auto; overflow-y: auto; }
+.chart-row-wide .tipologia-table { font-size: 0.7rem; }
+.chart-row-wide .tipologia-table th,
+.chart-row-wide .tipologia-table td { padding: 5px 6px; }
+.chart-row-wide .tipologia-table th[scope="row"] { white-space: normal; }
 /* Búsqueda ahora vive en la barra de la tabla y crece para llenar el espacio */
 .table-search { flex: 1 1 240px; margin: 0; min-width: 200px; }
+
+/* Sección Estadísticas colapsable (details/summary), abierta por defecto */
+.stats-card > .stats-summary { cursor: pointer; list-style: none; gap: 10px; }
+.stats-card > .stats-summary::-webkit-details-marker { display: none; }
+.stats-summary-hint { font-size: 0.72rem; color: var(--text-muted); font-weight: 400; margin-left: auto; }
+.stats-summary::after { content: '▲'; font-size: 0.62rem; color: var(--text-muted); transition: transform 0.2s ease; }
+.stats-card:not([open]) > .stats-summary::after { transform: rotate(180deg); }
+
+/* Ayuda ⓘ en títulos de sección de KPIs (popover flotante bajo el título) */
+.kpi-section-title { position: relative; }
+.kpi-help-body { top: 100%; left: 0; right: auto; min-width: 240px; max-width: 320px; margin-top: 4px; }
 .chart-tile-auto { height: auto; }
 
 /* Semáforo × tipología por número de pisos */
