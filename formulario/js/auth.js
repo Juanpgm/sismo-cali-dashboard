@@ -13,6 +13,7 @@ import {
   getFirestore, doc, getDoc,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 import { firebaseConfig, isConfigured } from './firebase-config.js';
+import { cedulaToEmail } from './logic.js';
 
 let app = null;
 let auth = null;
@@ -41,12 +42,12 @@ function buildOverlay() {
     <div class="auth-card" role="dialog" aria-modal="true" aria-labelledby="auth-title">
       <h1 id="auth-title">Evaluación Rápida ATC-20 · Cali</h1>
       <p class="auth-sub">Acceso restringido · Inspectores de campo</p>
-      <p class="auth-lead">Ingrese con su usuario y contraseña para registrar evaluaciones.</p>
+      <p class="auth-lead">Ingrese con su cédula y contraseña para registrar evaluaciones.</p>
 
       <form class="auth-form" id="auth-form" novalidate>
         <label class="auth-field">
-          <span>Correo</span>
-          <input type="email" id="auth-email" autocomplete="username" required placeholder="inspector@ejemplo.com">
+          <span>Cédula</span>
+          <input type="text" id="auth-email" inputmode="numeric" autocomplete="username" required placeholder="1110547406">
         </label>
         <label class="auth-field">
           <span>Contraseña</span>
@@ -127,9 +128,10 @@ export function initAuth(onFirstAuthorized) {
   overlay.querySelector('#auth-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     showError(overlay, '');
-    const email = overlay.querySelector('#auth-email').value.trim();
+    const cedula = overlay.querySelector('#auth-email').value.trim();
     const password = overlay.querySelector('#auth-password').value;
-    if (!email || !password) { showError(overlay, 'Ingrese correo y contraseña.'); return; }
+    if (!cedula || !password) { showError(overlay, 'Ingrese la cédula y la contraseña.'); return; }
+    const email = cedulaToEmail(cedula);
     setBusy(overlay, true);
     try {
       await signInWithEmailAndPassword(auth, email, password);

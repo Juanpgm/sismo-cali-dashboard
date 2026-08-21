@@ -1,7 +1,7 @@
 // Self-check for the pure ATC-20 form logic. Run: node --test formulario/test/logic.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sugerirClasificacion, buildCodigo, MUNICIPIO } from '../js/logic.js';
+import { sugerirClasificacion, buildCodigo, MUNICIPIO, cedulaToEmail, LOGIN_EMAIL_DOMAIN } from '../js/logic.js';
 
 const base = {
   dano_estructural: 'menor',
@@ -55,6 +55,24 @@ test('el área de centro poblado y rural entran en el código', () => {
 
 test('MUNICIPIO es el código DANE de Cali', () => {
   assert.equal(MUNICIPIO, '76001');
+});
+
+test('la cédula sola se convierte en el correo de login', () => {
+  assert.equal(cedulaToEmail('1110547406'), `1110547406@${LOGIN_EMAIL_DOMAIN}`);
+});
+
+test('un correo completo se usa tal cual (sin doble @)', () => {
+  assert.equal(cedulaToEmail('inspector@cali.gov.co'), 'inspector@cali.gov.co');
+});
+
+test('cédula con espacios y mayúsculas se normaliza', () => {
+  assert.equal(cedulaToEmail('  1110547406  '), `1110547406@${LOGIN_EMAIL_DOMAIN}`);
+  assert.equal(cedulaToEmail('Inspector@Cali.Gov.Co'), 'inspector@cali.gov.co');
+});
+
+test('cédula vacía o nula devuelve cadena vacía', () => {
+  assert.equal(cedulaToEmail(''), '');
+  assert.equal(cedulaToEmail(null), '');
 });
 
 // Documented ceiling (see SETUP.md): past 9999 the consecutivo widens the code.
