@@ -1,7 +1,7 @@
 // Data loading + global filter state (tiny pub/sub store, no framework).
 import {
   normalizeAddressText, buildSearchIndex, splitMultiValue, labelForField,
-  normalize, habBinary,
+  normalize, isNoHabitable,
 } from './utils.js';
 import { fetchIsraelRecords } from './israel-source.js';
 
@@ -70,12 +70,13 @@ function bucketNpisos(v) {
   return `${b * 3 + 1}–${b * 3 + 3} pisos`;
 }
 
-// Suspensión de servicios: cruce colapso parcial × habitabilidad. Un registro
-// con colapso parcial y clasificación de habitabilidad (habitable H o no
-// habitable R1/R2/I1/I2/I3) amerita corte. Derivado en carga; viaja en el xlsx.
+// Suspensión de servicios: colapso (parcial O total) declarado Y criterio de
+// habitabilidad no habitable (I1–I3). Un edificio colapsado y no habitable
+// amerita corte. Misma regla que el pipeline (refresh_data.add_suspension_servicios);
+// derivado en carga y viaja en el xlsx.
 function suspensionServicios(r) {
-  return normalize(r.colapso_parcial) === 'si' && habBinary(r) !== ''
-    ? 'si' : 'no';
+  const colapso = normalize(r.colapso_parcial) === 'si' || normalize(r.colapso_total) === 'si';
+  return colapso && isNoHabitable(r) ? 'si' : 'no';
 }
 
 /** Does `record` match the selected-value set for one FILTER_FIELDS entry? */

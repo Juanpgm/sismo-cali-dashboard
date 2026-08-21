@@ -466,11 +466,12 @@ def _norm(value) -> str:
 
 
 def add_suspension_servicios(df: pd.DataFrame) -> pd.DataFrame:
-    """Derived `suspension_servicios` (si/no): colapso total declarado Y criterio
-    de habitabilidad no habitable (I1–I3). Same rule the dashboard applies
-    client-side; deriving it here too keeps inspections.xlsx consistent."""
+    """Derived `suspension_servicios` (si/no): colapso (parcial O total) declarado
+    Y criterio de habitabilidad no habitable (I1–I3). Same rule the dashboard
+    applies client-side; deriving it here too keeps inspections.xlsx consistent."""
     def _flag(row) -> str:
-        colapso = _norm(row.get("colapso_total")) in ("si", "sí")
+        colapso = (_norm(row.get("colapso_total")) in ("si", "sí")
+                   or _norm(row.get("colapso_parcial")) in ("si", "sí"))
         hab = _norm(row.get("criterio_habitabilidad")) or _norm(row.get("habitabilidad_calc"))
         return "si" if colapso and hab in NO_HABITABLE_CODES else "no"
 
