@@ -58,7 +58,10 @@ const MOCK_AUTH = `
       const e = new Error('invalid credentials'); e.code = 'auth/invalid-credential';
       return Promise.reject(e);
     }
-    auth.currentUser = { uid: u.uid, email: email };
+    auth.currentUser = {
+      uid: u.uid, email: email,
+      getIdToken: function () { return Promise.resolve('mock-id-token'); },
+    };
     auth._emit();
     return Promise.resolve({ user: auth.currentUser });
   }
@@ -107,7 +110,8 @@ const MOCK_STORAGE = `
   export function getDownloadURL(ref) { return Promise.resolve('https://mock.storage/' + encodeURIComponent(ref._path)); }
 `;
 
-// Register route interceptors for the four gstatic module URLs on a page.
+// Register route interceptors for the gstatic module URLs plus the S3 photo
+// pipeline (signer + presigned PUT) on a page.
 export async function mockFirebase(page) {
   const bodies = {
     'firebase-app.js': MOCK_APP,
@@ -119,4 +123,16 @@ export async function mockFirebase(page) {
     await page.route(GSTATIC + file, (route) =>
       route.fulfill({ contentType: 'application/javascript; charset=utf-8', body }));
   }
+
+  // Photo signer: answers like the real Vercel function, deriving the S3 key
+  // from the request body so specs can assert the stored public URL.
+  await page.route('https://sismo-fotos-signer.vercel.app/**', (route) => {
+    const { idToken, codigo, slot } = route.request().postDataJSON();
+    if (!idToken) return route.fulfill({ status: 401, json: { error: 'invalid-token' } });
+    const key = `evaluaciones/${codigo}/foto_${slot}.jpg`;
+    return route.fulfill({
+      json: { uploadUrl: `https://s3.mock/upload/${key}`, publicUrl: `https://s3.mock/${key}` },
+    });
+  });
+  await page.route('https://s3.mock/upload/**', (route) => route.fulfill({ status: 200, body: '' }));
 }

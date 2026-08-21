@@ -21,6 +21,7 @@
   </script>
   <script>
     // Seed the in-memory backend (a registered demo inspector) before modules run.
+    window.__fotosMock = true; // DEMO: no real S3 uploads
     window.__fb = {
       seed: {
         users: { 'demo@cali.gov.co': { uid: 'demo-004', password: 'demo1234' } },

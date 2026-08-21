@@ -143,11 +143,8 @@ test.describe('Flujo completo de registro', () => {
     expect(written.coords).toBeTruthy();
     expect(typeof written.coords.lat).toBe('number');
     expect(written.fotos).toHaveLength(1);
+    expect(written.fotos[0]).toBe('https://s3.mock/evaluaciones/76001-1-0040001/foto_1.jpg');
     expect(written.acciones_posteriores.barricadas).toBe(true);
-
-    const uploads = await page.evaluate(() => window.__fb.uploads);
-    expect(uploads).toHaveLength(1);
-    expect(uploads[0].path).toBe('evaluaciones/76001-1-0040001/foto_1.jpg');
   });
 
   test('el consecutivo avanza en el segundo registro', async ({ page }) => {

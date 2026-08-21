@@ -9,7 +9,7 @@ export function signInWithEmailAndPassword(auth, email, password) {
     const e = new Error('invalid credentials'); e.code = 'auth/invalid-credential';
     return Promise.reject(e);
   }
-  auth.currentUser = { uid: u.uid, email };
+  auth.currentUser = { uid: u.uid, email, getIdToken: () => Promise.resolve('demo-token') };
   auth._emit();
   return Promise.resolve({ user: auth.currentUser });
 }

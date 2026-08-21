@@ -5,10 +5,12 @@ import { initAuth, getApp, getDb } from './auth.js';
 import {
   doc, runTransaction, serverTimestamp,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
-import {
-  getStorage, ref, uploadBytes, getDownloadURL,
-} from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js';
+import { getAuth } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
 import { MUNICIPIO, buildCodigo } from './logic.js';
+
+// Serverless signer that validates the Firebase idToken and presigns the
+// S3 upload (photos live in S3, not Firebase Storage).
+const FOTO_SIGNER_URL = 'https://sismo-fotos-signer.vercel.app/api/sign';
 
 // Signal the inline CDN-failure watchdog in index.html that modules loaded.
 window.__atc20Booted = true;
@@ -208,27 +210,39 @@ async function onSubmit(e) {
   setSubmitBusy(true);
   try {
     const db = getDb();
-    const storage = getStorage(getApp());
-    // Fail fast: the SDK default retries uploads for ~2 minutes, which reads
-    // as a frozen form in the field. 15 s is enough for a slow connection.
-    storage.maxUploadRetryTime = 15000;
-    storage.maxOperationRetryTime = 15000;
 
-    // Upload photos first; URLs go inside the evaluation doc. Successful
-    // uploads are cached so a retry after a failed doc write skips them.
+    // Upload photos to S3 first (signer presigns per photo); URLs go inside
+    // the evaluation doc. Successful uploads are cached so a retry after a
+    // failed doc write skips them.
     // ponytail: photos uploaded before the doc write can be orphaned if the form is abandoned; bounded to 3 files per code, clean manually if it ever matters.
     const fotos = [];
     try {
+      const idToken = await getAuth(getApp()).currentUser.getIdToken();
       for (let slot = 0; slot < state.fotos.length; slot++) {
         const file = state.fotos[slot];
         if (!file) continue;
         // Key by slot + file identity so removing/replacing a photo between a
         // failed submit and the retry never reuses a stale cached URL.
         const key = `${state.codigo}:${slot}:${file.name}:${file.size}:${file.lastModified}`;
+        if (!state.fotosSubidas[key] && window.__fotosMock) {
+          // demo.html only: skip the network, fake the stored URL.
+          state.fotosSubidas[key] = `https://demo.invalid/evaluaciones/${state.codigo}/foto_${slot + 1}.jpg`;
+        }
         if (!state.fotosSubidas[key]) {
-          const fotoRef = ref(storage, `evaluaciones/${state.codigo}/foto_${slot + 1}.jpg`);
-          await uploadBytes(fotoRef, file);
-          state.fotosSubidas[key] = await getDownloadURL(fotoRef);
+          const sr = await fetch(FOTO_SIGNER_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ idToken, codigo: state.codigo, slot: slot + 1 }),
+          });
+          if (!sr.ok) throw new Error(`sign-${sr.status}`);
+          const { uploadUrl, publicUrl } = await sr.json();
+          const up = await fetch(uploadUrl, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'image/jpeg' },
+            body: file,
+          });
+          if (!up.ok) throw new Error(`put-${up.status}`);
+          state.fotosSubidas[key] = publicUrl;
         }
         fotos.push(state.fotosSubidas[key]);
       }
