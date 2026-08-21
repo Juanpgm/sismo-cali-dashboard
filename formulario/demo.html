@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DEMO · Evaluación Rápida ATC-20 · Cali</title>
+  <link rel="stylesheet" href="css/form.css">
+
+  <!-- DEMO ONLY: remap the real Firebase SDK URLs to the in-memory mock so the
+       whole flow works with no real Firebase, no credentials, no data written.
+       index.html (production) has none of this. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js": "./demo-mock/firebase-app.js",
+      "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js": "./demo-mock/firebase-auth.js",
+      "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js": "./demo-mock/firebase-firestore.js",
+      "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js": "./demo-mock/firebase-storage.js"
+    }
+  }
+  </script>
+  <script>
+    // Seed the in-memory backend (a registered demo inspector) before modules run.
+    window.__fb = {
+      seed: {
+        users: { 'demo@cali.gov.co': { uid: 'demo-004', password: 'demo1234' } },
+      },
+      firestore: {
+        inspectores: {
+          'demo-004': {
+            nombre_completo: 'Inspector de Prueba',
+            identificacion: '1144000111',
+            entidad: 'SGRED (DEMO)',
+            profesion: 'Ingeniero civil',
+            codigo: '004',
+            consecutivo: 0,
+          },
+        },
+        evaluaciones: {},
+      },
+      auth: { currentUser: null, _listeners: [] },
+      uploads: [],
+    };
+    window.__fb.auth._emit = function () {
+      window.__fb.auth._listeners.forEach(function (cb) { cb(window.__fb.auth.currentUser); });
+    };
+    // DEMO: hand the form Cali coordinates so submit works without a location prompt.
+    navigator.geolocation.getCurrentPosition = function (ok) {
+      ok({ coords: { latitude: 3.4516, longitude: -76.532, accuracy: 12 } });
+    };
+  </script>
+  <style>
+    .demo-banner {
+      background: #1f2933; color: #fff; padding: 0.6rem 0.9rem; font-size: 0.85rem;
+      line-height: 1.4; text-align: center;
+    }
+    .demo-banner strong { color: #ffd166; }
+    .demo-banner code { background: rgba(255,255,255,0.15); padding: 0.1rem 0.35rem; border-radius: 4px; }
+  </style>
+</head>
+<body>
+
+  <div class="demo-banner">
+    <strong>MODO DEMO</strong> — Firebase simulado en memoria, no se guarda nada real.
+    Ingrese con <code>demo@cali.gov.co</code> / <code>demo1234</code>.
+    Código de inspector 004 · área a elección.
+  </div>
+
+  <p id="boot-status">Cargando aplicación…</p>
+  <script>
+    setTimeout(function(){ if (!window.__atc20Booted) { var el = document.getElementById('boot-status'); if (el) el.textContent = 'No se pudo cargar la aplicación. Verifique su conexión a internet y recargue la página.'; } }, 10000);
+  </script>
+
+  <header id="inspector-bar" class="inspector-bar" hidden>
+    <div class="inspector-info">
+      <span id="inspector-nombre" class="inspector-nombre"></span>
+      <span id="inspector-entidad" class="inspector-entidad"></span>
+    </div>
+    <button type="button" id="inspector-logout" class="btn-logout" aria-label="Cerrar sesión" title="Cerrar sesión">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+    </button>
+  </header>
+
+  <main id="app" hidden>
+    <h1 class="page-title">Evaluación Rápida ATC-20</h1>
+
+    <form id="eval-form" novalidate>
+
+      <section class="card" aria-labelledby="t-ubicacion">
+        <h2 id="t-ubicacion">Ubicación</h2>
+        <p id="geo-display" class="geo-display">Obteniendo ubicación…</p>
+        <p id="geo-error" class="field-error" role="alert" hidden></p>
+        <button type="button" id="btn-geo" class="btn-secondary">Actualizar ubicación</button>
+      </section>
+
+      <section class="card" aria-labelledby="t-codigo">
+        <h2 id="t-codigo">Código de la edificación</h2>
+        <div class="field">
+          <label for="area">Área (DIVIPOLA)</label>
+          <select id="area" name="area" required>
+            <option value="" selected disabled>Seleccione el área…</option>
+            <option value="1">1. Cabecera</option>
+            <option value="2">2. Centro Poblado</option>
+            <option value="3">3. Rural Disperso</option>
+          </select>
+        </div>
+        <button type="button" id="btn-codigo" class="btn-secondary">Generar código</button>
+        <p id="codigo-display" class="codigo-display" hidden></p>
+        <p id="codigo-error" class="field-error" role="alert" hidden></p>
+      </section>
+
+      <section class="card" aria-labelledby="t-descripcion">
+        <h2 id="t-descripcion">Descripción de la edificación</h2>
+        <div class="field">
+          <label for="nombre">Nombre de la edificación</label>
+          <input type="text" id="nombre" name="nombre" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="direccion">Dirección</label>
+          <input type="text" id="direccion" name="direccion" autocomplete="off">
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="n_pisos">N.º de pisos</label>
+            <input type="number" id="n_pisos" name="n_pisos" min="0" inputmode="numeric">
+          </div>
+          <div class="field">
+            <label for="n_unidades">N.º de unidades</label>
+            <input type="number" id="n_unidades" name="n_unidades" min="0" inputmode="numeric">
+          </div>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="t-clasificacion">
+        <h2 id="t-clasificacion">Clasificación</h2>
+        <p class="hint">Seleccione la clasificación de la edificación.</p>
+        <div class="clasif-cards">
+          <label class="clasif-card clasif-verde">
+            <input type="radio" name="clasificacion" value="INSPECCIONADA" required>
+            <span class="clasif-nombre">INSPECCIONADA</span>
+            <span class="clasif-desc">Habitable · sin restricción</span>
+          </label>
+          <label class="clasif-card clasif-ambar">
+            <input type="radio" name="clasificacion" value="USO_RESTRINGIDO">
+            <span class="clasif-nombre">USO RESTRINGIDO</span>
+            <span class="clasif-desc">Ingreso limitado</span>
+          </label>
+          <label class="clasif-card clasif-rojo">
+            <input type="radio" name="clasificacion" value="INSEGURO">
+            <span class="clasif-nombre">INSEGURO</span>
+            <span class="clasif-desc">No ingresar</span>
+          </label>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="t-alcance">
+        <h2 id="t-alcance">Alcance de la inspección</h2>
+        <div class="radio-list">
+          <label><input type="radio" name="alcance" value="exterior" required><span>Inspección solo del exterior</span></label>
+          <label><input type="radio" name="alcance" value="exterior_interior"><span>Inspección del exterior y del interior</span></label>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="t-restricciones">
+        <h2 id="t-restricciones">Restricciones</h2>
+        <div class="field">
+          <label for="restricciones">Restricciones de uso (palabras exactas del cartel)</label>
+          <textarea id="restricciones" name="restricciones" rows="3"></textarea>
+        </div>
+      </section>
+
+      <section class="card foto-card" aria-labelledby="t-fotos">
+        <h2 id="t-fotos" class="foto-head">
+          <svg class="foto-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+          <span>Fotos</span>
+          <span class="hint-inline">opcionales</span>
+        </h2>
+        <div class="fotos-grid">
+          <div class="foto-slot">
+            <label class="foto-add" aria-label="Agregar foto 1">
+              <input type="file" accept="image/*" capture="environment" class="visually-hidden">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            </label>
+            <img alt="Vista previa de la foto 1" hidden>
+            <button type="button" class="foto-remove" hidden aria-label="Quitar foto 1">Quitar</button>
+          </div>
+          <div class="foto-slot">
+            <label class="foto-add" aria-label="Agregar foto 2">
+              <input type="file" accept="image/*" capture="environment" class="visually-hidden">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            </label>
+            <img alt="Vista previa de la foto 2" hidden>
+            <button type="button" class="foto-remove" hidden aria-label="Quitar foto 2">Quitar</button>
+          </div>
+          <div class="foto-slot">
+            <label class="foto-add" aria-label="Agregar foto 3">
+              <input type="file" accept="image/*" capture="environment" class="visually-hidden">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+            </label>
+            <img alt="Vista previa de la foto 3" hidden>
+            <button type="button" class="foto-remove" hidden aria-label="Quitar foto 3">Quitar</button>
+          </div>
+        </div>
+      </section>
+
+      <details class="card acciones-card">
+        <summary>Acciones posteriores <span class="hint-inline">(opcional)</span></summary>
+        <div class="check-list">
+          <label><input type="checkbox" id="barricadas" name="barricadas"><span>Se recomiendan barricadas</span></label>
+          <label><input type="checkbox" id="evaluacion_detallada" name="evaluacion_detallada"><span>Se recomienda evaluación detallada</span></label>
+        </div>
+        <div class="field">
+          <label for="comentarios">Comentarios</label>
+          <textarea id="comentarios" name="comentarios" rows="3"></textarea>
+        </div>
+      </details>
+
+      <p id="submit-error" class="field-error submit-error" role="alert" hidden></p>
+      <button type="submit" id="btn-submit" class="btn-primary">Enviar evaluación</button>
+    </form>
+  </main>
+
+  <section id="confirm" class="confirm" hidden>
+    <div class="card confirm-card">
+      <h2>Evaluación registrada</h2>
+      <p>El registro se guardó correctamente con el código:</p>
+      <p id="confirm-codigo" class="codigo-display"></p>
+      <button type="button" id="btn-nuevo" class="btn-primary">Nuevo registro</button>
+    </div>
+  </section>
+
+  <script type="module" src="js/form.js"></script>
+</body>
+</html>
