@@ -9,6 +9,7 @@ import {
 } from './mapview.js';
 import { initTable, renderTable, setTotalRecords, openDetailModal } from './table.js';
 import { renderAcciones } from './acciones.js';
+import { initStickers } from './stickers.js';
 import { initTheme } from './theme.js';
 import { initAuth, getIdToken, isAdmin } from './auth.js';
 import { debounce, setSourceLabels, sourceLabel, habBinary, labelForCode } from './utils.js';
@@ -175,6 +176,10 @@ function switchView(view) {
   // The filters sidebar only applies to the Panel view; collapse it otherwise.
   document.querySelector('.app-shell').classList.toggle('asig-active', view !== 'panel');
   if (view !== 'panel') closeFiltersDrawer();
+  // Stickers pulls live data from /api/stickers — (re)load it each time it opens.
+  if (view === 'stickers') {
+    initStickers(document.getElementById('view-stickers'), { getToken: getIdToken });
+  }
 }
 
 function wireViewTabs() {

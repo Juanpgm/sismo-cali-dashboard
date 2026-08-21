@@ -61,6 +61,15 @@ service cloud.firestore {
       return exists(/databases/$(database)/documents/inspectores/$(request.auth.uid));
     }
 
+    // Inspector ACTIVO: además del perfil, el flag `activo` no debe ser false.
+    // Un inspector inhabilitado desde el dashboard (tab Stickers) no puede
+    // crear evaluaciones aunque su token siga vigente (~1h). `activo` ausente =
+    // inspector antiguo = activo (compatibilidad hacia atrás).
+    function isInspectorActivo() {
+      return isInspector()
+        && get(/databases/$(database)/documents/inspectores/$(request.auth.uid)).data.activo != false;
+    }
+
     // Perfil de inspector: cada quien lee solo su doc; solo puede
     // actualizar su propio doc, únicamente el campo consecutivo, y solo
     // incrementándolo en exactamente 1.
@@ -77,7 +86,7 @@ service cloud.firestore {
     // leer solo inspectores; nunca actualizar ni borrar (las
     // reinspecciones son un doc nuevo).
     match /evaluaciones/{id} {
-      allow create: if isInspector()
+      allow create: if isInspectorActivo()
         && request.resource.data.inspector.uid == request.auth.uid;
       allow read: if isInspector();
       allow update, delete: if false;

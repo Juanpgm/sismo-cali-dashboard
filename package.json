@@ -1,0 +1,9 @@
+{
+  "name": "sismo-cali-dashboard",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Serverless functions for the Sismo Cali dashboard (Vercel).",
+  "dependencies": {
+    "firebase-admin": "^13.0.0"
+  }
+}

@@ -173,6 +173,15 @@ export function initAuth(onFirstAuthorized) {
       showError(overlay, 'No está registrado como inspector. Contacte a la coordinación.');
       return;
     }
+    // Disabled from the dashboard: block new records. The Firestore rules are
+    // the durable gate (a live ID token can't create evaluaciones); this is the
+    // friendly client-side message. Missing `activo` = legacy inspector = active.
+    if (snap.data().activo === false) {
+      await signOut(auth);
+      setBusy(overlay, false);
+      showError(overlay, 'Su usuario está inhabilitado. Contacte a la coordinación.');
+      return;
+    }
 
     inspector = { uid: user.uid, email: user.email || '', ...snap.data() };
     mountHeader(inspector);

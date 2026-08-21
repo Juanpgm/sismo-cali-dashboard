@@ -1546,7 +1546,111 @@ select.gestion-edit:focus, input.gestion-edit:focus { outline: none; border-colo
    server-side, so this is presentation, not the only guard. */
 body[data-role="viewer"] #refresh-btn,
 body[data-role="viewer"] #transito-download,
-body[data-role="viewer"] .view-tab[data-view="acciones"] { display: none !important; }
+body[data-role="viewer"] .view-tab[data-view="acciones"],
+body[data-role="viewer"] .view-tab[data-view="stickers"] { display: none !important; }
+
+/* ============================================================
+   STICKERS — field-inspector roster management
+   Signature: the 3-digit brigade code as a gold monospace token
+   (an inspector's field identity, printed on every ATC-20 placard).
+   ============================================================ */
+:root { --sticker-on: #37c871; --sticker-off: #ff6b6b; }
+:root[data-theme="light"] { --sticker-on: #1f9d57; --sticker-off: #d64545; }
+
+#view-stickers { max-width: 860px; }
+
+.sticker-head {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
+}
+.sticker-h2 { font-size: 1.35rem; font-weight: 700; letter-spacing: -0.01em; margin: 0; }
+.sticker-lead { color: var(--text-muted); font-size: .9rem; margin: 4px 0 0; }
+.sticker-new { display: inline-flex; align-items: center; gap: 7px; }
+
+/* Stat tiles — kept quiet so the code token stays the loud element. */
+.sticker-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 22px; }
+.sticker-stat {
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-md); padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.sticker-stat-num { font-size: 1.7rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
+.sticker-stat-lbl { font-size: .72rem; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); }
+.sticker-stat.is-on .sticker-stat-num { color: var(--sticker-on); }
+.sticker-stat.is-off .sticker-stat-num { color: var(--sticker-off); }
+
+/* Roster rows */
+.sticker-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.sticker-row {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto auto;
+  align-items: center; gap: 14px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-md); padding: 12px 16px;
+  transition: border-color .15s ease, transform .15s ease;
+}
+.sticker-row:hover { border-color: var(--border-strong); }
+.sticker-row.is-off { opacity: .6; }
+
+.sticker-code {
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+  font-size: 1.15rem; font-weight: 700; letter-spacing: .04em;
+  color: var(--accent); background: var(--accent-dim);
+  border-radius: var(--radius-sm); padding: 6px 0; min-width: 52px; text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.sticker-avatar {
+  width: 36px; height: 36px; border-radius: 50%;
+  background: var(--surface-2); color: var(--text-secondary);
+  display: grid; place-items: center; font-size: .8rem; font-weight: 600;
+}
+.sticker-identity { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.sticker-name { font-weight: 600; color: var(--text-primary); }
+.sticker-meta { font-size: .82rem; color: var(--text-muted); }
+.sticker-warn {
+  font-size: .68rem; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--sticker-off); border: 1px solid currentColor; border-radius: 4px;
+  padding: 0 5px; margin-left: 6px; vertical-align: middle;
+}
+
+.sticker-pill { padding: 3px 10px; border-radius: 999px; font-size: .76rem; font-weight: 600; white-space: nowrap; }
+.sticker-pill-on { background: color-mix(in srgb, var(--sticker-on) 16%, transparent); color: var(--sticker-on); }
+.sticker-pill-off { background: color-mix(in srgb, var(--sticker-off) 16%, transparent); color: var(--sticker-off); }
+
+.sticker-action {
+  border-radius: var(--radius-sm); padding: 7px 12px; font-size: .82rem; font-weight: 600;
+  cursor: pointer; border: 1px solid var(--border-strong); background: transparent; color: var(--text-secondary);
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.sticker-action-off:hover { border-color: var(--sticker-off); color: var(--sticker-off); background: color-mix(in srgb, var(--sticker-off) 10%, transparent); }
+.sticker-action-on { border-color: var(--accent); color: var(--accent); }
+.sticker-action-on:hover { background: var(--accent); color: var(--accent-ink); }
+.sticker-action:disabled { opacity: .5; cursor: default; }
+
+.sticker-empty, .sticker-loading { color: var(--text-muted); padding: 40px 20px; text-align: center; }
+
+/* Create modal (reuses .modal / .modal-panel from the detail modal) */
+.sticker-modal-panel { width: min(520px, 100%); }
+.sticker-form { display: flex; flex-direction: column; gap: 14px; }
+.sticker-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.sticker-field { display: flex; flex-direction: column; gap: 5px; font-size: .82rem; color: var(--text-secondary); }
+.sticker-field input {
+  padding: 9px 11px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--surface-2); color: var(--text-primary); font-size: .95rem;
+}
+.sticker-field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.sticker-form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
+.sticker-error { color: var(--sticker-off); font-size: .86rem; margin: 0; }
+
+@media (max-width: 560px) {
+  .sticker-stats { grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .sticker-stat { padding: 10px 12px; }
+  .sticker-stat-num { font-size: 1.35rem; }
+  .sticker-row { grid-template-columns: auto 1fr auto; row-gap: 8px; }
+  .sticker-avatar { display: none; }
+  .sticker-row .sticker-action { grid-column: 2 / 4; justify-self: start; }
+  .sticker-form-grid { grid-template-columns: 1fr; }
+}
 
 /* ---- Login overlay ---- */
 .auth-overlay {
