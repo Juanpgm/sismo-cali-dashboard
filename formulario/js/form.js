@@ -19,9 +19,16 @@ if (bootStatus) bootStatus.remove();
 
 const AREA_NOMBRES = { 1: 'Cabecera', 2: 'Centro Poblado', 3: 'Rural Disperso' };
 
+// GPS refinement: stop watching once the fix is at least this accurate (m),
+// or after this much time — whichever comes first. The best fix always wins.
+const GEO_ACCURACY_TARGET = 12;
+const GEO_MAX_WATCH_MS = 90000;
+
 const state = {
   inspector: null,
-  coords: null,            // { lat, lng, accuracy }
+  coords: null,            // best fix so far: { lat, lng, accuracy }
+  geoWatchId: null,        // active watchPosition id (null = not watching)
+  geoWatchTimer: null,     // battery-guard timeout for the watch
   codigo: null,            // generated building code, e.g. "76001-1-0040001"
   fotos: [null, null, null], // File | null per slot
   fotosSubidas: {},        // "codigo:slot" -> downloadURL (upload retry cache)
@@ -60,28 +67,63 @@ function requestLocation() {
     return;
   }
 
+  // watchPosition instead of a one-shot getCurrentPosition: the first fix is
+  // usually the coarse network one (hundreds of meters); the GPS refines over
+  // the next seconds. We show every fix immediately (fast response) and keep
+  // only the most accurate one (precision), stopping once it is good enough.
+  stopGeoWatch();
+  state.coords = null;
   display.textContent = 'Obteniendo ubicación…';
-  navigator.geolocation.getCurrentPosition(
+
+  const renderFix = (final) => {
+    const c = state.coords;
+    if (!c) { display.textContent = '—'; return; }
+    const estado = final || c.accuracy <= GEO_ACCURACY_TARGET ? '' : ' · afinando…';
+    display.textContent =
+      `Lat: ${c.lat.toFixed(6)} · Lng: ${c.lng.toFixed(6)} · Precisión: ±${Math.round(c.accuracy)} m${estado}`;
+  };
+
+  state.geoWatchId = navigator.geolocation.watchPosition(
     (pos) => {
-      state.coords = {
-        lat: pos.coords.latitude,
-        lng: pos.coords.longitude,
-        accuracy: pos.coords.accuracy,
-      };
-      display.textContent =
-        `Lat: ${state.coords.lat.toFixed(6)} · Lng: ${state.coords.lng.toFixed(6)} · Precisión: ${Math.round(state.coords.accuracy)} m`;
+      // Keep the best fix seen so far, never a worse one.
+      if (!state.coords || pos.coords.accuracy < state.coords.accuracy) {
+        state.coords = {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+        };
+        renderFix(false);
+      }
+      if (state.coords.accuracy <= GEO_ACCURACY_TARGET) {
+        stopGeoWatch();
+        renderFix(true);
+      }
     },
     (err) => {
-      display.textContent = state.coords
-        ? `Lat: ${state.coords.lat.toFixed(6)} · Lng: ${state.coords.lng.toFixed(6)} · Precisión: ${Math.round(state.coords.accuracy)} m`
-        : '—';
+      renderFix(true);
+      // A timeout with a fix already in hand is not an error worth showing.
+      if (state.coords && err && err.code === 3) return;
       errBox.textContent = err && err.code === 1
         ? 'Permiso de ubicación denegado. Habilite la ubicación para este sitio e intente de nuevo.'
         : 'No se pudo obtener la ubicación. Intente de nuevo con "Actualizar ubicación".';
       errBox.hidden = false;
     },
-    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+    { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 },
   );
+
+  // Battery guard: stop refining after a while; the best fix stays.
+  state.geoWatchTimer = setTimeout(() => { stopGeoWatch(); renderFix(true); }, GEO_MAX_WATCH_MS);
+}
+
+function stopGeoWatch() {
+  if (state.geoWatchId != null) {
+    navigator.geolocation.clearWatch(state.geoWatchId);
+    state.geoWatchId = null;
+  }
+  if (state.geoWatchTimer) {
+    clearTimeout(state.geoWatchTimer);
+    state.geoWatchTimer = null;
+  }
 }
 
 // ---- Photos -----------------------------------------------------------------

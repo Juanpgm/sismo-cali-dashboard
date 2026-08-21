@@ -49,6 +49,11 @@
     navigator.geolocation.getCurrentPosition = function (ok) {
       ok({ coords: { latitude: 3.4516, longitude: -76.532, accuracy: 12 } });
     };
+    navigator.geolocation.watchPosition = function (ok) {
+      ok({ coords: { latitude: 3.4516, longitude: -76.532, accuracy: 8 } });
+      return 1;
+    };
+    navigator.geolocation.clearWatch = function () {};
   </script>
   <style>
     .demo-banner {
