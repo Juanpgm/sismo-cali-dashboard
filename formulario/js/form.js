@@ -189,6 +189,7 @@ function setSubmitBusy(busy) {
 function validate() {
   if (!state.codigo) return 'Genere el código de la edificación antes de enviar.';
   if (!state.coords) return 'Falta la ubicación. Use "Actualizar ubicación" antes de enviar.';
+  if (!state.fotos.some(Boolean)) return 'Agregue al menos una foto de la edificación antes de enviar.';
   const form = $('#eval-form');
   if (!form.checkValidity()) {
     form.reportValidity(); // native messages for criterios/clasificación/alcance

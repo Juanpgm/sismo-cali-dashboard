@@ -72,6 +72,12 @@ test.describe('Código de la edificación', () => {
   });
 });
 
+// Attach a 1x1 PNG to the given photo slot (photos are mandatory on submit).
+async function addFoto(page, slot = 0) {
+  await page.locator('.foto-slot').nth(slot).locator('input[type="file"]')
+    .setInputFiles({ name: `foto${slot + 1}.png`, mimeType: 'image/png', buffer: PNG_1x1 });
+}
+
 test.describe('Validación de envío', () => {
   test('no permite enviar sin generar el código', async ({ page }) => {
     await boot(page);
@@ -80,6 +86,20 @@ test.describe('Validación de envío', () => {
     await page.locator('input[name="alcance"][value="exterior"]').check();
     await page.click('#btn-submit');
     await expect(page.locator('#submit-error')).toHaveText('Genere el código de la edificación antes de enviar.');
+    await expect(page.locator('#confirm')).toBeHidden();
+  });
+
+  test('no permite enviar sin al menos una foto', async ({ page }) => {
+    await boot(page);
+    await loginAndWaitForm(page);
+    await page.selectOption('#area', '1');
+    await page.click('#btn-codigo');
+    await expect(page.locator('#codigo-display')).toHaveText('76001-1-0040001');
+    await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
+    await page.locator('input[name="alcance"][value="exterior"]').check();
+    await page.click('#btn-submit');
+    await expect(page.locator('#submit-error'))
+      .toHaveText('Agregue al menos una foto de la edificación antes de enviar.');
     await expect(page.locator('#confirm')).toBeHidden();
   });
 });
@@ -140,6 +160,7 @@ test.describe('Flujo completo de registro', () => {
     await expect(page.locator('#codigo-display')).toHaveText('76001-1-0040001');
     await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
     await page.locator('input[name="alcance"][value="exterior"]').check();
+    await addFoto(page);
     await page.click('#btn-submit');
     await expect(page.locator('#confirm')).toBeVisible();
 
@@ -165,6 +186,7 @@ test.describe('Recuperación ante código duplicado', () => {
     await expect(page.locator('#codigo-display')).toHaveText('76001-1-0040001');
     await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
     await page.locator('input[name="alcance"][value="exterior"]').check();
+    await addFoto(page);
     await page.click('#btn-submit');
 
     await expect(page.locator('#submit-error'))
