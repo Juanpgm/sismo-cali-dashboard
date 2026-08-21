@@ -706,7 +706,7 @@ a { color: var(--accent); }
 .kpi-help-body { top: 100%; left: 0; right: auto; min-width: 240px; max-width: 320px; margin-top: 4px; }
 .chart-tile-auto { height: auto; }
 
-/* Semáforo × tipología por número de pisos */
+/* Tabla base (colapso × habitabilidad por tipología, clase .tipologia-table) */
 .tipologia-table-wrap { overflow-x: auto; }
 .tipologia-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
 .tipologia-table th, .tipologia-table td {
@@ -718,19 +718,12 @@ a { color: var(--accent); }
 }
 .tipologia-table thead th { color: var(--text-secondary); font-weight: 600; }
 .tipologia-table th[scope="row"], .tipologia-table thead th:first-child { text-align: left; }
-.tipologia-table .tip-total { font-weight: 700; }
 .tipologia-table .tip-total-row th, .tipologia-table .tip-total-row td {
   border-top: 2px solid var(--border);
   border-bottom: none;
   font-weight: 700;
 }
-.sem-dot {
-  display: inline-block;
-  width: 8px; height: 8px;
-  border-radius: 50%;
-  margin-right: 5px;
-  vertical-align: baseline;
-}
+.tipologia-table .ce-muted th[scope="row"], .tipologia-table .ce-muted td { color: var(--text-muted); }
 .chart-note { margin: 6px 0 0; font-size: 0.72rem; color: var(--text-muted); }
 
 /* Ayuda orientativa: ⓘ discreto junto al título + snippet desplegable */
@@ -766,21 +759,6 @@ a { color: var(--accent); }
   letter-spacing: normal;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
-
-/* Leyenda de variables bajo la tabla del semáforo */
-.tip-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 18px;
-  margin: 10px 0 0;
-  font-size: 0.72rem;
-}
-.tip-legend > div { display: flex; gap: 6px; align-items: baseline; }
-.tip-legend dt { font-weight: 700; color: var(--text-secondary); white-space: nowrap; }
-.tip-legend dd { margin: 0; color: var(--text-muted); }
-
-/* Filas que no son Casa/Edificación se atenúan para no distraer la lectura */
-.tipologia-table .ce-muted th[scope="row"], .tipologia-table .ce-muted td { color: var(--text-muted); }
 
 /* Celda con doble lectura: registros (principal) + unidades habitacionales (secundario) */
 .ch-table td { vertical-align: top; }

@@ -639,53 +639,6 @@ function tipologiaCounts(records) {
 
 function renderTipologia(records) {
   const acc = tipologiaCounts(records);
-  const box = document.getElementById('tipologia-table');
-  if (box) {
-    const fmt = (n) => Math.round(n).toLocaleString('es-CO');
-    const dot = (color) => `<span class="sem-dot" style="background:${color}"></span>`;
-    const head = SEMAFORO_COLS.map(([, label, color]) => `<th>${dot(color)}${label} edif.</th>`).join('')
-      + '<th>Total edif.</th>'
-      + SEMAFORO_COLS.map(([, label, color]) => `<th>${dot(color)}${label} unid.</th>`).join('')
-      + '<th>Total unid.</th>';
-    const totals = { verde: { edif: 0, unid: 0 }, amarillo: { edif: 0, unid: 0 }, rojo: { edif: 0, unid: 0 } };
-    const bodyRows = TIPOLOGIAS.map(([t, label]) => {
-      const c = acc[t];
-      let te = 0; let tu = 0;
-      const cells = SEMAFORO_COLS.map(([k]) => {
-        te += c[k].edif; tu += c[k].unid;
-        totals[k].edif += c[k].edif; totals[k].unid += c[k].unid;
-        return c[k];
-      });
-      return `<tr><th scope="row">${label}</th>`
-        + cells.map((cell) => `<td>${fmt(cell.edif)}</td>`).join('')
-        + `<td class="tip-total">${fmt(te)}</td>`
-        + cells.map((cell) => `<td>${fmt(cell.unid)}</td>`).join('')
-        + `<td class="tip-total">${fmt(tu)}</td></tr>`;
-    }).join('');
-    const te = totals.verde.edif + totals.amarillo.edif + totals.rojo.edif;
-    const tu = totals.verde.unid + totals.amarillo.unid + totals.rojo.unid;
-    const footRow = '<tr class="tip-total-row"><th scope="row">TOTAL</th>'
-      + SEMAFORO_COLS.map(([k]) => `<td>${fmt(totals[k].edif)}</td>`).join('')
-      + `<td class="tip-total">${fmt(te)}</td>`
-      + SEMAFORO_COLS.map(([k]) => `<td>${fmt(totals[k].unid)}</td>`).join('')
-      + `<td class="tip-total">${fmt(tu)}</td></tr>`;
-    const dotL = (color) => `<span class="sem-dot" style="background:${color}"></span>`;
-    box.innerHTML = `<table class="tipologia-table">
-      <thead><tr><th scope="col">Tipología (pisos sobre el terreno)</th>${head}</tr></thead>
-      <tbody>${bodyRows}${footRow}</tbody>
-    </table>
-    <dl class="tip-legend">
-      <div><dt>${dotL(COLORS.status.h)}Verde</dt><dd>Habitable (H)</dd></div>
-      <div><dt>${dotL(COLORS.status.r2)}Amarillo</dt><dd>Uso restringido (R1 + R2)</dd></div>
-      <div><dt>${dotL(COLORS.status.i2)}Rojo</dt><dd>No habitable (I1 + I2 + I3)</dd></div>
-      <div><dt>edif.</dt><dd>número de edificaciones (registros)</dd></div>
-      <div><dt>unid.</dt><dd>unidades habitacionales (viviendas)</dd></div>
-      <div><dt>Casa</dt><dd>3 pisos o menos</dd></div>
-      <div><dt>Edificación</dt><dd>más de 3 pisos</dd></div>
-    </dl>
-    <p class="chart-note">Solo registros con habitabilidad conocida.</p>`;
-  }
-
   const surface = themeColor('--surface', '#12294a');
   upsertChart('chart-tipologia', {
     type: 'bar',
