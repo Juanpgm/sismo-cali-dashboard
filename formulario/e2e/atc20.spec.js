@@ -95,8 +95,6 @@ test.describe('Flujo completo de registro', () => {
 
     await page.fill('#nombre', 'Colegio San José');
     await page.fill('#direccion', 'Calle 5 #10-20');
-    await page.fill('#n_pisos', '3');
-    await page.fill('#n_unidades', '12');
 
     await page.locator('input[name="clasificacion"][value="USO_RESTRINGIDO"]').check();
     await page.locator('input[name="alcance"][value="exterior_interior"]').check();
@@ -121,7 +119,7 @@ test.describe('Flujo completo de registro', () => {
     expect(written.alcance).toBe('exterior_interior');
     expect(written.inspector.codigo).toBe('004');
     expect(written.inspector.uid).toBe('uid-004');
-    expect(written.descripcion.n_pisos).toBe(3);
+    expect(written.descripcion.direccion).toBe('Calle 5 #10-20');
     expect(written.coords).toBeTruthy();
     expect(typeof written.coords.lat).toBe('number');
     expect(written.fotos).toHaveLength(1);

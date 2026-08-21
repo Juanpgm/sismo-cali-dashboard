@@ -208,29 +208,33 @@ async function onSubmit(e) {
   try {
     const db = getDb();
     const storage = getStorage(getApp());
+    // Fail fast: the SDK default retries uploads for ~2 minutes, which reads
+    // as a frozen form in the field. 15 s is enough for a slow connection.
+    storage.maxUploadRetryTime = 15000;
+    storage.maxOperationRetryTime = 15000;
 
     // Upload photos first; URLs go inside the evaluation doc. Successful
     // uploads are cached so a retry after a failed doc write skips them.
     // ponytail: photos uploaded before the doc write can be orphaned if the form is abandoned; bounded to 3 files per code, clean manually if it ever matters.
     const fotos = [];
-    for (let slot = 0; slot < state.fotos.length; slot++) {
-      const file = state.fotos[slot];
-      if (!file) continue;
-      // Key by slot + file identity so removing/replacing a photo between a
-      // failed submit and the retry never reuses a stale cached URL.
-      const key = `${state.codigo}:${slot}:${file.name}:${file.size}:${file.lastModified}`;
-      if (!state.fotosSubidas[key]) {
-        const fotoRef = ref(storage, `evaluaciones/${state.codigo}/foto_${slot + 1}.jpg`);
-        await uploadBytes(fotoRef, file);
-        state.fotosSubidas[key] = await getDownloadURL(fotoRef);
+    try {
+      for (let slot = 0; slot < state.fotos.length; slot++) {
+        const file = state.fotos[slot];
+        if (!file) continue;
+        // Key by slot + file identity so removing/replacing a photo between a
+        // failed submit and the retry never reuses a stale cached URL.
+        const key = `${state.codigo}:${slot}:${file.name}:${file.size}:${file.lastModified}`;
+        if (!state.fotosSubidas[key]) {
+          const fotoRef = ref(storage, `evaluaciones/${state.codigo}/foto_${slot + 1}.jpg`);
+          await uploadBytes(fotoRef, file);
+          state.fotosSubidas[key] = await getDownloadURL(fotoRef);
+        }
+        fotos.push(state.fotosSubidas[key]);
       }
-      fotos.push(state.fotosSubidas[key]);
+    } catch (err) {
+      console.error(err);
+      throw new Error('foto-upload');
     }
-
-    const num = (id) => {
-      const v = $(id).value;
-      return v === '' ? null : Number(v);
-    };
 
     const data = {
       codigo_edificacion: state.codigo,
@@ -252,8 +256,6 @@ async function onSubmit(e) {
       descripcion: {
         nombre: $('#nombre').value.trim(),
         direccion: $('#direccion').value.trim(),
-        n_pisos: num('#n_pisos'),
-        n_unidades: num('#n_unidades'),
       },
       restricciones: $('#restricciones').value.trim(),
       acciones_posteriores: {
@@ -288,6 +290,8 @@ async function onSubmit(e) {
       $('#btn-codigo').disabled = false;
       $('#area').disabled = false;
       showSubmitError('El código ya existe. Genere un nuevo código e intente de nuevo.');
+    } else if (err && err.message === 'foto-upload') {
+      showSubmitError('No se pudieron subir las fotos. Verifique la conexión, o quite las fotos y envíe sin ellas (los demás datos se conservan).');
     } else {
       showSubmitError('No se pudo enviar la evaluación. Verifique la conexión e intente de nuevo (los datos se conservan).');
     }
