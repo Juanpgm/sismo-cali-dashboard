@@ -38,3 +38,5 @@ knowledge/fuentes/
 integracion_F1/
 # artefacto local del cruce (la fuente real es Firestore)
 web/data/cruce_criticos_survey.json
+credenciales_inspectores.csv
+Personas en campo con stickers.xlsx
