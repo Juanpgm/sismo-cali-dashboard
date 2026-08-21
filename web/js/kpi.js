@@ -142,6 +142,16 @@ function usoTilesHtml(records, total) {
 export function renderKpis(container, filteredRecords, allRecords, reportados = null) {
   const values = computeKpis(filteredRecords);
   const total = filteredRecords.length;
+  // Cifras de colapso: la tarjeta sigue siendo reactiva (se recalcula con los
+  // filtros como el resto de KPIs), pero cuando hay filtros activos el subtítulo
+  // lo deja explícito y muestra el total SIN filtrar como referencia para los
+  // reportes, para que un filtro no relacionado (p.ej. suspensión de servicios,
+  // que es colapso parcial) no lea como si la cifra oficial hubiera bajado.
+  const filtersActive = filteredRecords.length !== allRecords.length;
+  const globalColapso = {
+    colapso_total: allRecords.filter((r) => isYes(r.colapso_total)).length,
+    colapso_parcial: allRecords.filter((r) => isYes(r.colapso_parcial)).length,
+  };
 
   // Encabeza la sección: total de reportes ciudadanos en el sistema (dataset de
   // reportes, independiente de los registros EDAN-F3 y de los filtros).
@@ -163,8 +173,15 @@ export function renderKpis(container, filteredRecords, allRecords, reportados = 
       sub = subLine(`<span class="kpi-sub">${pct(values[def.key], total)}% del filtrado</span>`);
     } else if (def.key === 'ocupantes_riesgo') {
       sub = subLine(`<span class="kpi-sub">${pct(values.ocupantes_riesgo, ocupantesTotalFiltrados)}% de ocupantes totales</span>`);
-    } else if (def.key === 'colapso_total') {
-      sub = subLine('<span class="kpi-sub">Esta cifra puede variar debido a las validaciones técnicas y cruces de información que se hacen de manera recurrente</span>');
+    } else if (def.key === 'colapso_total' || def.key === 'colapso_parcial') {
+      const parts = [];
+      if (filtersActive) {
+        parts.push(`<span class="kpi-sub">Refleja los filtros activos · ${globalColapso[def.key]} sin filtrar</span>`);
+      }
+      if (def.key === 'colapso_total') {
+        parts.push('<span class="kpi-sub">Esta cifra puede variar debido a las validaciones técnicas y cruces de información que se hacen de manera recurrente</span>');
+      }
+      sub = subLine(parts.join(''));
     }
     return `
       <div class="kpi-tile" style="${def.accent ? `--kpi-accent:${def.accent}` : ''}">
