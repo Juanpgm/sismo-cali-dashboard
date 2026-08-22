@@ -345,7 +345,7 @@ test.describe('Fotos: galería y cámara', () => {
     await boot(page);
     await loginAndWaitForm(page);
     await expect(page.locator('#foto-sticker-legend'))
-      .toHaveText('Recuerde tomar una foto al sticker pegado en la edificación.');
+      .toHaveText('Importante: incluya una foto del sticker ya pegado en la edificación, con el código visible.');
   });
 
   test('seleccionar varias fotos a la vez agrega una vista previa por cada una, en orden', async ({ page }) => {
