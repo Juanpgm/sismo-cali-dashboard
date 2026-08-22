@@ -8,7 +8,7 @@
 // an already-issued ID token (valid ~1h) can no longer create evaluaciones.
 //
 // Required env in Vercel (Project Settings → Environment Variables):
-//   FIREBASE_SERVICE_ACCOUNT_JSON  Service-account key JSON for dagma-85aad,
+//   FIREBASE_SERVICE_ACCOUNT_JSON  Service-account key JSON for sismo-agosto-sgred,
 //     as a single-line string (Firebase console → Project settings →
 //     Service accounts → Generate new private key).
 //
@@ -19,7 +19,7 @@
 
 const { verifyFirebaseToken } = require('./refresh.js');
 
-const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'dagma-85aad';
+const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'sismo-agosto-sgred';
 const INSPECTOR_DOMAIN = '@sismocali.gov.co';
 
 // ---- Pure validators (exported for the self-check) --------------------------
