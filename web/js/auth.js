@@ -4,11 +4,9 @@
 //   • Email/password (provider "password")  → ADMIN  — sees everything,
 //     including the "Acciones" tab and the "Actualizar datos" button.
 //     These users are created by hand in the Firebase console.
-//   • Anything else is rejected.
-//
-// NOTE: Google sign-in (VIEWER role for @cali.gov.co accounts) is DISABLED for
-// now — only user/password is accepted. The viewer path is preserved in the
-// comments of roleForUser/initAuth for a quick re-enable.
+//   • Google (provider "google.com") whose email ends in @cali.gov.co → VIEWER
+//     — Panel only; the Acciones tab and refresh button are hidden.
+//   • Anything else (e.g. a Google account outside @cali.gov.co) is rejected.
 //
 // The role is applied to the document via `document.body.dataset.role`, which
 // CSS uses to hide admin-only chrome. The privileged action (refresh) is ALSO
@@ -21,10 +19,10 @@
 
 import {
   getAuth, setPersistence, browserLocalPersistence,
-  signInWithEmailAndPassword,
+  GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword,
   onAuthStateChanged, signOut,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-import { isConfigured, getFirebaseApp } from './firebase-config.js';
+import { ALLOWED_DOMAIN, isConfigured, getFirebaseApp } from './firebase-config.js';
 
 let auth = null;
 let currentRole = null; // 'admin' | 'viewer' | null
@@ -67,9 +65,10 @@ export async function signOutUser() {
 function roleForUser(user) {
   const providers = (user.providerData || []).map((p) => p.providerId);
   if (providers.includes('password')) return 'admin';
-  // Login con Google deshabilitado temporalmente: solo usuario/contraseña (admin).
-  // Para reactivar viewers institucionales, restaurar la rama google.com aquí y el
-  // botón/handler del overlay (ver initAuth).
+  if (providers.includes('google.com')) {
+    const email = (user.email || '').toLowerCase();
+    return email.endsWith(`@${ALLOWED_DOMAIN}`) ? 'viewer' : null;
+  }
   return null;
 }
 
@@ -88,7 +87,14 @@ function buildOverlay() {
         </div>
       </div>
 
-      <p class="auth-lead">Ingresá con tu usuario y contraseña para ver el panel de inspecciones.</p>
+      <p class="auth-lead">Ingresá para ver el panel de inspecciones.</p>
+
+      <button type="button" class="auth-google" id="auth-google">
+        <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.6 6.5 29.6 4.5 24 4.5 13.2 4.5 4.5 13.2 4.5 24S13.2 43.5 24 43.5 43.5 34.8 43.5 24c0-1.2-.1-2.3-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.6 6.5 29.6 4.5 24 4.5 16.3 4.5 9.7 8.9 6.3 14.7z"/><path fill="#4CAF50" d="M24 43.5c5.5 0 10.4-1.9 14.1-5.2l-6.5-5.5c-2 1.5-4.6 2.4-7.6 2.4-5.2 0-9.6-3.3-11.2-7.9l-6.5 5C9.6 39 16.2 43.5 24 43.5z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.1-4.1 5.4l6.5 5.5C42.6 35.9 43.5 30.4 43.5 24c0-1.2-.1-2.3-.4-3.5z"/></svg>
+        <span>Continuar con Google <b>@${ALLOWED_DOMAIN}</b></span>
+      </button>
+
+      <div class="auth-divider"><span>o con usuario administrador</span></div>
 
       <form class="auth-form" id="auth-form" novalidate>
         <label class="auth-field">
@@ -103,7 +109,7 @@ function buildOverlay() {
       </form>
 
       <p class="auth-error" id="auth-error" role="alert" hidden></p>
-      <p class="auth-foot">Solo personal autorizado.</p>
+      <p class="auth-foot">Solo personal autorizado. Los accesos con Google se limitan a cuentas <b>@${ALLOWED_DOMAIN}</b>.</p>
     </div>`;
   document.body.appendChild(root);
   return root;
@@ -162,9 +168,20 @@ export function initAuth(onFirstAuthorized) {
   auth = getAuth(getFirebaseApp());
   setPersistence(auth, browserLocalPersistence).catch(() => {});
 
-  // Login con Google deshabilitado temporalmente: el botón ya no se renderiza y
-  // roleForUser solo acepta el proveedor "password". Para reactivarlo, restaurar
-  // el botón en buildOverlay, este handler y la rama google.com de roleForUser.
+  const googleProvider = new GoogleAuthProvider();
+  googleProvider.setCustomParameters({ hd: ALLOWED_DOMAIN, prompt: 'select_account' });
+
+  overlay.querySelector('#auth-google').addEventListener('click', async () => {
+    showError(overlay, '');
+    setBusy(overlay, true);
+    try {
+      await signInWithPopup(auth, googleProvider);
+      // role/gating handled by onAuthStateChanged below.
+    } catch (err) {
+      setBusy(overlay, false);
+      showError(overlay, friendlyError(err));
+    }
+  });
 
   overlay.querySelector('#auth-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -196,11 +213,10 @@ export function initAuth(onFirstAuthorized) {
 
     const role = roleForUser(user);
     if (!role) {
-      // Signed in but not allowed. Con Google deshabilitado, cualquier sesión que
-      // no sea usuario/contraseña (incluidas sesiones de Google ya persistidas) cae acá.
+      // Signed in but not allowed (e.g. Google account outside the domain).
       await signOut(auth);
       setBusy(overlay, false);
-      showError(overlay, 'El ingreso con Google está deshabilitado temporalmente. Usá tu usuario y contraseña.');
+      showError(overlay, `Solo cuentas @${ALLOWED_DOMAIN} pueden ingresar con Google. Usá tu correo institucional o una cuenta administradora.`);
       return;
     }
 
