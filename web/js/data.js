@@ -1,7 +1,7 @@
 // Data loading + global filter state (tiny pub/sub store, no framework).
 import {
   normalizeAddressText, buildSearchIndex, splitMultiValue, labelForField,
-  bucketNpisos, suspensionServicios, bustParams,
+  bucketNpisos, suspensionServicios, bustParams, AFECTACION_ORDER,
 } from './utils.js';
 import { fetchIsraelRecords } from './israel-source.js';
 
@@ -23,6 +23,9 @@ export const FILTER_GROUPS = [
 export const FILTER_FIELDS = [
   // Severity / damage grade — the primary triage decision fields.
   { field: 'severidad_danos', label: labelForField('severidad_danos'), group: 'severidad' },
+  // Porcentaje de afectación en planta: rangos ordinales en string; `order` los
+  // muestra por severidad creciente en vez de alfabéticamente (ver computeOptions).
+  { field: 'afectacion_planta', label: labelForField('afectacion_planta'), group: 'severidad', order: AFECTACION_ORDER },
   { field: 'nivel_dano', label: 'Nivel de daño', group: 'severidad' },
   { field: 'criterio_habitabilidad', label: 'Habitabilidad', group: 'severidad' },
   // Derived field (see suspensionServicios): not in inspections.json.
@@ -214,7 +217,15 @@ class Store {
           set.add(raw);
         }
       }
-      let values = [...set].sort((a, b) => String(a).localeCompare(String(b), 'es', { numeric: true }));
+      // Ordinal fields declare an explicit `order`; everything else sorts
+      // alphanumerically. Values outside the declared order fall to the end.
+      let values;
+      if (def.order) {
+        const rank = (v) => { const i = def.order.indexOf(v); return i < 0 ? def.order.length : i; };
+        values = [...set].sort((a, b) => rank(a) - rank(b) || String(a).localeCompare(String(b), 'es', { numeric: true }));
+      } else {
+        values = [...set].sort((a, b) => String(a).localeCompare(String(b), 'es', { numeric: true }));
+      }
       if (def.emptyLabel && hasEmpty) values = [...values, NONE];
       opts[def.field] = values;
     }

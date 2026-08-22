@@ -89,6 +89,12 @@ const KNOWN_LABELS = {
   // fuente de datos (origen del levantamiento)
   cali: 'Levantamiento Cali',
   israel: 'Inspectores de Israel',
+  // porcentaje de afectación en planta (afectacion_planta) — rangos ordinales
+  ninguno: 'Sin afectación',
+  menor_10: 'Menor al 10%',
+  de_10_a_40: 'Del 10% al 40%',
+  de_40_a_70: 'Del 40% al 70%',
+  mayor_70: 'Mayor al 70%',
 };
 
 /** Strip accents + lowercase, for case/accent-insensitive matching. */
@@ -221,7 +227,7 @@ const FIELD_LABELS = {
   alc_exterior: 'Alcantarillado exterior',
   alc_interior: 'Alcantarillado interior',
   matriz_ref: 'Matriz de referencia',
-  afectacion_planta: 'Afectación en planta',
+  afectacion_planta: 'Porcentaje de afectación en planta',
   afectacion_planta_calc: 'Afectación en planta (calculada)',
   severidad_danos: 'Severidad de daños',
   severidad_danos_calc: 'Severidad de daños (calculada)',
@@ -331,7 +337,7 @@ export function formatValue(field, value) {
   if (value === null || value === undefined || value === '') return 'Sin dato';
   if (field === 'fecha_inspeccion') return formatDate(value);
   if (field === 'fecha_hora' || field === 'CreationDate' || field === 'EditDate') return formatDateTime(value);
-  if (['criterio_habitabilidad', 'habitabilidad_calc', 'nivel_dano', 'severidad_danos', 'severidad_danos_calc']
+  if (['criterio_habitabilidad', 'habitabilidad_calc', 'nivel_dano', 'severidad_danos', 'severidad_danos_calc', 'afectacion_planta', 'afectacion_planta_calc']
     .includes(field)) return labelForCode(value);
   if (typeof value === 'string' && /^(si|sí|no)$/i.test(value.trim())) return labelForCode(value);
   return String(value);
@@ -372,6 +378,30 @@ export function damageColor(code) {
 export function severidadColor(code) {
   const key = normalize(code);
   return COLORS.severidad[key] || COLORS.unknown;
+}
+
+// Porcentaje de afectación en planta (afectacion_planta): string ranges stored
+// in ascending severity order. Mapped onto the SAME 5-level severidad ramp
+// (verde → rojo oscuro) so points/heat read like the other damage variables.
+export const AFECTACION_ORDER = ['ninguno', 'menor_10', 'de_10_a_40', 'de_40_a_70', 'mayor_70'];
+const AFECTACION_COLORS = {
+  ninguno: COLORS.severidad.sin_dano,
+  menor_10: COLORS.severidad.bajo,
+  de_10_a_40: COLORS.severidad.medio,
+  de_40_a_70: COLORS.severidad.medio_alto,
+  mayor_70: COLORS.severidad.alto,
+};
+
+/** Color for an afectacion_planta range (ordinal, same warm ramp as severidad). */
+export function afectacionColor(code) {
+  return AFECTACION_COLORS[normalize(code)] || COLORS.unknown;
+}
+
+/** Ordinal level 0..4 of an afectacion_planta range; null when blank/unknown.
+ *  Backs the heat weight and the choropleth average. */
+export function afectacionLevel(code) {
+  const i = AFECTACION_ORDER.indexOf(normalize(code));
+  return i < 0 ? null : i;
 }
 
 /**

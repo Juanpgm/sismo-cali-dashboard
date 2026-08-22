@@ -2,7 +2,7 @@
 import {
   COLORS, habitabilityColor, damageColor, severidadColor, buildCategoricalScale,
   interpolateRamp, labelForCode, labelForField, formatValue, escapeHtml, normalize,
-  isNoHabitableBinary, basemapTileUrl,
+  isNoHabitableBinary, basemapTileUrl, afectacionColor, afectacionLevel, AFECTACION_ORDER,
 } from './utils.js';
 
 const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
@@ -124,6 +124,8 @@ function pointColor(record) {
       return damageColor(record.nivel_dano);
     case 'severidad_danos':
       return severidadColor(record.severidad_danos);
+    case 'afectacion_planta':
+      return afectacionColor(record.afectacion_planta);
     case 'tipologia':
       return tipologiaColor(record);
     case 'uso_edificacion':
@@ -242,6 +244,10 @@ function renderPointsLegend(records) {
   } else if (state.colorBy === 'severidad_danos') {
     title = labelForField('severidad_danos');
     entries = Object.entries(COLORS.severidad).map(([code, color]) => ({ label: labelForCode(code), color }));
+  } else if (state.colorBy === 'afectacion_planta') {
+    title = labelForField('afectacion_planta');
+    entries = AFECTACION_ORDER.map((code) => ({ label: labelForCode(code), color: afectacionColor(code) }));
+    entries.push({ label: 'Sin dato', color: COLORS.unknown });
   } else if (state.colorBy === 'tipologia') {
     title = 'Tipología (Casa / Edificación)';
     entries = Object.entries(TIPOLOGIA_COLORS).map(([code, color]) => ({ label: TIPOLOGIA_LABELS[code], color }));
@@ -275,6 +281,10 @@ function weightFor(record) {
       return (Number(record.n_muertos) || 0) + (Number(record.n_heridos) || 0) + 0.15;
     case 'damage':
       return (DAMAGE_ORDER[normalize(record.nivel_dano)] ?? -1) + 1 || 0.2;
+    case 'afectacion':
+      // Ordinal 0..4 → weight 1..5; sin dato (null) keeps a faint 0.2, same
+      // shape as 'damage' so "ninguno" points still register on the map.
+      return (afectacionLevel(record.afectacion_planta) ?? -1) + 1 || 0.2;
     case 'n_ocupantes':
     case 'n_pisos':
     case 'n_sotanos':
@@ -301,8 +311,9 @@ function renderHeat(records) {
 
   const label = state.heatWeight === 'victims' ? 'Intensidad: muertos + heridos'
     : state.heatWeight === 'damage' ? 'Intensidad: nivel de daño'
-      : NUM_FIELDS[state.heatWeight] ? `Intensidad: ${NUM_FIELDS[state.heatWeight]}`
-        : 'Intensidad: número de inspecciones';
+      : state.heatWeight === 'afectacion' ? 'Intensidad: afectación en planta'
+        : NUM_FIELDS[state.heatWeight] ? `Intensidad: ${NUM_FIELDS[state.heatWeight]}`
+          : 'Intensidad: número de inspecciones';
   setLegend(label, [
     { label: 'Baja', color: interpolateRamp(COLORS.choropleth, 0.15), shape: 'square' },
     { label: 'Media', color: interpolateRamp(COLORS.choropleth, 0.5), shape: 'square' },
@@ -337,6 +348,17 @@ function metricValue(records, metric) {
   }
   if (metric === 'victims') {
     return records.reduce((sum, r) => sum + (Number(r.n_muertos) || 0) + (Number(r.n_heridos) || 0), 0);
+  }
+  if (metric === 'afectacion_prom') {
+    // Average ordinal level (0 sin afectación … 4 mayor al 70%) over records
+    // that actually reported a value; blanks are ignored, not counted as 0.
+    let sum = 0;
+    let n = 0;
+    for (const r of records) {
+      const l = afectacionLevel(r.afectacion_planta);
+      if (l != null) { sum += l; n += 1; }
+    }
+    return n ? Math.round((sum / n) * 10) / 10 : 0;
   }
   if (NUM_FIELDS[metric]) {
     return records.reduce((sum, r) => sum + (Number(r[metric]) || 0), 0);
@@ -421,6 +443,7 @@ function metricLabel(metric) {
   if (metric === 'casas') return 'Casas (≤3 pisos)';
   if (metric === 'edificaciones') return 'Edificaciones (>3 pisos)';
   if (metric === 'victims') return 'Muertos + heridos';
+  if (metric === 'afectacion_prom') return 'Afectación en planta (nivel prom. 0–4)';
   if (NUM_FIELDS[metric]) return `Total ${NUM_FIELDS[metric]}`;
   return 'N° inspecciones';
 }
