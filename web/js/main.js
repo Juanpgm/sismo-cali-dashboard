@@ -178,6 +178,10 @@ function onRowClick(record) {
 }
 
 function switchView(view) {
+  // TEMPORARY: Acciones is suspended (see the matching CSS rule that greys
+  // out its tab). pointer-events already blocks clicks; this closes keyboard
+  // activation and programmatic calls.
+  if (view === 'acciones') return;
   document.querySelectorAll('.view-tab').forEach((btn) => {
     const active = btn.dataset.view === view;
     btn.classList.toggle('is-active', active);

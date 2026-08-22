@@ -344,6 +344,12 @@ function detailHtml(e) {
 
 // ---- Entry point -------------------------------------------------------------
 
+// Auto-refresh cadence for the section while the tab is open. Module-level
+// handle: initEvaluaciones runs on every tab open, and stacking intervals
+// would multiply the polling.
+const AUTO_REFRESH_MS = 5 * 60 * 1000;
+let autoRefreshTimer = null;
+
 /** Renders the evaluaciones section into `section` (already in the DOM).
  *  `fetchEvaluaciones` returns the array; failures render inline so a broken
  *  evaluations read never takes the inspector roster down with it. */
@@ -414,14 +420,24 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
     if (row) setHighlight(row.dataset.evalDetail, false);
   });
 
-  async function load() {
-    kpis.innerHTML = '<p class="sticker-loading">Cargando evaluaciones…</p>';
-    barEl.innerHTML = '';
-    listEl.innerHTML = '';
-    listMeta.textContent = '';
-    mapMeta.textContent = '';
+  // Fingerprint of the last rendered dataset. The silent auto-refresh skips
+  // the whole re-render (which would reset the map's pan/zoom mid-use) when
+  // the server returned exactly what is already on screen.
+  let lastFingerprint = null;
+
+  async function load({ silent = false } = {}) {
+    if (!silent) {
+      kpis.innerHTML = '<p class="sticker-loading">Cargando evaluaciones…</p>';
+      barEl.innerHTML = '';
+      listEl.innerHTML = '';
+      listMeta.textContent = '';
+      mapMeta.textContent = '';
+    }
     try {
       const evaluaciones = await fetchEvaluaciones();
+      const fingerprint = JSON.stringify(evaluaciones.map((e) => [e.id, e.clasificacion, e.fotos.length]));
+      if (silent && fingerprint === lastFingerprint) return;
+      lastFingerprint = fingerprint;
       byId = new Map(evaluaciones.map((e) => [e.id, e]));
       kpis.innerHTML = kpisHtml(evaluaciones);
       barEl.innerHTML = barHtml(evaluaciones);
@@ -439,6 +455,9 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
         ? `${conCoords} en el mapa · ${sinCoords} sin coordenadas`
         : `${conCoords} en el mapa`;
     } catch (err) {
+      // A failed silent poll keeps the last good render on screen; the next
+      // tick (or the manual button) retries.
+      if (silent) return;
       teardownMap();
       barEl.innerHTML = '';
       kpis.innerHTML = `<p class="sticker-error" role="alert">No se pudieron cargar las evaluaciones: ${escapeHtml(err.message)}</p>`;
@@ -447,4 +466,14 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
 
   reloadBtn.addEventListener('click', () => load());
   load();
+
+  // Keep the tab fresh on its own while it stays open: silent poll every 5
+  // minutes, skipped while the browser tab is hidden. Re-initialization
+  // replaces the previous interval; a detached section stops its own timer.
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+  autoRefreshTimer = setInterval(() => {
+    if (!section.isConnected) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; return; }
+    if (document.visibilityState === 'hidden' || section.closest('[hidden]')) return;
+    load({ silent: true }).catch(() => {});
+  }, AUTO_REFRESH_MS);
 }

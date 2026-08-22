@@ -1350,7 +1350,9 @@ td { padding: 10px 14px; vertical-align: top; color: var(--text-primary); max-wi
 /* Large desktop / projector: give the map real room and cap line length elsewhere */
 @media (min-width: 1600px) {
   .app-shell { grid-template-columns: 320px 1fr; }
-  .main-column { padding: 28px 40px 48px; max-width: 1720px; margin: 0 auto; }
+  /* width:100% is required: auto margins disable a grid item's default
+     stretch, collapsing the column to fit-content on content-light views. */
+  .main-column { padding: 28px 40px 48px; width: 100%; max-width: 1720px; margin: 0 auto; }
   .map-container { height: 62vh; min-height: 560px; }
   .kpi-value { font-size: 1.9rem; }
 }
@@ -1556,6 +1558,14 @@ body[data-role="viewer"] #transito-download,
 body[data-role="viewer"] .view-tab[data-view="acciones"],
 body[data-role="viewer"] .view-tab[data-view="stickers"] { display: none !important; }
 
+/* TEMPORARY: the Acciones tab is suspended — visible but inert. Remove this
+   rule (and the matching guard in main.js switchView) to reactivate it. */
+.view-tab[data-view="acciones"] {
+  opacity: .4;
+  pointer-events: none;
+  filter: grayscale(1);
+}
+
 /* ============================================================
    STICKERS — field-inspector roster management
    Signature: the 3-digit brigade code as a gold monospace token
@@ -1564,8 +1574,8 @@ body[data-role="viewer"] .view-tab[data-view="stickers"] { display: none !import
 :root { --sticker-on: #37c871; --sticker-off: #ff6b6b; }
 :root[data-theme="light"] { --sticker-on: #1f9d57; --sticker-off: #d64545; }
 
-/* Wider than the old roster-only tab: the evaluation map needs the room. */
-#view-stickers { max-width: 1180px; }
+/* Full-width like the Panel: the map + records workspace earns the room. */
+#view-stickers { max-width: none; }
 
 .sticker-page-head { margin-bottom: 22px; }
 .sticker-h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.015em; margin: 0; }
@@ -1709,10 +1719,12 @@ body[data-role="viewer"] .view-tab[data-view="stickers"] { display: none !import
 .eval-workspace-card { margin: 0; }
 .eval-workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
-  min-height: 440px;
+  /* The aside grows with the viewport (up to a cap) so wide screens don't
+     end up as a huge map next to a cramped 340px list. */
+  grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 440px);
+  min-height: 480px;
 }
-.eval-map { min-height: 440px; background: var(--surface-3); }
+.eval-map { min-height: 480px; background: var(--surface-3); }
 
 .eval-aside {
   display: flex; flex-direction: column; min-height: 0;
