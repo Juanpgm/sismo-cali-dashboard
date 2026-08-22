@@ -5,7 +5,7 @@ import {
   sugerirClasificacion, buildCodigo, MUNICIPIO, cedulaToEmail, LOGIN_EMAIL_DOMAIN,
   parseConsecutivo, siguienteConsecutivo, validarSegmento, canAddSlot,
   clasificarErrorFirestore, backoffDelay,
-  plegarConsecutivoGuardado, siguienteDesdeMax,
+  plegarConsecutivoGuardado, siguienteDesdeMax, consecutivosExistentes,
 } from '../js/logic.js';
 
 const base = {
@@ -217,4 +217,22 @@ test('backoffDelay en el primer intento usa la base', () => {
 
 test('backoffDelay en el segundo intento triplica la base', () => {
   assert.equal(backoffDelay(2), 1800);
+});
+
+// ---- consecutivosExistentes ------------------------------------------------
+
+test('consecutivosExistentes extrae los consecutivos propios de los ids', () => {
+  const set = consecutivosExistentes(['76001-1-0040001', '76001-1-0040003'], '004');
+  assert.equal(set.has(1), true);
+  assert.equal(set.has(3), true);
+  assert.equal(set.has(2), false);
+});
+
+test('consecutivosExistentes ignora codigos de otros inspectores y basura', () => {
+  const set = consecutivosExistentes(['76001-1-0050001', 'malformado', ''], '004');
+  assert.equal(set.size, 0);
+});
+
+test('consecutivosExistentes con lista vacia devuelve set vacio', () => {
+  assert.equal(consecutivosExistentes([], '004').size, 0);
 });

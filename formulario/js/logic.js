@@ -73,6 +73,20 @@ export function plegarConsecutivoGuardado(maxConocido, consecutivoGuardado) {
   return Math.max(max, consecutivoGuardado);
 }
 
+// Consecutivos already saved by THIS inspector, extracted from record ids.
+// Backs the duplicate guard on the editable segment: an edited value that is
+// already in this set can never be submitted (it would collide at the
+// create-only transaction anyway — this catches it at edit time instead of
+// after photo uploads). Codes of other inspectors parse to null and drop out.
+export function consecutivosExistentes(codigos, codigoInspector) {
+  const set = new Set();
+  for (const codigo of codigos) {
+    const n = parseConsecutivo(codigo, codigoInspector);
+    if (n != null) set.add(n);
+  }
+  return set;
+}
+
 // Validates the editable 4-digit consecutive segment the inspector types.
 // Deliberately no "floor at next available" rule: a value below the derived
 // next is a legitimate gap-filling correction, not an error (caller shows a

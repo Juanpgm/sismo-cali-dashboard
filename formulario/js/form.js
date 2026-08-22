@@ -10,7 +10,7 @@ import {
 } from './auth.js';
 import {
   MUNICIPIO, buildCodigo, parseConsecutivo, siguienteConsecutivo, validarSegmento, canAddSlot, MAX_FOTOS,
-  siguienteDesdeMax, plegarConsecutivoGuardado,
+  siguienteDesdeMax, plegarConsecutivoGuardado, consecutivosExistentes,
 } from './logic.js';
 
 // Serverless signer that validates the Firebase idToken and presigns the
@@ -40,6 +40,10 @@ const state = {
   // next one). null = not yet derived from Firestore. Invalidated only on a
   // codigo-duplicado collision.
   maxConsecutivo: null,
+  // Consecutivos this inspector has already saved (Set<number>), filled by
+  // the same session query that derives maxConsecutivo and extended on each
+  // successful submit. Backs the duplicate guard on the editable segment.
+  consecutivosUsados: new Set(),
   // The consecutive value last rendered by generarCodigo/renderCodigo (before
   // any manual edit). Used only to decide whether an edited segment is below
   // the derived next value (non-blocking hint, no floor enforced).
@@ -251,6 +255,7 @@ async function siguienteConsecutivoSesion() {
     const codigos = [];
     snap.forEach((d) => codigos.push(d.id));
     state.maxConsecutivo = siguienteConsecutivo(codigos, state.inspector.codigo) - 1;
+    state.consecutivosUsados = consecutivosExistentes(codigos, state.inspector.codigo);
   }
   return siguienteDesdeMax(state.maxConsecutivo);
 }
@@ -281,6 +286,16 @@ function validarSegmentoInput() {
   const res = validarSegmento(input.value);
   if (!res.ok) {
     errBox.textContent = SEGMENTO_ERRORES[res.code] || 'Consecutivo inválido.';
+    errBox.hidden = false;
+    hintBox.hidden = true;
+    return false;
+  }
+  // Hard stop on an edited value this inspector already saved: it can only
+  // fail later at the create-only transaction (after the photo uploads), so
+  // it is rejected here, at edit time. The derived value is never in the set
+  // (it is max+1), so the automatic path is unaffected.
+  if (res.value !== state.derivedConsecutivo && state.consecutivosUsados.has(res.value)) {
+    errBox.textContent = `El consecutivo ${input.value} ya existe en sus registros. Use otro número.`;
     errBox.hidden = false;
     hintBox.hidden = true;
     return false;
@@ -545,6 +560,9 @@ async function onSubmit(e) {
     // correction (saved value below the current max) never drags the known
     // max backwards.
     state.maxConsecutivo = plegarConsecutivoGuardado(state.maxConsecutivo, data.consecutivo);
+    // The number just saved is now taken: the duplicate guard must reject it
+    // if the inspector edits a later code back onto it in this same session.
+    state.consecutivosUsados.add(data.consecutivo);
 
     $('#confirm-codigo').textContent = state.codigo;
     $('#app').hidden = true;
