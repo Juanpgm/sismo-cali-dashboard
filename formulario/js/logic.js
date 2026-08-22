@@ -54,6 +54,25 @@ export function siguienteConsecutivo(codigos, codigoInspector) {
   return max + 1;
 }
 
+// Pure "next from a known max" arithmetic — the session-cache counterpart to
+// siguienteConsecutivo, for when the caller already holds the max (no codes
+// array to re-scan). Same max-based semantics: null/undefined means "no
+// known max yet" and is treated as 0.
+export function siguienteDesdeMax(maxConocido) {
+  return (maxConocido == null ? 0 : maxConocido) + 1;
+}
+
+// Folds a consecutive that was just actually saved into the session's known
+// max, via max() — never a blind assignment. This is what lets the session
+// cache learn from a manually-edited code (the saved value can be higher OR
+// lower than what was derived before the edit) without a gap-filling
+// correction (saving a value BELOW the current max) ever dragging the known
+// max backwards.
+export function plegarConsecutivoGuardado(maxConocido, consecutivoGuardado) {
+  const max = maxConocido == null ? 0 : maxConocido;
+  return Math.max(max, consecutivoGuardado);
+}
+
 // Validates the editable 4-digit consecutive segment the inspector types.
 // Deliberately no "floor at next available" rule: a value below the derived
 // next is a legitimate gap-filling correction, not an error (caller shows a
@@ -73,11 +92,11 @@ export function validarSegmento(raw) {
 
 // Slot-generic cap (design decision "Slot-Generic Design With Capped
 // Fallback"): the client never hardcodes below-10 UI logic — only this
-// constant changes if the external signer starts accepting slot > 3.
-// Set to 3 after the apply-time signer probe rejected slot 4 and 10 with
-// `400 bad-request` while slot 1 and 3 passed schema validation (see
+// constant changes if the external signer's accepted slot range changes.
+// Set to 10 after a signer re-probe confirmed slot 1..10 pass schema
+// validation while slot 11 is rejected with `400 bad-request` (see
 // formulario/SETUP.md section 7 for the raw probe evidence).
-export const MAX_FOTOS = 3;
+export const MAX_FOTOS = 10;
 
 // Pure predicate for the dynamic add-tile: true while there is room for one
 // more photo. `current` is the number of photos already attached.

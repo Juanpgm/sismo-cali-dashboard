@@ -10,6 +10,7 @@ import {
 } from './auth.js';
 import {
   MUNICIPIO, buildCodigo, parseConsecutivo, siguienteConsecutivo, validarSegmento, canAddSlot, MAX_FOTOS,
+  siguienteDesdeMax, plegarConsecutivoGuardado,
 } from './logic.js';
 
 // Serverless signer that validates the Firebase idToken and presigns the
@@ -61,7 +62,10 @@ function boot(inspector) {
   wirePhotos();
 
   $('#btn-codigo').addEventListener('click', generarCodigo);
-  $('#codigo-consecutivo').addEventListener('blur', validarSegmentoInput);
+  $('#btn-codigo-editar').addEventListener('click', abrirEdicionConsecutivo);
+  $('#btn-codigo-confirmar').addEventListener('click', confirmarConsecutivo);
+  $('#btn-codigo-cancelar').addEventListener('click', cancelarConsecutivo);
+  $('#codigo-consecutivo').addEventListener('keydown', onConsecutivoKeydown);
 
   $('#eval-form').addEventListener('submit', onSubmit);
   $('#btn-nuevo').addEventListener('click', nuevoRegistro);
@@ -225,11 +229,20 @@ const SEGMENTO_ERRORES = {
   cero: 'El consecutivo no puede ser 0000.',
 };
 
+// Snapshot of #codigo-consecutivo's value taken when edit mode opens, so a
+// cancel (button or Escape) can restore it exactly. Edit-session-scoped, not
+// part of `state` — it has no meaning outside an open edit interaction.
+let consecutivoPrevio = null;
+
 // Records-derived next consecutive, session-cached. Runs the query at most
 // once per session (state.maxConsecutivo starts null); every call after that
-// just bumps the cached max locally with no round trip. This is a pure read
-// plus in-memory bookkeeping — nothing is written to Firestore here, so a
-// generated-but-unsubmitted code never "consumes" a number for real.
+// just re-derives from the cached max with no round trip and NO mutation —
+// state.maxConsecutivo only advances when a code is actually saved (see
+// onSubmit's plegarConsecutivoGuardado fold). This is a pure read plus a
+// pure arithmetic step; nothing is written to Firestore or to the cache
+// here, so a generated-but-unsubmitted code never "consumes" a number for
+// real, and calling this twice in a row without submitting yields the same
+// value.
 async function siguienteConsecutivoSesion() {
   if (state.maxConsecutivo == null) {
     const db = getDb();
@@ -239,25 +252,28 @@ async function siguienteConsecutivoSesion() {
     snap.forEach((d) => codigos.push(d.id));
     state.maxConsecutivo = siguienteConsecutivo(codigos, state.inspector.codigo) - 1;
   }
-  state.maxConsecutivo += 1;
-  return state.maxConsecutivo;
+  return siguienteDesdeMax(state.maxConsecutivo);
 }
 
 function renderCodigo(area, consecutivo) {
   state.area = area;
   state.codigo = buildCodigo(area, state.inspector.codigo, consecutivo);
   state.derivedConsecutivo = consecutivo;
+  const valor = String(consecutivo).padStart(4, '0');
   $('#codigo-prefijo').textContent = `${MUNICIPIO}-${area}-${state.inspector.codigo}`;
-  $('#codigo-consecutivo').value = String(consecutivo).padStart(4, '0');
+  $('#codigo-consecutivo').value = valor;
+  $('#codigo-consecutivo-texto').textContent = valor;
   $('#codigo-display').hidden = false;
   $('#codigo-hint').hidden = true;
+  setCodigoEditMode(false);
 }
 
-// Re-validates the editable segment on blur/submit and, if valid, rebuilds
-// state.codigo from it (the prefix segments stay fixed). A value below the
-// derived next consecutive is accepted (gap-filling correction, not an
-// error) but shows a non-blocking Spanish hint per spec "Editable
-// Last-4-Digits Segment / Below-next edit is permitted with a hint".
+// Re-validates the editable segment (on confirm/submit) and, if valid,
+// rebuilds state.codigo from it (the prefix segments stay fixed) and syncs
+// the display-mode text. A value below the derived next consecutive is
+// accepted (gap-filling correction, not an error) but shows a non-blocking
+// Spanish hint per spec "Editable Last-4-Digits Segment / Below-next edit is
+// permitted with a hint".
 function validarSegmentoInput() {
   const errBox = $('#codigo-error');
   const hintBox = $('#codigo-hint');
@@ -271,6 +287,7 @@ function validarSegmentoInput() {
   }
   errBox.hidden = true;
   state.codigo = buildCodigo(state.area, state.inspector.codigo, res.value);
+  $('#codigo-consecutivo-texto').textContent = input.value;
   if (state.derivedConsecutivo != null && res.value < state.derivedConsecutivo) {
     hintBox.textContent = 'El consecutivo ingresado es menor al siguiente sugerido. Se acepta si es una corrección intencional.';
     hintBox.hidden = false;
@@ -278,6 +295,56 @@ function validarSegmentoInput() {
     hintBox.hidden = true;
   }
   return true;
+}
+
+// ---- Discreet edit affordance ------------------------------------------------
+// Default state is display-only (unified code text + a small pencil button).
+// Tapping the pencil swaps the consecutive segment for the real input,
+// focused with its content selected, alongside confirm/cancel icon buttons.
+
+function setCodigoEditMode(editing) {
+  $('#codigo-consecutivo-texto').hidden = editing;
+  $('#btn-codigo-editar').hidden = editing;
+  $('#codigo-consecutivo').hidden = !editing;
+  $('#btn-codigo-confirmar').hidden = !editing;
+  $('#btn-codigo-cancelar').hidden = !editing;
+  if (editing) {
+    const input = $('#codigo-consecutivo');
+    input.focus();
+    input.select();
+  }
+}
+
+function abrirEdicionConsecutivo() {
+  consecutivoPrevio = $('#codigo-consecutivo').value;
+  setCodigoEditMode(true);
+}
+
+// Applies the existing validation path; an invalid value keeps edit mode
+// open (error already shown by validarSegmentoInput) instead of returning
+// to display mode.
+function confirmarConsecutivo() {
+  if (!validarSegmentoInput()) return;
+  setCodigoEditMode(false);
+}
+
+// Restores the value captured when edit mode opened and re-runs validation
+// on it (always the last accepted value, so it just re-derives the
+// error-free error/hint state) before returning to display mode.
+function cancelarConsecutivo() {
+  $('#codigo-consecutivo').value = consecutivoPrevio;
+  validarSegmentoInput();
+  setCodigoEditMode(false);
+}
+
+function onConsecutivoKeydown(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    confirmarConsecutivo();
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    cancelarConsecutivo();
+  }
 }
 
 async function generarCodigo() {
@@ -472,6 +539,13 @@ async function onSubmit(e) {
       tx.set(evalRef, data);
     });
 
+    // Fold the ACTUALLY saved consecutive into the session cache (max(), not
+    // a blind assignment) so the next generated code derives from what was
+    // really written — including a manual edit — and a gap-filling
+    // correction (saved value below the current max) never drags the known
+    // max backwards.
+    state.maxConsecutivo = plegarConsecutivoGuardado(state.maxConsecutivo, data.consecutivo);
+
     $('#confirm-codigo').textContent = state.codigo;
     $('#app').hidden = true;
     $('#confirm').hidden = false;
@@ -522,9 +596,12 @@ function nuevoRegistro() {
   $('#btn-codigo').disabled = false;
   $('#codigo-prefijo').textContent = '';
   $('#codigo-consecutivo').value = '';
+  $('#codigo-consecutivo-texto').textContent = '';
   $('#codigo-display').hidden = true;
   $('#codigo-error').hidden = true;
   $('#codigo-hint').hidden = true;
+  setCodigoEditMode(false);
+  consecutivoPrevio = null;
   state.derivedConsecutivo = null;
   showSubmitError('');
 

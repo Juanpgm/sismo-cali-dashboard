@@ -41,3 +41,6 @@ web/data/cruce_criticos_survey.json
 credenciales_inspectores.csv
 Personas en campo con stickers.xlsx
 node_modules/
+
+# Bundles locales (p.ej. transferencia de secretos) — nunca commitear
+*.zip

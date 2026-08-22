@@ -139,31 +139,37 @@ reglas de Storage están soportadas de forma nativa por Firebase rules v2.
    Storage bajo `evaluaciones/{codigo}/`.
 6. Un segundo registro debe generar `...0010002`.
 
-## 7. Límite de fotos por registro (probado en apply de slice 2)
+## 7. Límite de fotos por registro (re-probado tras redeploy del signer)
 
 El signer externo (`https://sismo-fotos-signer.vercel.app/api/sign`) fue
-probado en 2026-08-22 con `curl` (sign-only, sin subir ningún archivo real)
-antes de habilitar más de 3 fotos en el cliente:
+probado originalmente en 2026-08-22 con `curl` (sign-only, sin subir ningún
+archivo real) y en ese momento sólo admitía `slot 1..3`, por lo que el
+cliente quedó temporalmente configurado con `MAX_FOTOS = 3`. El signer fue
+redesplegado y re-probado el mismo día con el resultado actualizado:
 
 | Petición (`idToken` inválido a propósito) | `slot` | Respuesta |
 |---|---|---|
 | `POST /api/sign` | `1` | `401 {"error":"invalid-token"}` |
-| `POST /api/sign` | `3` | `401 {"error":"invalid-token"}` |
-| `POST /api/sign` | `4` | `400 {"error":"bad-request"}` |
-| `POST /api/sign` | `10` | `400 {"error":"bad-request"}` |
+| `POST /api/sign` | `10` | `401 {"error":"invalid-token"}` |
+| `POST /api/sign` | `11` | `400 {"error":"bad-request"}` |
 
-`slot` 1 y 3 pasan la validación de esquema y fallan recién en la
-autenticación (`401`, esperado con un token inválido de prueba); `slot` 4 y
-10 son rechazados **antes** de validar el token (`400 bad-request`), es
-decir el signer valida `slot` contra un rango `1..3` fijo en el servidor.
-**Conclusión: el signer NO admite `slot > 3`.** El cliente queda configurado
-con `MAX_FOTOS = 3` (fallback documentado en `design.md`, decisión "Slot-
-Generic Design With Capped Fallback"). El resto de la funcionalidad de la
-slice (selector de galería, cámara, grilla dinámica, subida en paralelo con
-límite de concurrencia 3) se mantiene sin cambios; solo el tope visible de
-slots baja de 10 a 3. Si el signer se actualiza para aceptar `slot` hasta
-10, basta con cambiar la constante `MAX_FOTOS` en `formulario/js/logic.js`
-— ningún otro archivo asume el valor 3.
+`slot` 1..10 pasan la validación de esquema y fallan recién en la
+autenticación (`401`, esperado con un token inválido de prueba); `slot` 11
+es rechazado **antes** de validar el token (`400 bad-request`).
+**Conclusión: el signer admite `slot 1..10` (ya no está limitado a 3).** El
+cliente queda configurado con `MAX_FOTOS = 10` (fallback documentado en
+`design.md`, decisión "Slot-Generic Design With Capped Fallback"). El resto
+de la funcionalidad de la slice (selector de galería, cámara, grilla
+dinámica, subida en paralelo con límite de concurrencia igual a
+`MAX_FOTOS`) se mantiene sin cambios.
+
+El tope del servidor es ahora la variable de entorno `SIGNER_MAX_SLOT` del
+proyecto `sismo-fotos-signer`, y su código fuente está versionado en
+[`services/photo-signer/`](../services/photo-signer/README.md). Para cambiar
+el tope de fotos: subir primero `SIGNER_MAX_SLOT` (y redesplegar el signer),
+luego `MAX_FOTOS` en `formulario/js/logic.js` — ningún otro archivo asume el
+valor numérico del tope. El signer debe quedar siempre con un tope mayor o
+igual al del cliente.
 
 ## 8. Orden de despliegue y endurecimiento opcional (slice 3)
 

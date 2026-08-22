@@ -153,7 +153,9 @@ test.describe('Segmento editable del código', () => {
     await page.click('#btn-codigo');
     await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
 
+    await page.click('#btn-codigo-editar');
     await page.fill('#codigo-consecutivo', '0005');
+    await page.click('#btn-codigo-confirmar');
     await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
     await page.locator('input[name="alcance"][value="exterior"]').check();
     await addFoto(page);
@@ -174,9 +176,12 @@ test.describe('Segmento editable del código', () => {
     await page.click('#btn-codigo');
     await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
 
+    await page.click('#btn-codigo-editar');
     await page.fill('#codigo-consecutivo', '12');
-    await page.locator('#codigo-consecutivo').blur();
+    await page.click('#btn-codigo-confirmar');
     await expect(page.locator('#codigo-error')).toHaveText('El consecutivo debe tener exactamente 4 dígitos.');
+    // Confirm rejected the invalid value: edit mode stays open.
+    await expect(page.locator('#codigo-consecutivo')).toBeVisible();
 
     await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
     await page.locator('input[name="alcance"][value="exterior"]').check();
@@ -201,8 +206,9 @@ test.describe('Segmento editable del código', () => {
     await expect(page.locator('#codigo-consecutivo')).toHaveValue('0006');
     await expect(page.locator('#codigo-hint')).toBeHidden();
 
+    await page.click('#btn-codigo-editar');
     await page.fill('#codigo-consecutivo', '0002');
-    await page.locator('#codigo-consecutivo').blur();
+    await page.click('#btn-codigo-confirmar');
     await expect(page.locator('#codigo-error')).toBeHidden();
     await expect(page.locator('#codigo-hint')).toBeVisible();
     await expect(page.locator('#codigo-hint')).not.toBeEmpty();
@@ -217,6 +223,106 @@ test.describe('Segmento editable del código', () => {
     const written = await page.evaluate(() => window.__fb.firestore.evaluaciones['76001-1-0040002']);
     expect(written).toBeTruthy();
     expect(written.consecutivo).toBe(2);
+  });
+});
+
+test.describe('Bug reportado: caché del consecutivo tras una edición manual', () => {
+  test('editar el segmento a un valor mucho más alto y enviar hace que el siguiente registro continúe desde ese valor + 1', async ({ page }) => {
+    await boot(page);
+    await loginAndWaitForm(page);
+
+    // Genera el primer código (0001) y lo edita manualmente a un valor muy
+    // por encima del derivado — el escenario reportado: inspector edita a
+    // 9000 en vez de aceptar el sugerido.
+    await page.selectOption('#area', '1');
+    await page.click('#btn-codigo');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
+
+    await page.click('#btn-codigo-editar');
+    await page.fill('#codigo-consecutivo', '9000');
+    await page.click('#btn-codigo-confirmar');
+
+    await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
+    await page.locator('input[name="alcance"][value="exterior"]').check();
+    await addFoto(page);
+    await page.click('#btn-submit');
+
+    await expect(page.locator('#confirm')).toBeVisible();
+    await expect(page.locator('#confirm-codigo')).toHaveText('76001-1-0049000');
+
+    // Nuevo registro: el siguiente código debe continuar desde el valor
+    // GUARDADO (9000 + 1 = 9001), no desde el máximo derivado antes de la
+    // edición (que habría producido 0002).
+    await page.click('#btn-nuevo');
+    await expect(page.locator('#app')).toBeVisible();
+    await page.selectOption('#area', '1');
+    await page.click('#btn-codigo');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('9001');
+  });
+
+  test('generar código dos veces sin enviar no avanza el consecutivo', async ({ page }) => {
+    await boot(page);
+    await loginAndWaitForm(page);
+
+    await page.selectOption('#area', '1');
+    await page.click('#btn-codigo');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
+
+    // Re-generar sin haber enviado (mismo estado, botón sigue habilitado
+    // solo hasta que el área se bloquea; se fuerza la llamada directa a la
+    // función interna vía un segundo intento de exponer la UI no es
+    // necesario: basta con habilitar el botón/área de nuevo para reintentar
+    // la generación sin pasar por un envío real).
+    await page.evaluate(() => { document.querySelector('#area').disabled = false; document.querySelector('#btn-codigo').disabled = false; });
+    await page.click('#btn-codigo');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
+
+    const evaluaciones = await page.evaluate(() => window.__fb.firestore.evaluaciones);
+    expect(Object.keys(evaluaciones)).toHaveLength(0);
+  });
+});
+
+test.describe('Edición discreta del consecutivo (lápiz / confirmar / cancelar)', () => {
+  test('el lápiz abre edición, Escape cancela restaurando el valor y confirmar aplica un valor válido', async ({ page }) => {
+    await boot(page);
+    await loginAndWaitForm(page);
+    await page.selectOption('#area', '1');
+    await page.click('#btn-codigo');
+
+    // Display mode by default: unified text visible, input hidden.
+    await expect(page.locator('#codigo-consecutivo-texto')).toHaveText('0001');
+    await expect(page.locator('#codigo-consecutivo')).toBeHidden();
+    await expect(page.locator('#btn-codigo-editar')).toBeVisible();
+
+    // The pencil opens edit mode: input takes over, focused and ready to type.
+    await page.click('#btn-codigo-editar');
+    await expect(page.locator('#codigo-consecutivo')).toBeVisible();
+    await expect(page.locator('#codigo-consecutivo')).toBeFocused();
+    await expect(page.locator('#codigo-consecutivo-texto')).toBeHidden();
+    await expect(page.locator('#btn-codigo-editar')).toBeHidden();
+
+    // Escape cancels: restores the previous value and returns to display mode.
+    await page.fill('#codigo-consecutivo', '0009');
+    await page.locator('#codigo-consecutivo').press('Escape');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
+    await expect(page.locator('#codigo-consecutivo-texto')).toHaveText('0001');
+    await expect(page.locator('#codigo-consecutivo')).toBeHidden();
+    await expect(page.locator('#btn-codigo-editar')).toBeVisible();
+
+    // Confirm (via Enter) applies a valid edited value and returns to display mode.
+    await page.click('#btn-codigo-editar');
+    await page.fill('#codigo-consecutivo', '0007');
+    await page.locator('#codigo-consecutivo').press('Enter');
+    await expect(page.locator('#codigo-consecutivo-texto')).toHaveText('0007');
+    await expect(page.locator('#codigo-consecutivo')).toBeHidden();
+    await expect(page.locator('#btn-codigo-editar')).toBeVisible();
+
+    await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
+    await page.locator('input[name="alcance"][value="exterior"]').check();
+    await addFoto(page);
+    await page.click('#btn-submit');
+    await expect(page.locator('#confirm')).toBeVisible();
+    await expect(page.locator('#confirm-codigo')).toHaveText('76001-1-0040007');
   });
 });
 
@@ -235,6 +341,13 @@ async function addFotosGaleria(page, names) {
 }
 
 test.describe('Fotos: galería y cámara', () => {
+  test('muestra el recordatorio de fotografiar el sticker en la sección de Fotos', async ({ page }) => {
+    await boot(page);
+    await loginAndWaitForm(page);
+    await expect(page.locator('#foto-sticker-legend'))
+      .toHaveText('Recuerde tomar una foto al sticker pegado en la edificación.');
+  });
+
   test('seleccionar varias fotos a la vez agrega una vista previa por cada una, en orden', async ({ page }) => {
     await boot(page);
     await loginAndWaitForm(page);
@@ -255,14 +368,14 @@ test.describe('Fotos: galería y cámara', () => {
     expect(alts).toEqual(['Vista previa de la foto 1', 'Vista previa de la foto 2']);
   });
 
-  // MAX_FOTOS resolved to 3 (signer probe, see SETUP.md section 7), so the
-  // hard-cap scenario is reached at the 4th photo, not the 11th.
+  // MAX_FOTOS resolved to 10 (signer re-probe, see SETUP.md section 7), so the
+  // hard-cap scenario is reached at the 11th photo.
   test('alcanzar el máximo de fotos oculta los botones de agregar y muestra el aviso', async ({ page }) => {
     await boot(page);
     await loginAndWaitForm(page);
-    await addFotosGaleria(page, ['a.png', 'b.png', 'c.png']);
+    await addFotosGaleria(page, ['a.png', 'b.png', 'c.png', 'd.png', 'e.png', 'f.png', 'g.png', 'h.png', 'i.png', 'j.png']);
     await expect(page.locator('#foto-max-msg')).toBeVisible();
-    await expect(page.locator('#foto-max-msg')).toHaveText('Alcanzó el máximo de 3 fotos.');
+    await expect(page.locator('#foto-max-msg')).toHaveText('Alcanzó el máximo de 10 fotos.');
     await expect(page.locator('#btn-foto-galeria')).toBeHidden();
     await expect(page.locator('#btn-foto-camara')).toBeHidden();
   });
@@ -270,22 +383,22 @@ test.describe('Fotos: galería y cámara', () => {
   test('seleccionar más fotos que la capacidad restante solo agrega hasta el tope', async ({ page }) => {
     await boot(page);
     await loginAndWaitForm(page);
-    await addFotosGaleria(page, ['a.png', 'b.png', 'c.png', 'd.png', 'e.png']);
-    await expect(page.locator('.foto-tile')).toHaveCount(3);
+    await addFotosGaleria(page, ['a.png', 'b.png', 'c.png', 'd.png', 'e.png', 'f.png', 'g.png', 'h.png', 'i.png', 'j.png', 'k.png', 'l.png']);
+    await expect(page.locator('.foto-tile')).toHaveCount(10);
   });
 });
 
 test.describe('Subida de fotos: concurrencia y caché', () => {
-  // MAX_FOTOS resolved to 3 (SETUP.md section 7), so 3 photos is both the
+  // MAX_FOTOS resolved to 10 (SETUP.md section 7), so 10 photos is both the
   // maximum reachable through the real UI and the concurrency cap itself —
   // this proves uploads run in parallel (not sequentially) and never exceed
   // the cap, which is the strongest assertion possible at this ceiling.
-  test('sube hasta 3 fotos en paralelo, no de a una', async ({ page }) => {
+  test('sube hasta 10 fotos en paralelo, no de a una', async ({ page }) => {
     await boot(page);
     await loginAndWaitForm(page);
     await page.selectOption('#area', '1');
     await page.click('#btn-codigo');
-    await addFotosGaleria(page, ['a.png', 'b.png', 'c.png']);
+    await addFotosGaleria(page, ['a.png', 'b.png', 'c.png', 'd.png', 'e.png', 'f.png', 'g.png', 'h.png', 'i.png', 'j.png']);
     await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
     await page.locator('input[name="alcance"][value="exterior"]').check();
 
@@ -305,7 +418,7 @@ test.describe('Subida de fotos: concurrencia y caché', () => {
     await page.click('#btn-submit');
     await expect(page.locator('#confirm')).toBeVisible();
     expect(maxInFlight).toBeGreaterThan(1);
-    expect(maxInFlight).toBeLessThanOrEqual(3);
+    expect(maxInFlight).toBeLessThanOrEqual(10);
   });
 
   test('una foto ya subida no se vuelve a subir en un reintento', async ({ page }) => {
@@ -453,7 +566,9 @@ test.describe('Recuperación ante código duplicado', () => {
     await page.selectOption('#area', '1');
     await page.click('#btn-codigo');
     await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
+    await page.click('#btn-codigo-editar');
     await page.fill('#codigo-consecutivo', '0005'); // choca con el existente
+    await page.click('#btn-codigo-confirmar');
     await page.fill('#nombre', 'Colegio San José');
     await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
     await page.locator('input[name="alcance"][value="exterior"]').check();

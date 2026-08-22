@@ -5,6 +5,7 @@ import {
   sugerirClasificacion, buildCodigo, MUNICIPIO, cedulaToEmail, LOGIN_EMAIL_DOMAIN,
   parseConsecutivo, siguienteConsecutivo, validarSegmento, canAddSlot,
   clasificarErrorFirestore, backoffDelay,
+  plegarConsecutivoGuardado, siguienteDesdeMax,
 } from '../js/logic.js';
 
 const base = {
@@ -111,6 +112,38 @@ test('siguienteConsecutivo con un salto usa el máximo, no el conteo', () => {
 
 test('siguienteConsecutivo sin registros previos empieza en 1', () => {
   assert.equal(siguienteConsecutivo([], '004'), 1);
+});
+
+// ---- plegarConsecutivoGuardado -----------------------------------------------
+
+test('plegarConsecutivoGuardado adopta un valor guardado mayor que el máximo conocido', () => {
+  assert.equal(plegarConsecutivoGuardado(2, 9), 9);
+});
+
+test('plegarConsecutivoGuardado no retrocede si el valor guardado es menor (corrección de hueco)', () => {
+  assert.equal(plegarConsecutivoGuardado(9, 2), 9);
+});
+
+test('plegarConsecutivoGuardado con máximo conocido null adopta el valor guardado', () => {
+  assert.equal(plegarConsecutivoGuardado(null, 5), 5);
+});
+
+test('plegarConsecutivoGuardado sostiene el ancho por encima de 9999', () => {
+  assert.equal(plegarConsecutivoGuardado(9999, 10000), 10000);
+});
+
+// ---- siguienteDesdeMax -------------------------------------------------------
+
+test('siguienteDesdeMax suma uno al máximo conocido', () => {
+  assert.equal(siguienteDesdeMax(2), 3);
+});
+
+test('siguienteDesdeMax sin máximo conocido (null) empieza en 1', () => {
+  assert.equal(siguienteDesdeMax(null), 1);
+});
+
+test('siguienteDesdeMax por encima de 9999 sigue sumando uno (ancho libre)', () => {
+  assert.equal(siguienteDesdeMax(9999), 10000);
 });
 
 // ---- validarSegmento --------------------------------------------------------
