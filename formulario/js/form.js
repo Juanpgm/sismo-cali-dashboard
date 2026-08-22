@@ -39,6 +39,10 @@ const state = {
   // next one). null = not yet derived from Firestore. Invalidated only on a
   // codigo-duplicado collision.
   maxConsecutivo: null,
+  // The consecutive value last rendered by generarCodigo/renderCodigo (before
+  // any manual edit). Used only to decide whether an edited segment is below
+  // the derived next value (non-blocking hint, no floor enforced).
+  derivedConsecutivo: null,
   fotos: [],                // { file, previewUrl }[] — dense array, max MAX_FOTOS
   fotosSubidas: {},         // "codigo:name:size:lastModified" -> downloadURL (upload retry cache)
 };
@@ -242,24 +246,37 @@ async function siguienteConsecutivoSesion() {
 function renderCodigo(area, consecutivo) {
   state.area = area;
   state.codigo = buildCodigo(area, state.inspector.codigo, consecutivo);
+  state.derivedConsecutivo = consecutivo;
   $('#codigo-prefijo').textContent = `${MUNICIPIO}-${area}-${state.inspector.codigo}`;
   $('#codigo-consecutivo').value = String(consecutivo).padStart(4, '0');
   $('#codigo-display').hidden = false;
+  $('#codigo-hint').hidden = true;
 }
 
 // Re-validates the editable segment on blur/submit and, if valid, rebuilds
-// state.codigo from it (the prefix segments stay fixed).
+// state.codigo from it (the prefix segments stay fixed). A value below the
+// derived next consecutive is accepted (gap-filling correction, not an
+// error) but shows a non-blocking Spanish hint per spec "Editable
+// Last-4-Digits Segment / Below-next edit is permitted with a hint".
 function validarSegmentoInput() {
   const errBox = $('#codigo-error');
+  const hintBox = $('#codigo-hint');
   const input = $('#codigo-consecutivo');
   const res = validarSegmento(input.value);
   if (!res.ok) {
     errBox.textContent = SEGMENTO_ERRORES[res.code] || 'Consecutivo inválido.';
     errBox.hidden = false;
+    hintBox.hidden = true;
     return false;
   }
   errBox.hidden = true;
   state.codigo = buildCodigo(state.area, state.inspector.codigo, res.value);
+  if (state.derivedConsecutivo != null && res.value < state.derivedConsecutivo) {
+    hintBox.textContent = 'El consecutivo ingresado es menor al siguiente sugerido. Se acepta si es una corrección intencional.';
+    hintBox.hidden = false;
+  } else {
+    hintBox.hidden = true;
+  }
   return true;
 }
 
@@ -303,7 +320,7 @@ async function generarCodigo() {
 // index-keyed caching would force re-upload of every surviving photo after a
 // removal shifts the array. `slot` sent to the signer is still index-based
 // (1..MAX_FOTOS) since the signer's request schema requires it.
-async function subirFotos(fotos, limit = 3) {
+async function subirFotos(fotos, limit = MAX_FOTOS) {
   const idToken = await getAuth(getApp()).currentUser.getIdToken();
   const urls = new Array(fotos.length);
   let next = 0;
@@ -333,11 +350,12 @@ async function subirUnaFoto(file, slot, idToken) {
       body: JSON.stringify({ idToken, codigo: state.codigo, slot }),
     });
     if (!sr.ok) {
-      // Defensive fallback (design D3): the deployed signer rejects slot > 3
-      // with a 400 before checking the token. MAX_FOTOS already caps at 3 so
-      // this should be unreachable in normal use, but surfaces a specific
-      // message instead of the generic upload error if it ever happens.
-      if (sr.status === 400 && slot > 3) throw new Error('signer-slot-limit');
+      // Defensive fallback (design D3): the deployed signer rejects slot >
+      // MAX_FOTOS with a 400 before checking the token. MAX_FOTOS already
+      // caps the client-constructed slot at this value so this should be
+      // unreachable in normal use, but surfaces a specific message instead
+      // of the generic upload error if it ever happens.
+      if (sr.status === 400 && slot > MAX_FOTOS) throw new Error('signer-slot-limit');
       throw new Error(`sign-${sr.status}`);
     }
     const { uploadUrl, publicUrl } = await sr.json();
@@ -474,7 +492,7 @@ async function onSubmit(e) {
       }
       showSubmitError('El código ya existe. Se generó uno nuevo automáticamente; revise y envíe de nuevo.');
     } else if (err && err.message === 'signer-slot-limit') {
-      showSubmitError('Este dispositivo solo admite 3 fotos por registro.');
+      showSubmitError(`Este dispositivo solo admite ${MAX_FOTOS} fotos por registro.`);
     } else if (err && err.message === 'foto-upload') {
       showSubmitError('No se pudieron subir las fotos. Verifique la conexión, o quite las fotos y envíe sin ellas (los demás datos se conservan).');
     } else {
@@ -506,6 +524,8 @@ function nuevoRegistro() {
   $('#codigo-consecutivo').value = '';
   $('#codigo-display').hidden = true;
   $('#codigo-error').hidden = true;
+  $('#codigo-hint').hidden = true;
+  state.derivedConsecutivo = null;
   showSubmitError('');
 
   $('#confirm').hidden = true;

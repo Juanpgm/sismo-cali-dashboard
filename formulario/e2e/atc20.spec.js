@@ -72,6 +72,26 @@ test.describe('Sesión: reintento del perfil ante fallas transitorias', () => {
       .toHaveText('No se pudo verificar el perfil de inspector. Intente de nuevo.');
     await expect(page.locator('#app')).toBeHidden();
   });
+
+  test('agotados los 3 intentos por fallas transitorias, el botón Reintentar permite recuperar la sesión', async ({ page }) => {
+    const seed = defaultSeed();
+    // 3 fallas transitorias agotan los reintentos de readProfileWithRetry;
+    // la 4ª lectura (disparada por el clic en #auth-retry) no está en la cola
+    // y resuelve normalmente.
+    seed.flags.getDocFailQueue = ['unavailable', 'unavailable', 'unavailable'];
+    await boot(page, seed);
+    await login(page);
+
+    await expect(page.locator('#auth-retry')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#auth-error'))
+      .toHaveText('No se pudo verificar el perfil de inspector por una falla de conexión.');
+    await expect(page.locator('#app')).toBeHidden();
+
+    await page.click('#auth-retry');
+
+    await expect(page.locator('#app')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#auth-overlay')).toBeHidden();
+  });
 });
 
 test.describe('Código de la edificación', () => {
@@ -145,6 +165,58 @@ test.describe('Segmento editable del código', () => {
     const written = await page.evaluate(() => window.__fb.firestore.evaluaciones['76001-1-0040005']);
     expect(written).toBeTruthy();
     expect(written.consecutivo).toBe(5);
+  });
+
+  test('un segmento que no tiene 4 dígitos muestra el error inline y bloquea el envío', async ({ page }) => {
+    await boot(page);
+    await loginAndWaitForm(page);
+    await page.selectOption('#area', '1');
+    await page.click('#btn-codigo');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
+
+    await page.fill('#codigo-consecutivo', '12');
+    await page.locator('#codigo-consecutivo').blur();
+    await expect(page.locator('#codigo-error')).toHaveText('El consecutivo debe tener exactamente 4 dígitos.');
+
+    await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
+    await page.locator('input[name="alcance"][value="exterior"]').check();
+    await addFoto(page);
+    await page.click('#btn-submit');
+    await expect(page.locator('#submit-error')).toHaveText('Corrija el consecutivo del código antes de enviar.');
+    await expect(page.locator('#confirm')).toBeHidden();
+  });
+
+  test('editar el segmento por debajo del siguiente sugerido se acepta y muestra una sugerencia no bloqueante', async ({ page }) => {
+    const seed = defaultSeed();
+    // Solo un registro previo (consecutivo 5) para derivar "0006" como
+    // siguiente sugerido, sin ocupar el código 0002 que el inspector va a
+    // editar (evita una colisión de duplicado que enmascararía este caso).
+    seed.firestore.evaluaciones = {
+      '76001-1-0040005': { inspector: { uid: 'uid-004' } },
+    };
+    await boot(page, seed);
+    await loginAndWaitForm(page);
+    await page.selectOption('#area', '1');
+    await page.click('#btn-codigo');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0006');
+    await expect(page.locator('#codigo-hint')).toBeHidden();
+
+    await page.fill('#codigo-consecutivo', '0002');
+    await page.locator('#codigo-consecutivo').blur();
+    await expect(page.locator('#codigo-error')).toBeHidden();
+    await expect(page.locator('#codigo-hint')).toBeVisible();
+    await expect(page.locator('#codigo-hint')).not.toBeEmpty();
+
+    // Non-blocking: submit still succeeds with the below-next value.
+    await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
+    await page.locator('input[name="alcance"][value="exterior"]').check();
+    await addFoto(page);
+    await page.click('#btn-submit');
+    await expect(page.locator('#confirm')).toBeVisible();
+
+    const written = await page.evaluate(() => window.__fb.firestore.evaluaciones['76001-1-0040002']);
+    expect(written).toBeTruthy();
+    expect(written.consecutivo).toBe(2);
   });
 });
 
