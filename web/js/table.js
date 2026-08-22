@@ -45,6 +45,7 @@ let sortDir = 'desc';
 let els = null;
 let onRowClick = null;
 let lastRecords = [];
+let lastSorted = []; // current render's sorted rows, read by the delegated row handler
 let totalRecords = null;
 
 function discoverFields(records) {
@@ -73,6 +74,34 @@ export function initTable(root, allRecords, callbacks) {
   };
   buildColumnsPopover();
   wireColumnsToggle();
+  wireRowDelegation();
+}
+
+// One delegated click+keydown listener on the tbody instead of two listeners
+// per row (854 records x 2 = ~1700 attaches). Behavior-identical: same
+// modal-open / [data-expandable] toggle / Enter-Space dispatch as before,
+// just resolved via event.target.closest() against the row that's actually
+// still in the DOM after the current render (see lastSorted).
+function wireRowDelegation() {
+  els.tbody.addEventListener('click', (e) => {
+    const expandable = e.target.closest('[data-expandable]');
+    if (expandable && els.tbody.contains(expandable)) {
+      expandable.classList.toggle('is-expanded');
+      return;
+    }
+    const tr = e.target.closest('tr[data-object-id]');
+    if (!tr) return;
+    const id = tr.dataset.objectId;
+    const record = lastSorted.find((r) => String(r.ObjectID) === id);
+    if (record && onRowClick) onRowClick(record);
+  });
+  els.tbody.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const tr = e.target.closest('tr[data-object-id]');
+    if (!tr) return;
+    e.preventDefault();
+    tr.click(); // re-dispatches a click event that bubbles to the handler above
+  });
 }
 
 function buildColumnsPopover() {
@@ -183,24 +212,7 @@ export function renderTable(records) {
   }
 
   els.countEl.textContent = `Mostrando ${sorted.length} de ${totalRecords ?? sorted.length}`;
-
-  els.tbody.querySelectorAll('tr[data-object-id]').forEach((tr) => {
-    tr.addEventListener('click', (e) => {
-      if (e.target.closest('[data-expandable]')) {
-        e.target.closest('[data-expandable]').classList.toggle('is-expanded');
-        return;
-      }
-      const id = tr.dataset.objectId;
-      const record = sorted.find((r) => String(r.ObjectID) === id);
-      if (record && onRowClick) onRowClick(record);
-    });
-    tr.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        tr.click();
-      }
-    });
-  });
+  lastSorted = sorted; // read by the delegated row handler (see wireRowDelegation)
 }
 
 export function setTotalRecords(n) {

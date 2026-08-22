@@ -19,13 +19,12 @@
 // gates the UI and the refresh trigger, not the raw data files. Real data
 // protection would require serving those behind token-checked functions.
 
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
 import {
   getAuth, setPersistence, browserLocalPersistence,
   signInWithEmailAndPassword,
   onAuthStateChanged, signOut,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-import { firebaseConfig, isConfigured } from './firebase-config.js';
+import { isConfigured, getFirebaseApp } from './firebase-config.js';
 
 let auth = null;
 let currentRole = null; // 'admin' | 'viewer' | null
@@ -160,8 +159,7 @@ export function initAuth(onFirstAuthorized) {
     return;
   }
 
-  const app = initializeApp(firebaseConfig);
-  auth = getAuth(app);
+  auth = getAuth(getFirebaseApp());
   setPersistence(auth, browserLocalPersistence).catch(() => {});
 
   // Login con Google deshabilitado temporalmente: el botón ya no se renderiza y

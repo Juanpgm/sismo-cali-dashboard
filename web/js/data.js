@@ -1,9 +1,14 @@
 // Data loading + global filter state (tiny pub/sub store, no framework).
 import {
   normalizeAddressText, buildSearchIndex, splitMultiValue, labelForField,
-  normalize, isNoHabitable,
+  bucketNpisos, suspensionServicios, bustParams,
 } from './utils.js';
 import { fetchIsraelRecords } from './israel-source.js';
+
+// Re-exported so existing/potential external import sites (`import { bucketNpisos } from './data.js'`)
+// keep working; the actual implementation lives in utils.js (see comment there
+// for why — data.js can't be loaded standalone by Node's ESM loader for testing).
+export { bucketNpisos, suspensionServicios, bustParams };
 
 // Sidebar section order/labels for FILTER_FIELDS' `group` key.
 // Ordered so the severity-determining fields the assessor needs first come first.
@@ -55,28 +60,6 @@ function cleanDate(v) {
   if (v === null || v === undefined) return null;
   const s = String(v).trim();
   return s === '' ? null : s;
-}
-
-// Rangos de "N.º de pisos" en buckets de 3 (1–3, 4–6, 7–9, …). El dato de origen
-// trae errores de captura (500, 91980…): valores fuera de un rango físico plausible
-// (>60 pisos) se ignoran como outliers → "sin dato". Las etiquetas empiezan por su
-// número menor para que el orden numérico (localeCompare numeric) las deje en orden.
-const NPISOS_OUTLIER_MAX = 60;
-function bucketNpisos(v) {
-  const n = Number(v);
-  if (v === null || v === undefined || v === '' || Number.isNaN(n)
-      || n < 1 || n > NPISOS_OUTLIER_MAX) return null;
-  const b = Math.floor((n - 1) / 3);
-  return `${b * 3 + 1}–${b * 3 + 3} pisos`;
-}
-
-// Suspensión de servicios: colapso (parcial O total) declarado Y criterio de
-// habitabilidad no habitable (I1–I3). Un edificio colapsado y no habitable
-// amerita corte. Misma regla que el pipeline (refresh_data.add_suspension_servicios);
-// derivado en carga y viaja en el xlsx.
-function suspensionServicios(r) {
-  const colapso = normalize(r.colapso_parcial) === 'si' || normalize(r.colapso_total) === 'si';
-  return colapso && isNoHabitable(r) ? 'si' : 'no';
 }
 
 /** Does `record` match the selected-value set for one FILTER_FIELDS entry? */
@@ -145,8 +128,14 @@ class Store {
     for (const fn of this.listeners) fn(this);
   }
 
-  async load() {
-    const bust = `?t=${Date.now()}`;
+  // `bust` forces a network re-fetch bypassing HTTP cache — only needed right
+  // after we KNOW the published JSON changed (manual "Actualizar datos",
+  // poll detecting a new generated_at). Otherwise we let vercel.json's
+  // Cache-Control (max-age=120, stale-while-revalidate) do its job: repeat
+  // navigations/reloads and the 15-min auto-refresh don't re-download the
+  // full 3.5MB file when nothing changed server-side.
+  async load({ bust = false } = {}) {
+    const { q, opts } = bustParams(bust);
     // israelRecords: colección Firestore SEPARADA (Inspectores de Israel). Se trae
     // en paralelo y nunca lanza (devuelve [] ante cualquier fallo), así el tablero
     // de Cali carga aunque Firestore no responda.
@@ -155,8 +144,8 @@ class Store {
     // acá dejaba el tablero en blanco. Cuando llega, notify() pinta el KPI.
     this.refreshReportados().catch(() => {});
     const [metaRes, dataRes, israelRecords] = await Promise.all([
-      fetch(`data/meta.json${bust}`, { cache: 'no-store' }),
-      fetch(`data/inspections.json${bust}`, { cache: 'no-store' }),
+      fetch(`data/meta.json${q}`, opts),
+      fetch(`data/inspections.json${q}`, opts),
       fetchIsraelRecords(),
     ]);
     if (!metaRes.ok || !dataRes.ok) {

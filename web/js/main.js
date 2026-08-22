@@ -2,7 +2,7 @@
 import { store } from './data.js';
 import { initFilters } from './filters.js';
 import { renderKpis } from './kpi.js';
-import { renderStatistics } from './charts.js';
+import { renderStatistics, resetCharts } from './charts.js';
 import {
   initMap, render as renderMap, setMode, setColorBy, setSizeBy, setHeatWeight,
   setChoroplethLevel, setChoroplethMetric, invalidateSize, highlightRecord, applyMapTheme,
@@ -36,6 +36,18 @@ const drawerBackdrop = el('#drawer-backdrop');
 const tableCard = el('#table-card');
 
 let mapInitialized = false;
+let currentView = 'panel';
+
+// Kick off the data fetch RIGHT NOW, in parallel with the Firebase Auth SDK
+// boot/login check below — the static JSON is publicly fetchable regardless
+// of login (see auth.js's "ceiling" comment), so there's no reason to
+// serialize a ~3.5MB fetch behind an auth round-trip. loadAndRender() awaits
+// this instead of calling store.load() again for the very first render.
+let initialLoadPromise = store.load();
+// Real handling happens in loadAndRender()'s try/catch; this just keeps the
+// browser from logging a spurious "unhandled rejection" if auth is slow and
+// the fetch fails before loadAndRender gets a chance to await it.
+initialLoadPromise.catch(() => {});
 
 function showToast(message, variant = 'success') {
   const toast = document.createElement('div');
@@ -104,8 +116,9 @@ function onStoreChange() {
   });
   renderStatistics(store.filtered, store.records, store.reportados);
   // Acciones works over ALL records: the filters sidebar only applies to Panel.
-  // Solo admin: los viewers ni siquiera reciben ese contenido en el DOM.
-  if (isAdmin()) {
+  // Solo admin, and only while that tab is actually visible — skip the full
+  // rebuild on every Panel filter keystroke otherwise (see switchView()).
+  if (isAdmin() && currentView === 'acciones') {
     renderAcciones(document.getElementById('view-acciones'), store.records, { onRowClick: openDetailModal });
   }
 }
@@ -180,6 +193,13 @@ function switchView(view) {
   if (view === 'stickers') {
     initStickers(document.getElementById('view-stickers'), { getToken: getIdToken });
   }
+  currentView = view;
+  // Acciones works over ALL records and doesn't depend on the Panel filters —
+  // render it lazily (on load and on filter change) only while it's the
+  // visible tab, same idea as Stickers above; see onStoreChange().
+  if (view === 'acciones' && isAdmin() && store.records.length) {
+    renderAcciones(document.getElementById('view-acciones'), store.records, { onRowClick: openDetailModal });
+  }
 }
 
 function wireViewTabs() {
@@ -188,7 +208,7 @@ function wireViewTabs() {
   });
 }
 
-async function loadAndRender({ isRefresh = false } = {}) {
+async function loadAndRender({ isRefresh = false, bust = false } = {}) {
   try {
     if (isRefresh) {
       refreshBtn.classList.add('is-loading');
@@ -198,9 +218,14 @@ async function loadAndRender({ isRefresh = false } = {}) {
       refreshProgress.hidden = false;
       // Floor the perceived duration so the progress feedback is visible even
       // when the JSON comes back from cache in a few milliseconds.
-      await Promise.all([store.load(), new Promise((r) => setTimeout(r, 600))]);
+      await Promise.all([store.load({ bust }), new Promise((r) => setTimeout(r, 600))]);
+    } else if (initialLoadPromise) {
+      // First call after boot: reuse the fetch kicked off at module load
+      // instead of firing a second, redundant one.
+      await initialLoadPromise;
+      initialLoadPromise = null;
     } else {
-      await store.load();
+      await store.load({ bust });
     }
     errorOverlay.hidden = true;
     renderHeaderMeta();
@@ -321,7 +346,7 @@ async function pollForFreshData(baseline) {
         const meta = await res.json();
         if (meta.generated_at && meta.generated_at !== baseline) {
           setProgress(100, 'Datos actualizados', 'done');
-          await loadAndRender();
+          await loadAndRender({ bust: true });
           showToast('Datos actualizados');
           setTimeout(clearProgress, 1800);
           return;
@@ -372,7 +397,7 @@ async function triggerRefresh() {
     } catch {
       // No backend reachable: degrade to re-reading the published JSON.
       setProgress(100, 'Sin conexión — recargando datos', 'error');
-      await loadAndRender();
+      await loadAndRender({ bust: true });
       showToast('No se pudo contactar el servicio de actualización; recargué los datos publicados.', 'error');
       return;
     }
@@ -409,7 +434,7 @@ async function triggerRefresh() {
     // Trigger unavailable (endpoint missing, token not set, Railway error):
     // never leave the user worse off — re-read the published JSON.
     setProgress(100, 'No se pudo disparar — recargando', 'error');
-    await loadAndRender();
+    await loadAndRender({ bust: true });
     showToast(`No se pudo disparar la actualización (${body.error || res.status}); recargué los datos publicados.`, 'error');
   } finally {
     // Los caminos fallidos liberan el botón ya; el camino exitoso lo libera el
@@ -422,11 +447,29 @@ async function triggerRefresh() {
   }
 }
 
+// xlsx (SheetJS, ~1MB) is only needed by the two download buttons below —
+// load it on first click instead of blocking every page load with it.
+let xlsxPromise = null;
+function loadXlsx() {
+  if (!xlsxPromise) {
+    xlsxPromise = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+      s.onload = () => resolve(window.XLSX);
+      s.onerror = () => reject(new Error('No se pudo cargar xlsx'));
+      document.head.appendChild(s);
+    });
+  }
+  return xlsxPromise;
+}
+
 /** Build the .xlsx client-side from store.filtered so active filters apply.
  *  The JSON records carry the same columns as the static export; the internal
  *  derived fields (_search, n_pisos_rango) are stripped, but the derived
  *  suspension_servicios column ships in the export on purpose. */
-el('#datos-download').addEventListener('click', () => {
+el('#datos-download').addEventListener('click', async () => {
+  let XLSX;
+  try { XLSX = await loadXlsx(); } catch { showToast('No se pudo cargar el generador de Excel.', 'error'); return; }
   const rows = store.filtered.map(({ _search, n_pisos_rango, ...r }) => {
     const bin = habBinary(r); // 'habitable' | 'no_habitable' | '' (sin dato)
     return { ...r, habitable_no_habitable: bin ? labelForCode(bin) : 'Sin dato' };
@@ -463,8 +506,10 @@ el('#datos-download').addEventListener('click', () => {
  *  colapso (parcial o total) Y nivel de daño alto — las que pueden comprometer
  *  la vía. El filtro es FIJO (no usa los filtros del Panel) porque es un
  *  documento con criterio propio que se entrega a otra entidad. */
-el('#transito-download').addEventListener('click', () => {
+el('#transito-download').addEventListener('click', async () => {
   if (!isAdmin()) return; // el botón está oculto para viewers; guardia por si acaso
+  let XLSX;
+  try { XLSX = await loadXlsx(); } catch { showToast('No se pudo cargar el generador de Excel.', 'error'); return; }
   const yes = (v) => String(v).toLowerCase() === 'si';
   const rows = store.records
     .filter((r) => (yes(r.colapso_parcial) || yes(r.colapso_total))
@@ -491,7 +536,7 @@ el('#transito-download').addEventListener('click', () => {
 
 searchInput.addEventListener('input', debounce((e) => store.setSearch(e.target.value), 250));
 refreshBtn.addEventListener('click', () => triggerRefresh());
-retryBtn.addEventListener('click', () => loadAndRender({ isRefresh: true }));
+retryBtn.addEventListener('click', () => loadAndRender({ isRefresh: true, bust: true }));
 filtersOpenBtn.addEventListener('click', openFiltersDrawer);
 drawerBackdrop.addEventListener('click', closeFiltersDrawer);
 document.addEventListener('keydown', (e) => {
@@ -508,7 +553,10 @@ window.addEventListener('resize', debounce(() => {
 // up the new CSS-variable colors it bakes in at construction time.
 document.addEventListener('themechange', () => {
   applyMapTheme();
-  if (store.records.length) renderStatistics(store.filtered, store.records, store.reportados);
+  if (store.records.length) {
+    resetCharts(); // force destroy+recreate so Chart.js re-bakes the new theme's CSS-var colors
+    renderStatistics(store.filtered, store.records, store.reportados);
+  }
 });
 
 // Auto-refresh cada 15 min, alineado con el cron de Railway (*/15) que publica

@@ -1058,7 +1058,14 @@ th.is-sorted { color: var(--accent); }
 }
 .sort-arrow { color: var(--accent); font-size: 0.7rem; }
 
-tbody tr { border-bottom: 1px solid var(--border); cursor: pointer; }
+/* content-visibility lets the browser skip layout/paint for off-screen rows
+   (perf win at 854+ rows, no JS windowing needed). contain-intrinsic-size is a
+   placeholder size for skipped rows before they're measured — approximate, not
+   exact (most rows are one text line; a 2-line .cell-clamp expansion is taller).
+   Known ceiling: this can cause a brief column-width guess mismatch/jump while
+   scrolling; acceptable at this row count, revisit with real virtualization if
+   it becomes visible or row count reaches the thousands. */
+tbody tr { border-bottom: 1px solid var(--border); cursor: pointer; content-visibility: auto; contain-intrinsic-size: 44px; }
 tbody tr:hover { background: var(--surface-2); }
 tbody tr:focus-visible { background: var(--surface-2); }
 td { padding: 10px 14px; vertical-align: top; color: var(--text-primary); max-width: 260px; }

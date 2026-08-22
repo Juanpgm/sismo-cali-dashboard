@@ -7,16 +7,17 @@
 // Reusa la app de Firebase que auth.js ya inicializó (getApp()). Nunca lanza:
 // ante cualquier fallo (reglas, red, app sin iniciar) devuelve [] para que el
 // tablero de Cali siga cargando igual.
-import { getApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
 import {
   getFirestore, collection, getDocs,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+import { isConfigured, getFirebaseApp } from './firebase-config.js';
 
 const COLLECTION = 'inspecciones_israel';
 
 export async function fetchIsraelRecords() {
+  if (!isConfigured()) return [];
   try {
-    const db = getFirestore(getApp());
+    const db = getFirestore(getFirebaseApp());
     const snap = await getDocs(collection(db, COLLECTION));
     return snap.docs.map((d) => ({ ...d.data(), fuente: 'israel' }));
   } catch (err) {

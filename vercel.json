@@ -1,3 +1,29 @@
 {
-  "outputDirectory": "web"
+  "outputDirectory": "web",
+  "headers": [
+    {
+      "source": "/data/meta.json",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=120, stale-while-revalidate=600" }
+      ]
+    },
+    {
+      "source": "/data/inspections.json",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=120, stale-while-revalidate=600" }
+      ]
+    },
+    {
+      "source": "/data/comunas.geojson",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=3600, stale-while-revalidate=86400" }
+      ]
+    },
+    {
+      "source": "/data/barrios.geojson",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=3600, stale-while-revalidate=86400" }
+      ]
+    }
+  ]
 }

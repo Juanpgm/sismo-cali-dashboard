@@ -52,15 +52,37 @@ function injectChartHelp() {
   }
 }
 
-/** Destroy-and-recreate per render (fine at 91 rows; revisit with chart.update() if data grows). */
-export function upsertChart(canvasId, config) {
+/** Filter-change render: mutate the existing Chart instance in place via
+ *  update() when one of the same `type` already exists on this canvas — avoids
+ *  a full destroy+recreate teardown/rebuild per filter change. Falls back to
+ *  destroy+recreate when there's no existing chart, its type differs, or the
+ *  caller passes `recreate: true` (needed by chart-suspension: its centerText
+ *  plugin closes over requieren/total/pct baked in at construction, which
+ *  update() would leave stale — see renderSuspension). Theme changes go
+ *  through resetCharts() first instead, so they always take the recreate path. */
+export function upsertChart(canvasId, config, { recreate = false } = {}) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return null;
   const existing = registry.get(canvasId);
+  if (existing && !recreate && existing.config.type === config.type) {
+    existing.data = config.data;
+    existing.options = config.options;
+    existing.update('none');
+    return existing;
+  }
   if (existing) existing.destroy();
   const chart = new Chart(canvas, config);
   registry.set(canvasId, chart);
   return chart;
+}
+
+/** Destroy every registered chart and clear the registry. Used before a theme
+ *  change re-render: Chart.js bakes CSS-variable colors in at construction, so
+ *  update() alone won't repaint an existing instance with the new theme's
+ *  colors — a full recreate is required. */
+export function resetCharts() {
+  for (const chart of registry.values()) chart.destroy();
+  registry.clear();
 }
 
 function baseOptions(overrides = {}) {
@@ -612,7 +634,7 @@ const TIPOLOGIAS = [
 ];
 const NPISOS_MAX = 60;
 
-function tipologiaDe(r) {
+export function tipologiaDe(r) {
   const raw = r.n_pisos;
   if (raw == null || String(raw).trim() === '') return 'sin_dato';
   const n = Number(raw);
@@ -622,7 +644,7 @@ function tipologiaDe(r) {
 
 /** Conteos edificaciones + suma de unidades residenciales por tipología×semáforo.
  *  Solo registros con semáforo conocido (H/R/I), así todas las filas cuadran. */
-function tipologiaCounts(records) {
+export function tipologiaCounts(records) {
   const acc = Object.fromEntries(TIPOLOGIAS.map(([t]) => [
     t, { verde: { edif: 0, unid: 0 }, amarillo: { edif: 0, unid: 0 }, rojo: { edif: 0, unid: 0 } },
   ]));
@@ -693,7 +715,7 @@ const CH_METRICS = [
 // la tabla (que se queda en las 4 de CH_METRICS), solo en el gráfico de colapso
 // para dar el contraste contra las colapsadas.
 const CH_BAR_METRICS = [...CH_METRICS, ['no_colapso', 'No colapsadas', COLORS.status.h]];
-function colapsoHabCounts(records) {
+export function colapsoHabCounts(records) {
   const acc = Object.fromEntries(TIPOLOGIAS.map(([t]) => [
     t, Object.fromEntries(CH_BAR_METRICS.map(([m]) => [m, { reg: 0, unid: 0 }])),
   ]));
@@ -818,7 +840,7 @@ function renderSuspension(records) {
         },
       },
     }),
-  });
+  }, { recreate: true }); // centerText closes over requieren/total/pct — must always rebuild.
 }
 
 let warnedMissingChart = false;

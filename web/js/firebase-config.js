@@ -15,6 +15,8 @@
 //   • Authentication → Settings → Authorized domains includes your Vercel
 //     domain (e.g. sismo-cali.vercel.app) and any custom domain.
 
+import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+
 export const firebaseConfig = {
   apiKey: 'AIzaSyAVVewMgunLWBiZz5XU-GjrzbO3ZKcyvD0',
   authDomain: 'dagma-85aad.firebaseapp.com',
@@ -34,3 +36,9 @@ export const isConfigured = () =>
   !Object.values(firebaseConfig).some(
     (v) => typeof v === 'string' && v.startsWith('PEGA_'),
   );
+
+// Shared Firebase app instance. auth.js and israel-source.js both need it and
+// can run in either order (data loading now starts in parallel with the auth
+// SDK boot) — initializeApp() throws if called twice for the default app, so
+// this is the one place that's allowed to create it.
+export const getFirebaseApp = () => (getApps().length ? getApp() : initializeApp(firebaseConfig));

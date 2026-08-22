@@ -469,6 +469,45 @@ export function habBinary(record) {
 }
 export function isNoHabitableBinary(record) { return habBinary(record) === 'no_habitable'; }
 
+/* ---- N.º de pisos buckets / suspensión de servicios / fetch cache-busting */
+// Kept here (not in data.js) because data.js transitively imports the Firebase
+// SDK (via israel-source.js -> firebase-config.js -> a bare https:// specifier)
+// which Node's ESM loader can't resolve — that import chain makes data.js
+// impossible to unit-test directly. utils.js has zero imports, so pure logic
+// that needs a `node:assert` self-check (data.test.mjs) lives here instead;
+// data.js re-exports these three so its own call sites/import surface don't change.
+
+// Rangos de "N.º de pisos" en buckets de 3 (1–3, 4–6, 7–9, …). El dato de origen
+// trae errores de captura (500, 91980…): valores fuera de un rango físico plausible
+// (>60 pisos) se ignoran como outliers → "sin dato". Las etiquetas empiezan por su
+// número menor para que el orden numérico (localeCompare numeric) las deje en orden.
+const NPISOS_OUTLIER_MAX = 60;
+export function bucketNpisos(v) {
+  const n = Number(v);
+  if (v === null || v === undefined || v === '' || Number.isNaN(n)
+      || n < 1 || n > NPISOS_OUTLIER_MAX) return null;
+  const b = Math.floor((n - 1) / 3);
+  return `${b * 3 + 1}–${b * 3 + 3} pisos`;
+}
+
+// Suspensión de servicios: colapso (parcial O total) declarado Y criterio de
+// habitabilidad no habitable (I1–I3). Un edificio colapsado y no habitable
+// amerita corte. Misma regla que el pipeline (refresh_data.add_suspension_servicios);
+// derivado en carga y viaja en el xlsx.
+export function suspensionServicios(r) {
+  const colapso = normalize(r.colapso_parcial) === 'si' || normalize(r.colapso_total) === 'si';
+  return colapso && isNoHabitable(r) ? 'si' : 'no';
+}
+
+// Cache-busting fetch params. `bust` MUST stay false on normal startup loads
+// (lets vercel.json's Cache-Control do its job); true only for retry/refresh/poll
+// paths that need a guaranteed-fresh fetch. See data.js load()'s comment for the why.
+export function bustParams(bust) {
+  const q = bust ? `?t=${Date.now()}` : '';
+  const opts = bust ? { cache: 'no-store' } : {};
+  return { q, opts };
+}
+
 /* ---- Source (pre-normalization) field labels from the EDAN-F3 excel ----- */
 // Populated once from meta.json's `source_labels` on load; used ONLY for the
 // display of selectable options (filters, "Colorear por"). Internal field keys
