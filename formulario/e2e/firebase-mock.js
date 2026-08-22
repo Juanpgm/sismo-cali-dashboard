@@ -82,6 +82,25 @@ const MOCK_FIRESTORE = `
     const d = c[ref._id];
     return Promise.resolve({ exists: function () { return d !== undefined; }, data: function () { return d; } });
   }
+  // Minimal query support: collection() + query() + where() build a
+  // descriptor; getDocs() filters in-memory docs by dotted-path equality
+  // (e.g. 'inspector.uid') — enough for the app's single-field lookups.
+  export function collection(db, coll) { return { _coll: coll }; }
+  export function where(field, op, value) { return { field: field, op: op, value: value }; }
+  export function query(collRef, ...clauses) { return { _coll: collRef._coll, _clauses: clauses }; }
+  function getPath(obj, path) {
+    return path.split('.').reduce(function (acc, key) { return acc == null ? acc : acc[key]; }, obj);
+  }
+  export function getDocs(q) {
+    const c = window.__fb.firestore[q._coll] || {};
+    const docs = Object.keys(c)
+      .filter(function (id) {
+        const d = c[id];
+        return (q._clauses || []).every(function (cl) { return getPath(d, cl.field) === cl.value; });
+      })
+      .map(function (id) { return { id: id, data: function () { return c[id]; } }; });
+    return Promise.resolve({ docs: docs, forEach: function (cb) { docs.forEach(cb); } });
+  }
   export function runTransaction(db, fn) {
     const tx = {
       get: function (ref) {

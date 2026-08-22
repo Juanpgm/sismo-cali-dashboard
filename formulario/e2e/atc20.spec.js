@@ -66,9 +66,64 @@ test.describe('Código de la edificación', () => {
     await loginAndWaitForm(page);
     await page.selectOption('#area', '1');
     await page.click('#btn-codigo');
-    await expect(page.locator('#codigo-display')).toHaveText('76001-1-0040001');
+    await expect(page.locator('#codigo-prefijo')).toHaveText('76001-1-004');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
     await expect(page.locator('#area')).toBeDisabled();
     await expect(page.locator('#btn-codigo')).toBeDisabled();
+  });
+});
+
+test.describe('Consecutivo derivado de registros', () => {
+  test('con un salto en los registros previos, el siguiente código es 0004', async ({ page }) => {
+    const seed = defaultSeed();
+    seed.firestore.evaluaciones = {
+      '76001-1-0040001': { inspector: { uid: 'uid-004' } },
+      '76001-1-0040003': { inspector: { uid: 'uid-004' } },
+    };
+    await boot(page, seed);
+    await loginAndWaitForm(page);
+    await page.selectOption('#area', '1');
+    await page.click('#btn-codigo');
+    await expect(page.locator('#codigo-prefijo')).toHaveText('76001-1-004');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0004');
+  });
+
+  test('abandonar el formulario sin enviar no consume un número (no hay escritura en Firestore)', async ({ page }) => {
+    await boot(page);
+    await loginAndWaitForm(page);
+    await page.selectOption('#area', '1');
+    await page.click('#btn-codigo');
+    await expect(page.locator('#codigo-prefijo')).toHaveText('76001-1-004');
+    // Generar código es solo lectura + caché local; nada se escribe hasta
+    // enviar (la vieja transacción inspectores/{uid} que incrementaba en cada
+    // clic ya no existe).
+    const inspectorDoc = await page.evaluate(() => window.__fb.firestore.inspectores['uid-004']);
+    expect(inspectorDoc.consecutivo).toBe(0);
+    const evaluaciones = await page.evaluate(() => window.__fb.firestore.evaluaciones);
+    expect(Object.keys(evaluaciones)).toHaveLength(0);
+  });
+});
+
+test.describe('Segmento editable del código', () => {
+  test('editar el segmento cambia el código final que se guarda (doc id + consecutivo numérico)', async ({ page }) => {
+    await boot(page);
+    await loginAndWaitForm(page);
+    await page.selectOption('#area', '1');
+    await page.click('#btn-codigo');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
+
+    await page.fill('#codigo-consecutivo', '0005');
+    await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
+    await page.locator('input[name="alcance"][value="exterior"]').check();
+    await addFoto(page);
+    await page.click('#btn-submit');
+
+    await expect(page.locator('#confirm')).toBeVisible();
+    await expect(page.locator('#confirm-codigo')).toHaveText('76001-1-0040005');
+
+    const written = await page.evaluate(() => window.__fb.firestore.evaluaciones['76001-1-0040005']);
+    expect(written).toBeTruthy();
+    expect(written.consecutivo).toBe(5);
   });
 });
 
@@ -94,7 +149,8 @@ test.describe('Validación de envío', () => {
     await loginAndWaitForm(page);
     await page.selectOption('#area', '1');
     await page.click('#btn-codigo');
-    await expect(page.locator('#codigo-display')).toHaveText('76001-1-0040001');
+    await expect(page.locator('#codigo-prefijo')).toHaveText('76001-1-004');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
     await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
     await page.locator('input[name="alcance"][value="exterior"]').check();
     await page.click('#btn-submit');
@@ -111,7 +167,8 @@ test.describe('Flujo completo de registro', () => {
 
     await page.selectOption('#area', '1');
     await page.click('#btn-codigo');
-    await expect(page.locator('#codigo-display')).toHaveText('76001-1-0040001');
+    await expect(page.locator('#codigo-prefijo')).toHaveText('76001-1-004');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
 
     await page.fill('#nombre', 'Colegio San José');
     await page.fill('#direccion', 'Calle 5 #10-20');
@@ -145,6 +202,7 @@ test.describe('Flujo completo de registro', () => {
     expect(written.fotos).toHaveLength(1);
     expect(written.fotos[0]).toBe('https://s3.mock/evaluaciones/76001-1-0040001/foto_1.jpg');
     expect(written.acciones_posteriores.barricadas).toBe(true);
+    expect(written.consecutivo).toBe(1);
   });
 
   test('el consecutivo avanza en el segundo registro', async ({ page }) => {
@@ -154,7 +212,8 @@ test.describe('Flujo completo de registro', () => {
     // Primer registro completo.
     await page.selectOption('#area', '1');
     await page.click('#btn-codigo');
-    await expect(page.locator('#codigo-display')).toHaveText('76001-1-0040001');
+    await expect(page.locator('#codigo-prefijo')).toHaveText('76001-1-004');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
     await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
     await page.locator('input[name="alcance"][value="exterior"]').check();
     await addFoto(page);
@@ -167,31 +226,47 @@ test.describe('Flujo completo de registro', () => {
     await expect(page.locator('#area')).toBeEnabled();
     await page.selectOption('#area', '1');
     await page.click('#btn-codigo');
-    await expect(page.locator('#codigo-display')).toHaveText('76001-1-0040002');
+    await expect(page.locator('#codigo-prefijo')).toHaveText('76001-1-004');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0002');
   });
 });
 
 test.describe('Recuperación ante código duplicado', () => {
-  test('si el código ya existe, avisa y rehabilita el área para regenerar', async ({ page }) => {
+  test('si el código editado ya existe, avisa, conserva los datos y ofrece un código nuevo', async ({ page }) => {
     const seed = defaultSeed();
-    seed.firestore.evaluaciones['76001-1-0040001'] = { codigo_edificacion: '76001-1-0040001' }; // colisión
+    // Colisión con un código creado fuera de la consulta de este inspector
+    // (sin inspector.uid), como lo exige la generación por edición manual o
+    // la creación concurrente desde otro dispositivo.
+    seed.firestore.evaluaciones['76001-1-0040005'] = { codigo_edificacion: '76001-1-0040005' };
     await boot(page, seed);
     await loginAndWaitForm(page);
 
     await page.selectOption('#area', '1');
     await page.click('#btn-codigo');
-    await expect(page.locator('#codigo-display')).toHaveText('76001-1-0040001');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
+    await page.fill('#codigo-consecutivo', '0005'); // choca con el existente
+    await page.fill('#nombre', 'Colegio San José');
     await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
     await page.locator('input[name="alcance"][value="exterior"]').check();
     await addFoto(page);
     await page.click('#btn-submit');
 
-    await expect(page.locator('#submit-error'))
-      .toHaveText('El código ya existe. Genere un nuevo código e intente de nuevo.');
+    await expect(page.locator('#submit-error')).toHaveText(
+      'El código ya existe. Se generó uno nuevo automáticamente; revise y envíe de nuevo.',
+    );
     await expect(page.locator('#confirm')).toBeHidden();
-    await expect(page.locator('#area')).toBeEnabled();
-    await expect(page.locator('#btn-codigo')).toBeEnabled();
-    await expect(page.locator('#codigo-display')).toBeHidden();
+
+    // A diferencia del comportamiento anterior, el formulario NO se limpia:
+    // los datos ingresados y la foto se conservan.
+    await expect(page.locator('#nombre')).toHaveValue('Colegio San José');
+    await expect(page.locator('input[name="clasificacion"][value="INSPECCIONADA"]')).toBeChecked();
+
+    // El área y el botón de generar siguen bloqueados; se ofrece un código
+    // nuevo derivado (no el editado que chocó).
+    await expect(page.locator('#area')).toBeDisabled();
+    await expect(page.locator('#btn-codigo')).toBeDisabled();
+    await expect(page.locator('#codigo-display')).toBeVisible();
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
   });
 });
 

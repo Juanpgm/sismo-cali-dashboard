@@ -3,10 +3,12 @@
 
 import { initAuth, getApp, getDb } from './auth.js';
 import {
-  doc, runTransaction, serverTimestamp,
+  collection, doc, getDoc, getDocs, query, runTransaction, serverTimestamp, where,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 import { getAuth } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-import { MUNICIPIO, buildCodigo } from './logic.js';
+import {
+  MUNICIPIO, buildCodigo, parseConsecutivo, siguienteConsecutivo, validarSegmento,
+} from './logic.js';
 
 // Serverless signer that validates the Firebase idToken and presigns the
 // S3 upload (photos live in S3, not Firebase Storage).
@@ -29,7 +31,12 @@ const state = {
   coords: null,            // best fix so far: { lat, lng, accuracy }
   geoWatchId: null,        // active watchPosition id (null = not watching)
   geoWatchTimer: null,     // battery-guard timeout for the watch
+  area: null,               // selected DIVIPOLA area, e.g. "1"
   codigo: null,            // generated building code, e.g. "76001-1-0040001"
+  // Session-scoped cache of this inspector's max known consecutive (not the
+  // next one). null = not yet derived from Firestore. Invalidated only on a
+  // codigo-duplicado collision.
+  maxConsecutivo: null,
   fotos: [null, null, null], // File | null per slot
   fotosSubidas: {},        // "codigo:slot" -> downloadURL (upload retry cache)
 };
@@ -48,6 +55,7 @@ function boot(inspector) {
   wirePhotos();
 
   $('#btn-codigo').addEventListener('click', generarCodigo);
+  $('#codigo-consecutivo').addEventListener('blur', validarSegmentoInput);
 
   $('#eval-form').addEventListener('submit', onSubmit);
   $('#btn-nuevo').addEventListener('click', nuevoRegistro);
@@ -169,6 +177,55 @@ function clearPhotos() {
 
 // ---- Building code ----------------------------------------------------------
 
+const SEGMENTO_ERRORES = {
+  vacio: 'Ingrese el consecutivo de 4 dígitos.',
+  longitud: 'El consecutivo debe tener exactamente 4 dígitos.',
+  'no-numerico': 'El consecutivo debe contener solo números.',
+  cero: 'El consecutivo no puede ser 0000.',
+};
+
+// Records-derived next consecutive, session-cached. Runs the query at most
+// once per session (state.maxConsecutivo starts null); every call after that
+// just bumps the cached max locally with no round trip. This is a pure read
+// plus in-memory bookkeeping — nothing is written to Firestore here, so a
+// generated-but-unsubmitted code never "consumes" a number for real.
+async function siguienteConsecutivoSesion() {
+  if (state.maxConsecutivo == null) {
+    const db = getDb();
+    const q = query(collection(db, 'evaluaciones'), where('inspector.uid', '==', state.inspector.uid));
+    const snap = await getDocs(q);
+    const codigos = [];
+    snap.forEach((d) => codigos.push(d.id));
+    state.maxConsecutivo = siguienteConsecutivo(codigos, state.inspector.codigo) - 1;
+  }
+  state.maxConsecutivo += 1;
+  return state.maxConsecutivo;
+}
+
+function renderCodigo(area, consecutivo) {
+  state.area = area;
+  state.codigo = buildCodigo(area, state.inspector.codigo, consecutivo);
+  $('#codigo-prefijo').textContent = `${MUNICIPIO}-${area}-${state.inspector.codigo}`;
+  $('#codigo-consecutivo').value = String(consecutivo).padStart(4, '0');
+  $('#codigo-display').hidden = false;
+}
+
+// Re-validates the editable segment on blur/submit and, if valid, rebuilds
+// state.codigo from it (the prefix segments stay fixed).
+function validarSegmentoInput() {
+  const errBox = $('#codigo-error');
+  const input = $('#codigo-consecutivo');
+  const res = validarSegmento(input.value);
+  if (!res.ok) {
+    errBox.textContent = SEGMENTO_ERRORES[res.code] || 'Consecutivo inválido.';
+    errBox.hidden = false;
+    return false;
+  }
+  errBox.hidden = true;
+  state.codigo = buildCodigo(state.area, state.inspector.codigo, res.value);
+  return true;
+}
+
 async function generarCodigo() {
   const areaSel = $('#area');
   const btn = $('#btn-codigo');
@@ -187,24 +244,9 @@ async function generarCodigo() {
     if (!/^\d{3}$/.test(String(state.inspector.codigo))) {
       throw new Error('codigo-inspector-invalido');
     }
-    const db = getDb();
-    const insRef = doc(db, 'inspectores', state.inspector.uid);
-    // Transaction: read consecutivo, increment, write back — no duplicates
-    // even with the same account on two devices.
-    const codigo = await runTransaction(db, async (tx) => {
-      const snap = await tx.get(insRef);
-      if (!snap.exists()) throw new Error('perfil-no-encontrado');
-      const actual = Number(snap.data().consecutivo);
-      const consecutivo = (Number.isFinite(actual) ? actual : 0) + 1;
-      tx.update(insRef, { consecutivo });
-      return buildCodigo(area, state.inspector.codigo, consecutivo);
-    });
-
-    state.codigo = codigo;
+    const consecutivo = await siguienteConsecutivoSesion();
+    renderCodigo(area, consecutivo);
     areaSel.disabled = true;
-    const display = $('#codigo-display');
-    display.textContent = codigo;
-    display.hidden = false;
   } catch (err) {
     console.error(err);
     btn.disabled = false;
@@ -246,12 +288,23 @@ async function onSubmit(e) {
   e.preventDefault();
   showSubmitError('');
 
+  if (state.codigo && !validarSegmentoInput()) {
+    showSubmitError('Corrija el consecutivo del código antes de enviar.');
+    return;
+  }
+
   const invalid = validate();
   if (invalid) { showSubmitError(invalid); return; }
 
   setSubmitBusy(true);
   try {
     const db = getDb();
+
+    // Friendly early guard: catch an existing code before spending time on
+    // photo uploads. The create-only transaction below is the authoritative,
+    // fail-closed backstop (also catches a race between two devices).
+    const preSnap = await getDoc(doc(db, 'evaluaciones', state.codigo));
+    if (preSnap.exists()) throw new Error('codigo-duplicado');
 
     // Upload photos to S3 first (signer presigns per photo); URLs go inside
     // the evaluation doc. Successful uploads are cached so a retry after a
@@ -295,6 +348,7 @@ async function onSubmit(e) {
 
     const data = {
       codigo_edificacion: state.codigo,
+      consecutivo: parseConsecutivo(state.codigo, state.inspector.codigo),
       municipio: MUNICIPIO,
       area: Number($('#area').value),
       area_nombre: AREA_NOMBRES[Number($('#area').value)],
@@ -338,15 +392,18 @@ async function onSubmit(e) {
   } catch (err) {
     console.error(err);
     if (err && err.message === 'codigo-duplicado') {
-      // Recover: force a fresh code, keep the rest of the entered data.
-      state.codigo = null;
-      state.fotosSubidas = {};
-      const display = $('#codigo-display');
-      display.textContent = '';
-      display.hidden = true;
-      $('#btn-codigo').disabled = false;
-      $('#area').disabled = false;
-      showSubmitError('El código ya existe. Genere un nuevo código e intente de nuevo.');
+      // Recover without wiping the form: invalidate the session cache,
+      // re-derive against the latest records, and prefill a fresh code.
+      // Area stays locked and all entered data/photos survive — the
+      // inspector only needs to review the new code and resend.
+      state.maxConsecutivo = null;
+      try {
+        const consecutivo = await siguienteConsecutivoSesion();
+        renderCodigo(state.area, consecutivo);
+      } catch (deriveErr) {
+        console.error(deriveErr);
+      }
+      showSubmitError('El código ya existe. Se generó uno nuevo automáticamente; revise y envíe de nuevo.');
     } else if (err && err.message === 'foto-upload') {
       showSubmitError('No se pudieron subir las fotos. Verifique la conexión, o quite las fotos y envíe sin ellas (los demás datos se conservan).');
     } else {
@@ -363,17 +420,20 @@ function nuevoRegistro() {
   $('#eval-form').reset();
   clearPhotos();
   state.codigo = null;
+  state.area = null;
   state.fotosSubidas = {};
-  // Drop stale coords before requesting fresh ones.
+  // Drop stale coords before requesting fresh ones. state.maxConsecutivo is
+  // intentionally kept: it is a session-scoped cache, not a per-record one —
+  // the next record in the same session should not re-query Firestore.
   state.coords = null;
   $('#geo-display').textContent = 'Obteniendo ubicación…';
 
   const areaSel = $('#area');
   areaSel.disabled = false;
   $('#btn-codigo').disabled = false;
-  const display = $('#codigo-display');
-  display.textContent = '';
-  display.hidden = true;
+  $('#codigo-prefijo').textContent = '';
+  $('#codigo-consecutivo').value = '';
+  $('#codigo-display').hidden = true;
   $('#codigo-error').hidden = true;
   showSubmitError('');
 

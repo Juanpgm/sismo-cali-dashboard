@@ -48,7 +48,7 @@
           </select>
         </div>
         <button type="button" id="btn-codigo" class="btn-secondary">Generar código</button>
-        <p id="codigo-display" class="codigo-display" hidden></p>
+        <p id="codigo-display" class="codigo-display" hidden><span id="codigo-prefijo"></span><input type="text" id="codigo-consecutivo" inputmode="numeric" pattern="[0-9]*" maxlength="4" aria-label="Consecutivo del código (4 dígitos, editable)"></p>
         <p id="codigo-error" class="field-error" role="alert" hidden></p>
       </section>
 
