@@ -312,14 +312,14 @@ test.describe('Fotos: galería y cámara', () => {
     expect(alts).toEqual(['Vista previa de la foto 1', 'Vista previa de la foto 2']);
   });
 
-  // MAX_FOTOS resolved to 3 (signer probe, see SETUP.md section 7), so the
-  // hard-cap scenario is reached at the 4th photo, not the 11th.
+  // MAX_FOTOS resolved to 10 (signer re-probe, see SETUP.md section 7), so the
+  // hard-cap scenario is reached at the 11th photo.
   test('alcanzar el máximo de fotos oculta los botones de agregar y muestra el aviso', async ({ page }) => {
     await boot(page);
     await loginAndWaitForm(page);
-    await addFotosGaleria(page, ['a.png', 'b.png', 'c.png']);
+    await addFotosGaleria(page, ['a.png', 'b.png', 'c.png', 'd.png', 'e.png', 'f.png', 'g.png', 'h.png', 'i.png', 'j.png']);
     await expect(page.locator('#foto-max-msg')).toBeVisible();
-    await expect(page.locator('#foto-max-msg')).toHaveText('Alcanzó el máximo de 3 fotos.');
+    await expect(page.locator('#foto-max-msg')).toHaveText('Alcanzó el máximo de 10 fotos.');
     await expect(page.locator('#btn-foto-galeria')).toBeHidden();
     await expect(page.locator('#btn-foto-camara')).toBeHidden();
   });
@@ -327,22 +327,22 @@ test.describe('Fotos: galería y cámara', () => {
   test('seleccionar más fotos que la capacidad restante solo agrega hasta el tope', async ({ page }) => {
     await boot(page);
     await loginAndWaitForm(page);
-    await addFotosGaleria(page, ['a.png', 'b.png', 'c.png', 'd.png', 'e.png']);
-    await expect(page.locator('.foto-tile')).toHaveCount(3);
+    await addFotosGaleria(page, ['a.png', 'b.png', 'c.png', 'd.png', 'e.png', 'f.png', 'g.png', 'h.png', 'i.png', 'j.png', 'k.png', 'l.png']);
+    await expect(page.locator('.foto-tile')).toHaveCount(10);
   });
 });
 
 test.describe('Subida de fotos: concurrencia y caché', () => {
-  // MAX_FOTOS resolved to 3 (SETUP.md section 7), so 3 photos is both the
+  // MAX_FOTOS resolved to 10 (SETUP.md section 7), so 10 photos is both the
   // maximum reachable through the real UI and the concurrency cap itself —
   // this proves uploads run in parallel (not sequentially) and never exceed
   // the cap, which is the strongest assertion possible at this ceiling.
-  test('sube hasta 3 fotos en paralelo, no de a una', async ({ page }) => {
+  test('sube hasta 10 fotos en paralelo, no de a una', async ({ page }) => {
     await boot(page);
     await loginAndWaitForm(page);
     await page.selectOption('#area', '1');
     await page.click('#btn-codigo');
-    await addFotosGaleria(page, ['a.png', 'b.png', 'c.png']);
+    await addFotosGaleria(page, ['a.png', 'b.png', 'c.png', 'd.png', 'e.png', 'f.png', 'g.png', 'h.png', 'i.png', 'j.png']);
     await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
     await page.locator('input[name="alcance"][value="exterior"]').check();
 
@@ -362,7 +362,7 @@ test.describe('Subida de fotos: concurrencia y caché', () => {
     await page.click('#btn-submit');
     await expect(page.locator('#confirm')).toBeVisible();
     expect(maxInFlight).toBeGreaterThan(1);
-    expect(maxInFlight).toBeLessThanOrEqual(3);
+    expect(maxInFlight).toBeLessThanOrEqual(10);
   });
 
   test('una foto ya subida no se vuelve a subir en un reintento', async ({ page }) => {
