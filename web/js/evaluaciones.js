@@ -61,33 +61,38 @@ const tituloDe = (e) => e.descripcion.nombre || e.descripcion.direccion || e.cod
 // ---- Static markup -----------------------------------------------------------
 
 /** The section's skeleton. Contents are filled in by render() once the data
- *  lands, so the map container exists before Leaflet is asked to mount. */
+ *  lands, so the map container exists before Leaflet is asked to mount.
+ *
+ *  Map and record list share one card side by side: they are two readings of
+ *  the same rows, the tab has the width for it, and stacking them buried the
+ *  inspector roster under a screen and a half of scroll. */
 export function sectionHtml() {
   return `
     <section class="eval-section" aria-label="Evaluaciones ATC-20">
-      <header class="sticker-head">
-        <div>
-          <h3 class="sticker-h2">Evaluaciones ATC-20</h3>
-          <p class="sticker-lead">Cada punto es una edificación evaluada en campo, con el color de su placa.</p>
-        </div>
+      <div class="section-bar">
+        <h3 class="section-bar-title">Evaluaciones ATC-20</h3>
         <button type="button" class="sticker-action" id="eval-reload">Actualizar</button>
-      </header>
+      </div>
 
       <div class="kpi-row eval-kpis" id="eval-kpis"></div>
+      <div class="eval-bar" id="eval-bar"></div>
 
-      <section class="card map-card eval-map-card" aria-label="Mapa de evaluaciones">
+      <div class="card eval-workspace-card">
         <div class="card-toolbar">
           <span class="eval-toolbar-title">Puntos de evaluación</span>
           <span class="eval-toolbar-meta" id="eval-map-meta"></span>
         </div>
-        <div class="map-container eval-map" id="eval-map"></div>
-      </section>
-
-      <div class="eval-list-head">
-        <h4>Registros</h4>
-        <span class="eval-toolbar-meta" id="eval-list-meta"></span>
+        <div class="eval-workspace">
+          <div class="eval-map" id="eval-map"></div>
+          <div class="eval-aside">
+            <div class="eval-aside-head">
+              <h4>Registros</h4>
+              <span class="eval-toolbar-meta" id="eval-list-meta"></span>
+            </div>
+            <ul class="eval-list" id="eval-list"></ul>
+          </div>
+        </div>
       </div>
-      <ul class="eval-list" id="eval-list"></ul>
 
       <div class="modal" id="eval-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="eval-modal-title">
         <div class="modal-backdrop" data-eval-close></div>
@@ -106,37 +111,49 @@ export function sectionHtml() {
 
 // ---- KPIs --------------------------------------------------------------------
 
+/** Which classes get a tile: the three placards always, "sin dato" only when
+ *  it actually happened — an always-zero tile beside three real ones dilutes
+ *  the row. */
+function clasesVisibles(counts) {
+  return counts[SIN_CLASE.key] ? [...CLASES, SIN_CLASE] : CLASES;
+}
+
 function kpisHtml(evaluaciones) {
   const total = evaluaciones.length;
   const counts = contarPorClase(evaluaciones);
-  // "sin dato" only earns a tile when it actually happened — an always-zero
-  // tile next to three real ones just dilutes the row.
-  const clases = counts[SIN_CLASE.key] ? [...CLASES, SIN_CLASE] : CLASES;
 
-  const tiles = clases.map((c) => `
+  const tiles = clasesVisibles(counts).map((c) => `
     <div class="kpi-tile" style="--kpi-accent:${c.color}">
       <span class="kpi-label kpi-label-lower">${c.label}</span>
       <span class="kpi-value">${counts[c.key]}</span>
       <div class="kpi-sub-row"><span class="kpi-sub">${pct(counts[c.key], total)}% del total</span></div>
     </div>`).join('');
 
-  const segs = clases.map((c) => {
-    const share = pct(counts[c.key], total);
-    if (share <= 0) return '';
-    return `<div class="hab-bar-seg" style="width:${share}%;background:${c.color}" title="${escapeHtml(c.label)}: ${counts[c.key]}"></div>`;
-  }).join('');
-
+  // The total tile stays deliberately colourless: green/yellow/red mean a
+  // placard here, and a gold bar over "registros" reads as a fourth state.
   return `
-    <div class="kpi-tile">
+    <div class="kpi-tile is-neutral">
       <span class="kpi-label kpi-label-lower">registros</span>
       <span class="kpi-value">${total}</span>
       <div class="kpi-sub-row"><span class="kpi-sub">evaluaciones enviadas desde el formulario</span></div>
     </div>
-    ${tiles}
-    <div class="kpi-tile kpi-tile-wide">
-      <span class="kpi-label kpi-label-lower">distribución por clasificación</span>
-      <div class="hab-bar">${segs}</div>
-    </div>`;
+    ${tiles}`;
+}
+
+/** One-line proportion strip under the tiles. No legend of its own: the
+ *  segments run in the same order and colour as the tiles right above it. */
+function barHtml(evaluaciones) {
+  const total = evaluaciones.length;
+  if (!total) return '';
+  const counts = contarPorClase(evaluaciones);
+  const segs = clasesVisibles(counts).map((c) => {
+    const share = pct(counts[c.key], total);
+    if (share <= 0) return '';
+    return `<div class="hab-bar-seg" style="width:${share}%;background:${c.color}" title="${escapeHtml(c.label)}: ${counts[c.key]}"></div>`;
+  }).join('');
+  return `
+    <span class="eval-bar-label">distribución</span>
+    <div class="hab-bar">${segs}</div>`;
 }
 
 // ---- Map ---------------------------------------------------------------------
@@ -148,12 +165,15 @@ let map = null;
 let baseTile = null;
 let pointsLayer = null;
 let legendEl = null;
+// id -> circleMarker, so hovering a row in the aside can point at the map.
+let markerById = new Map();
 
 function teardownMap() {
   if (map) { map.remove(); map = null; }
   baseTile = null;
   pointsLayer = null;
   legendEl = null;
+  markerById = new Map();
 }
 
 // The Panel swaps its own tiles on theme change (mapview.applyMapTheme); this
@@ -211,6 +231,7 @@ function renderMap(containerId, evaluaciones, onDetail) {
       if (btn) btn.addEventListener('click', () => onDetail(e.id));
     });
     marker.addTo(pointsLayer);
+    markerById.set(e.id, marker);
   }
 
   const legend = L.control({ position: 'bottomright' });
@@ -245,18 +266,23 @@ function renderMap(containerId, evaluaciones, onDetail) {
 
 // ---- Record list -------------------------------------------------------------
 
+// The aside is a narrow column, so the row stacks instead of laying its parts
+// out in a strip, and the whole row is the button — a separate "Ver detalle"
+// control would eat a third of the width. The label stays visible so the
+// affordance is not hidden behind a hover.
 function listItemHtml(e) {
   const c = claseDe(e);
   const fotos = e.fotos.length ? `${e.fotos.length} foto${e.fotos.length === 1 ? '' : 's'}` : 'sin fotos';
   const quien = e.inspector.nombre_completo || `Brigada ${e.inspector.codigo || '—'}`;
-  return `<li class="eval-row">
-    <span class="eval-dot" style="background:${c.color}" aria-hidden="true"></span>
-    <div class="eval-identity">
+  return `<li>
+    <button type="button" class="eval-row" data-eval-detail="${escapeHtml(e.id)}">
+      <span class="eval-dot" style="background:${c.color}" aria-hidden="true"></span>
       <span class="eval-name">${escapeHtml(tituloDe(e))}</span>
-      <span class="eval-meta">${escapeHtml(e.codigo_edificacion)} · ${escapeHtml(quien)} · ${escapeHtml(formatFecha(e.fecha))} · ${fotos}</span>
-    </div>
-    <span class="eval-pill" style="--eval-pill:${c.color}">${escapeHtml(c.label)}</span>
-    <button type="button" class="sticker-action" data-eval-detail="${escapeHtml(e.id)}">Ver detalle</button>
+      <span class="eval-pill" style="--eval-pill:${c.color}">${escapeHtml(c.label)}</span>
+      <span class="eval-meta">${escapeHtml(e.codigo_edificacion)} · ${escapeHtml(quien)}</span>
+      <span class="eval-meta">${escapeHtml(formatFecha(e.fecha))} · ${fotos}</span>
+      <span class="eval-cta">Ver detalle &rsaquo;</span>
+    </button>
   </li>`;
 }
 
@@ -323,6 +349,7 @@ function detailHtml(e) {
  *  evaluations read never takes the inspector roster down with it. */
 export function initEvaluaciones(section, { fetchEvaluaciones }) {
   const kpis = section.querySelector('#eval-kpis');
+  const barEl = section.querySelector('#eval-bar');
   const listEl = section.querySelector('#eval-list');
   const listMeta = section.querySelector('#eval-list-meta');
   const mapMeta = section.querySelector('#eval-map-meta');
@@ -360,8 +387,36 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
     if (btn && listEl.contains(btn)) openDetail(btn.dataset.evalDetail);
   });
 
+  // Pointing at a row lights up its point. This is what earns the side-by-side
+  // layout: the list stops being a second copy of the data and becomes a way
+  // to read the map. Delegated, so re-rendering the list keeps working.
+  const setHighlight = (id, on) => {
+    const marker = markerById.get(id);
+    if (marker) marker.setStyle(on
+      ? { radius: 12, color: COLORS.accent, weight: 3 }
+      : { radius: 8, color: '#0B1D33', weight: 1 });
+  };
+  listEl.addEventListener('pointerover', (ev) => {
+    const row = ev.target.closest('[data-eval-detail]');
+    if (row) setHighlight(row.dataset.evalDetail, true);
+  });
+  listEl.addEventListener('pointerout', (ev) => {
+    const row = ev.target.closest('[data-eval-detail]');
+    if (row) setHighlight(row.dataset.evalDetail, false);
+  });
+  // Keyboard parity: tabbing through the list highlights too.
+  listEl.addEventListener('focusin', (ev) => {
+    const row = ev.target.closest('[data-eval-detail]');
+    if (row) setHighlight(row.dataset.evalDetail, true);
+  });
+  listEl.addEventListener('focusout', (ev) => {
+    const row = ev.target.closest('[data-eval-detail]');
+    if (row) setHighlight(row.dataset.evalDetail, false);
+  });
+
   async function load() {
     kpis.innerHTML = '<p class="sticker-loading">Cargando evaluaciones…</p>';
+    barEl.innerHTML = '';
     listEl.innerHTML = '';
     listMeta.textContent = '';
     mapMeta.textContent = '';
@@ -369,12 +424,13 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
       const evaluaciones = await fetchEvaluaciones();
       byId = new Map(evaluaciones.map((e) => [e.id, e]));
       kpis.innerHTML = kpisHtml(evaluaciones);
+      barEl.innerHTML = barHtml(evaluaciones);
 
       if (!evaluaciones.length) {
-        listEl.innerHTML = '<li class="sticker-empty">Todavía no hay evaluaciones registradas desde el formulario.</li>';
+        listEl.innerHTML = '<li class="eval-empty">Todavía no hay evaluaciones registradas desde el formulario.</li>';
       } else {
         listEl.innerHTML = evaluaciones.map(listItemHtml).join('');
-        listMeta.textContent = `${evaluaciones.length} registro${evaluaciones.length === 1 ? '' : 's'} · más reciente primero`;
+        listMeta.textContent = `${evaluaciones.length} · más reciente primero`;
       }
 
       const conCoords = renderMap('eval-map', evaluaciones, openDetail);
@@ -384,6 +440,7 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
         : `${conCoords} en el mapa`;
     } catch (err) {
       teardownMap();
+      barEl.innerHTML = '';
       kpis.innerHTML = `<p class="sticker-error" role="alert">No se pudieron cargar las evaluaciones: ${escapeHtml(err.message)}</p>`;
     }
   }

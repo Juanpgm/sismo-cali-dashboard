@@ -1663,47 +1663,111 @@ body[data-role="viewer"] .view-tab[data-view="stickers"] { display: none !import
 }
 
 /* ============================================================
-   EVALUACIONES ATC-20 — same visual language as the Panel
-   (KPI tiles, distribution bar, Leaflet map + legend), scoped
-   to the placard's three states.
+   Section bars — one-line headers shared by both Stickers
+   sections (title left, meta/actions right).
    ============================================================ */
-.eval-section { display: flex; flex-direction: column; gap: 18px; }
+.section-bar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding-bottom: 10px; border-bottom: 1px solid var(--border);
+}
+.section-bar-title {
+  font-size: 1.05rem; font-weight: 700; letter-spacing: -0.01em; margin: 0;
+  margin-right: auto;
+}
+
+.sticker-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.sticker-chip {
+  padding: 3px 10px; border-radius: 999px; font-size: .76rem; font-weight: 600;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+  color: var(--text-secondary); background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.sticker-chip.is-on { color: var(--sticker-on); background: color-mix(in srgb, var(--sticker-on) 12%, transparent); border-color: color-mix(in srgb, var(--sticker-on) 35%, transparent); }
+.sticker-chip.is-off { color: var(--sticker-off); background: color-mix(in srgb, var(--sticker-off) 12%, transparent); border-color: color-mix(in srgb, var(--sticker-off) 35%, transparent); }
+
+/* ============================================================
+   EVALUACIONES ATC-20 — same visual language as the Panel,
+   scoped to the placard's three states. Map + record list share
+   one card side by side; the list drives the map on hover.
+   ============================================================ */
+.eval-section { display: flex; flex-direction: column; gap: 14px; }
 .eval-kpis { margin: 0; }
 /* The placard states read as prose here, not as three shouted labels. */
 .kpi-label-lower { text-transform: lowercase; letter-spacing: .02em; }
+/* Total tile: no coloured top bar — colour means a placard in this section. */
+.kpi-tile.is-neutral::before { display: none; }
 
-.eval-map-card { margin: 0; }
-.eval-map { height: 52vh; min-height: 360px; }
-.eval-toolbar-title { font-size: .82rem; font-weight: 600; color: var(--text-secondary); }
-.eval-toolbar-meta { font-size: .75rem; color: var(--text-muted); font-family: var(--font-mono); }
+/* Compact one-line distribution strip (label + bar), not a full-width card. */
+.eval-bar { display: flex; align-items: center; gap: 12px; }
+.eval-bar:empty { display: none; }
+.eval-bar-label {
+  font-size: .68rem; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-muted); font-weight: 600; white-space: nowrap;
+}
+.eval-bar .hab-bar { margin: 0; }
 
-.eval-list-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.eval-list-head h4 {
-  font-size: .72rem; text-transform: uppercase; letter-spacing: .06em;
+.eval-workspace-card { margin: 0; }
+.eval-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  min-height: 440px;
+}
+.eval-map { min-height: 440px; background: var(--surface-3); }
+
+.eval-aside {
+  display: flex; flex-direction: column; min-height: 0;
+  border-left: 1px solid var(--border);
+}
+.eval-aside-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  background: var(--surface-3);
+}
+.eval-aside-head h4 {
+  font-size: .68rem; text-transform: uppercase; letter-spacing: .06em;
   color: var(--text-secondary); font-weight: 700; margin: 0;
 }
+.eval-toolbar-title { font-size: .82rem; font-weight: 600; color: var(--text-secondary); }
+.eval-toolbar-meta { font-size: .72rem; color: var(--text-muted); font-family: var(--font-mono); }
+
 .eval-list {
-  list-style: none; margin: 0; padding: 0;
-  display: flex; flex-direction: column; gap: 8px;
-  max-height: 460px; overflow-y: auto;
+  list-style: none; margin: 0; padding: 6px;
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 4px;
+  /* Cap so a long roster scrolls inside the card, not the page. */
+  max-height: 560px;
 }
+.eval-empty { color: var(--text-muted); padding: 32px 16px; text-align: center; font-size: .85rem; }
+
+/* Whole row is the detail button; stacked layout for the narrow column. */
 .eval-row {
-  display: grid; grid-template-columns: auto 1fr auto auto;
-  align-items: center; gap: 14px;
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius-md); padding: 11px 16px;
-  transition: border-color .15s ease;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center; column-gap: 8px; row-gap: 1px;
+  width: 100%; text-align: left;
+  background: transparent; border: 1px solid transparent;
+  border-radius: var(--radius-sm); padding: 8px 10px;
+  cursor: pointer; color: inherit; font: inherit;
+  transition: background .12s ease, border-color .12s ease;
 }
-.eval-row:hover { border-color: var(--border-strong); }
-.eval-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
-.eval-identity { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.eval-name { font-weight: 600; color: var(--text-primary); }
-.eval-meta {
-  font-size: .78rem; color: var(--text-muted);
+.eval-row:hover, .eval-row:focus-visible { background: var(--surface-2); border-color: var(--border-strong); }
+.eval-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.eval-dot { width: 10px; height: 10px; border-radius: 50%; }
+.eval-name {
+  font-weight: 600; color: var(--text-primary); font-size: .85rem; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.eval-meta {
+  grid-column: 2 / 4; font-size: .72rem; color: var(--text-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.eval-cta {
+  grid-column: 2 / 4; font-size: .72rem; font-weight: 600; color: var(--accent);
+  margin-top: 2px;
+}
 .eval-pill {
-  padding: 3px 10px; border-radius: 999px; font-size: .74rem; font-weight: 600; white-space: nowrap;
+  justify-self: end;
+  padding: 2px 8px; border-radius: 999px; font-size: .68rem; font-weight: 600; white-space: nowrap;
   color: var(--eval-pill); background: color-mix(in srgb, var(--eval-pill) 16%, transparent);
   border: 1px solid color-mix(in srgb, var(--eval-pill) 40%, transparent);
 }
@@ -1712,16 +1776,19 @@ body[data-role="viewer"] .view-tab[data-view="stickers"] { display: none !import
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--border);
 }
+.eval-detail-banner .eval-pill { font-size: .74rem; padding: 3px 10px; justify-self: start; }
 .eval-detail-code {
   font-family: var(--font-mono); font-size: .95rem; font-weight: 700;
   color: var(--accent); background: var(--accent-dim);
   border-radius: var(--radius-sm); padding: 4px 10px;
 }
 
-@media (max-width: 700px) {
-  .eval-map { height: 46vh; min-height: 300px; }
-  .eval-row { grid-template-columns: auto 1fr auto; row-gap: 8px; }
-  .eval-row .sticker-action { grid-column: 2 / 4; justify-self: start; }
+/* Stack map over list when the side-by-side no longer fits. */
+@media (max-width: 940px) {
+  .eval-workspace { grid-template-columns: 1fr; }
+  .eval-map { min-height: 46vh; }
+  .eval-aside { border-left: none; border-top: 1px solid var(--border); }
+  .eval-list { max-height: 320px; }
 }
 
 @media (max-width: 560px) {

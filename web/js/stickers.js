@@ -67,25 +67,23 @@ function rosterHtml(inspectores) {
     ? `<ul class="sticker-list">${inspectores.map(rowHtml).join('')}</ul>`
     : `<p class="sticker-empty">Todavía no hay inspectores. Creá el primero con «Nuevo inspector».</p>`;
 
+  // Counters ride in the section bar as inline chips instead of a second row
+  // of stat cards: three numbers do not need three cards' worth of height.
   return `
-    <header class="sticker-head">
-      <div>
-        <h3 class="sticker-h2">Inspectores de campo</h3>
-        <p class="sticker-lead">Quién puede registrar evaluaciones desde el formulario ATC-20.</p>
+    <div class="section-bar">
+      <h3 class="section-bar-title">Inspectores de campo</h3>
+      <div class="sticker-chips" aria-label="Resumen de inspectores">
+        <span class="sticker-chip">${inspectores.length} total</span>
+        <span class="sticker-chip is-on">${activos} activos</span>
+        <span class="sticker-chip is-off">${off} inhabilitados</span>
       </div>
       <button type="button" class="btn-primary sticker-new" id="sticker-new">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         Nuevo inspector
       </button>
-    </header>
+    </div>
 
     <p class="sticker-ok" id="sticker-ok" role="status" hidden></p>
-
-    <div class="sticker-stats">
-      <div class="sticker-stat"><span class="sticker-stat-num">${inspectores.length}</span><span class="sticker-stat-lbl">Total</span></div>
-      <div class="sticker-stat is-on"><span class="sticker-stat-num">${activos}</span><span class="sticker-stat-lbl">Activos</span></div>
-      <div class="sticker-stat is-off"><span class="sticker-stat-num">${off}</span><span class="sticker-stat-lbl">Inhabilitados</span></div>
-    </div>
 
     ${roster}
 
@@ -125,7 +123,7 @@ function shellHtml() {
   return `
     <header class="sticker-page-head">
       <h2 class="sticker-h1">Operación de campo</h2>
-      <p class="sticker-lead">Lo que registran las brigadas y quién está habilitado para registrarlo.</p>
+      <p class="sticker-lead">Lo que registran las brigadas y quién puede registrarlo.</p>
     </header>
     ${evalSectionHtml()}
     <section class="sticker-roster" id="sticker-roster"></section>`;
