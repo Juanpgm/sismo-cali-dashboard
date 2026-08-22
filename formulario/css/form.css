@@ -244,9 +244,9 @@ button:focus-visible, summary:focus-visible, label:has(:focus-visible) {
   align-items: center;
   justify-content: center;
   flex-wrap: wrap;
-  gap: 0.4rem;
+  gap: 0.5rem;
   margin: 0.75rem 0 0;
-  padding: 0.6rem 0.7rem;
+  padding: 0.7rem 0.8rem;
   background: var(--surface-3);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
@@ -263,19 +263,22 @@ button:focus-visible, summary:focus-visible, label:has(:focus-visible) {
   white-space: nowrap;
 }
 
-/* Edit-mode input: matches the display text's weight/size so switching
-   modes doesn't visually jolt, but sized to just the 4-digit segment. */
+/* Edit-mode input: deliberately larger than the display text so the 4
+   digits being typed stay easy to read — width is character-based (digit
+   count + breathing room) rather than a cramped fixed size, and the wider
+   letter-spacing keeps every digit visually distinct while editing. */
 #codigo-consecutivo {
-  width: 4.5ch;
+  width: calc(4ch + 1.8em);
   flex: none;
-  font-size: 1.35rem;
+  font-size: 1.6rem;
   font-weight: 700;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.2em;
   text-align: center;
   font-variant-numeric: tabular-nums;
-  min-height: 40px;
-  padding: 0.25rem 0.3rem;
+  min-height: 44px;
+  padding: 0.3rem 0.5rem;
   background: var(--surface-2);
+  border-color: var(--line-strong);
 }
 
 /* Discreet icon buttons for the edit affordance: muted by default, tap
