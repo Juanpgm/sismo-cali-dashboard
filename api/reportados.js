@@ -13,8 +13,12 @@
 // minute. Only id + estadoVerificacion are kept: this endpoint counts, it
 // never republishes report contents.
 //
+// API v2 (2026-08-22, see api-informe-json.md): credentials must belong to a
+// `personal` account with api="read" (old operario/viewer accounts are
+// rejected with 401). Password is created at https://atencionsismo.cali.gov.co/ingresar.
+//
 // Required env in Vercel (Project Settings → Environment Variables):
-//   VISITADOS_API_PASS   password for the operator/viewer account (secret)
+//   VISITADOS_API_PASS   password for the api="read" account (secret)
 // Optional:
 //   VISITADOS_API_USER   default juanp.gzmz@gmail.com
 //   REPORTES_DESDE       floor date YYYY-MM-DD (default 2026-08-01)

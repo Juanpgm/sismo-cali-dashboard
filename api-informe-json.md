@@ -1,29 +1,34 @@
-# API Informe JSON
+# APIs de integración — Atención Sismo Cali
 
-Exportación en JSON de reportes con datos de visita (evaluación v1) y enlaces a fotografías, pensada para integraciones externas.
+**Host de producción:** `https://atencionsismo.cali.gov.co`
 
-Equivalente funcional al Excel de `GET /api/informe/export`, con campos adicionales (`id`, fotos de evaluación y fotos del chat).
+Las dos APIs de exportación JSON usan el **mismo usuario y contraseña** (HTTP Basic Auth).
 
-## Endpoint
-
-```
-GET /api/informe/json
-```
+| Endpoint | Uso | Fechas |
+|----------|-----|--------|
+| `GET /api/informe/json` | Informe completo de reportes (visita paso 1 + fotos) | `desde_utc` / `hasta_utc` **opcionales** |
+| `GET /api/operario/reports/visitados-criticos` | Solo casos visitados críticos A/B | `desde_utc` / `hasta_utc` **obligatorios** |
 
 | Propiedad | Valor |
 |-----------|--------|
 | Método | `GET` |
 | Content-Type respuesta | `application/json` |
-| Autenticación | HTTP Basic Auth |
+| Autenticación | HTTP Basic Auth (`personal.api === "read"`) |
 | Tiempo máximo | 60 s |
 
-## Autenticación
+---
 
-Credenciales de un usuario **operario** o **viewer** (solo lectura) registrado en el sistema, con contraseña ya configurada en su portal correspondiente.
+## Autenticación (común)
+
+Credenciales de una fila en **`personal`** con permiso **`api: "read"`** y contraseña ya configurada en:
+
+`https://atencionsismo.cali.gov.co/ingresar`
 
 ```
 Authorization: Basic base64(correo:contraseña)
 ```
+
+En Postman: pestaña **Authorization** → tipo **Basic Auth** → Username = correo, Password = contraseña. No use Bearer.
 
 En solicitudes no autenticadas la API responde `401` con:
 
@@ -31,86 +36,71 @@ En solicitudes no autenticadas la API responde `401` con:
 WWW-Authenticate: Basic realm="informe-json"
 ```
 
-### Roles permitidos
-
-| Rol | Portal de contraseña |
-|-----|----------------------|
-| Operario | Portal de operarios (`/`) |
-| Viewer | Portal de administración (acceso de solo lectura) |
+(Visitados críticos usa `realm="visitados-criticos"`. El `realm` no cambia el usuario ni la contraseña.)
 
 ### Errores de autenticación
 
 | HTTP | Situación |
 |------|-----------|
-| `401` | Sin header `Authorization`, credenciales incorrectas o correo no autorizado |
-| `403` | Usuario válido pero aún no ha creado su contraseña en el portal |
+| `401` | Sin header `Authorization`, credenciales incorrectas o correo sin permiso `api: read` |
+| `403` | Usuario válido pero aún no ha creado su contraseña en `/ingresar` |
 
-## Parámetros de consulta
+> Los operarios/viewers del modelo v1 ya no aplican. Use una cuenta `personal` con columna `api` en `"read"`.
 
-### Filtros (mismos que `/api/informe`)
+---
 
-Todos son opcionales. Sin filtros se devuelven **todos** los reportes que cumplan el rango de fechas (si se indica).
+## Informe JSON
+
+```
+GET https://atencionsismo.cali.gov.co/api/informe/json
+```
+
+Una fila = un **reporte**. No pagina: sin filtros puede devolver el conjunto completo. Conviene acotar con fechas.
+
+### Parámetros (todos opcionales)
 
 | Parámetro | Tipo | Descripción |
 |-----------|------|-------------|
-| `comuna` | CSV de enteros | Ej.: `comuna=14,15` |
+| `desde_utc` | entero (ms Unix UTC) | Inclusive. Filtra `reporte.creadoEn` |
+| `hasta_utc` | entero (ms Unix UTC) | Inclusive |
+| `comuna` | CSV de enteros | Ej.: `comuna=14,15` (filtra `subcluster.comuna`) |
 | `barrio` | CSV de strings | Ej.: `barrio=San Antonio,Granada` |
-| `verif` | CSV | Estados de verificación: `pending`, `assigned`, `visited`, `critical`, `unavailable`, `ede` |
-| `afectacion` | CSV | Tipos de colapso: `A`, `B`, `C`, `D`, `E`, `F`, `unset` |
-| `inmueble` | CSV | Tipos de inmueble según el catálogo de la app |
-| `q` | string | Búsqueda libre (dirección, contacto, barrio, etc.) |
+| `verif` | CSV | `pending`, `assigned`, `visited`, `critical`, `unavailable`, `ede` |
+| `afectacion` | CSV | Grado de **ingreso**: `A`, `B`, `C`, `D`, `E`, `F`, `unset` |
+| `inmueble` | CSV | `casa`, `condominio`, `escuela`, `edificio`, `hospital`, `local_comercial`, `otro` |
+| `q` | string | Búsqueda libre (dirección, contacto, barrio, comuna, etc.) |
 
-### Rango de fechas (opcional)
-
-Filtra por `reports.createdAt` en milisegundos Unix UTC.
-
-| Parámetro | Tipo | Descripción |
-|-----------|------|-------------|
-| `desde_utc` | entero (ms) | Inclusive. Ej.: `1724025600000` |
-| `hasta_utc` | entero (ms) | Inclusive. Ej.: `1724111999999` |
-
-Reglas:
+Reglas de fechas:
 
 - Ambos son opcionales; puede usarse solo uno.
 - `desde_utc` no puede ser mayor que `hasta_utc`.
 - Deben ser enteros en milisegundos Unix UTC.
 
-> **Nota:** El parámetro `page` se parsea por compatibilidad con `/api/informe`, pero esta API **no pagina**: devuelve el conjunto completo de filas que coinciden con los filtros.
+Para armar los milisegundos (consola del navegador):
 
-## Ejemplos de solicitud
-
-### cURL — todos los reportes
-
-```bash
-curl -u "operario@ejemplo.com:mi-contraseña" \
-  "https://atencionsismo.cali.gov.co/api/informe/json"
+```js
+Date.parse("2026-08-22T00:00:00.000Z")
+Date.parse("2026-08-22T23:59:59.999Z")
 ```
 
-### cURL — rango de fechas + filtro de verificación
+### Probar con Postman
+
+1. **Method:** `GET`
+2. **URL:** `https://atencionsismo.cali.gov.co/api/informe/json`
+3. **Authorization:** tipo **Basic Auth** (mismas credenciales que visitados críticos)
+4. **Params** (opcionales), por ejemplo:
+   - `desde_utc` = `1724025600000`
+   - `hasta_utc` = `1724111999999`
+   - `verif` = `visited,critical`
+
+### Ejemplo cURL
 
 ```bash
-curl -u "viewer@ejemplo.com:mi-contraseña" \
+curl -u "integracion@ejemplo.com:su-contraseña" \
   "https://atencionsismo.cali.gov.co/api/informe/json?desde_utc=1724025600000&hasta_utc=1724111999999&verif=visited,critical"
 ```
 
-### JavaScript (fetch)
-
-```javascript
-const credentials = btoa("operario@ejemplo.com:mi-contraseña");
-
-const response = await fetch(
-  "https://atencionsismo.cali.gov.co/api/informe/json?desde_utc=1724025600000",
-  {
-    headers: {
-      Authorization: `Basic ${credentials}`,
-    },
-  },
-);
-
-const data = await response.json();
-```
-
-## Respuesta exitosa (`200`)
+### Respuesta exitosa (`200`)
 
 ```json
 {
@@ -118,7 +108,7 @@ const data = await response.json();
   "cantidad": 2,
   "generado_utc": 1724112000123,
   "desde_utc": 1724025600000,
-  "hasta_utc": null,
+  "hasta_utc": 1724111999999,
   "reportes": [
     {
       "id": "uuid-del-reporte",
@@ -127,61 +117,20 @@ const data = await response.json();
       "telefono": "300 123 4567",
       "direccion": "Calle 1 # 2-3",
       "barrio": "San Antonio",
-      "comuna": "14",
+      "comuna": "Comuna 14",
       "estadoVerificacion": "Visitado crítico",
-      "afectacion": "A — Colapso total",
-      "tipoInmueble": "Apartamento",
-      "nombreEdificio": "Torre Central",
-      "apartamento": "501",
-      "casa": "",
-      "predioCompleto": "No",
-      "descripcion": "Grieta en muro principal",
-      "latitud": "3.4512",
-      "longitud": "-76.5321",
-      "fechaCreacion": "19/08/2026, 10:30 a. m.",
-      "fechaEnvio": "19/08/2026, 10:35 a. m.",
-      "fechaVencimiento": "",
-      "completado": "Sí",
-      "pudoEvaluar": "Sí",
-      "motivoNoEvaluacion": "",
-      "otroMotivoNoEvaluacion": "",
-      "pisos": "5",
-      "sotanos": "1",
-      "anoConstruccion": "1980–1989",
-      "alcanceInspeccion": "Exterior e interior",
-      "danosMurosFachadas": "Moderado",
-      "danosParticiones": "Leve",
-      "danosCieloRaso": "Sin daño",
-      "danosCubierta": "Leve",
-      "danosEscaleras": "Sin daño",
-      "danosServiciosPublicos": "Sin daño",
-      "fallecidos": "0",
-      "atrapados": "0",
-      "rescatados": "0",
-      "necesitaEvacuacion": "No",
-      "evacuados": "0",
-      "porEvacuar": "0",
-      "habitabilidad": "No habitable",
-      "conceptoTecnico": "Daño estructural moderado…",
-      "aspectosVisitaEspecializada": "",
-      "visitado": "Sí",
-      "fechaEvaluacion": "19/08/2026, 2:00 p. m.",
+      "afectacion": "COLAPSO TOTAL",
+      "tipoInmueble": "Edificio",
       "fotografiasEvaluacion": [
-        {
-          "id": "file-id-1",
-          "url": "https://storage.instantdb.com/..."
-        }
+        { "id": "file-id-1", "url": "https://..." }
       ],
       "mensajes": [
         {
-          "id": "msg-id-1",
-          "texto": "Foto de la grieta en la fachada",
+          "id": "uuid-ingreso",
+          "texto": "Grieta en muro principal",
           "creado_utc": 1724073600000,
           "fotografias": [
-            {
-              "id": "file-id-2",
-              "url": "https://storage.instantdb.com/..."
-            }
+            { "id": "file-id-2", "url": "https://..." }
           ]
         }
       ]
@@ -190,70 +139,93 @@ const data = await response.json();
 }
 ```
 
-### Campos de cada reporte
+Los demás campos coinciden con las columnas del Excel (`nombre`, `cedula`, `direccion`, daños, habitabilidad, etc.). Valores formateados en español (`es-CO`), con weekday y mes completos.
 
-Los campos de datos del informe (`nombre`, `cedula`, `direccion`, etc.) coinciden con las columnas del Excel de `/api/informe/export`. Los valores de texto están **formateados para lectura humana** (etiquetas en español, fechas localizadas `es-CO`, teléfonos formateados).
+Campos de cada reporte:
 
-| Campo extra | Descripción |
-|-------------|-------------|
-| `id` | Identificador único del reporte en InstantDB |
-| `fotografiasEvaluacion` | Fotos adjuntas a la **evaluación v1 más reciente** del reporte |
-| `mensajes` | Mensajes del chat del reporte, ordenados por fecha ascendente |
+`id`, `nombre`, `cedula`, `telefono`, `direccion`, `barrio`, `comuna`, `estadoVerificacion`, `afectacion`, `tipoInmueble`, `nombreEdificio`, `apartamento`, `casa`, `predioCompleto`, `descripcion`, `latitud`, `longitud`, `fechaCreacion`, `fechaEnvio`, `fechaVencimiento`, `completado`, `pudoEvaluar`, `motivoNoEvaluacion`, `otroMotivoNoEvaluacion`, `pisos`, `sotanos`, `anoConstruccion`, `alcanceInspeccion`, `danosMurosFachadas`, `danosParticiones`, `danosCieloRaso`, `danosCubierta`, `danosEscaleras`, `danosServiciosPublicos`, `fallecidos`, `atrapados`, `rescatados`, `necesitaEvacuacion`, `evacuados`, `porEvacuar`, `habitabilidad`, `conceptoTecnico`, `aspectosVisitaEspecializada`, `visitado`, `fechaEvaluacion`, `fotografiasEvaluacion`, `mensajes`.
 
-Cada foto incluye:
+### Campos extra por reporte
 
 | Campo | Descripción |
 |-------|-------------|
-| `id` | ID del archivo en `$files` |
-| `url` | URL pública/de acceso directo al archivo en Instant Storage |
+| `id` | Identificador del `reporte` en InstantDB |
+| `fotografiasEvaluacion` | Fotos de la evaluación paso 1 más reciente (no invalidada) |
+| `mensajes` | Mensaje sintético de ingreso (`descripcion` + fotos del reporte); no hay chat multi-mensaje en v2 |
 
-### Fotografías
+`estadoVerificacion` usa estas etiquetas: Reportado, Asignado, Visitado, Visitado crítico, Evaluación especializada, Visita fallida.
 
-- **Evaluación:** se toma la evaluación v1 con `createdAt` más reciente (misma lógica que el Excel).
-- **Chat:** todos los mensajes del reporte; solo se incluyen fotos con `id` y `url` válidos.
-- Las URLs provienen de Instant Storage y pueden usarse directamente en `<img src="...">` o descargas HTTP.
-
-## Errores
+### Errores
 
 | HTTP | Cuerpo | Causa |
 |------|--------|-------|
 | `400` | `{ "error": "..." }` | Parámetro `desde_utc` / `hasta_utc` inválido o rango inconsistente |
 | `401` | `{ "error": "..." }` | Autenticación fallida |
-| `403` | `{ "error": "..." }` | Contraseña no configurada en el portal |
+| `403` | `{ "error": "..." }` | Contraseña no configurada en `/ingresar` |
 | `500` | `{ "error": "No pudimos cargar el informe. Intente de nuevo." }` | Error interno |
 
-## Alcance y limitaciones
+### Alcance y limitaciones (v2)
 
-### Incluido
+**Incluido**
 
-- Datos del reporte (ingreso / ciudadano)
-- Datos de la evaluación de verificación **v1** (visita técnica)
-- Fotos de la evaluación v1
-- Mensajes del chat del reporte con sus fotos
-- Estado de verificación (incluye detección de EDE v2 para la etiqueta, sin exportar el detalle EDE)
+- Datos del `reporte` (ingreso ciudadano/operario)
+- Contacto desde `ciudadano` (`creador` + `ciudadanos`)
+- Evaluación paso 1 más reciente del `subcluster` del reporte
+- Fotos de evaluación y fotos de ingreso del reporte
+- Estado de verificación derivado de `paso1Estado`, `paso1TipoAfectacion`, `paso2Estado`
 
-### No incluido
+**No incluido / campos vacíos**
 
-- Detalle completo de **evaluaciones EDE v2** (`evaluationsV2`)
-- Datos **RUFE**
-- `accessSecret` del reporte (capability de autogestión ciudadana)
-- Paginación (usar filtros y rango de fechas para acotar resultados)
+| Campo JSON | Motivo |
+|------------|--------|
+| `fechaVencimiento`, `completado` | No existen en `reporte` v2 |
+| `anoConstruccion` | No existe en `evaluacion` v2 |
+| `fallecidos`, `atrapados`, `rescatados` | No existen en `evaluacion` v2 |
+| Detalle EDE (`ede` JSON) | Solo se refleja el estado `ede` en `estadoVerificacion` |
+| RUFE | Fuera de este contrato |
+| Chat multi-autor | `mensajes` es sintético (un ítem por ingreso) |
 
-## Implementación en el repositorio
+`visitado` es `"Sí"` si hay evaluación paso 1 válida.
+
+---
+
+## Visitados críticos A/B
+
+```
+GET https://atencionsismo.cali.gov.co/api/operario/reports/visitados-criticos
+```
+
+**Mismas credenciales** que el informe JSON. Aquí `desde_utc` y `hasta_utc` **sí son obligatorios**. Filtra evaluaciones paso 1 visitable (`puedeEvaluar: true`) con afectación A o B.
+
+### Ejemplo cURL
+
+```bash
+curl -u "integracion@ejemplo.com:su-contraseña" \
+  "https://atencionsismo.cali.gov.co/api/operario/reports/visitados-criticos?desde_utc=1724025600000&hasta_utc=1724111999999"
+```
+
+Respuesta: `{ ok, cantidad, generado_utc, desde_utc, hasta_utc, casos[] }`. Cada caso es una edificación (`subcluster`) con la evaluación más reciente en el rango.
+
+Si faltan fechas: `400` (`Falta el parámetro desde_utc…`). Eso no es un fallo de usuario.
+
+---
+
+## Checklist de verificación
+
+1. Sin auth → `401`
+2. Correo sin permiso `api` → `401`
+3. Credenciales válidas + rango corto en informe → `200` y `reportes[].id`
+4. Las mismas credenciales en visitados críticos **con** fechas → `200` y `casos`
+5. `desde_utc` mayor que `hasta_utc` → `400`
+
+---
+
+## Implementación
 
 | Archivo | Responsabilidad |
 |---------|-----------------|
-| [app/api/informe/json/route.ts](../app/api/informe/json/route.ts) | Route handler |
-| [lib/informe/query.ts](../lib/informe/query.ts) | `queryInformeJsonRows` |
-| [lib/informe/json-map.ts](../lib/informe/json-map.ts) | Mapeo reporte → JSON |
-| [lib/informe/export-map.ts](../lib/informe/export-map.ts) | Campos compartidos con Excel |
-| [lib/operator-basic-auth.ts](../lib/operator-basic-auth.ts) | `requireOperatorOrViewerBasicAuth` |
-
-## APIs relacionadas
-
-| Endpoint | Formato | Auth | Uso |
-|----------|---------|------|-----|
-| `GET /api/informe` | JSON resumido | Sesión Instant (Bearer) | Tabla UI `/informe` |
-| `GET /api/informe/export` | Excel | Sesión Instant (Bearer) | Descarga desde el portal |
-| `GET /api/informe/json` | JSON completo + fotos | Basic Auth | Integraciones externas |
-| `GET /api/operario/reports/visitados-criticos` | JSON críticos A/B | Basic Auth (solo operario) | Casos críticos visitados |
+| [`app/api/informe/json/route.ts`](../app/api/informe/json/route.ts) | Informe JSON |
+| [`lib/informe/json-query.ts`](../lib/informe/json-query.ts) | Query v2 + filtros |
+| [`lib/informe/json-map.ts`](../lib/informe/json-map.ts) | Mapeo `reporte` → JSON |
+| [`app/api/operario/reports/visitados-criticos/route.ts`](../app/api/operario/reports/visitados-criticos/route.ts) | Visitados críticos |
+| [`lib/personal/api-basic-auth.ts`](../lib/personal/api-basic-auth.ts) | Basic Auth `personal.api` (compartido) |
