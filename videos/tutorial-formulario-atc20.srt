@@ -1,0 +1,59 @@
+1
+00:00:00,992 --> 00:00:15,864
+Bienvenido. En este video aprenderá a registrar una evaluación ATC-20 desde el formulario de campo. Entre desde su celular a: formulario-atc20-cali.vercel.app
+
+2
+00:00:15,887 --> 00:00:21,116
+Escriba su número de cédula, sin puntos ni espacios.
+
+3
+00:00:21,139 --> 00:00:36,257
+Escriba su contraseña. La clave por defecto es: Cali2026+- — es decir, la palabra Cali con C mayúscula, el año 2026, el signo más y el signo menos.
+
+4
+00:00:36,280 --> 00:00:42,087
+Pulse Ingresar. El sistema valida su usuario de inspector.
+
+5
+00:00:42,109 --> 00:00:54,217
+Al entrar, el formulario obtiene su ubicación GPS automáticamente. Si no aparece, pulse "Actualizar ubicación" y acepte el permiso del navegador.
+
+6
+00:00:54,238 --> 00:01:01,708
+Seleccione el área donde está la edificación: Cabecera, Centro Poblado o Rural Disperso.
+
+7
+00:01:01,730 --> 00:01:11,904
+Pulse "Generar código". El sistema crea el código único de la edificación usando su número de brigada y un consecutivo automático.
+
+8
+00:01:11,927 --> 00:01:16,351
+Escriba el nombre de la edificación y su dirección.
+
+9
+00:01:16,374 --> 00:01:27,709
+Marque la clasificación según lo observado: Inspeccionada, Uso Restringido o Inseguro. Esta es la placa que queda pegada en la edificación.
+
+10
+00:01:27,731 --> 00:01:34,506
+Indique el alcance de la inspección: solo el exterior, o el exterior y el interior.
+
+11
+00:01:34,528 --> 00:01:39,980
+Si aplica, describa las restricciones de uso de la edificación.
+
+12
+00:01:40,002 --> 00:01:52,415
+Agregue las fotos de la edificación. Muy importante: incluya una foto del sticker pegado. Puede elegir fotos de la galería o tomarlas en el momento.
+
+13
+00:01:52,438 --> 00:02:00,583
+Si lo necesita, abra "Acciones posteriores", marque las recomendaciones y agregue comentarios.
+
+14
+00:02:00,605 --> 00:02:15,319
+Para terminar, revise la información y pulse "Enviar evaluación". Verá una pantalla de confirmación con el código del registro. En este video no la enviaremos, porque es una demostración.
+
+15
+00:02:15,341 --> 00:02:26,501
+Y listo. Recuerde: su usuario es su número de cédula y la clave por defecto es Cali2026+-. ¡Buen trabajo en campo!
