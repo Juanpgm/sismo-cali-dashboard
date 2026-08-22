@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Evaluación Rápida ATC-20 · Cali</title>
   <link rel="stylesheet" href="css/form.css">
+  <!-- Startup perf: open the connection to the Firebase CDN early and start
+       fetching the Firestore module in parallel instead of waiting for
+       auth.js to be parsed (design "import dedupe" — real load-time win). -->
+  <link rel="preconnect" href="https://www.gstatic.com">
+  <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js">
+  <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js">
+  <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js">
 </head>
 <body>
 
@@ -48,8 +55,9 @@
           </select>
         </div>
         <button type="button" id="btn-codigo" class="btn-secondary">Generar código</button>
-        <p id="codigo-display" class="codigo-display" hidden></p>
+        <p id="codigo-display" class="codigo-display" hidden><span id="codigo-prefijo"></span><input type="text" id="codigo-consecutivo" inputmode="numeric" pattern="[0-9]*" maxlength="4" aria-label="Consecutivo del código (4 dígitos, editable)"></p>
         <p id="codigo-error" class="field-error" role="alert" hidden></p>
+        <p id="codigo-hint" class="hint" hidden></p>
       </section>
 
       <section class="card" aria-labelledby="t-descripcion">
@@ -108,32 +116,14 @@
           <span>Fotos</span>
           <span class="hint-inline">mínimo 1</span>
         </h2>
-        <div class="fotos-grid">
-          <div class="foto-slot">
-            <label class="foto-add" aria-label="Agregar foto 1">
-              <input type="file" accept="image/*" capture="environment" class="visually-hidden">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-            </label>
-            <img alt="Vista previa de la foto 1" hidden>
-            <button type="button" class="foto-remove" hidden aria-label="Quitar foto 1">Quitar</button>
-          </div>
-          <div class="foto-slot">
-            <label class="foto-add" aria-label="Agregar foto 2">
-              <input type="file" accept="image/*" capture="environment" class="visually-hidden">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-            </label>
-            <img alt="Vista previa de la foto 2" hidden>
-            <button type="button" class="foto-remove" hidden aria-label="Quitar foto 2">Quitar</button>
-          </div>
-          <div class="foto-slot">
-            <label class="foto-add" aria-label="Agregar foto 3">
-              <input type="file" accept="image/*" capture="environment" class="visually-hidden">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
-            </label>
-            <img alt="Vista previa de la foto 3" hidden>
-            <button type="button" class="foto-remove" hidden aria-label="Quitar foto 3">Quitar</button>
-          </div>
+        <div id="fotos-grid" class="fotos-grid"></div>
+        <div class="foto-actions">
+          <button type="button" id="btn-foto-galeria" class="btn-secondary foto-action-btn">Agregar fotos</button>
+          <button type="button" id="btn-foto-camara" class="btn-secondary foto-action-btn">Tomar foto</button>
         </div>
+        <p id="foto-max-msg" class="hint foto-max-msg" hidden></p>
+        <input type="file" id="foto-galeria" accept="image/*" multiple class="visually-hidden">
+        <input type="file" id="foto-camara" accept="image/*" capture="environment" class="visually-hidden">
       </section>
 
       <details class="card acciones-card">

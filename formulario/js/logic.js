@@ -24,3 +24,86 @@ export function sugerirClasificacion(criterios) {
 export function buildCodigo(area, codigoInspector, consecutivo) {
   return `${MUNICIPIO}-${area}-${codigoInspector}${String(consecutivo).padStart(4, '0')}`;
 }
+
+// Inverse of buildCodigo's third segment: strips the fixed 3-digit inspector
+// code and parses the remainder as the consecutive. Width-agnostic so codes
+// that already widened past 9999 (see the ceiling test above) still parse:
+// '76001-1-00410000' with codigoInspector '004' -> 10000. Returns null when
+// the code does not belong to this inspector (wrong area segment, wrong
+// inspector prefix, or malformed input).
+export function parseConsecutivo(codigo, codigoInspector) {
+  if (typeof codigo !== 'string' || !codigoInspector) return null;
+  const parts = codigo.split('-');
+  if (parts.length !== 3) return null;
+  const [, , tail] = parts;
+  if (!tail.startsWith(codigoInspector)) return null;
+  const rest = tail.slice(codigoInspector.length);
+  if (!/^\d+$/.test(rest)) return null;
+  return Number(rest);
+}
+
+// Max-based (not count-based) so gaps in the sequence never collide with an
+// existing code: {1, 3} -> 4, not 3. Codes that do not belong to this
+// inspector (parseConsecutivo -> null) are ignored.
+export function siguienteConsecutivo(codigos, codigoInspector) {
+  let max = 0;
+  for (const codigo of codigos) {
+    const n = parseConsecutivo(codigo, codigoInspector);
+    if (n != null && n > max) max = n;
+  }
+  return max + 1;
+}
+
+// Validates the editable 4-digit consecutive segment the inspector types.
+// Deliberately no "floor at next available" rule: a value below the derived
+// next is a legitimate gap-filling correction, not an error (caller shows a
+// non-blocking hint instead). '0000' is rejected — zero is not a valid
+// consecutive.
+export function validarSegmento(raw) {
+  const v = String(raw == null ? '' : raw).trim();
+  if (!v) return { ok: false, value: null, code: 'vacio' };
+  if (v.length !== 4) return { ok: false, value: null, code: 'longitud' };
+  if (!/^\d{4}$/.test(v)) return { ok: false, value: null, code: 'no-numerico' };
+  const n = Number(v);
+  if (n === 0) return { ok: false, value: null, code: 'cero' };
+  return { ok: true, value: n, code: null };
+}
+
+// ---- Photos -----------------------------------------------------------------
+
+// Slot-generic cap (design decision "Slot-Generic Design With Capped
+// Fallback"): the client never hardcodes below-10 UI logic — only this
+// constant changes if the external signer starts accepting slot > 3.
+// Set to 3 after the apply-time signer probe rejected slot 4 and 10 with
+// `400 bad-request` while slot 1 and 3 passed schema validation (see
+// formulario/SETUP.md section 7 for the raw probe evidence).
+export const MAX_FOTOS = 3;
+
+// Pure predicate for the dynamic add-tile: true while there is room for one
+// more photo. `current` is the number of photos already attached.
+export function canAddSlot(current, max = MAX_FOTOS) {
+  return current < max;
+}
+
+// ---- Session resilience ------------------------------------------------------
+
+const TRANSIENT_FIRESTORE_CODES = new Set(['unavailable', 'deadline-exceeded', 'network-request-failed']);
+const FATAL_FIRESTORE_CODES = new Set(['permission-denied', 'not-found']);
+
+// Classifies a Firebase/Firestore error by its `.code`. Fatal errors are
+// authoritative rejections (retrying can never succeed); everything else,
+// including unknown/missing codes, is transient — the Firestore rules are
+// the durable gate (a live ID token can't create evaluaciones on its own),
+// so failing OPEN on the session here is safe, and failing CLOSED is the
+// field-logout bug this classification exists to prevent.
+export function clasificarErrorFirestore(err) {
+  const code = err && err.code ? err.code : '';
+  if (FATAL_FIRESTORE_CODES.has(code)) return 'fatal';
+  return 'transient';
+}
+
+// Exponential backoff for the profile-read retry loop: attempt 1 -> 600ms,
+// attempt 2 -> 1800ms, attempt 3 -> 5400ms (base * 3^(attempt-1)).
+export function backoffDelay(attempt, base = 600) {
+  return base * 3 ** (attempt - 1);
+}

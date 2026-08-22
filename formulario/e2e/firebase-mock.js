@@ -78,9 +78,36 @@ const MOCK_FIRESTORE = `
   export function doc(db, coll, id) { return { _coll: coll, _id: id }; }
   export function serverTimestamp() { return { __server: true }; }
   export function getDoc(ref) {
+    // Scoped to 'inspectores' so it only affects the auth-boot profile read,
+    // not the unrelated pre-submit 'evaluaciones' existence check in form.js.
+    if (ref._coll === 'inspectores' && window.__fb.flags.getDocFailQueue && window.__fb.flags.getDocFailQueue.length) {
+      const code = window.__fb.flags.getDocFailQueue.shift();
+      const e = new Error('mock-getdoc-fail: ' + code);
+      e.code = code;
+      return Promise.reject(e);
+    }
     const c = window.__fb.firestore[ref._coll] || {};
     const d = c[ref._id];
     return Promise.resolve({ exists: function () { return d !== undefined; }, data: function () { return d; } });
+  }
+  // Minimal query support: collection() + query() + where() build a
+  // descriptor; getDocs() filters in-memory docs by dotted-path equality
+  // (e.g. 'inspector.uid') — enough for the app's single-field lookups.
+  export function collection(db, coll) { return { _coll: coll }; }
+  export function where(field, op, value) { return { field: field, op: op, value: value }; }
+  export function query(collRef, ...clauses) { return { _coll: collRef._coll, _clauses: clauses }; }
+  function getPath(obj, path) {
+    return path.split('.').reduce(function (acc, key) { return acc == null ? acc : acc[key]; }, obj);
+  }
+  export function getDocs(q) {
+    const c = window.__fb.firestore[q._coll] || {};
+    const docs = Object.keys(c)
+      .filter(function (id) {
+        const d = c[id];
+        return (q._clauses || []).every(function (cl) { return getPath(d, cl.field) === cl.value; });
+      })
+      .map(function (id) { return { id: id, data: function () { return c[id]; } }; });
+    return Promise.resolve({ docs: docs, forEach: function (cb) { docs.forEach(cb); } });
   }
   export function runTransaction(db, fn) {
     const tx = {
@@ -95,7 +122,17 @@ const MOCK_FIRESTORE = `
         window.__fb.firestore[ref._coll][ref._id] = val;
       },
     };
-    return Promise.resolve().then(function () { return fn(tx); });
+    return Promise.resolve().then(function () {
+      // One-shot generic write failure, distinct from the create-only
+      // duplicate check, so a spec can exercise "photos already uploaded,
+      // but the doc write still failed" — the scenario a retry-without-
+      // re-upload cache actually protects against.
+      if (window.__fb.flags.failTransactionOnce) {
+        window.__fb.flags.failTransactionOnce = false;
+        throw new Error('mock-transaction-fail');
+      }
+      return fn(tx);
+    });
   }
 `;
 
