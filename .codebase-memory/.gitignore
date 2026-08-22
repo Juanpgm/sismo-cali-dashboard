@@ -1,0 +1,6 @@
+# Only the human-readable config is versioned. The graph DB artifact
+# (graph.db.zst, produced by index_repository persistence:true) is regenerable
+# and must never be committed.
+*
+!.gitignore
+!config.json

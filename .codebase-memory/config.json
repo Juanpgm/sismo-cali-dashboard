@@ -1,0 +1,27 @@
+{
+  "project": "C-Users-User-Documents-workspace-seismic_disaster_data_analisys_cali",
+  "description": "Codebase-memory indexing config for the sismo-cali-dashboard repo. Documents how the code knowledge graph is built so teammates re-index consistently. The graph DB itself is NOT committed (regenerate with index_repository); the ADR lives in docs/ADR.md and mirrored in the graph.",
+  "index": {
+    "mode": "full",
+    "repo_path": ".",
+    "excluded_dirs": [
+      ".atl",
+      ".claude",
+      ".git",
+      ".vercel",
+      "deploy",
+      "integracion_F1",
+      "__pycache__",
+      "web/.vercel",
+      "scripts/__pycache__",
+      "knowledge/fuentes",
+      "formulario/node_modules",
+      "formulario/test-results"
+    ],
+    "notes": [
+      "integracion_F1/ is a separate git repo indexed as its own codebase-memory project.",
+      "Run `index_repository(repo_path='.', mode='full')` after significant code changes.",
+      "ADR: `manage_adr(mode='get')` reads it from the graph; docs/ADR.md is the versioned mirror."
+    ]
+  }
+}
