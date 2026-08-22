@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   sugerirClasificacion, buildCodigo, MUNICIPIO, cedulaToEmail, LOGIN_EMAIL_DOMAIN,
   parseConsecutivo, siguienteConsecutivo, validarSegmento, canAddSlot,
+  clasificarErrorFirestore, backoffDelay,
 } from '../js/logic.js';
 
 const base = {
@@ -146,4 +147,41 @@ test('canAddSlot no permite agregar en el tope', () => {
 
 test('canAddSlot no permite agregar por encima del tope', () => {
   assert.equal(canAddSlot(4, 3), false);
+});
+
+// ---- clasificarErrorFirestore -------------------------------------------------
+
+test('clasificarErrorFirestore clasifica unavailable como transient', () => {
+  assert.equal(clasificarErrorFirestore({ code: 'unavailable' }), 'transient');
+});
+
+test('clasificarErrorFirestore clasifica deadline-exceeded como transient', () => {
+  assert.equal(clasificarErrorFirestore({ code: 'deadline-exceeded' }), 'transient');
+});
+
+test('clasificarErrorFirestore clasifica network-request-failed como transient', () => {
+  assert.equal(clasificarErrorFirestore({ code: 'network-request-failed' }), 'transient');
+});
+
+test('clasificarErrorFirestore clasifica permission-denied como fatal', () => {
+  assert.equal(clasificarErrorFirestore({ code: 'permission-denied' }), 'fatal');
+});
+
+test('clasificarErrorFirestore clasifica not-found como fatal', () => {
+  assert.equal(clasificarErrorFirestore({ code: 'not-found' }), 'fatal');
+});
+
+test('clasificarErrorFirestore trata un código desconocido como transient (falla abierto)', () => {
+  assert.equal(clasificarErrorFirestore({ code: 'internal' }), 'transient');
+  assert.equal(clasificarErrorFirestore({}), 'transient');
+});
+
+// ---- backoffDelay ---------------------------------------------------------
+
+test('backoffDelay en el primer intento usa la base', () => {
+  assert.equal(backoffDelay(1), 600);
+});
+
+test('backoffDelay en el segundo intento triplica la base', () => {
+  assert.equal(backoffDelay(2), 1800);
 });

@@ -10,10 +10,18 @@ import {
   signInWithEmailAndPassword, onAuthStateChanged, signOut,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
 import {
-  getFirestore, doc, getDoc,
+  getFirestore, doc, getDoc, getDocs, collection, query, where, runTransaction, serverTimestamp,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 import { firebaseConfig, isConfigured } from './firebase-config.js';
-import { cedulaToEmail } from './logic.js';
+import { cedulaToEmail, clasificarErrorFirestore, backoffDelay } from './logic.js';
+
+// Single Firebase boundary (design "import dedupe"): form.js imports every
+// Firestore/Auth primitive it needs from here instead of the gstatic CDN
+// directly, so there is one seam to intercept in the e2e mock and one place
+// that owns the SDK imports.
+export {
+  getAuth, doc, getDoc, getDocs, collection, query, where, runTransaction, serverTimestamp,
+};
 
 let app = null;
 let auth = null;
@@ -57,6 +65,7 @@ function buildOverlay() {
       </form>
 
       <p class="auth-error" id="auth-error" role="alert" hidden></p>
+      <button type="button" class="auth-retry" id="auth-retry" hidden>Reintentar</button>
       <p class="auth-foot">Solo personal autorizado.</p>
     </div>`;
   document.body.appendChild(root);
@@ -72,6 +81,34 @@ function showError(overlay, msg) {
 function setBusy(overlay, busy) {
   overlay.querySelectorAll('button, input').forEach((el) => { el.disabled = busy; });
   overlay.classList.toggle('is-busy', busy);
+}
+
+function showRetry(overlay, show) {
+  overlay.querySelector('#auth-retry').hidden = !show;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
+
+// Reads the inspector-profile doc with up to 3 attempts, retrying only
+// transient failures with backoff. A fatal classification (permission-denied,
+// not-found) is re-thrown immediately — retrying it would never succeed and
+// would only delay the sign-out.
+async function readProfileWithRetry(db, uid) {
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      // eslint-disable-next-line no-await-in-loop -- retries are inherently sequential
+      return await getDoc(doc(db, 'inspectores', uid));
+    } catch (err) {
+      lastErr = err;
+      if (clasificarErrorFirestore(err) === 'fatal') throw err;
+      // eslint-disable-next-line no-await-in-loop -- backoff between retries is sequential by design
+      if (attempt < 3) await sleep(backoffDelay(attempt));
+    }
+  }
+  throw lastErr;
 }
 
 function friendlyError(err) {
@@ -144,29 +181,32 @@ export function initAuth(onFirstAuthorized) {
   });
 
   let booted = false;
-  onAuthStateChanged(auth, async (user) => {
-    if (!user) {
-      inspector = null;
-      const form = overlay.querySelector('#auth-form');
-      if (form) form.reset();
-      showError(overlay, '');
-      setBusy(overlay, false);
-      overlay.style.display = '';
-      overlay.classList.remove('is-authed');
-      return;
-    }
+  let retryUser = null; // set only while the retry affordance is shown
 
-    // The profile doc gates access: no doc, no form.
+  // The profile doc gates access: no doc, no form. Split out so the
+  // "Reintentar" button can re-run exactly this check for the same user.
+  async function checkProfile(user) {
     let snap = null;
     try {
-      snap = await getDoc(doc(db, 'inspectores', user.uid));
+      snap = await readProfileWithRetry(db, user.uid);
     } catch (err) {
       console.error(err);
-      await signOut(auth);
+      if (clasificarErrorFirestore(err) === 'fatal') {
+        await signOut(auth);
+        setBusy(overlay, false);
+        showError(overlay, 'No se pudo verificar el perfil de inspector. Intente de nuevo.');
+        return;
+      }
+      // Transient and retries exhausted: do NOT sign out (the field-logout
+      // bug this feature exists to fix). Offer a manual retry instead.
+      retryUser = user;
       setBusy(overlay, false);
-      showError(overlay, 'No se pudo verificar el perfil de inspector. Intente de nuevo.');
+      showError(overlay, 'No se pudo verificar el perfil de inspector por una falla de conexión.');
+      showRetry(overlay, true);
       return;
     }
+    retryUser = null;
+    showRetry(overlay, false);
     if (!snap.exists()) {
       await signOut(auth);
       setBusy(overlay, false);
@@ -190,5 +230,29 @@ export function initAuth(onFirstAuthorized) {
     setTimeout(() => { overlay.style.display = 'none'; }, 350);
 
     if (!booted) { booted = true; onFirstAuthorized(inspector); }
+  }
+
+  overlay.querySelector('#auth-retry').addEventListener('click', () => {
+    if (!retryUser) return;
+    showError(overlay, '');
+    showRetry(overlay, false);
+    setBusy(overlay, true);
+    checkProfile(retryUser);
+  });
+
+  onAuthStateChanged(auth, async (user) => {
+    if (!user) {
+      inspector = null;
+      retryUser = null;
+      const form = overlay.querySelector('#auth-form');
+      if (form) form.reset();
+      showError(overlay, '');
+      showRetry(overlay, false);
+      setBusy(overlay, false);
+      overlay.style.display = '';
+      overlay.classList.remove('is-authed');
+      return;
+    }
+    await checkProfile(user);
   });
 }

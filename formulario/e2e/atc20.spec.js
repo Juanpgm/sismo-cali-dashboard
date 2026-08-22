@@ -53,6 +53,27 @@ test.describe('Autenticación', () => {
   });
 });
 
+test.describe('Sesión: reintento del perfil ante fallas transitorias', () => {
+  test('una falla transitoria en la lectura del perfil no cierra la sesión (reintenta y arranca)', async ({ page }) => {
+    const seed = defaultSeed();
+    seed.flags.getDocFailQueue = ['unavailable', 'unavailable']; // falla 2 veces, la 3ª pasa
+    await boot(page, seed);
+    await login(page);
+    await expect(page.locator('#app')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#auth-overlay')).toBeHidden();
+  });
+
+  test('una falla permission-denied en la lectura del perfil cierra la sesión de inmediato', async ({ page }) => {
+    const seed = defaultSeed();
+    seed.flags.getDocFailQueue = ['permission-denied'];
+    await boot(page, seed);
+    await login(page);
+    await expect(page.locator('#auth-error'))
+      .toHaveText('No se pudo verificar el perfil de inspector. Intente de nuevo.');
+    await expect(page.locator('#app')).toBeHidden();
+  });
+});
+
 test.describe('Código de la edificación', () => {
   test('exige seleccionar el área antes de generar', async ({ page }) => {
     await boot(page);

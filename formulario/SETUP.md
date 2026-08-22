@@ -164,3 +164,44 @@ límite de concurrencia 3) se mantiene sin cambios; solo el tope visible de
 slots baja de 10 a 3. Si el signer se actualiza para aceptar `slot` hasta
 10, basta con cambiar la constante `MAX_FOTOS` en `formulario/js/logic.js`
 — ningún otro archivo asume el valor 3.
+
+## 8. Orden de despliegue y endurecimiento opcional (slice 3)
+
+El cambio `stickers-form-upgrade` se entrega en tres PRs independientes,
+cada uno revertible por separado (`git revert`), en este orden:
+
+1. **Asignación de código** (consecutivo derivado de registros, segmento
+   editable) — sin cambios de reglas ni de esquema.
+2. **Captura de fotos** (galería/cámara, subida en paralelo, ver §7) — sin
+   cambios de reglas.
+3. **Sesión y rendimiento** (este slice: reintento con backoff ante fallas
+   transitorias del perfil, un solo punto de importación de Firebase,
+   `preconnect`/`modulepreload`) — sin cambios de reglas ni de esquema.
+
+Ninguna de las tres requiere migración de datos ni despliegue de reglas
+nuevas: la transacción `inspectores/{uid}` (incrementaba `consecutivo` en
+cada clic de "Generar código") se elimina del cliente en el slice 1, pero el
+campo permanece en el documento sin usarse — la regla de Firestore que la
+protegía (`allow update` con `hasOnly(['consecutivo'])`, ver §4) sigue
+desplegada y nunca se ejecuta desde el cliente nuevo.
+
+**Endurecimiento opcional, post-rollout**: una vez confirmado en producción
+que ningún cliente sigue escribiendo `inspectores/{uid}.consecutivo` (los
+tres slices ya desplegados), la regla `allow update` de la sección `match
+/inspectores/{uid}` en §4 puede reemplazarse por `allow update: if false;`
+para cerrar por completo esa vía de escritura (dejando `allow create,
+delete: if false;` como ya está). Esto es una limpieza de defensa en
+profundidad, no un requisito de este cambio — el campo `consecutivo` de
+`inspectores` ya no es leído por el cliente.
+
+## 9. Resiliencia de sesión ante fallas transitorias (slice 3)
+
+La verificación del perfil de inspector (`getDoc(inspectores/{uid})`) ahora
+reintenta hasta 3 veces con backoff (600 ms, luego 1800 ms) antes de darse
+por vencida. Solo un error clasificado como **fatal**
+(`permission-denied`, `not-found`) cierra la sesión de inmediato — el
+resto (`unavailable`, `deadline-exceeded`, `network-request-failed`,
+cualquier código desconocido) se trata como transitorio: el inspector nunca
+se desloguea por una falla de red pasajera en campo. Si los 3 intentos
+fallan, la pantalla de acceso muestra un botón "Reintentar" en vez de forzar
+el cierre de sesión.

@@ -84,3 +84,26 @@ export const MAX_FOTOS = 3;
 export function canAddSlot(current, max = MAX_FOTOS) {
   return current < max;
 }
+
+// ---- Session resilience ------------------------------------------------------
+
+const TRANSIENT_FIRESTORE_CODES = new Set(['unavailable', 'deadline-exceeded', 'network-request-failed']);
+const FATAL_FIRESTORE_CODES = new Set(['permission-denied', 'not-found']);
+
+// Classifies a Firebase/Firestore error by its `.code`. Fatal errors are
+// authoritative rejections (retrying can never succeed); everything else,
+// including unknown/missing codes, is transient — the Firestore rules are
+// the durable gate (a live ID token can't create evaluaciones on its own),
+// so failing OPEN on the session here is safe, and failing CLOSED is the
+// field-logout bug this classification exists to prevent.
+export function clasificarErrorFirestore(err) {
+  const code = err && err.code ? err.code : '';
+  if (FATAL_FIRESTORE_CODES.has(code)) return 'fatal';
+  return 'transient';
+}
+
+// Exponential backoff for the profile-read retry loop: attempt 1 -> 600ms,
+// attempt 2 -> 1800ms, attempt 3 -> 5400ms (base * 3^(attempt-1)).
+export function backoffDelay(attempt, base = 600) {
+  return base * 3 ** (attempt - 1);
+}

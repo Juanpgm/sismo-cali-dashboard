@@ -1,11 +1,13 @@
 // ATC-20 field form logic: geolocation, photos, unique building code and
 // create-only submit. Boots only after auth.js confirms a registered inspector.
 
-import { initAuth, getApp, getDb } from './auth.js';
+// Every Firestore/Auth primitive comes from './auth.js' (single Firebase
+// boundary, per design "import dedupe") instead of importing the gstatic
+// CDN modules a second time here.
 import {
+  initAuth, getApp, getDb, getAuth,
   collection, doc, getDoc, getDocs, query, runTransaction, serverTimestamp, where,
-} from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
-import { getAuth } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+} from './auth.js';
 import {
   MUNICIPIO, buildCodigo, parseConsecutivo, siguienteConsecutivo, validarSegmento, canAddSlot, MAX_FOTOS,
 } from './logic.js';

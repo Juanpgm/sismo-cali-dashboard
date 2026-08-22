@@ -78,6 +78,14 @@ const MOCK_FIRESTORE = `
   export function doc(db, coll, id) { return { _coll: coll, _id: id }; }
   export function serverTimestamp() { return { __server: true }; }
   export function getDoc(ref) {
+    // Scoped to 'inspectores' so it only affects the auth-boot profile read,
+    // not the unrelated pre-submit 'evaluaciones' existence check in form.js.
+    if (ref._coll === 'inspectores' && window.__fb.flags.getDocFailQueue && window.__fb.flags.getDocFailQueue.length) {
+      const code = window.__fb.flags.getDocFailQueue.shift();
+      const e = new Error('mock-getdoc-fail: ' + code);
+      e.code = code;
+      return Promise.reject(e);
+    }
     const c = window.__fb.firestore[ref._coll] || {};
     const d = c[ref._id];
     return Promise.resolve({ exists: function () { return d !== undefined; }, data: function () { return d; } });
