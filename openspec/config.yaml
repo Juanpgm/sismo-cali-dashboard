@@ -1,0 +1,48 @@
+schema: spec-driven
+
+context: |
+  Tech stack: Vanilla JS (ESM) + Node.js 25, Firebase (Admin + client SDK), Vercel serverless functions.
+  Structure: api/ (Vercel endpoints), web/ (dashboard SPA, no bundler), formulario/ (ATC-20 field form,
+  independent Node/Playwright project), scripts/ (Python data pipeline), deploy/ (Docker + Railway cron).
+  Architecture: static/serverless, no frontend framework/bundler; Firestore as data store; Python
+  scripts produce/refresh JSON consumed by web/.
+  Testing: `node --test` + plain `node <file>.js` self-checks (assert-based) in api/, web/js/,
+  formulario/; Playwright e2e in formulario/. Not wired at repo-root package.json; no Python test runner.
+  Style: no repo-root linter/formatter/type-checker config detected.
+
+strict_tdd: true
+
+testing:
+  test_runner: "node --test (formulario/, web/js/) and node <file>.js (api/, root test/) — self-check style, assert-based"
+  test_layers:
+    unit: true
+    integration: false
+    e2e: true
+  e2e_tool: "Playwright (formulario/playwright.config.js)"
+  coverage: false
+  linter: none
+  type_checker: none
+  formatter: none
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes (this project has no CI test gate — manual verification matters)
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Document architecture decisions with rationale
+    - Call out Firebase/Firestore schema or rules changes explicitly
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+  apply:
+    - Follow existing code patterns (vanilla ESM, no framework, no bundler)
+    tdd: true
+    test_command: "node --test \"js/**/*.test.mjs\" (run from web/ or formulario/); node <file>.test.js (run from api/ or test/)"
+  verify:
+    test_command: "node --test \"js/**/*.test.mjs\" (web/, formulario/); node test/refresh.test.js; node api/stickers.test.js"
+    build_command: ""
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas
