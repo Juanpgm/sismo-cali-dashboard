@@ -189,16 +189,17 @@ button:focus-visible, summary:focus-visible, label:has(:focus-visible) {
    to photograph the sticker with its code already in place. */
 .foto-sticker-legend {
   margin: 0.25rem 0 0.75rem;
-  padding: 0.6rem 0.75rem;
-  border: 1px solid var(--brand);
-  border-left-width: 4px;
+  padding: 0.75rem 0.9rem;
+  border: 2px solid var(--brand);
+  border-left-width: 6px;
   border-radius: var(--radius-md);
   background: var(--brand-dim);
   color: var(--ink);
-  font-size: 0.95rem;
   line-height: 1.4;
 }
-.foto-sticker-legend strong { color: var(--brand); }
+.foto-sticker-legend p { margin: 0; }
+.foto-sticker-title { font-size: 1.05rem; font-weight: 700; color: var(--brand); }
+.foto-sticker-detail { margin-block-start: 0.35rem !important; font-size: 0.95rem; color: var(--ink); }
 
 .fotos-grid {
   display: grid;
