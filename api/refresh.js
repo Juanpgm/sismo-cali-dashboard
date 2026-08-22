@@ -19,7 +19,7 @@ const RAILWAY_API = 'https://backboard.railway.com/graphql/v2';
 
 // Firebase project that issues the ID tokens (public identifier). Env override
 // only if it ever changes.
-const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'dagma-85aad';
+const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'sismo-agosto-sgred';
 const FIREBASE_CERTS_URL =
   'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
 

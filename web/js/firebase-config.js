@@ -18,11 +18,11 @@
 import { initializeApp, getApps, getApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
 
 export const firebaseConfig = {
-  apiKey: 'AIzaSyAVVewMgunLWBiZz5XU-GjrzbO3ZKcyvD0',
-  authDomain: 'dagma-85aad.firebaseapp.com',
-  projectId: 'dagma-85aad',
-  appId: '1:716440297451:web:6971b2bb4118f7ea3cc3ae',
-  messagingSenderId: '716440297451',
+  apiKey: 'AIzaSyDeJjKCGyfu_BSqxKUu4OhHEsUtOLaONyU',
+  authDomain: 'sismo-agosto-sgred.firebaseapp.com',
+  projectId: 'sismo-agosto-sgred',
+  appId: '1:802494899680:web:1258ddebab557655073785',
+  messagingSenderId: '802494899680',
   // La apiKey web NO es secreta (identificador público del proyecto).
 };
 
