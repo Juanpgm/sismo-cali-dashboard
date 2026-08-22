@@ -1,11 +1,18 @@
-// Stickers view: manage @sismocali.gov.co field inspectors via /api/stickers.
-// List, create (modal), and enable/disable accounts. A disabled inspector can
-// no longer create evaluaciones (enforced by the Firestore rules' `activo` gate).
+// Stickers view: the field operation in one screen.
+//
+// Two sections over the same /api/stickers endpoint:
+//   · Evaluaciones ATC-20 — KPIs, map and detail of what the brigades recorded
+//     (see evaluaciones.js).
+//   · Inspectores de campo — list, create (modal), enable/disable accounts. A
+//     disabled inspector can no longer create evaluaciones (enforced by the
+//     Firestore rules' `activo` gate).
 //
 // Design note: the 3-digit brigade code is each inspector's field identity — it
 // appears on the ATC-20 placard they post and inside every record id
-// (76001-1-1030001). It's the recurring visual anchor of the roster.
+// (76001-1-1030001). It's the recurring visual anchor of the roster. The admin
+// no longer types it: the server allocates the lowest free code on create.
 import { escapeHtml } from './utils.js';
+import { sectionHtml as evalSectionHtml, initEvaluaciones } from './evaluaciones.js';
 
 const ENDPOINT = '/api/stickers';
 
@@ -53,7 +60,7 @@ const field = (name, label, attrs = '') => `<label class="sticker-field">
     <input name="${name}" ${attrs}>
   </label>`;
 
-function view(inspectores) {
+function rosterHtml(inspectores) {
   const activos = inspectores.filter((i) => !i.disabled && i.activo).length;
   const off = inspectores.length - activos;
   const roster = inspectores.length
@@ -63,7 +70,7 @@ function view(inspectores) {
   return `
     <header class="sticker-head">
       <div>
-        <h2 class="sticker-h2">Inspectores de campo</h2>
+        <h3 class="sticker-h2">Inspectores de campo</h3>
         <p class="sticker-lead">Quién puede registrar evaluaciones desde el formulario ATC-20.</p>
       </div>
       <button type="button" class="btn-primary sticker-new" id="sticker-new">
@@ -71,6 +78,8 @@ function view(inspectores) {
         Nuevo inspector
       </button>
     </header>
+
+    <p class="sticker-ok" id="sticker-ok" role="status" hidden></p>
 
     <div class="sticker-stats">
       <div class="sticker-stat"><span class="sticker-stat-num">${inspectores.length}</span><span class="sticker-stat-lbl">Total</span></div>
@@ -93,11 +102,11 @@ function view(inspectores) {
           <form id="sticker-form" class="sticker-form" novalidate>
             <div class="sticker-form-grid">
               ${field('cedula', 'Cédula *', 'inputmode="numeric" required placeholder="1020735324" autocomplete="off"')}
-              ${field('codigo', 'Código de brigada *', 'inputmode="numeric" required maxlength="3" placeholder="004" autocomplete="off"')}
               ${field('nombre_completo', 'Nombre completo', 'placeholder="Andrés Torres" autocomplete="off"')}
               ${field('entidad', 'Entidad', 'placeholder="SGRED" autocomplete="off"')}
+              ${field('password', 'Contraseña *', 'type="text" required placeholder="mínimo 6 caracteres" autocomplete="off"')}
             </div>
-            ${field('password', 'Contraseña *', 'type="text" required placeholder="mínimo 6 caracteres" autocomplete="off"')}
+            <p class="sticker-note">El código de brigada se asigna solo: el servidor toma el número libre más bajo (001, 002, …) y nunca reutiliza uno ya entregado.</p>
             <p class="sticker-error" id="sticker-error" role="alert" hidden></p>
             <div class="sticker-form-actions">
               <button type="button" class="btn-secondary" data-modal-close>Cancelar</button>
@@ -109,26 +118,55 @@ function view(inspectores) {
     </div>`;
 }
 
+// Rendered once per tab open. The roster reloads into #sticker-roster on its
+// own; keeping the evaluaciones section outside that subtree means toggling an
+// inspector doesn't tear down the map and refetch every evaluation.
+function shellHtml() {
+  return `
+    <header class="sticker-page-head">
+      <h2 class="sticker-h1">Operación de campo</h2>
+      <p class="sticker-lead">Lo que registran las brigadas y quién está habilitado para registrarlo.</p>
+    </header>
+    ${evalSectionHtml()}
+    <section class="sticker-roster" id="sticker-roster"></section>`;
+}
+
 // initStickers(root, { getToken }) — renders the tab and wires its actions.
-// Refetches from the API on each open so the roster is always current.
+// Refetches from the API on each open so both sections are always current.
 export function initStickers(root, { getToken }) {
   let busy = false;
+  // Survives a roster reload so the "brigada 007 asignada" confirmation is
+  // still on screen after the list comes back with the new inspector on it.
+  let assignedNotice = '';
+
+  root.innerHTML = shellHtml();
+  const rosterRoot = root.querySelector('#sticker-roster');
+
+  initEvaluaciones(root.querySelector('.eval-section'), {
+    fetchEvaluaciones: async () => (await callApi(getToken, { action: 'evaluaciones' })).evaluaciones,
+  });
 
   async function reload() {
-    root.innerHTML = '<p class="sticker-loading">Cargando inspectores…</p>';
+    rosterRoot.innerHTML = '<p class="sticker-loading">Cargando inspectores…</p>';
     try {
       const { inspectores } = await callApi(getToken, { action: 'list' });
-      root.innerHTML = view(inspectores);
+      rosterRoot.innerHTML = rosterHtml(inspectores);
       wire();
+      if (assignedNotice) {
+        const ok = rosterRoot.querySelector('#sticker-ok');
+        ok.textContent = assignedNotice;
+        ok.hidden = false;
+        assignedNotice = '';
+      }
     } catch (err) {
-      root.innerHTML = `<p class="sticker-error" role="alert">${escapeHtml(err.message)}</p>`;
+      rosterRoot.innerHTML = `<p class="sticker-error" role="alert">${escapeHtml(err.message)}</p>`;
     }
   }
 
   function wire() {
-    const modal = root.querySelector('#sticker-modal');
-    const form = root.querySelector('#sticker-form');
-    const errBox = root.querySelector('#sticker-error');
+    const modal = rosterRoot.querySelector('#sticker-modal');
+    const form = rosterRoot.querySelector('#sticker-form');
+    const errBox = rosterRoot.querySelector('#sticker-error');
     const showError = (msg) => { errBox.textContent = msg; errBox.hidden = !msg; };
 
     const openModal = () => {
@@ -143,7 +181,7 @@ export function initStickers(root, { getToken }) {
       modal.setAttribute('aria-hidden', 'true');
     };
 
-    root.querySelector('#sticker-new').addEventListener('click', openModal);
+    rosterRoot.querySelector('#sticker-new').addEventListener('click', openModal);
     modal.querySelectorAll('[data-modal-close]').forEach((el) => el.addEventListener('click', closeModal));
     modal.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
 
@@ -154,20 +192,25 @@ export function initStickers(root, { getToken }) {
       const body = { action: 'create' };
       new FormData(form).forEach((v, k) => { body[k] = String(v).trim(); });
       busy = true;
-      root.querySelector('#sticker-submit').disabled = true;
+      rosterRoot.querySelector('#sticker-submit').disabled = true;
       try {
-        await callApi(getToken, body);
+        // The server allocates the brigade code, so the admin only learns it
+        // from the response — surface it instead of silently closing.
+        const { codigo } = await callApi(getToken, body);
+        assignedNotice = `Inspector creado. Código de brigada asignado: ${codigo}.`;
         closeModal();
         await reload();
       } catch (err) {
         showError(err.message);
-        root.querySelector('#sticker-submit').disabled = false;
+        rosterRoot.querySelector('#sticker-submit').disabled = false;
       } finally {
         busy = false;
       }
     });
 
-    root.querySelectorAll('.sticker-action').forEach((btn) => {
+    // Scoped to the roster rows: the evaluaciones section reuses .sticker-action
+    // for its own buttons, which must not get the enable/disable handler.
+    rosterRoot.querySelectorAll('.sticker-row .sticker-action[data-uid]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         if (busy) return;
         busy = true;

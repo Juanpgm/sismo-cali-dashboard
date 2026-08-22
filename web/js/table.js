@@ -282,7 +282,9 @@ function lbStep(delta) {
   lbShow();
 }
 
-function openLightbox(urls, startIndex) {
+/** Full-screen photo viewer. Shared with the Stickers tab's evaluation
+ *  detail modal so both photo galleries behave identically. */
+export function openLightbox(urls, startIndex) {
   lbState.urls = Array.isArray(urls) ? urls : [urls];
   lbState.idx = startIndex || 0;
   if (!lightboxEl) {

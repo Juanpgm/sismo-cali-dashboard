@@ -1564,7 +1564,13 @@ body[data-role="viewer"] .view-tab[data-view="stickers"] { display: none !import
 :root { --sticker-on: #37c871; --sticker-off: #ff6b6b; }
 :root[data-theme="light"] { --sticker-on: #1f9d57; --sticker-off: #d64545; }
 
-#view-stickers { max-width: 860px; }
+/* Wider than the old roster-only tab: the evaluation map needs the room. */
+#view-stickers { max-width: 1180px; }
+
+.sticker-page-head { margin-bottom: 22px; }
+.sticker-h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.015em; margin: 0; }
+
+.sticker-roster { margin-top: 34px; padding-top: 26px; border-top: 1px solid var(--border); }
 
 .sticker-head {
   display: flex; align-items: flex-end; justify-content: space-between;
@@ -1648,6 +1654,75 @@ body[data-role="viewer"] .view-tab[data-view="stickers"] { display: none !import
 .sticker-field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
 .sticker-form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
 .sticker-error { color: var(--sticker-off); font-size: .86rem; margin: 0; }
+.sticker-note { color: var(--text-muted); font-size: .78rem; line-height: 1.45; margin: 0; }
+.sticker-ok {
+  margin: 0 0 16px; padding: 10px 14px; font-size: .86rem; font-weight: 600;
+  color: var(--sticker-on); border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--sticker-on) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--sticker-on) 35%, transparent);
+}
+
+/* ============================================================
+   EVALUACIONES ATC-20 — same visual language as the Panel
+   (KPI tiles, distribution bar, Leaflet map + legend), scoped
+   to the placard's three states.
+   ============================================================ */
+.eval-section { display: flex; flex-direction: column; gap: 18px; }
+.eval-kpis { margin: 0; }
+/* The placard states read as prose here, not as three shouted labels. */
+.kpi-label-lower { text-transform: lowercase; letter-spacing: .02em; }
+
+.eval-map-card { margin: 0; }
+.eval-map { height: 52vh; min-height: 360px; }
+.eval-toolbar-title { font-size: .82rem; font-weight: 600; color: var(--text-secondary); }
+.eval-toolbar-meta { font-size: .75rem; color: var(--text-muted); font-family: var(--font-mono); }
+
+.eval-list-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.eval-list-head h4 {
+  font-size: .72rem; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-secondary); font-weight: 700; margin: 0;
+}
+.eval-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 8px;
+  max-height: 460px; overflow-y: auto;
+}
+.eval-row {
+  display: grid; grid-template-columns: auto 1fr auto auto;
+  align-items: center; gap: 14px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-md); padding: 11px 16px;
+  transition: border-color .15s ease;
+}
+.eval-row:hover { border-color: var(--border-strong); }
+.eval-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+.eval-identity { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.eval-name { font-weight: 600; color: var(--text-primary); }
+.eval-meta {
+  font-size: .78rem; color: var(--text-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.eval-pill {
+  padding: 3px 10px; border-radius: 999px; font-size: .74rem; font-weight: 600; white-space: nowrap;
+  color: var(--eval-pill); background: color-mix(in srgb, var(--eval-pill) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--eval-pill) 40%, transparent);
+}
+
+.eval-detail-banner {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--border);
+}
+.eval-detail-code {
+  font-family: var(--font-mono); font-size: .95rem; font-weight: 700;
+  color: var(--accent); background: var(--accent-dim);
+  border-radius: var(--radius-sm); padding: 4px 10px;
+}
+
+@media (max-width: 700px) {
+  .eval-map { height: 46vh; min-height: 300px; }
+  .eval-row { grid-template-columns: auto 1fr auto; row-gap: 8px; }
+  .eval-row .sticker-action { grid-column: 2 / 4; justify-self: start; }
+}
 
 @media (max-width: 560px) {
   .sticker-stats { grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
