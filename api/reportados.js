@@ -71,6 +71,26 @@ async function fetchWindow(auth, d0, d1) {
   return [];
 }
 
+// One tiny probe (a 1-minute window) before the full day walk: while the API
+// is down for maintenance it answers 503 to everything, and without this the
+// walk retries every window 3 times (~25s of guaranteed failure per uncached
+// page load — error responses are not CDN-cached). A healthy API pays one
+// ~200ms request.
+async function probeApi(auth) {
+  const now = Date.now();
+  const res = await fetch(`${API_URL}?desde_utc=${now - MIN_WINDOW_MS}&hasta_utc=${now}`, {
+    headers: { Authorization: `Basic ${auth}`, 'User-Agent': 'sismo-cali-dashboard/1.0' },
+    signal: AbortSignal.timeout(15_000),
+  }).catch(() => null);
+  // 413/504 = alive but window too dense (fine); anything else non-ok = down.
+  if (!res || (!res.ok && res.status !== 413 && res.status !== 504)) {
+    const status = res ? `HTTP ${res.status}` : 'sin respuesta';
+    const err = new Error(`API no disponible (${status})`);
+    err.status = 503;
+    throw err;
+  }
+}
+
 async function countReportes(auth, desde) {
   const start = Date.parse(`${desde}T00:00:00Z`);
   const end = Date.now() + DAY_MS;
@@ -108,6 +128,7 @@ module.exports = async (req, res) => {
   const desde = process.env.REPORTES_DESDE || '2026-08-01';
 
   try {
+    await probeApi(auth);
     const counts = await countReportes(auth, desde);
     if (counts.total === 0) {
       // Never cache/serve an empty count over a transient API failure; the
@@ -126,6 +147,7 @@ module.exports = async (req, res) => {
       ...counts,
     });
   } catch (err) {
-    return res.status(502).json({ error: String((err && err.message) || err) });
+    const status = (err && err.status) || 502;
+    return res.status(status).json({ error: String((err && err.message) || err) });
   }
 };
