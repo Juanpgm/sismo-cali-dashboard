@@ -4,14 +4,34 @@ name: Manual dashboard refresh
 # el cron de Railway (*/15 en horario diurno Colombia). Esto solo agrega un botón
 # "Run workflow" en la pestaña Actions que redespliega el servicio a demanda —
 # equivalente al botón "Actualizar datos" del dashboard, útil como respaldo.
+#
+# /api/refresh es fail-closed (exige un ID token de Firebase con proveedor
+# "password"), así que el job primero inicia sesión contra Firebase Auth con
+# las credenciales guardadas en los secrets del repositorio:
+#   REFRESH_EMAIL     correo de un usuario password-provider (p.ej. cédula@sismocali.gov.co)
+#   REFRESH_PASSWORD  su contraseña
+# La apiKey web de Firebase es un identificador público, no un secreto.
 on:
   workflow_dispatch: {}
 
 jobs:
-  ping:
+  refresh:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger dashboard refresh
+      - name: Sign in to Firebase and trigger the refresh
+        env:
+          REFRESH_EMAIL: ${{ secrets.REFRESH_EMAIL }}
+          REFRESH_PASSWORD: ${{ secrets.REFRESH_PASSWORD }}
         run: |
+          set -euo pipefail
+          if [ -z "$REFRESH_EMAIL" ] || [ -z "$REFRESH_PASSWORD" ]; then
+            echo "Faltan los secrets REFRESH_EMAIL / REFRESH_PASSWORD" >&2
+            exit 1
+          fi
+          ID_TOKEN=$(curl -fsS "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=AIzaSyDeJjKCGyfu_BSqxKUu4OhHEsUtOLaONyU" \
+            -H 'Content-Type: application/json' \
+            -d "{\"email\":\"$REFRESH_EMAIL\",\"password\":\"$REFRESH_PASSWORD\",\"returnSecureToken\":true}" \
+            | python3 -c 'import json,sys;print(json.load(sys.stdin)["idToken"])')
           curl -fsS -X POST https://sismo-cali-dashboard.vercel.app/api/refresh \
+            -H "Authorization: Bearer $ID_TOKEN" \
             -w '\nHTTP %{http_code}\n'
