@@ -240,18 +240,67 @@ button:focus-visible, summary:focus-visible, label:has(:focus-visible) {
 /* ---- Building code ---- */
 
 .codigo-display {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
   margin: 0.75rem 0 0;
-  padding: 0.7rem;
-  text-align: center;
+  padding: 0.6rem 0.7rem;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+}
+
+/* The code reads as one unified piece of text: prefix + consecutive glued
+   together with no gap, styled identically so the seam is invisible. */
+.codigo-texto {
   font-size: 1.35rem;
   font-weight: 700;
   letter-spacing: 0.05em;
   font-variant-numeric: tabular-nums;
   color: var(--brand);
-  background: var(--surface-3);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
+  white-space: nowrap;
 }
+
+/* Edit-mode input: matches the display text's weight/size so switching
+   modes doesn't visually jolt, but sized to just the 4-digit segment. */
+#codigo-consecutivo {
+  width: 4.5ch;
+  flex: none;
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  min-height: 40px;
+  padding: 0.25rem 0.3rem;
+  background: var(--surface-2);
+}
+
+/* Discreet icon buttons for the edit affordance: muted by default, tap
+   target >= 40px per spec, brand/verde/rojo accents only on hover/focus. */
+.codigo-btn-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.codigo-btn-icon:hover { color: var(--brand); border-color: var(--line); }
+/* Author CSS (display:grid) would otherwise cancel the UA [hidden] rule —
+   same fix already applied to .foto-action-btn above. */
+.codigo-btn-icon[hidden] { display: none; }
+
+.codigo-btn-confirmar { color: var(--verde); }
+.codigo-btn-confirmar:hover { color: var(--verde); border-color: var(--verde); }
+
+.codigo-btn-cancelar:hover { color: var(--rojo); border-color: var(--rojo); }
 
 /* ---- Classification cards ---- */
 

@@ -55,7 +55,19 @@
           </select>
         </div>
         <button type="button" id="btn-codigo" class="btn-secondary">Generar código</button>
-        <p id="codigo-display" class="codigo-display" hidden><span id="codigo-prefijo"></span><input type="text" id="codigo-consecutivo" inputmode="numeric" pattern="[0-9]*" maxlength="4" aria-label="Consecutivo del código (4 dígitos, editable)"></p>
+        <div id="codigo-display" class="codigo-display" hidden>
+          <span class="codigo-texto"><span id="codigo-prefijo"></span><span id="codigo-consecutivo-texto"></span></span>
+          <input type="text" id="codigo-consecutivo" inputmode="numeric" pattern="[0-9]*" maxlength="4" aria-label="Consecutivo del código (4 dígitos, editable)" hidden>
+          <button type="button" id="btn-codigo-editar" class="codigo-btn-icon" aria-label="Editar consecutivo">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+          <button type="button" id="btn-codigo-confirmar" class="codigo-btn-icon codigo-btn-confirmar" aria-label="Confirmar consecutivo" hidden>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+          </button>
+          <button type="button" id="btn-codigo-cancelar" class="codigo-btn-icon codigo-btn-cancelar" aria-label="Cancelar edición" hidden>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
         <p id="codigo-error" class="field-error" role="alert" hidden></p>
         <p id="codigo-hint" class="hint" hidden></p>
       </section>
@@ -116,6 +128,7 @@
           <span>Fotos</span>
           <span class="hint-inline">mínimo 1</span>
         </h2>
+        <p id="foto-sticker-legend" class="hint">Recuerde tomar una foto al sticker pegado en la edificación.</p>
         <div id="fotos-grid" class="fotos-grid"></div>
         <div class="foto-actions">
           <button type="button" id="btn-foto-galeria" class="btn-secondary foto-action-btn">Agregar fotos</button>

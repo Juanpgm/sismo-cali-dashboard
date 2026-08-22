@@ -153,7 +153,9 @@ test.describe('Segmento editable del código', () => {
     await page.click('#btn-codigo');
     await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
 
+    await page.click('#btn-codigo-editar');
     await page.fill('#codigo-consecutivo', '0005');
+    await page.click('#btn-codigo-confirmar');
     await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
     await page.locator('input[name="alcance"][value="exterior"]').check();
     await addFoto(page);
@@ -174,9 +176,12 @@ test.describe('Segmento editable del código', () => {
     await page.click('#btn-codigo');
     await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
 
+    await page.click('#btn-codigo-editar');
     await page.fill('#codigo-consecutivo', '12');
-    await page.locator('#codigo-consecutivo').blur();
+    await page.click('#btn-codigo-confirmar');
     await expect(page.locator('#codigo-error')).toHaveText('El consecutivo debe tener exactamente 4 dígitos.');
+    // Confirm rejected the invalid value: edit mode stays open.
+    await expect(page.locator('#codigo-consecutivo')).toBeVisible();
 
     await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
     await page.locator('input[name="alcance"][value="exterior"]').check();
@@ -201,8 +206,9 @@ test.describe('Segmento editable del código', () => {
     await expect(page.locator('#codigo-consecutivo')).toHaveValue('0006');
     await expect(page.locator('#codigo-hint')).toBeHidden();
 
+    await page.click('#btn-codigo-editar');
     await page.fill('#codigo-consecutivo', '0002');
-    await page.locator('#codigo-consecutivo').blur();
+    await page.click('#btn-codigo-confirmar');
     await expect(page.locator('#codigo-error')).toBeHidden();
     await expect(page.locator('#codigo-hint')).toBeVisible();
     await expect(page.locator('#codigo-hint')).not.toBeEmpty();
@@ -217,6 +223,50 @@ test.describe('Segmento editable del código', () => {
     const written = await page.evaluate(() => window.__fb.firestore.evaluaciones['76001-1-0040002']);
     expect(written).toBeTruthy();
     expect(written.consecutivo).toBe(2);
+  });
+});
+
+test.describe('Edición discreta del consecutivo (lápiz / confirmar / cancelar)', () => {
+  test('el lápiz abre edición, Escape cancela restaurando el valor y confirmar aplica un valor válido', async ({ page }) => {
+    await boot(page);
+    await loginAndWaitForm(page);
+    await page.selectOption('#area', '1');
+    await page.click('#btn-codigo');
+
+    // Display mode by default: unified text visible, input hidden.
+    await expect(page.locator('#codigo-consecutivo-texto')).toHaveText('0001');
+    await expect(page.locator('#codigo-consecutivo')).toBeHidden();
+    await expect(page.locator('#btn-codigo-editar')).toBeVisible();
+
+    // The pencil opens edit mode: input takes over, focused and ready to type.
+    await page.click('#btn-codigo-editar');
+    await expect(page.locator('#codigo-consecutivo')).toBeVisible();
+    await expect(page.locator('#codigo-consecutivo')).toBeFocused();
+    await expect(page.locator('#codigo-consecutivo-texto')).toBeHidden();
+    await expect(page.locator('#btn-codigo-editar')).toBeHidden();
+
+    // Escape cancels: restores the previous value and returns to display mode.
+    await page.fill('#codigo-consecutivo', '0009');
+    await page.locator('#codigo-consecutivo').press('Escape');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
+    await expect(page.locator('#codigo-consecutivo-texto')).toHaveText('0001');
+    await expect(page.locator('#codigo-consecutivo')).toBeHidden();
+    await expect(page.locator('#btn-codigo-editar')).toBeVisible();
+
+    // Confirm (via Enter) applies a valid edited value and returns to display mode.
+    await page.click('#btn-codigo-editar');
+    await page.fill('#codigo-consecutivo', '0007');
+    await page.locator('#codigo-consecutivo').press('Enter');
+    await expect(page.locator('#codigo-consecutivo-texto')).toHaveText('0007');
+    await expect(page.locator('#codigo-consecutivo')).toBeHidden();
+    await expect(page.locator('#btn-codigo-editar')).toBeVisible();
+
+    await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
+    await page.locator('input[name="alcance"][value="exterior"]').check();
+    await addFoto(page);
+    await page.click('#btn-submit');
+    await expect(page.locator('#confirm')).toBeVisible();
+    await expect(page.locator('#confirm-codigo')).toHaveText('76001-1-0040007');
   });
 });
 
@@ -235,6 +285,13 @@ async function addFotosGaleria(page, names) {
 }
 
 test.describe('Fotos: galería y cámara', () => {
+  test('muestra el recordatorio de fotografiar el sticker en la sección de Fotos', async ({ page }) => {
+    await boot(page);
+    await loginAndWaitForm(page);
+    await expect(page.locator('#foto-sticker-legend'))
+      .toHaveText('Recuerde tomar una foto al sticker pegado en la edificación.');
+  });
+
   test('seleccionar varias fotos a la vez agrega una vista previa por cada una, en orden', async ({ page }) => {
     await boot(page);
     await loginAndWaitForm(page);
@@ -453,7 +510,9 @@ test.describe('Recuperación ante código duplicado', () => {
     await page.selectOption('#area', '1');
     await page.click('#btn-codigo');
     await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
+    await page.click('#btn-codigo-editar');
     await page.fill('#codigo-consecutivo', '0005'); // choca con el existente
+    await page.click('#btn-codigo-confirmar');
     await page.fill('#nombre', 'Colegio San José');
     await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
     await page.locator('input[name="alcance"][value="exterior"]').check();
