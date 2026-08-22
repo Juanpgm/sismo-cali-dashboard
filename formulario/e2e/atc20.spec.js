@@ -226,6 +226,62 @@ test.describe('Segmento editable del código', () => {
   });
 });
 
+test.describe('Bug reportado: caché del consecutivo tras una edición manual', () => {
+  test('editar el segmento a un valor mucho más alto y enviar hace que el siguiente registro continúe desde ese valor + 1', async ({ page }) => {
+    await boot(page);
+    await loginAndWaitForm(page);
+
+    // Genera el primer código (0001) y lo edita manualmente a un valor muy
+    // por encima del derivado — el escenario reportado: inspector edita a
+    // 9000 en vez de aceptar el sugerido.
+    await page.selectOption('#area', '1');
+    await page.click('#btn-codigo');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
+
+    await page.click('#btn-codigo-editar');
+    await page.fill('#codigo-consecutivo', '9000');
+    await page.click('#btn-codigo-confirmar');
+
+    await page.locator('input[name="clasificacion"][value="INSPECCIONADA"]').check();
+    await page.locator('input[name="alcance"][value="exterior"]').check();
+    await addFoto(page);
+    await page.click('#btn-submit');
+
+    await expect(page.locator('#confirm')).toBeVisible();
+    await expect(page.locator('#confirm-codigo')).toHaveText('76001-1-0049000');
+
+    // Nuevo registro: el siguiente código debe continuar desde el valor
+    // GUARDADO (9000 + 1 = 9001), no desde el máximo derivado antes de la
+    // edición (que habría producido 0002).
+    await page.click('#btn-nuevo');
+    await expect(page.locator('#app')).toBeVisible();
+    await page.selectOption('#area', '1');
+    await page.click('#btn-codigo');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('9001');
+  });
+
+  test('generar código dos veces sin enviar no avanza el consecutivo', async ({ page }) => {
+    await boot(page);
+    await loginAndWaitForm(page);
+
+    await page.selectOption('#area', '1');
+    await page.click('#btn-codigo');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
+
+    // Re-generar sin haber enviado (mismo estado, botón sigue habilitado
+    // solo hasta que el área se bloquea; se fuerza la llamada directa a la
+    // función interna vía un segundo intento de exponer la UI no es
+    // necesario: basta con habilitar el botón/área de nuevo para reintentar
+    // la generación sin pasar por un envío real).
+    await page.evaluate(() => { document.querySelector('#area').disabled = false; document.querySelector('#btn-codigo').disabled = false; });
+    await page.click('#btn-codigo');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
+
+    const evaluaciones = await page.evaluate(() => window.__fb.firestore.evaluaciones);
+    expect(Object.keys(evaluaciones)).toHaveLength(0);
+  });
+});
+
 test.describe('Edición discreta del consecutivo (lápiz / confirmar / cancelar)', () => {
   test('el lápiz abre edición, Escape cancela restaurando el valor y confirmar aplica un valor válido', async ({ page }) => {
     await boot(page);

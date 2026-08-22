@@ -10,6 +10,7 @@ import {
 } from './auth.js';
 import {
   MUNICIPIO, buildCodigo, parseConsecutivo, siguienteConsecutivo, validarSegmento, canAddSlot, MAX_FOTOS,
+  siguienteDesdeMax, plegarConsecutivoGuardado,
 } from './logic.js';
 
 // Serverless signer that validates the Firebase idToken and presigns the
@@ -235,9 +236,13 @@ let consecutivoPrevio = null;
 
 // Records-derived next consecutive, session-cached. Runs the query at most
 // once per session (state.maxConsecutivo starts null); every call after that
-// just bumps the cached max locally with no round trip. This is a pure read
-// plus in-memory bookkeeping — nothing is written to Firestore here, so a
-// generated-but-unsubmitted code never "consumes" a number for real.
+// just re-derives from the cached max with no round trip and NO mutation —
+// state.maxConsecutivo only advances when a code is actually saved (see
+// onSubmit's plegarConsecutivoGuardado fold). This is a pure read plus a
+// pure arithmetic step; nothing is written to Firestore or to the cache
+// here, so a generated-but-unsubmitted code never "consumes" a number for
+// real, and calling this twice in a row without submitting yields the same
+// value.
 async function siguienteConsecutivoSesion() {
   if (state.maxConsecutivo == null) {
     const db = getDb();
@@ -247,8 +252,7 @@ async function siguienteConsecutivoSesion() {
     snap.forEach((d) => codigos.push(d.id));
     state.maxConsecutivo = siguienteConsecutivo(codigos, state.inspector.codigo) - 1;
   }
-  state.maxConsecutivo += 1;
-  return state.maxConsecutivo;
+  return siguienteDesdeMax(state.maxConsecutivo);
 }
 
 function renderCodigo(area, consecutivo) {
@@ -534,6 +538,13 @@ async function onSubmit(e) {
       if (snap.exists()) throw new Error('codigo-duplicado');
       tx.set(evalRef, data);
     });
+
+    // Fold the ACTUALLY saved consecutive into the session cache (max(), not
+    // a blind assignment) so the next generated code derives from what was
+    // really written — including a manual edit — and a gap-filling
+    // correction (saved value below the current max) never drags the known
+    // max backwards.
+    state.maxConsecutivo = plegarConsecutivoGuardado(state.maxConsecutivo, data.consecutivo);
 
     $('#confirm-codigo').textContent = state.codigo;
     $('#app').hidden = true;
