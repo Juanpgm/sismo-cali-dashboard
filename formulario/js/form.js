@@ -7,7 +7,7 @@ import {
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 import { getAuth } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
 import {
-  MUNICIPIO, buildCodigo, parseConsecutivo, siguienteConsecutivo, validarSegmento,
+  MUNICIPIO, buildCodigo, parseConsecutivo, siguienteConsecutivo, validarSegmento, canAddSlot, MAX_FOTOS,
 } from './logic.js';
 
 // Serverless signer that validates the Firebase idToken and presigns the
@@ -37,8 +37,8 @@ const state = {
   // next one). null = not yet derived from Firestore. Invalidated only on a
   // codigo-duplicado collision.
   maxConsecutivo: null,
-  fotos: [null, null, null], // File | null per slot
-  fotosSubidas: {},        // "codigo:slot" -> downloadURL (upload retry cache)
+  fotos: [],                // { file, previewUrl }[] — dense array, max MAX_FOTOS
+  fotosSubidas: {},         // "codigo:name:size:lastModified" -> downloadURL (upload retry cache)
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -135,44 +135,79 @@ function stopGeoWatch() {
 }
 
 // ---- Photos -----------------------------------------------------------------
+// Dynamic dense array (see design "photo model"): no fixed slots. Two shared
+// hidden inputs (gallery multi-select, camera single-shot) feed the same
+// addFotos() entry point; renderFotos() rebuilds the grid from state so
+// removing a photo never leaves a gap in the displayed order.
 
 function wirePhotos() {
-  document.querySelectorAll('.foto-slot').forEach((slot, i) => {
-    const input = slot.querySelector('input[type="file"]');
-    const img = slot.querySelector('img');
-    const removeBtn = slot.querySelector('.foto-remove');
-
-    input.addEventListener('change', () => {
-      const file = input.files && input.files[0];
-      if (!file) return;
-      state.fotos[i] = file;
-      if (img.src) URL.revokeObjectURL(img.src);
-      img.src = URL.createObjectURL(file);
-      img.hidden = false;
-      removeBtn.hidden = false;
-    });
-
-    removeBtn.addEventListener('click', () => {
-      state.fotos[i] = null;
-      input.value = '';
-      if (img.src) URL.revokeObjectURL(img.src);
-      img.removeAttribute('src');
-      img.hidden = true;
-      removeBtn.hidden = true;
-    });
+  $('#btn-foto-galeria').addEventListener('click', () => $('#foto-galeria').click());
+  $('#btn-foto-camara').addEventListener('click', () => $('#foto-camara').click());
+  $('#foto-galeria').addEventListener('change', (e) => {
+    addFotos(e.target.files);
+    e.target.value = ''; // allow re-selecting the same file later
   });
+  $('#foto-camara').addEventListener('change', (e) => {
+    addFotos(e.target.files);
+    e.target.value = '';
+  });
+  renderFotos();
+}
+
+// Accepts as many files as fit in the remaining capacity; extras beyond
+// MAX_FOTOS are silently dropped (per spec: gallery multi-select adds "up to
+// the remaining slot capacity", not an error condition).
+function addFotos(fileList) {
+  const files = Array.from(fileList || []);
+  for (const file of files) {
+    if (!canAddSlot(state.fotos.length, MAX_FOTOS)) break;
+    state.fotos.push({ file, previewUrl: URL.createObjectURL(file) });
+  }
+  renderFotos();
+}
+
+function removeFoto(index) {
+  const [removed] = state.fotos.splice(index, 1);
+  if (removed) URL.revokeObjectURL(removed.previewUrl);
+  renderFotos();
+}
+
+function renderFotos() {
+  const grid = $('#fotos-grid');
+  grid.innerHTML = '';
+  state.fotos.forEach((foto, i) => {
+    const tile = document.createElement('div');
+    tile.className = 'foto-tile';
+
+    const img = document.createElement('img');
+    img.src = foto.previewUrl;
+    img.alt = `Vista previa de la foto ${i + 1}`;
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'foto-remove';
+    removeBtn.textContent = 'Quitar';
+    removeBtn.setAttribute('aria-label', `Quitar foto ${i + 1}`);
+    removeBtn.addEventListener('click', () => removeFoto(i));
+
+    tile.append(img, removeBtn);
+    grid.append(tile);
+  });
+
+  const puedeAgregar = canAddSlot(state.fotos.length, MAX_FOTOS);
+  $('#btn-foto-galeria').hidden = !puedeAgregar;
+  $('#btn-foto-camara').hidden = !puedeAgregar;
+  const maxMsg = $('#foto-max-msg');
+  maxMsg.textContent = `Alcanzó el máximo de ${MAX_FOTOS} fotos.`;
+  maxMsg.hidden = puedeAgregar;
 }
 
 function clearPhotos() {
-  document.querySelectorAll('.foto-slot').forEach((slot, i) => {
-    state.fotos[i] = null;
-    slot.querySelector('input[type="file"]').value = '';
-    const img = slot.querySelector('img');
-    if (img.src) URL.revokeObjectURL(img.src);
-    img.removeAttribute('src');
-    img.hidden = true;
-    slot.querySelector('.foto-remove').hidden = true;
-  });
+  state.fotos.forEach((f) => URL.revokeObjectURL(f.previewUrl));
+  state.fotos = [];
+  $('#foto-galeria').value = '';
+  $('#foto-camara').value = '';
+  renderFotos();
 }
 
 // ---- Building code ----------------------------------------------------------
@@ -257,6 +292,64 @@ async function generarCodigo() {
   }
 }
 
+// ---- Photo upload ------------------------------------------------------------
+
+// Uploads all attached photos with a bounded worker pool (design: "photo
+// model" / spec "Parallel Upload With Concurrency Cap"): at most `limit`
+// requests in flight at any point, results collected index-ordered
+// regardless of completion order. Cache key intentionally drops the slot —
+// index-keyed caching would force re-upload of every surviving photo after a
+// removal shifts the array. `slot` sent to the signer is still index-based
+// (1..MAX_FOTOS) since the signer's request schema requires it.
+async function subirFotos(fotos, limit = 3) {
+  const idToken = await getAuth(getApp()).currentUser.getIdToken();
+  const urls = new Array(fotos.length);
+  let next = 0;
+
+  async function worker() {
+    while (next < fotos.length) {
+      const i = next++;
+      urls[i] = await subirUnaFoto(fotos[i].file, i + 1, idToken);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(limit, fotos.length) }, worker);
+  await Promise.all(workers);
+  return urls;
+}
+
+async function subirUnaFoto(file, slot, idToken) {
+  const key = `${state.codigo}:${file.name}:${file.size}:${file.lastModified}`;
+  if (!state.fotosSubidas[key] && window.__fotosMock) {
+    // demo.html only: skip the network, fake the stored URL.
+    state.fotosSubidas[key] = `https://demo.invalid/evaluaciones/${state.codigo}/foto_${slot}.jpg`;
+  }
+  if (!state.fotosSubidas[key]) {
+    const sr = await fetch(FOTO_SIGNER_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken, codigo: state.codigo, slot }),
+    });
+    if (!sr.ok) {
+      // Defensive fallback (design D3): the deployed signer rejects slot > 3
+      // with a 400 before checking the token. MAX_FOTOS already caps at 3 so
+      // this should be unreachable in normal use, but surfaces a specific
+      // message instead of the generic upload error if it ever happens.
+      if (sr.status === 400 && slot > 3) throw new Error('signer-slot-limit');
+      throw new Error(`sign-${sr.status}`);
+    }
+    const { uploadUrl, publicUrl } = await sr.json();
+    const up = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: file,
+    });
+    if (!up.ok) throw new Error(`put-${up.status}`);
+    state.fotosSubidas[key] = publicUrl;
+  }
+  return state.fotosSubidas[key];
+}
+
 // ---- Submit -----------------------------------------------------------------
 
 function showSubmitError(msg) {
@@ -275,7 +368,7 @@ function setSubmitBusy(busy) {
 function validate() {
   if (!state.codigo) return 'Genere el código de la edificación antes de enviar.';
   if (!state.coords) return 'Falta la ubicación. Use "Actualizar ubicación" antes de enviar.';
-  if (!state.fotos.some(Boolean)) return 'Agregue al menos una foto de la edificación antes de enviar.';
+  if (state.fotos.length === 0) return 'Agregue al menos una foto de la edificación antes de enviar.';
   const form = $('#eval-form');
   if (!form.checkValidity()) {
     form.reportValidity(); // native messages for criterios/clasificación/alcance
@@ -308,41 +401,15 @@ async function onSubmit(e) {
 
     // Upload photos to S3 first (signer presigns per photo); URLs go inside
     // the evaluation doc. Successful uploads are cached so a retry after a
-    // failed doc write skips them.
-    // ponytail: photos uploaded before the doc write can be orphaned if the form is abandoned; bounded to 3 files per code, clean manually if it ever matters.
-    const fotos = [];
+    // failed doc write skips them. Cache key drops the slot (design: "photo
+    // model") — removing a photo shifts every later index, and a slot-keyed
+    // cache would force re-upload of every surviving photo on retry.
+    let fotos;
     try {
-      const idToken = await getAuth(getApp()).currentUser.getIdToken();
-      for (let slot = 0; slot < state.fotos.length; slot++) {
-        const file = state.fotos[slot];
-        if (!file) continue;
-        // Key by slot + file identity so removing/replacing a photo between a
-        // failed submit and the retry never reuses a stale cached URL.
-        const key = `${state.codigo}:${slot}:${file.name}:${file.size}:${file.lastModified}`;
-        if (!state.fotosSubidas[key] && window.__fotosMock) {
-          // demo.html only: skip the network, fake the stored URL.
-          state.fotosSubidas[key] = `https://demo.invalid/evaluaciones/${state.codigo}/foto_${slot + 1}.jpg`;
-        }
-        if (!state.fotosSubidas[key]) {
-          const sr = await fetch(FOTO_SIGNER_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ idToken, codigo: state.codigo, slot: slot + 1 }),
-          });
-          if (!sr.ok) throw new Error(`sign-${sr.status}`);
-          const { uploadUrl, publicUrl } = await sr.json();
-          const up = await fetch(uploadUrl, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'image/jpeg' },
-            body: file,
-          });
-          if (!up.ok) throw new Error(`put-${up.status}`);
-          state.fotosSubidas[key] = publicUrl;
-        }
-        fotos.push(state.fotosSubidas[key]);
-      }
+      fotos = await subirFotos(state.fotos);
     } catch (err) {
       console.error(err);
+      if (err && /^signer-slot-limit$/.test(err.message)) throw err;
       throw new Error('foto-upload');
     }
 
@@ -404,6 +471,8 @@ async function onSubmit(e) {
         console.error(deriveErr);
       }
       showSubmitError('El código ya existe. Se generó uno nuevo automáticamente; revise y envíe de nuevo.');
+    } else if (err && err.message === 'signer-slot-limit') {
+      showSubmitError('Este dispositivo solo admite 3 fotos por registro.');
     } else if (err && err.message === 'foto-upload') {
       showSubmitError('No se pudieron subir las fotos. Verifique la conexión, o quite las fotos y envíe sin ellas (los demás datos se conservan).');
     } else {

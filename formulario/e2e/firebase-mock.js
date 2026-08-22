@@ -114,7 +114,17 @@ const MOCK_FIRESTORE = `
         window.__fb.firestore[ref._coll][ref._id] = val;
       },
     };
-    return Promise.resolve().then(function () { return fn(tx); });
+    return Promise.resolve().then(function () {
+      // One-shot generic write failure, distinct from the create-only
+      // duplicate check, so a spec can exercise "photos already uploaded,
+      // but the doc write still failed" — the scenario a retry-without-
+      // re-upload cache actually protects against.
+      if (window.__fb.flags.failTransactionOnce) {
+        window.__fb.flags.failTransactionOnce = false;
+        throw new Error('mock-transaction-fail');
+      }
+      return fn(tx);
+    });
   }
 `;
 

@@ -68,3 +68,19 @@ export function validarSegmento(raw) {
   if (n === 0) return { ok: false, value: null, code: 'cero' };
   return { ok: true, value: n, code: null };
 }
+
+// ---- Photos -----------------------------------------------------------------
+
+// Slot-generic cap (design decision "Slot-Generic Design With Capped
+// Fallback"): the client never hardcodes below-10 UI logic — only this
+// constant changes if the external signer starts accepting slot > 3.
+// Set to 3 after the apply-time signer probe rejected slot 4 and 10 with
+// `400 bad-request` while slot 1 and 3 passed schema validation (see
+// formulario/SETUP.md section 7 for the raw probe evidence).
+export const MAX_FOTOS = 3;
+
+// Pure predicate for the dynamic add-tile: true while there is room for one
+// more photo. `current` is the number of photos already attached.
+export function canAddSlot(current, max = MAX_FOTOS) {
+  return current < max;
+}

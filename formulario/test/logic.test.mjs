@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   sugerirClasificacion, buildCodigo, MUNICIPIO, cedulaToEmail, LOGIN_EMAIL_DOMAIN,
-  parseConsecutivo, siguienteConsecutivo, validarSegmento,
+  parseConsecutivo, siguienteConsecutivo, validarSegmento, canAddSlot,
 } from '../js/logic.js';
 
 const base = {
@@ -132,4 +132,18 @@ test('validarSegmento rechaza el segmento cero', () => {
 
 test('validarSegmento rechaza el segmento vacío', () => {
   assert.deepEqual(validarSegmento(''), { ok: false, value: null, code: 'vacio' });
+});
+
+// ---- canAddSlot --------------------------------------------------------------
+
+test('canAddSlot permite agregar por debajo del tope', () => {
+  assert.equal(canAddSlot(2, 3), true);
+});
+
+test('canAddSlot no permite agregar en el tope', () => {
+  assert.equal(canAddSlot(3, 3), false);
+});
+
+test('canAddSlot no permite agregar por encima del tope', () => {
+  assert.equal(canAddSlot(4, 3), false);
 });

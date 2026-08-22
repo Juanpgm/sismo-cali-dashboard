@@ -179,29 +179,22 @@ button:focus-visible, summary:focus-visible, label:has(:focus-visible) {
 
 .geo-display { margin: 0 0 0.75rem; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
 
-/* ---- Photos (discreet) ---- */
+/* ---- Photos (dynamic grid, up to MAX_FOTOS) ---- */
 
 .foto-head { display: flex; align-items: center; gap: 0.5rem; }
 .foto-icon { flex: none; color: var(--brand); }
 .foto-head .hint-inline { margin-inline-start: auto; }
 
-.fotos-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; }
-
-.foto-slot { display: flex; flex-direction: column; gap: 0.4rem; }
-
-.foto-add {
+.fotos-grid {
   display: grid;
-  place-items: center;
-  min-height: 64px;
-  border: 1.5px dashed var(--line-strong);
-  border-radius: var(--radius-md);
-  color: var(--muted);
-  background: var(--surface-3);
-  cursor: pointer;
+  grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  gap: 0.6rem;
 }
-.foto-add:hover { color: var(--brand); border-color: var(--brand); }
+.fotos-grid:not(:empty) { margin-block-end: 0.75rem; }
 
-.foto-slot img {
+.foto-tile { position: relative; display: flex; flex-direction: column; gap: 0.4rem; }
+
+.foto-tile img {
   width: 100%;
   aspect-ratio: 1;
   object-fit: cover;
@@ -219,6 +212,18 @@ button:focus-visible, summary:focus-visible, label:has(:focus-visible) {
   color: var(--rojo);
   cursor: pointer;
 }
+
+.foto-actions {
+  display: flex;
+  gap: 0.6rem;
+}
+.foto-actions .foto-action-btn { flex: 1; }
+/* .btn-secondary sets display:block, which overrides the UA [hidden]
+   stylesheet rule (author CSS always wins over UA styles) — restore it
+   explicitly so JS-toggled `hidden` actually hides these buttons. */
+.foto-action-btn[hidden] { display: none; }
+
+.foto-max-msg { margin: 0.6rem 0 0; }
 
 .visually-hidden {
   position: absolute;
