@@ -146,7 +146,7 @@ sanity is instead `api/stickers.test.js`, which passes unchanged.
 1. Mobile CSS collapse (`styles.css:1818-1820`) — the `.sticker-row` mobile
    media query collapses to a 3-column grid and gives `.sticker-action`
    full-width treatment; `.usuario-row`'s `.usuario-actions` (a
-   flex-wrapped group, not individual grid children) does not get an
+   flex-wrapped group, not individual grid children like Stickers') does not get an
    equivalent override, so it will likely render cramped on narrow screens.
    Confirmed present: the media query at `:1818-1820` only targets
    `.sticker-row .sticker-action`, not `.usuario-actions`. Documented in

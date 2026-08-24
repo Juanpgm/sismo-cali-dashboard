@@ -355,5 +355,3 @@ if the diff still needs bounding:
    it is NOT the deployed ruleset for `sismo-agosto-sgred`. v1 edits no rules. Phase 2's server-side
    event capture avoids needing a client-write rule at all; if any rule change is ever required it must
    be made in the `sismo-agosto-sgred` console, not this repo.
-</content>
-</invoke>
