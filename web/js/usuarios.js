@@ -35,9 +35,15 @@ const field = (name, label, attrs = '') => `<label class="sticker-field">
     <input name="${name}" ${attrs}>
   </label>`;
 
-function rowHtml(u, ownUid) {
+function rowHtml(u, ownUid, selected) {
   const activo = !u.disabled;
   const isSelf = u.uid === ownUid;
+  // Self can't be selected/deleted (server guard rejects it too), so those
+  // rows keep the decorative avatar; every other row swaps it for a select
+  // checkbox in the same first grid column — no grid surgery needed.
+  const lead = isSelf
+    ? `<span class="sticker-avatar" aria-hidden="true">${escapeHtml(initials(u.email))}</span>`
+    : `<input type="checkbox" class="usuario-check" data-uid="${escapeHtml(u.uid)}"${selected.has(u.uid) ? ' checked' : ''} aria-label="Seleccionar ${escapeHtml(u.email)}">`;
   const estado = activo
     ? '<span class="sticker-pill sticker-pill-on">Activo</span>'
     : '<span class="sticker-pill sticker-pill-off">Inhabilitado</span>';
@@ -51,7 +57,7 @@ function rowHtml(u, ownUid) {
   const reset = `<button type="button" class="sticker-action" data-email="${escapeHtml(u.email)}" data-reset="true">Resetear contraseña</button>`;
   const meta = `${ROLE_LABEL[u.role] || u.role} · último acceso: ${fmtDate(u.lastSignInTime)} · alta: ${fmtDate(u.creationTime)}`;
   return `<li class="sticker-row usuario-row${activo ? '' : ' is-off'}">
-    <span class="sticker-avatar" aria-hidden="true">${escapeHtml(initials(u.email))}</span>
+    ${lead}
     <div class="sticker-identity">
       <span class="sticker-name">${escapeHtml(u.email || '—')}${isSelf ? ' <span class="sticker-warn" title="Tu propia cuenta">vos</span>' : ''}</span>
       <span class="sticker-meta">${escapeHtml(meta)}</span>
@@ -77,16 +83,29 @@ function chipsHtml(usuarios) {
     </div>`;
 }
 
-function rosterHtml(usuarios, filtered, ownUid, { role, status }) {
+function pagerHtml({ page, totalPages, total }) {
+  if (totalPages <= 1) return `<p class="usuario-pager-info">${total} resultado(s)</p>`;
+  return `<div class="usuario-pager">
+      <button type="button" class="btn-secondary" id="usuario-prev"${page <= 1 ? ' disabled' : ''}>Anterior</button>
+      <span class="usuario-pager-info">Página ${page} de ${totalPages} · ${total} resultado(s)</span>
+      <button type="button" class="btn-secondary" id="usuario-next"${page >= totalPages ? ' disabled' : ''}>Siguiente</button>
+    </div>`;
+}
+
+function rosterHtml(usuarios, filtered, pageItems, ownUid, { role, status, query }, selected, pag) {
   const roster = filtered.length
-    ? `<ul class="sticker-list">${filtered.map((u) => rowHtml(u, ownUid)).join('')}</ul>`
-    : `<p class="sticker-empty">Ningún usuario coincide con el filtro.</p>`;
+    ? `<ul class="sticker-list">${pageItems.map((u) => rowHtml(u, ownUid, selected)).join('')}</ul>${pagerHtml(pag)}`
+    : `<p class="sticker-empty">Ningún usuario coincide con la búsqueda o el filtro.</p>`;
   const opt = (value, label, current) => `<option value="${value}"${value === current ? ' selected' : ''}>${label}</option>`;
+  const bulk = selected.size
+    ? `<button type="button" class="sticker-action sticker-action-off" id="usuario-bulk-delete">Eliminar seleccionados (${selected.size})</button>`
+    : '';
 
   return `
     <div class="section-bar">
       <h3 class="section-bar-title">Cuentas</h3>
       ${chipsHtml(usuarios)}
+      ${bulk}
       <button type="button" class="btn-primary sticker-new" id="usuario-new">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         Nuevo administrador
@@ -94,6 +113,9 @@ function rosterHtml(usuarios, filtered, ownUid, { role, status }) {
     </div>
 
     <div class="usuario-filters">
+      <label class="sticker-field usuario-search"><span>Buscar</span>
+        <input type="search" id="usuario-search" placeholder="email, rol o estado…" value="${escapeHtml(query || '')}" autocomplete="off">
+      </label>
       <label class="sticker-field"><span>Rol</span>
         <select id="usuario-filter-role">
           ${opt('', 'Todos', role)}${opt('admin', 'Admin', role)}${opt('viewer', 'Viewer', role)}${opt('inspector', 'Inspector', role)}${opt('otro', 'Otro', role)}
@@ -155,6 +177,10 @@ export function initUsuarios(root, { getToken }) {
   let ownUid = null;
   let roleFilter = '';
   let statusFilter = '';
+  let query = '';
+  let page = 1;
+  const PAGE_SIZE = 25;
+  const selected = new Set(); // uids checked for bulk delete; survives re-render
   // Survives a re-render so a confirmation stays on screen after the list
   // comes back refreshed (mirrors stickers.js's assignedNotice).
   let notice = '';
@@ -162,12 +188,31 @@ export function initUsuarios(root, { getToken }) {
   root.innerHTML = shellHtml();
   const rosterRoot = root.querySelector('#usuario-roster');
 
+  // Multi-term AND search over email + role label + estado (the user-visible
+  // attributes). Empty query matches everything.
+  const matchesQuery = (u) => {
+    if (!query) return true;
+    const hay = `${u.email} ${ROLE_LABEL[u.role] || u.role} ${u.disabled ? 'inhabilitado' : 'activo'}`.toLowerCase();
+    return query.toLowerCase().split(/\s+/).filter(Boolean).every((t) => hay.includes(t));
+  };
+
   const currentFiltered = () => usuarios.filter((u) =>
     (!roleFilter || u.role === roleFilter)
-    && (!statusFilter || (statusFilter === 'activo' ? !u.disabled : u.disabled)));
+    && (!statusFilter || (statusFilter === 'activo' ? !u.disabled : u.disabled))
+    && matchesQuery(u));
 
   function render() {
-    rosterRoot.innerHTML = rosterHtml(usuarios, currentFiltered(), ownUid, { role: roleFilter, status: statusFilter });
+    const filtered = currentFiltered();
+    const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+    if (page > totalPages) page = totalPages;
+    if (page < 1) page = 1;
+    const start = (page - 1) * PAGE_SIZE;
+    const pageItems = filtered.slice(start, start + PAGE_SIZE);
+    rosterRoot.innerHTML = rosterHtml(
+      usuarios, filtered, pageItems, ownUid,
+      { role: roleFilter, status: statusFilter, query }, selected,
+      { page, totalPages, total: filtered.length },
+    );
     wire();
     if (notice) {
       const ok = rosterRoot.querySelector('#usuario-ok');
@@ -192,11 +237,68 @@ export function initUsuarios(root, { getToken }) {
   function wire() {
     rosterRoot.querySelector('#usuario-filter-role').addEventListener('change', (e) => {
       roleFilter = e.target.value;
+      selected.clear(); // no dejar seleccionadas cuentas que el filtro oculta
       render();
     });
     rosterRoot.querySelector('#usuario-filter-status').addEventListener('change', (e) => {
       statusFilter = e.target.value;
+      selected.clear();
       render();
+    });
+
+    rosterRoot.querySelector('#usuario-search').addEventListener('input', (e) => {
+      query = e.target.value;
+      page = 1;
+      selected.clear(); // narrowing the set, like the filters, clears selection
+      render();
+      // render() rebuilt the input; restore focus + caret so typing is smooth
+      const s = rosterRoot.querySelector('#usuario-search');
+      s.focus();
+      s.setSelectionRange(s.value.length, s.value.length);
+    });
+
+    const prev = rosterRoot.querySelector('#usuario-prev');
+    const next = rosterRoot.querySelector('#usuario-next');
+    if (prev) prev.addEventListener('click', () => { page -= 1; render(); });
+    if (next) next.addEventListener('click', () => { page += 1; render(); });
+
+    rosterRoot.querySelectorAll('.usuario-check').forEach((box) => {
+      box.addEventListener('change', () => {
+        if (box.checked) selected.add(box.dataset.uid);
+        else selected.delete(box.dataset.uid);
+        render(); // refreshes the "Eliminar seleccionados (N)" count
+      });
+    });
+
+    const bulkBtn = rosterRoot.querySelector('#usuario-bulk-delete');
+    if (bulkBtn) bulkBtn.addEventListener('click', async () => {
+      if (busy) return;
+      const uids = [...selected];
+      if (!uids.length) return;
+      if (!confirm(`¿Eliminar ${uids.length} cuenta(s)? Esta acción no se puede deshacer.`)) return;
+      busy = true;
+      bulkBtn.disabled = true;
+      // Sequential on purpose: the API deletes one uid per call and the
+      // last-admin guard reads a fresh snapshot each time, so serializing
+      // keeps that guard honest. Failures (e.g. last-admin 403) are collected
+      // per-account instead of aborting the batch.
+      const emailByUid = new Map(usuarios.map((u) => [u.uid, u.email]));
+      const errors = [];
+      for (const uid of uids) {
+        try {
+          await callApi(getToken, { action: 'delete', uid });
+          usuarios = usuarios.filter((u) => u.uid !== uid);
+          selected.delete(uid);
+        } catch (err) {
+          errors.push(`${emailByUid.get(uid) || uid}: ${err.message}`);
+        }
+      }
+      busy = false;
+      const done = uids.length - errors.length;
+      notice = errors.length
+        ? `Eliminadas ${done}/${uids.length}. No se pudieron: ${errors.join('; ')}`
+        : `${done} usuario(s) eliminado(s).`;
+      render(); // local mutation + re-render, no full page/API reload
     });
 
     const modal = rosterRoot.querySelector('#usuario-modal');
@@ -248,6 +350,7 @@ export function initUsuarios(root, { getToken }) {
         btn.disabled = true;
         try {
           await callApi(getToken, { action: 'setEnabled', uid: btn.dataset.uid, enabled: btn.dataset.enable === 'true' });
+          busy = false;
           await reload();
         } catch (err) {
           busy = false;
@@ -265,8 +368,11 @@ export function initUsuarios(root, { getToken }) {
         btn.disabled = true;
         try {
           await callApi(getToken, { action: 'delete', uid: btn.dataset.uid });
+          usuarios = usuarios.filter((u) => u.uid !== btn.dataset.uid);
+          selected.delete(btn.dataset.uid);
           notice = 'Usuario eliminado.';
-          await reload();
+          busy = false;
+          render(); // local mutation + re-render, no full page/API reload
         } catch (err) {
           busy = false;
           btn.disabled = false;

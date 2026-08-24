@@ -1702,6 +1702,11 @@ body[data-role="viewer"] .view-tab[data-view="usuarios"] { display: none !import
 .usuario-filters { display: flex; gap: 14px; flex-wrap: wrap; margin: 16px 0; }
 .usuario-row { grid-template-columns: auto 1fr auto auto; }
 .usuario-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-self: end; }
+.usuario-check { width: 20px; height: 20px; justify-self: center; cursor: pointer; accent-color: var(--sticker-off); }
+.usuario-search { flex: 1 1 220px; }
+.usuario-pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 16px; flex-wrap: wrap; }
+.usuario-pager-info { font-size: .82rem; color: var(--text-muted); text-align: center; margin-top: 12px; }
+.usuario-pager .usuario-pager-info { margin-top: 0; }
 
 /* ============================================================
    EVALUACIONES ATC-20 — same visual language as the Panel,
