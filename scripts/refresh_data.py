@@ -507,13 +507,10 @@ def _query_attachment_groups(definition_expression: str) -> dict:
     return data
 
 
-def fetch_photo_coords() -> dict[int, dict]:
-    """Per-record GPS centroid from the photo attachments' EXIF metadata.
-
-    Everything comes from queryAttachments with returnMetadata=true — no image
-    downloads. Attachments without a GPS IFD (signatures, GPS-less photos) are
-    skipped. Returns {objectid: {lat, lon, n_fotos_gps, gps_error_m}}.
-    """
+def _all_attachment_groups() -> list[dict]:
+    """Every attachmentGroup for the layer, in one queryAttachments call (with a
+    batched fallback if the transfer limit is hit). Raises if the endpoint
+    returns nothing, so callers fail loud instead of marking records photo-less."""
     data = _query_attachment_groups("1=1")
     groups = data.get("attachmentGroups", [])
     if data.get("exceededTransferLimit"):
@@ -534,9 +531,52 @@ def fetch_photo_coords() -> dict[int, dict]:
             expr = f"objectid >= {chunk[0]} AND objectid <= {chunk[-1]}"
             groups.extend(_query_attachment_groups(expr).get("attachmentGroups", []))
     if not groups:
-        # An empty result is indistinguishable from a broken endpoint — treat
-        # it as failure rather than silently marking every record photo-less.
         raise RuntimeError("queryAttachments returned 0 attachment groups.")
+    return groups
+
+
+def _photo_urls_from_groups(groups: list[dict]) -> dict[int, list[str]]:
+    """Pure: attachmentGroups → {objectid: [download url, ...]}. Keeps only image
+    attachments and skips the evaluator's signature (firma*), matching what the
+    dashboard shows as "las fotos". Separated from the fetch so it is testable
+    without the network (see scripts/test_photo_urls.py)."""
+    urls: dict[int, list[str]] = {}
+    for group in groups:
+        oid = group.get("parentObjectId")
+        if oid is None:
+            continue
+        for info in group.get("attachmentInfos", []):
+            if not (info.get("contentType") or "").startswith("image"):
+                continue
+            if re.match(r"firma", info.get("name") or "", re.IGNORECASE):
+                continue  # el attachment de la firma del evaluador, no una foto
+            aid = info.get("id")
+            if aid is None:
+                continue
+            urls.setdefault(int(oid), []).append(
+                f"{SURVEY_LAYER_URL}/{int(oid)}/attachments/{aid}"
+            )
+    return urls
+
+
+def fetch_photo_urls() -> dict[int, list[str]]:
+    """Direct download URLs for each record's inspection photos, for the xlsx
+    export. {objectid: [url, ...]}.
+
+    ponytail: does its own queryAttachments call (same as fetch_photo_coords);
+    if the doubled ~5 MB fetch ever matters, thread one _all_attachment_groups()
+    result through both."""
+    return _photo_urls_from_groups(_all_attachment_groups())
+
+
+def fetch_photo_coords() -> dict[int, dict]:
+    """Per-record GPS centroid from the photo attachments' EXIF metadata.
+
+    Everything comes from queryAttachments with returnMetadata=true — no image
+    downloads. Attachments without a GPS IFD (signatures, GPS-less photos) are
+    skipped. Returns {objectid: {lat, lon, n_fotos_gps, gps_error_m}}.
+    """
+    groups = _all_attachment_groups()
 
     points: dict[int, list[tuple[float, float, float | None]]] = {}
     n_photos_gps = 0
@@ -821,7 +861,12 @@ def spatial_join(df: pd.DataFrame, mask: pd.Series | None = None) -> pd.DataFram
 # --- Step 5: write outputs -------------------------------------------------
 
 
-def write_outputs(df: pd.DataFrame, out_dir: Path, source_used: str) -> tuple[Path, Path, int]:
+def write_outputs(
+    df: pd.DataFrame,
+    out_dir: Path,
+    source_used: str,
+    photo_urls: dict[int, list[str]] | None = None,
+) -> tuple[Path, Path, int]:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     records_json = df.to_json(orient="records", date_format="iso", force_ascii=False)
@@ -852,10 +897,20 @@ def write_outputs(df: pd.DataFrame, out_dir: Path, source_used: str) -> tuple[Pa
     meta_path = out_dir / "meta.json"
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # Full dataset as xlsx for the dashboard's download button (same columns
-    # as inspections.json). Optional: never block the JSON publish over it.
+    # Full dataset as xlsx for the dashboard's download button. Adds a `fotos`
+    # column with the direct download URL of each record's photos (newline-
+    # separated) so the xlsx is self-contained — the JSON stays lean without it.
+    # Optional: never block the JSON publish over it.
+    xlsx_df = df
+    if photo_urls and "ObjectID" in df.columns:
+        oids = pd.to_numeric(df["ObjectID"], errors="coerce")
+        fotos = [
+            "\n".join(photo_urls.get(int(o), [])) if pd.notna(o) else ""
+            for o in oids
+        ]
+        xlsx_df = df.assign(fotos=fotos)
     try:
-        df.to_excel(out_dir / "inspections.xlsx", index=False)
+        xlsx_df.to_excel(out_dir / "inspections.xlsx", index=False)
     except Exception as exc:  # noqa: BLE001 - openpyxl may be absent; xlsx is optional
         log.warning("inspections.xlsx not written: %s", exc)
 
@@ -1092,7 +1147,16 @@ def run_once(out_dir: Path) -> None:
     # Derived triage flag consumed by the dashboard and shipped in the xlsx.
     df = add_suspension_servicios(df)
 
-    inspections_path, meta_path, n = write_outputs(df, out_dir, "survey123")
+    # Direct photo download URLs for the xlsx export. Fail-soft: a broken
+    # attachments endpoint just ships the xlsx without the `fotos` column.
+    try:
+        photo_urls = fetch_photo_urls()
+        log.info("Photo URLs: %d records with photos for the xlsx.", len(photo_urls))
+    except Exception as exc:  # noqa: BLE001 - fail-soft by design
+        log.warning("Photo URLs unavailable (%s); xlsx without the fotos column.", exc)
+        photo_urls = None
+
+    inspections_path, meta_path, n = write_outputs(df, out_dir, "survey123", photo_urls)
     log.info("Wrote %s (%d records) and %s.", inspections_path, n, meta_path)
     log.info("=== refresh_data run complete ===")
 
