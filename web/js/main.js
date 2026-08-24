@@ -10,6 +10,7 @@ import {
 import { initTable, renderTable, setTotalRecords, openDetailModal } from './table.js';
 import { renderAcciones } from './acciones.js';
 import { initStickers } from './stickers.js';
+import { initUsuarios } from './usuarios.js';
 import { initTheme } from './theme.js';
 import { initAuth, getIdToken, isAdmin } from './auth.js';
 import { debounce, setSourceLabels, sourceLabel, habBinary, labelForCode } from './utils.js';
@@ -196,6 +197,10 @@ function switchView(view) {
   // Stickers pulls live data from /api/stickers — (re)load it each time it opens.
   if (view === 'stickers') {
     initStickers(document.getElementById('view-stickers'), { getToken: getIdToken });
+  }
+  // Usuarios pulls live data from /api/usuarios — (re)load it each time it opens.
+  if (view === 'usuarios') {
+    initUsuarios(document.getElementById('view-usuarios'), { getToken: getIdToken });
   }
   currentView = view;
   // Acciones works over ALL records and doesn't depend on the Panel filters —
