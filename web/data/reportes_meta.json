@@ -1,10 +1,10 @@
 {
-  "generated_at": "2026-08-20T21:13:27Z",
-  "row_count": 11445,
+  "generated_at": "2026-08-24T20:17:29Z",
+  "row_count": 15668,
   "source": "api:informe/json",
   "date_range": {
-    "generated_at": "2026-08-20T21:13:27Z",
+    "generated_at": "2026-08-24T20:17:29Z",
     "desde": "2026-08-01",
-    "hasta": "2026-08-21"
+    "hasta": "2026-08-25"
   }
 }
