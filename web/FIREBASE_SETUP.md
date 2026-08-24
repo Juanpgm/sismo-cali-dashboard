@@ -8,7 +8,7 @@ El dashboard ahora exige autenticación. Roles según **cómo** inicia sesión:
 | Usuario + contraseña (creados a mano) | **admin** | Todo: *Panel*, *Acciones* y *Actualizar datos*. |
 | Google fuera de `@cali.gov.co` | — | Rechazado. |
 
-Proyecto Firebase: **`dagma-85aad`**.
+Proyecto Firebase: **`sismo-agosto-sgred`** (consola bajo la cuenta `cigred@cali.gov.co`).
 
 > **Estado:** ya quedó configurado y desplegado. La config web (`apiKey`/`appId`),
 > los proveedores (Google + Email/Password) y los dominios autorizados de Vercel
@@ -34,7 +34,7 @@ No son secretos: la apiKey web es un identificador público.
 *Authentication → Settings → Authorized domains* → *Add domain*:
 agregá tu dominio de Vercel (p. ej. `sismo-cali.vercel.app`) y cualquier dominio propio.
 Sin esto, el login con Google falla con `auth/unauthorized-domain`.
-`localhost`, `dagma-85aad.firebaseapp.com` y `dagma-85aad.web.app` ya vienen autorizados.
+`localhost`, `sismo-agosto-sgred.firebaseapp.com` y `sismo-agosto-sgred.web.app` ya vienen autorizados.
 
 ## 4. Crear administradores
 
@@ -49,7 +49,7 @@ la consola (no hay API pública estable para cambiarlo):
 > **App name** → poné algo de la app, p. ej. `Visualización sísmica Cali` →
 > *Save*. (También podés fijar un logo y el dominio de la app.)
 
-Así deja de aparecer "Dagma".
+Así deja de aparecer el nombre por defecto del proyecto (`sismo-agosto-sgred`).
 
 ## Seguridad — alcance real
 
