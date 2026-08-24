@@ -83,13 +83,23 @@ def _ms(dt: datetime) -> int:
     return int(dt.timestamp() * 1000)
 
 
+class AuthError(Exception):
+    """API rejected the credentials (401/403). This is a global auth failure, not
+    a per-window hiccup, so it aborts the whole pull instead of being retried and
+    swallowed once per day-window."""
+
+
 def fetch_window(session: requests.Session, auth: tuple[str, str],
                  d0: int, d1: int) -> list[dict]:
-    """Fetch [d0, d1] (ms UTC), recursively halving on 413/504 payload limits."""
+    """Fetch [d0, d1] (ms UTC), recursively halving on 413/504 payload limits.
+    Raises AuthError immediately on 401/403 (bad credentials) — no point
+    retrying or splitting when the whole pull will fail the same way."""
     for attempt in range(3):
         try:
             resp = session.get(API_URL, params={"desde_utc": d0, "hasta_utc": d1},
                                auth=auth, timeout=90)
+            if resp.status_code in (401, 403):
+                raise AuthError(f"HTTP {resp.status_code}: {resp.text[:120]}")
             if resp.status_code in (413, 504):
                 raise requests.HTTPError(str(resp.status_code), response=resp)
             resp.raise_for_status()
@@ -180,19 +190,30 @@ def run(desde: str) -> int:
     session = requests.Session()
     seen: dict[str, dict] = {}
     day = start
-    while day < end:
-        d0 = _ms(day)
-        d1 = _ms(day + timedelta(days=1)) - 1
-        reps = fetch_window(session, creds, d0, d1)
-        new = 0
-        for rep in reps:
-            rid = rep.get("id")
-            if rid and rid not in seen:
-                seen[rid] = strip_report(rep)
-                new += 1
-        if reps:
-            log.info("%s: %d reportes (%d nuevos)", day.date(), len(reps), new)
-        day += timedelta(days=1)
+    try:
+        while day < end:
+            d0 = _ms(day)
+            d1 = _ms(day + timedelta(days=1)) - 1
+            reps = fetch_window(session, creds, d0, d1)
+            new = 0
+            for rep in reps:
+                rid = rep.get("id")
+                if rid and rid not in seen:
+                    seen[rid] = strip_report(rep)
+                    new += 1
+            if reps:
+                log.info("%s: %d reportes (%d nuevos)", day.date(), len(reps), new)
+            day += timedelta(days=1)
+    except AuthError as exc:
+        # Wrong/expired credentials fail every window identically — stop on the
+        # first one. Fail-soft for the overall refresh: keep previous files.
+        log.error(
+            "Reportes API rechazó las credenciales de %s (%s). Actualizá %s en "
+            "Railway con la contraseña autorizada. Detalle: %s. "
+            "El refresh principal (survey123) continúa; reportes no se actualizan.",
+            creds[0], USER_ENV, PASS_ENV, exc,
+        )
+        return 0
 
     records = [seen[k] for k in sorted(seen)]  # stable order → idempotent file
     if not records:
