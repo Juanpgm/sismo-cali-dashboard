@@ -1,9 +1,9 @@
 {
-  "generated_at": "2026-08-24T23:31:52Z",
-  "row_count": 14702,
+  "generated_at": "2026-08-24T23:47:14Z",
+  "row_count": 13065,
   "source": "api:informe/json",
   "date_range": {
-    "generated_at": "2026-08-24T23:31:52Z",
+    "generated_at": "2026-08-24T23:47:14Z",
     "desde": "2026-08-01",
     "hasta": "2026-08-25"
   }
