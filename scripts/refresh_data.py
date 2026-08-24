@@ -77,8 +77,8 @@ NORMALIZED_TAB = "tabla_normalizada"
 # queryAttachments to harvest photo EXIF GPS metadata (no image downloads,
 # nothing is ever written to ArcGIS).
 SURVEY_LAYER_URL = (
-    "https://services6.arcgis.com/EF6OTqvE0RxR2jwj/arcgis/rest/services/"
-    "service_d108cb3c79e242eabe99b458798936d1/FeatureServer/0"
+    "https://services8.arcgis.com/ljfiJpg35HWgdtaC/arcgis/rest/services/"
+    "service_16fa1d2000ea4fa68304bc030a95e8d1/FeatureServer/0"
 )
 
 # Generous Cali bounding box for sanity-filtering photo GPS fixes.

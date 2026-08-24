@@ -233,7 +233,7 @@ function groupForField(field) {
 
 // Layer público de Survey123: sus adjuntos (fotos) son accesibles sin token en
 // {LAYER}/{objectid}/attachments. Se muestran en el modal, junto al minimapa.
-const SURVEY_LAYER_URL = 'https://services6.arcgis.com/EF6OTqvE0RxR2jwj/arcgis/rest/services/service_d108cb3c79e242eabe99b458798936d1/FeatureServer/0';
+const SURVEY_LAYER_URL = 'https://services8.arcgis.com/ljfiJpg35HWgdtaC/arcgis/rest/services/service_16fa1d2000ea4fa68304bc030a95e8d1/FeatureServer/0';
 
 async function loadPhotos(objectId, container) {
   if (!container || objectId == null) return;
