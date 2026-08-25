@@ -11,11 +11,17 @@ import {
 import {
   MUNICIPIO, buildCodigo, parseConsecutivo, siguienteConsecutivo, validarSegmento, canAddSlot, MAX_FOTOS,
   siguienteDesdeMax, plegarConsecutivoGuardado, consecutivosExistentes,
+  habitabilidadColor, colapsoLabel, mapsDirUrl,
 } from './logic.js';
 
 // Serverless signer that validates the Firebase idToken and presigns the
 // S3 upload (photos live in S3, not Firebase Storage).
 const FOTO_SIGNER_URL = 'https://sismo-fotos-signer.vercel.app/api/sign';
+
+// Dashboard admin endpoint for assigned points: reads/writes sticker_matches
+// server-side (Firebase Admin), so the form needs NO Firestore rules for it.
+// Auth is the inspector's Firebase ID token.
+const DASHBOARD_API = location.hostname === 'localhost' ? 'http://localhost:3000' : 'https://sismo-cali-dashboard.vercel.app';
 
 // Signal the inline CDN-failure watchdog in index.html that modules loaded.
 window.__atc20Booted = true;
@@ -50,6 +56,12 @@ const state = {
   derivedConsecutivo: null,
   fotos: [],                // { file, previewUrl }[] — dense array, max MAX_FOTOS
   fotosSubidas: {},         // "codigo:name:size:lastModified" -> downloadURL (upload retry cache)
+  // Assigned points (sticker_matches) for this inspector, still pending. Empty
+  // array = none assigned = go straight to the blank form (hard requirement).
+  asignaciones: [],
+  // The point currently being registered, or null for a free-form record.
+  // { id, coords, direccion }. Drives the sticker_matches "hecho" flip on submit.
+  asignacion: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -58,9 +70,9 @@ initAuth(boot);
 
 function boot(inspector) {
   state.inspector = inspector;
-  $('#app').hidden = false;
 
-  requestLocation();
+  // Wire everything once; visibility of #app / #asignaciones is decided by the
+  // assignments flow below (and requestLocation only runs when the form shows).
   $('#btn-geo').addEventListener('click', requestLocation);
 
   wirePhotos();
@@ -73,6 +85,128 @@ function boot(inspector) {
 
   $('#eval-form').addEventListener('submit', onSubmit);
   $('#btn-nuevo').addEventListener('click', nuevoRegistro);
+
+  iniciarAsignaciones();
+}
+
+// ---- Assigned points (pre-form) ---------------------------------------------
+// Before showing the blank form, ask the dashboard admin endpoint for this
+// inspector's pending points (it reads sticker_matches server-side, so the
+// form needs no Firestore rules). Zero (or any failure) → go straight to the
+// form, so an inspector with nothing assigned is never blocked. One or more →
+// show the picker; the form opens only once a point is chosen.
+
+// POSTs to the assigned-points endpoint with the inspector's ID token. Same
+// token pattern as subirFotos (getAuth(getApp()).currentUser).
+async function asignacionesApi(body) {
+  const token = await getAuth(getApp()).currentUser.getIdToken();
+  return fetch(`${DASHBOARD_API}/api/inspector-asignaciones`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+}
+
+async function iniciarAsignaciones() {
+  try {
+    const res = await asignacionesApi({ action: 'misPuntos' });
+    if (!res.ok) throw new Error(`misPuntos-${res.status}`);
+    // Endpoint already filters to this inspector's not-done points.
+    state.asignaciones = (await res.json()).puntos || [];
+  } catch (err) {
+    // Fail open: never block the form on an assignments lookup problem.
+    console.warn('No se pudieron cargar los puntos asignados:', err);
+    state.asignaciones = [];
+  }
+
+  if (state.asignaciones.length === 0) {
+    mostrarFormulario();
+    return;
+  }
+  // Fail open on a render fault too: a bug building the cards must never leave
+  // the inspector on a blank screen — fall through to the usable blank form.
+  try {
+    renderAsignaciones();
+  } catch (err) {
+    console.warn('No se pudo mostrar el listado de asignados:', err);
+    mostrarFormulario();
+  }
+}
+
+// Shows the form screen and starts GPS. Single entry point for "reveal #app".
+function mostrarFormulario() {
+  $('#asignaciones').hidden = true;
+  $('#confirm').hidden = true;
+  $('#app').hidden = false;
+  requestLocation();
+}
+
+function renderAsignaciones() {
+  const cont = $('#asignaciones-lista');
+  cont.innerHTML = '';
+  state.asignaciones.forEach((a) => cont.append(buildAsignacionCard(a)));
+  $('#app').hidden = true;
+  $('#confirm').hidden = true;
+  $('#asignaciones').hidden = false;
+}
+
+function buildAsignacionCard(a) {
+  const card = document.createElement('article');
+  card.className = 'card asignacion-card';
+  card.style.borderLeftColor = habitabilidadColor(a.criterio_habitabilidad);
+
+  const dir = document.createElement('h3');
+  dir.className = 'asignacion-dir';
+  dir.textContent = a.direccion || 'Dirección no registrada';
+  card.append(dir);
+
+  const pills = document.createElement('div');
+  pills.className = 'asignacion-pills';
+  const hab = document.createElement('span');
+  hab.className = 'pill';
+  hab.style.background = habitabilidadColor(a.criterio_habitabilidad);
+  hab.textContent = a.criterio_habitabilidad ? String(a.criterio_habitabilidad).toUpperCase() : '—';
+  pills.append(hab);
+  const colapso = colapsoLabel(a.colapso);
+  if (colapso) {
+    const cp = document.createElement('span');
+    cp.className = 'pill pill-colapso';
+    cp.textContent = `Colapso ${colapso}`;
+    pills.append(cp);
+  }
+  card.append(pills);
+
+  const acciones = document.createElement('div');
+  acciones.className = 'asignacion-acciones';
+
+  const url = mapsDirUrl(a.coords);
+  if (url) {
+    const link = document.createElement('a');
+    link.className = 'btn-secondary asignacion-maps';
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = '📍 Cómo llegar';
+    acciones.append(link);
+  }
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn-primary';
+  btn.textContent = 'Registrar Sticker';
+  btn.addEventListener('click', () => registrarSticker(a));
+  acciones.append(btn);
+
+  card.append(acciones);
+  return card;
+}
+
+// Link the chosen point to the form: stash it, prefill what is clean to
+// prefill (address; GPS stays authoritative for coords), and open the form.
+function registrarSticker(a) {
+  state.asignacion = { id: a.id, coords: a.coords, direccion: a.direccion };
+  $('#direccion').value = a.direccion || '';
+  mostrarFormulario();
 }
 
 // ---- Geolocation ------------------------------------------------------------
@@ -546,6 +680,9 @@ async function onSubmit(e) {
       fotos,
     };
 
+    // Traceability back to the assigned point (when this record came from one).
+    if (state.asignacion) data.sticker_match_id = state.asignacion.id;
+
     // Create-only: the transaction fails if the doc already exists.
     const evalRef = doc(db, 'evaluaciones', state.codigo);
     await runTransaction(db, async (tx) => {
@@ -563,6 +700,19 @@ async function onSubmit(e) {
     // The number just saved is now taken: the duplicate guard must reject it
     // if the inspector edits a later code back onto it in this same session.
     state.consecutivosUsados.add(data.consecutivo);
+
+    // Best-effort: flip the assigned point to 'hecho' via the dashboard
+    // endpoint and drop it from the pending list so the picker shows the next
+    // one. If the call fails, the evaluación still stands — the next
+    // cruce_sticker.py run picks up the flip from the new evaluación.
+    if (state.asignacion) {
+      try {
+        await asignacionesApi({ action: 'marcarHecho', punto_id: state.asignacion.id });
+      } catch (err) {
+        console.warn('No se pudo marcar el punto asignado como hecho (se continúa):', err);
+      }
+      state.asignaciones = state.asignaciones.filter((a) => a.id !== state.asignacion.id);
+    }
 
     $('#confirm-codigo').textContent = state.codigo;
     $('#app').hidden = true;
@@ -623,8 +773,14 @@ function nuevoRegistro() {
   state.derivedConsecutivo = null;
   showSubmitError('');
 
-  $('#confirm').hidden = true;
-  $('#app').hidden = false;
+  state.asignacion = null;
   window.scrollTo(0, 0);
-  requestLocation();
+
+  // If assigned points remain, go back to the picker for the next one;
+  // otherwise straight to a blank form as before.
+  if (state.asignaciones.length > 0) {
+    renderAsignaciones();
+    return;
+  }
+  mostrarFormulario();
 }

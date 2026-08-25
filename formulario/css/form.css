@@ -400,6 +400,44 @@ button:focus-visible, summary:focus-visible, label:has(:focus-visible) {
 .confirm-card h2 { color: var(--verde); }
 .confirm-card .btn-primary { margin-block-start: 1rem; }
 
+/* ---- Assigned points (pre-form) ---- */
+
+.asignaciones { max-width: 640px; margin: 0 auto; padding: 1rem; }
+.asignaciones-intro { margin: -0.25rem 0 1rem; color: var(--text-secondary); font-size: 0.95rem; }
+.asignaciones-lista { display: grid; gap: 1rem; }
+
+/* Reuses .card; the left border carries criticality color (set inline from
+   habitabilidadColor), matching the .clasif-card visual language. */
+.asignacion-card {
+  border-left-width: 8px;
+  margin-block-end: 0;
+}
+
+.asignacion-dir { font-size: 1.1rem; font-weight: 700; margin: 0 0 0.6rem; }
+
+.asignacion-pills { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-block-end: 0.9rem; }
+
+.pill {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--bg);
+}
+.pill-colapso { background: var(--rojo); }
+
+.asignacion-acciones { display: grid; gap: 0.6rem; }
+
+.asignacion-maps {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  text-decoration: none;
+}
+
 /* ---- Auth overlay ---- */
 
 .auth-overlay {

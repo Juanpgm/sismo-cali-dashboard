@@ -118,6 +118,45 @@ export function canAddSlot(current, max = MAX_FOTOS) {
   return current < max;
 }
 
+// ---- Assigned points (sticker_matches) ---------------------------------------
+
+// Assigned points still to visit: everything except those already completed.
+// The dashboard/cruce marks a point 'hecho' once its evaluación lands, so those
+// drop off the inspector's list. Firestore `!=` needs a composite index, so the
+// estado filter is done here in code over the inspector's own docs.
+export function filtrarPendientes(asignaciones) {
+  return (asignaciones || []).filter((a) => a && a.estado_asignacion !== 'hecho');
+}
+
+// Habitability criterion → severity color token, reusing the form's palette.
+// h = habitable (green), r1/r2 = restricted use (amber), i1/i2/i3 = unsafe
+// (red). Unknown/empty → muted grey. Value is a CSS custom-property reference
+// so the caller can drop it straight into an inline style.
+export function habitabilidadColor(criterio) {
+  const c = String(criterio == null ? '' : criterio).trim().toLowerCase();
+  if (c === 'h') return 'var(--verde)';
+  if (c === 'r1' || c === 'r2') return 'var(--ambar)';
+  if (c === 'i1' || c === 'i2' || c === 'i3') return 'var(--rojo)';
+  return 'var(--muted)';
+}
+
+// Colapso pill label: total/parcial get a (red) pill; anything else — 'no',
+// empty, unknown — means no pill (return '').
+export function colapsoLabel(colapso) {
+  const c = String(colapso == null ? '' : colapso).trim().toLowerCase();
+  if (c === 'total') return 'Total';
+  if (c === 'parcial') return 'Parcial';
+  return '';
+}
+
+// Google Maps directions deep link to a point's coordinates. sticker_matches
+// coords are { lat, lon } (note: lon, not lng). Returns '' when coords are
+// missing so the caller can hide the "Cómo llegar" button.
+export function mapsDirUrl(coords) {
+  if (!coords || coords.lat == null || coords.lon == null) return '';
+  return `https://www.google.com/maps/dir/?api=1&destination=${coords.lat},${coords.lon}`;
+}
+
 // ---- Session resilience ------------------------------------------------------
 
 const TRANSIENT_FIRESTORE_CODES = new Set(['unavailable', 'deadline-exceeded', 'network-request-failed']);

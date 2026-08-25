@@ -6,6 +6,7 @@ import {
   parseConsecutivo, siguienteConsecutivo, validarSegmento, canAddSlot,
   clasificarErrorFirestore, backoffDelay,
   plegarConsecutivoGuardado, siguienteDesdeMax, consecutivosExistentes,
+  filtrarPendientes, habitabilidadColor, colapsoLabel, mapsDirUrl,
 } from '../js/logic.js';
 
 const base = {
@@ -235,4 +236,61 @@ test('consecutivosExistentes ignora codigos de otros inspectores y basura', () =
 
 test('consecutivosExistentes con lista vacia devuelve set vacio', () => {
   assert.equal(consecutivosExistentes([], '004').size, 0);
+});
+
+// ---- filtrarPendientes ------------------------------------------------------
+
+test('filtrarPendientes descarta los puntos ya hechos', () => {
+  const puntos = [
+    { id: 'a', estado_asignacion: 'pendiente' },
+    { id: 'b', estado_asignacion: 'hecho' },
+    { id: 'c', estado_asignacion: 'en_proceso' },
+    { id: 'd' }, // sin estado = sigue pendiente
+  ];
+  assert.deepEqual(filtrarPendientes(puntos).map((p) => p.id), ['a', 'c', 'd']);
+});
+
+test('filtrarPendientes con entrada nula devuelve lista vacia', () => {
+  assert.deepEqual(filtrarPendientes(null), []);
+});
+
+// ---- habitabilidadColor -----------------------------------------------------
+
+test('habitabilidadColor mapea H a verde, R a ambar, I a rojo', () => {
+  assert.equal(habitabilidadColor('h'), 'var(--verde)');
+  assert.equal(habitabilidadColor('R1'), 'var(--ambar)');
+  assert.equal(habitabilidadColor('r2'), 'var(--ambar)');
+  assert.equal(habitabilidadColor('I2'), 'var(--rojo)');
+  assert.equal(habitabilidadColor('i3'), 'var(--rojo)');
+});
+
+test('habitabilidadColor con valor desconocido o vacio usa muted', () => {
+  assert.equal(habitabilidadColor(''), 'var(--muted)');
+  assert.equal(habitabilidadColor(null), 'var(--muted)');
+  assert.equal(habitabilidadColor('x'), 'var(--muted)');
+});
+
+// ---- colapsoLabel -----------------------------------------------------------
+
+test('colapsoLabel etiqueta total y parcial, ignora no/vacio', () => {
+  assert.equal(colapsoLabel('total'), 'Total');
+  assert.equal(colapsoLabel('Parcial'), 'Parcial');
+  assert.equal(colapsoLabel('no'), '');
+  assert.equal(colapsoLabel(''), '');
+  assert.equal(colapsoLabel(null), '');
+});
+
+// ---- mapsDirUrl -------------------------------------------------------------
+
+test('mapsDirUrl arma el enlace de direcciones desde coords {lat, lon}', () => {
+  assert.equal(
+    mapsDirUrl({ lat: 3.4516, lon: -76.532 }),
+    'https://www.google.com/maps/dir/?api=1&destination=3.4516,-76.532',
+  );
+});
+
+test('mapsDirUrl devuelve cadena vacia si faltan coords', () => {
+  assert.equal(mapsDirUrl(null), '');
+  assert.equal(mapsDirUrl({ lat: 3.4 }), '');
+  assert.equal(mapsDirUrl({ lon: -76.5 }), '');
 });
