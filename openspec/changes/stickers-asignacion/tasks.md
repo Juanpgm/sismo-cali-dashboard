@@ -210,7 +210,7 @@ Commit: `feat(web): asignación sub-section`
 
 Depends on: Phase 2 (calls `/api/sticker-asignaciones`), Phase 0.1 (sub-nav decision).
 
-- [ ] **3.1** Create `web/js/stickers-asignacion.js` cloning the `callApi(getToken, body)` helper
+- [x] **3.1** Create `web/js/stickers-asignacion.js` cloning the `callApi(getToken, body)` helper
       verbatim from `web/js/stickers.js:19-30` (swap `ENDPOINT` to
       `/api/sticker-asignaciones`), and `initStickersAsignacion(root, {getToken})` with a
       render-shell-once / `reload()` fetches `listPuntos` + `listCuadrillas` / re-render lifecycle
@@ -218,7 +218,7 @@ Depends on: Phase 2 (calls `/api/sticker-asignaciones`), Phase 0.1 (sub-nav deci
       — Satisfies: *Requirement: Mounted as a sub-section of the existing Stickers tab* (init runs
       once scenario).
 
-- [ ] **3.2** Introduce the three-way segmented control (Roster · Evaluaciones · Asignación) inside
+- [x] **3.2** Introduce the three-way segmented control (Roster · Evaluaciones · Asignación) inside
       `#view-stickers` for the first time (per **0.1**'s finding — no existing sub-nav to extend).
       Add it to `shellHtml()` in `web/js/stickers.js`, toggling which of the three section
       containers is visible; the existing roster/evaluaciones sections keep rendering as before,
@@ -226,20 +226,20 @@ Depends on: Phase 2 (calls `/api/sticker-asignaciones`), Phase 0.1 (sub-nav deci
       — Satisfies: *Requirement: Mounted as a sub-section of the existing Stickers tab* (no new
       top-level tab scenario).
 
-- [ ] **3.3** Add the table: columns dirección, zona, estado_asignacion, cuadrilla, inspector,
+- [x] **3.3** Add the table: columns dirección, zona, estado_asignacion, cuadrilla, inspector,
       tier; client-side sort on column-header click (over the already-fetched `puntos` array, same
       weight class as the `usuarios-tab` inline-sort decision — no new dependency); filter chips
       for `estado_asignacion`.
       — Satisfies: *Requirement: Table view — sortable, filterable by `estado_asignacion`* (both
       scenarios).
 
-- [ ] **3.4** Add the Leaflet map: clone `evaluaciones.js`'s map setup, `L.circleMarker` per point
+- [x] **3.4** Add the Leaflet map: clone `evaluaciones.js`'s map setup, `L.circleMarker` per point
       colored blue (`tiene_sticker === true`) / red (`estado_asignacion === 'pendiente'`) / amber
       (`asignado` or `en_proceso`), 3-color legend, `fitBounds()` on load, popup with
       "Ver detalle / Reasignar".
       — Satisfies: *Requirement: Map view — 3-color legend* (all 3 scenarios).
 
-- [ ] **3.5** Add CRUD controls: "Auto-agrupar" button (calls `autoAgrupar` with the
+- [x] **3.5** Add CRUD controls: "Auto-agrupar" button (calls `autoAgrupar` with the
       `maxRadiusM`/`maxSize` defaults from **0.2**, small settings affordance to override); manual
       multi-select (checkbox column) → "Crear cuadrilla" from selection (calls `crearCuadrilla`);
       per-cuadrilla inspector `<select>` populated from the `inspectores` roster the Stickers tab
@@ -248,14 +248,20 @@ Depends on: Phase 2 (calls `/api/sticker-asignaciones`), Phase 0.1 (sub-nav deci
       `reasignarPunto`.
       — Satisfies: *Requirement: CRUD affordances in the frontend* (all 3 scenarios).
 
-- [ ] **3.6** Wire `web/index.html`: no new `.view-tabs` entry (confirm none added). Add the
+- [x] **3.6** Wire `web/index.html`: no new `.view-tabs` entry (confirm none added). Add the
       "Asignación" segment/button inside `#view-stickers`'s new sub-nav (3.2) and a
       `<div data-sticker-section="asignacion" hidden>` container next to the roster/evaluaciones
       ones.
+      — CORRECTION at apply time: `web/index.html`'s `#view-stickers` is `<section ... hidden></section>`,
+      fully empty — `web/js/stickers.js`'s `initStickers()` sets `root.innerHTML = shellHtml()` on
+      every open (confirmed in `web/js/main.js`'s `switchView()`). There is no static markup to edit;
+      the sub-nav + all three `data-sticker-section` containers are 3.2's `shellHtml()` output.
+      Verified no `.view-tabs` entry added (grepped `index.html` for "sticker": only the existing
+      top-level tab button and the empty `#view-stickers` section, both unchanged).
       — Satisfies: *Requirement: Mounted as a sub-section of the existing Stickers tab* (no new
       top-level tab scenario).
 
-- [ ] **3.7** Wire `web/js/stickers.js` (owner of the Stickers section-switch after 3.2): import
+- [x] **3.7** Wire `web/js/stickers.js` (owner of the Stickers section-switch after 3.2): import
       and lazy-call `initStickersAsignacion(container, {getToken})` the first time the "Asignación"
       segment is opened; subsequent opens in the same session call `reload()` instead of
       re-initializing (mirror how `initEvaluaciones` is already wired at
@@ -263,22 +269,35 @@ Depends on: Phase 2 (calls `/api/sticker-asignaciones`), Phase 0.1 (sub-nav deci
       — Satisfies: *Requirement: Mounted as a sub-section of the existing Stickers tab* (lazy init
       + init-runs-once scenarios).
 
-- [ ] **3.8** Wire `web/styles.css`: reuse `.sticker-*` table/chip styles; add `.asignacion-*` only
+- [x] **3.8** Wire `web/styles.css`: reuse `.sticker-*` table/chip styles; add `.asignacion-*` only
       for the segmented control and the 3-color legend (matching the `usuarios-tab` precedent of
       styling only what genuinely differs, `openspec/changes/archive/2026-08-24-usuarios-tab/tasks.md`
       task 2.8's approach).
       — Satisfies: no single spec requirement directly; supports 3.2-3.5's rendering.
 
-- [ ] **3.9** Runnable check: manual smoke test — log in as admin, open Stickers tab, confirm
-      Roster/Evaluaciones still render as before with the new segmented control added (no
-      regression); open "Asignación" for the first time, confirm exactly one `listPuntos` +
-      `listCuadrillas` call fires (network tab), table renders with sort/filter working, map shows
-      3 colors, auto-agrupar creates cuadrillas without touching `estado_asignacion`, manual
-      multi-select creates a cuadrilla, assign/reassign inspector round-trips. Re-open the segment
-      and confirm no duplicate init call, only `reload()`. No automated UI test — same proportion
-      call as `usuarios-tab` task 2.9 (DOM wiring plus an already-tested API).
+- [ ] **3.9** NOT independently verified — no live browser session available to the apply agent in
+      this environment. What WAS verified by static analysis/code reading instead (see
+      `apply-progress.md` Work Unit Evidence for the exact commands):
+      - `node --test "js/**/*.test.mjs"` → 6/6 pass, including the new
+        `stickers-asignacion.test.mjs` self-check for `colorForPunto`/`buildRows`/`sortRows`/
+        `filterRows` (the pure logic behind the table sort/filter and map 3-color legend).
+      - `node -e "import('./js/stickers.js')"` and `...stickers-asignacion.js` both resolve/parse
+        cleanly (catches syntax errors and import-cycle issues, not runtime DOM behavior).
+      - Code-read trace confirming: `initStickersAsignacion` is only ever called from inside
+        `showSegment('asignacion')` in `stickers.js` (not from `initStickers`'s top-level body), so
+        no `listPuntos`/`listCuadrillas` call can fire before the segment is first opened; the
+        `asignacionHandle` guard (`if (asignacionHandle) reload(); else initStickersAsignacion(...)`)
+        traced to confirm a second open calls `.reload()`, not a second `initStickersAsignacion()`.
+      - Grepped `web/index.html` for `.view-tabs`/`view-tab` occurrences — unchanged, only the
+        pre-existing "Stickers" top-level button.
+      **Still needs a real browser session** (not performed here — flagging for the orchestrator to
+      arrange before/alongside `sdd-verify`): actual click-through of the segmented control, Leaflet
+      map rendering/fitBounds/legend colors on real `sticker_matches` data, the network-tab
+      single-call assertion, and the auto-agrupar/crear-cuadrilla/asignar/reasignar round-trips
+      against live (or emulated) Firestore — none of Phase 1/2/3 has touched a real Firestore
+      instance yet in any apply batch (no credentials in this environment, noted since Phase 1).
       — Satisfies: *Requirement: Mounted as a sub-section of the existing Stickers tab* (all
-      scenarios, end to end).
+      scenarios, end to end) — PARTIALLY, pending the browser session above.
 
 ---
 

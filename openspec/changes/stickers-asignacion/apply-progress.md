@@ -300,3 +300,164 @@ per its own instruction, not blocking.
   call; still no operator-confirmed default.
 - Carry Phase 1's task 1.7 forward unchanged (Railway cron service creation, manual operator step,
   independent of Phase 2/3's PR chain).
+
+---
+
+# Batch 3 — Phase 3: Frontend (`feat/stickers-asignacion-3-frontend`)
+
+Branch: `feat/stickers-asignacion-3-frontend` (branched from `feat/stickers-asignacion-2-api`, per
+`chain_strategy: stacked-to-main` — Phase 2's `api/sticker-asignaciones.js` is present in the
+working tree but not yet merged to `main`, that is expected).
+
+## Scope of this batch
+
+Phase 3 — Frontend Asignación sub-section. Tasks 3.1–3.8 complete; 3.9 (manual browser smoke test)
+explicitly NOT performed — no live browser session available to this apply agent — see its own note
+in `tasks.md` for exactly what was verified by static analysis instead.
+
+## Completed tasks
+
+- [x] **3.1** `web/js/stickers-asignacion.js` created: `callApi(getToken, body)` cloned verbatim
+  from `stickers.js:19-30` (`ENDPOINT` swapped to `/api/sticker-asignaciones`);
+  `initStickersAsignacion(root, {getToken, getInspectores})` renders `shellHtml()` once, `reload()`
+  runs `Promise.all([listPuntos, listCuadrillas])`, returns `{ reload }` so the caller can re-fetch
+  on subsequent opens without re-initializing.
+- [x] **3.2** Three-way segmented control (`Roster · Evaluaciones · Asignación`) added to
+  `shellHtml()` in `stickers.js` — the first sub-nav pattern inside `#view-stickers` (0.1's finding
+  confirmed: nothing existed to extend). Each of the three sections now lives behind its own
+  `<div data-sticker-section="...">` wrapper, toggled via `hidden`.
+- [x] **3.3** Table: checkbox + 6 spec.md columns (dirección, zona, estado_asignacion, cuadrilla,
+  inspector, tier). Client-side sort reuses the Panel's own existing `data-sort-field`/`.is-sorted`/
+  `.th-sort-btn`/`.sort-arrow` convention from `table.js:151-166` (zero new CSS for sort UI — more
+  reuse than task 3.8 anticipated). Filter chips are the one genuinely new interactive piece
+  (`.asignacion-chip`/`.asignacion-filters`), since `.sticker-chip` is a display-only two-state
+  (`is-on`/`is-off`) chip, not built for a 5-way single-select toggle group.
+- [x] **3.4** Leaflet map cloned from `evaluaciones.js`'s setup (same `L.map`/`L.tileLayer`/
+  `L.circleMarker`/`L.layerGroup`/`themechange` re-tile listener, guarded behind
+  `typeof document !== 'undefined'` so the pure-logic self-check can still import the module under
+  Node). 3-color legend reuses `.map-legend`/`.legend-row`/`.legend-swatch.legend-circle` **verbatim
+  — zero new CSS**, since that component was already fully generic (hex passed via inline `style`),
+  contrary to task 3.8's expectation that the legend would need `.asignacion-*` additions.
+  `colorForPunto()` implements the exact blue/red/amber priority spec.md locks (tiene_sticker wins
+  over estado_asignacion).
+- [x] **3.5** CRUD controls, scoped to exactly the 4 controls spec.md's "CRUD affordances in the
+  frontend" requirement and design.md ADR-4 both list (no more, no less — see Deviations below for
+  the two explicitly NOT wired): "Auto-agrupar" button + two small number-input overrides
+  (`maxRadiusM`/`maxSize`, sent only when non-empty — task 0.2's per-call override contract from
+  Phase 2 consumed exactly as documented); checkbox column + "Crear cuadrilla" button
+  (`window.prompt()` for the nombre — native dialog, no new modal component, per-point checkboxes
+  disable themselves once a point already has a `cuadrilla_id`); per-cuadrilla inspector `<select>`
+  in a new "Cuadrillas" list card (`getInspectores()` closure — reads `stickers.js`'s
+  `inspectoresCache`, set from its existing roster `list` call, confirmed **zero new roster fetch**
+  by inspection: no `action: 'list'` call anywhere in `stickers-asignacion.js`); per-point
+  "Reasignar" `<select>` inline inside the Leaflet popup (design.md's literal "in the popup/detail"
+  placement — populated on `popupopen`, same lazy-population pattern `evaluaciones.js` uses for its
+  own popup button wiring).
+- [x] **3.6** `web/index.html` — CORRECTION recorded in `tasks.md` itself: `#view-stickers` is an
+  empty `<section ... hidden></section>`, fully populated by `stickers.js`'s `initStickers()` on
+  every open (confirmed via `main.js`'s `switchView()`). There is no static markup in `index.html`
+  to edit; 3.2's `shellHtml()` change already produces the sub-nav and all three
+  `data-sticker-section` containers. Grepped `index.html` for "sticker" (case-insensitive) — only
+  the pre-existing `.view-tab` button and the empty `#view-stickers` section remain, both untouched.
+  Zero-line diff to `index.html` for this batch, by design not by omission.
+- [x] **3.7** `stickers.js` wiring: `showSegment(name)` toggles the three section wrappers' `hidden`
+  + the segment buttons' `.is-active`/`aria-selected`; on `asignacion`, lazy-inits
+  `initStickersAsignacion` exactly once (`asignacionHandle === null` guard) and calls
+  `.reload()` on every subsequent open. `inspectoresCache` is set inside the roster `reload()`
+  (already-existing function, one new assignment line) and read by the `getInspectores` closure
+  passed into `initStickersAsignacion`.
+- [x] **3.8** `web/styles.css` additions, all under one new `.asignacion-*` block (30 lines):
+  `.asignacion-segmented`/`.asignacion-segment` (segmented control, genuinely new — no prior
+  sub-nav pattern existed per 0.1), `.asignacion-filters`/`.asignacion-chip` (interactive filter
+  toggle group, `.sticker-chip` wasn't built for this), `.asignacion-inline-field`/`.asignacion-check`/
+  `.asignacion-inspector-select` (small layout tweaks for the toolbar's number inputs and the
+  cuadrilla list's select). Everything else (table sort UI, estado pill via `.eval-pill`, map
+  legend/popup via `.map-legend`/`.map-popup`, cards via `.card`/`.card-toolbar`/`.eval-map`, roster
+  list shape via `.sticker-list`/`.sticker-row`/`.sticker-code`/`.sticker-identity`) is reused
+  verbatim, zero new CSS — a stricter reading of "reuse `.sticker-*`, add `.asignacion-*` only where
+  genuinely different" than task 3.8's own text anticipated (it expected the legend to need new
+  CSS too; it didn't).
+- [ ] **3.9** NOT independently verified in a real browser — see the note left directly in
+  `tasks.md` under this task for the exact split of what static analysis covered vs. what still
+  needs a live/emulated session.
+
+## Deviations from design / risks discovered
+
+- **`editarCuadrilla` and `eliminarCuadrilla` have NO frontend UI in this batch.** Re-read
+  spec.md's "Requirement: CRUD affordances in the frontend" and design.md ADR-4's own CRUD-controls
+  paragraph closely at apply time: both list exactly 4 controls (auto-agrupar, manual
+  create-from-selection, assign/reassign inspector, per-point reasignar) — neither mentions an
+  "editar cuadrilla" (add/remove points from an existing group) or "eliminar cuadrilla" affordance.
+  Phase 2's API supports both actions (`editarCuadrilla`/`eliminarCuadrilla` in
+  `api/sticker-asignaciones.js`), so wiring them later is additive, not a schema change — just two
+  more buttons/selects calling an endpoint that already exists. Flagging explicitly since this is a
+  scope reduction versus what a skim of the API surface alone would suggest, but it matches the
+  locked spec/design text precisely.
+- **"Ver detalle" (half of design.md's "Ver detalle / Reasignar" popup pattern) was not built as a
+  separate action.** Unlike `evaluaciones.js` (where the popup is a short summary linking to a full
+  ATC-20 detail modal with photos), every field available on a `sticker_matches` point
+  (dirección/estado/zona/tier/cuadrilla) is already shown directly in the popup body — there is no
+  additional data behind a "ver detalle" click to justify a second modal. Lazy call: building an
+  empty-content modal just to match the literal two-word phrase would be scaffolding with no
+  payload behind it.
+- **`initStickersAsignacion`'s "once per session" is once per Stickers-tab open, not once per
+  browser session.** `main.js`'s `switchView('stickers')` unconditionally re-calls `initStickers()`
+  (full `root.innerHTML = shellHtml()` replace) every time the Stickers top-level tab is opened —
+  this is pre-existing behavior for the roster/evaluaciones sections too (the file's own top comment
+  says "Refetches from the API on each open so both sections are always current"), not something
+  this batch introduced. `asignacionHandle` is a local `let` inside `initStickers`'s closure, so it
+  resets on every fresh Stickers-tab open; re-opening the Asignación segment within the SAME
+  Stickers-tab-open session correctly calls `.reload()`, not a second `initStickersAsignacion()`, an
+  exact match for spec.md's "Init runs once on first Asignación open" scenario read at that
+  granularity. Documented here in case "session" was meant more broadly — no code change made
+  without operator confirmation, since it would mean changing the pre-existing (unrelated to this
+  change) roster/evaluaciones refetch-on-every-open behavior too.
+- **No live/emulated Firestore or browser used in this batch** — same constraint recorded in Phases
+  1 and 2 (no credentials/browser in this environment). All CRUD wiring is code-reviewed against
+  Phase 2's own `api/sticker-asignaciones.js` request/response shapes (confirmed field names
+  `{cuadrilla_id, add, remove}` etc. match exactly what Phase 2's apply-progress documented as "the
+  real contract").
+- **No other deviations.** Table columns, map colors, segmented-control placement, and the
+  lazy-init contract all match `spec.md` and `design.md` ADR-4/ADR-5 exactly.
+
+## TDD Cycle Evidence
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 3.1, 3.3, 3.4 (pure logic only) | `web/js/stickers-asignacion.test.mjs` (`node js/stickers-asignacion.test.mjs`, from `web/`) | Unit (pure fixture, offline) | ✅ `node --test "js/**/*.test.mjs"` — all 5 pre-existing self-checks (`analista`, `charts`, `data`, `evaluaciones`, `utils`) still pass before and after, none touched | ✅ Written first; ran against a nonexistent module, confirmed `ERR_MODULE_NOT_FOUND` (exit 1) | ✅ `colorForPunto`/`buildRows`/`sortRows`/`filterRows` implemented, self-check passes (exit 0) | ✅ 5 `colorForPunto` cases (blue precedence over amber/red, both amber sub-states), a 2-point `buildRows` fixture (one grouped+assigned, one bare pending) covering label fallback (`—`) and label hit, `sortRows` asc+desc, `filterRows` `'todos'`/`undefined`/a real filter | ✅ Both `node --check`-equivalent (`node -e "import(...)"`) syntax passes clean for `stickers.js` and `stickers-asignacion.js`; re-ran the self-check after, still green |
+| 3.2, 3.5–3.8 (DOM/CSS wiring, no pure logic) | N/A — DOM wiring has no offline self-check surface, same call as `usuarios-tab` task 2.9's precedent, explicitly endorsed for this batch's task 3.9 | N/A | N/A | N/A | ✅ Both files import/parse cleanly under Node (catches syntax errors); traced call graph by reading, not executing, in a browser | ➖ N/A | ➖ N/A |
+
+### Test Summary
+- **Total tests written**: 1 self-check file (`stickers-asignacion.test.mjs`), 16 assertions across
+  `colorForPunto` (5), `buildRows` (6), `sortRows` (2 — asc/desc order arrays via `deepEqual`),
+  `filterRows` (3 — `'todos'`, `undefined`, a real filter value).
+- **Total tests passing**: 16/16 (`node --test "js/**/*.test.mjs"` → `tests 6, pass 6, fail 0` across
+  the whole `web/js/` suite, including this new file).
+- **Layers used**: Unit (1 — the pure table/map-color logic), Integration (0), E2E (0 — no browser
+  available in this environment, see task 3.9's note).
+- **Approval tests**: None — `evaluaciones.js`/`table.js`/`utils.js` were read as pattern reference
+  only, never modified.
+- **Pure functions created**: `colorForPunto`, `buildRows`, `sortRows`, `filterRows` (all exported
+  from `stickers-asignacion.js` for the self-check). DOM rendering (`shellHtml`, `tableHtml`,
+  `cuadrillasHtml`, `popupHtml`) and Firestore-via-API calls (`callApi`, `reload`, the four CRUD
+  handlers) are not pure and have no offline self-check surface, matching the same proportion call
+  `usuarios-tab` task 2.9 already established for this repo's DOM-wiring tasks.
+
+## Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused test command and exact result | `node js/stickers-asignacion.test.mjs` (from `web/`) → RED (before implementation): `Error [ERR_MODULE_NOT_FOUND]: Cannot find module '.../stickers-asignacion.js'` (exit 1). After implementation → GREEN: `ok — stickers-asignacion.js pure table/map logic` (exit 0). `node --test "js/**/*.test.mjs"` (from `web/`) → `tests 6, pass 6, fail 0` (all pre-existing self-checks plus the new one). `node -e "import('./js/stickers.js')"` and the same for `stickers-asignacion.js` → both resolve/parse cleanly (`ok`), no syntax errors introduced into either file. |
+| Runtime harness command/scenario and exact result | No live browser or Firestore available in this environment (same constraint recorded in Phases 1 and 2). Runtime behavior (segmented-control clicks, Leaflet map mount/fitBounds/legend, the single-`listPuntos`+`listCuadrillas`-call-on-first-open assertion, and all 4 CRUD round-trips) was verified only by reading the code's call graph, not by executing it in a DOM — explicitly NOT claimed as a passed manual smoke test. Task 3.9 in `tasks.md` is left unchecked with the exact split of what was/wasn't verified, per instruction. The orchestrator should arrange a real browser session (e.g. via a `run` skill or Chrome DevTools) before or alongside `sdd-verify` for this specific gap. |
+| Rollback boundary | Four files touched, all independent of Phase 1/2's already-committed work: new `web/js/stickers-asignacion.js` + `web/js/stickers-asignacion.test.mjs`; modified `web/js/stickers.js` (3 additive edits: one new import, `shellHtml()`'s new sub-nav markup, `initStickers()`'s new segment-switching/lazy-init block — the pre-existing roster/evaluaciones logic inside `initStickers` is untouched code, only re-indented by the new wrapper divs); modified `web/styles.css` (one new 30-line `.asignacion-*` block, inserted between two pre-existing sections, nothing else in the file touched). `git checkout -- web/js/stickers.js web/styles.css && git rm web/js/stickers-asignacion.js web/js/stickers-asignacion.test.mjs` (or `git revert` this batch's commit(s)) fully reverts Phase 3 with zero impact on Phase 1 (`integracion_F1/`, separate repo, untouched) or Phase 2 (`api/sticker-asignaciones.js`, untouched by this batch). |
+
+## Next steps (not this agent's scope)
+
+- Task 3.9's real browser smoke test — flagged above, needed before/alongside `sdd-verify`.
+- Task 0.2 (`maxRadiusM`/`maxSize` defaults) still open across all 3 phases — no operator
+  confirmation obtained in any apply batch; shipped as named placeholder constants everywhere
+  (API + this batch's UI hint values), one-line change if/when confirmed.
+- Task 1.7 (Railway cron service) still open — manual operator step, independent of this PR chain.
+- Phase 4 (Firestore console rules for `sticker_matches`/`cuadrillas`) is a manual console step, not
+  a repo diff, tracked in `tasks.md` §4.1 — should happen before or shortly after this PR merges so
+  the two new collections aren't left open to client-direct reads in the interim.
