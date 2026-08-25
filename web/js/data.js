@@ -193,24 +193,23 @@ class Store {
   }
 
   // KPI "Reportados" = solo los reportes en estado "Reportado" (decisión del
-  // usuario 2026-08-20), leídos en vivo de /api/reportados; el agregado
-  // estático del pipeline es fallback. Con bust=true agrega un query param
-  // único que saltea la caché CDN de 15 min (botón "Actualizar datos"); sin
-  // bust, la caché manda y la API se relee como máximo cada 15 min. Si ambas
-  // fuentes fallan, conserva el último valor conocido.
+  // usuario 2026-08-20), leídos EN VIVO de /api/reportados. SIN fallback: si la
+  // API no responde, no trae el campo, o el valor no es un número, el KPI se
+  // pone en null y se OCULTA (kpi.js) — nunca se muestra un dato viejo o de otra
+  // fuente que pueda contradecir a la API. Con bust=true agrega un query param
+  // único que saltea la caché CDN de 15 min (botón "Actualizar datos").
   async refreshReportados({ bust = false } = {}) {
     let val = null;
     try {
       const res = await fetch(bust ? `/api/reportados?refresh=${Date.now()}` : '/api/reportados');
-      if (res.ok) val = (await res.json())?.por_estadoVerificacion?.Reportado ?? null;
-    } catch { /* respuesta malformada o sin red: probamos el fallback */ }
-    if (val == null) {
-      try {
-        const res = await fetchData('reportes_agg.json', { q: `?t=${Date.now()}`, opts: { cache: 'no-store' } });
-        if (res.ok) val = (await res.json())?.por_estadoVerificacion?.Reportado ?? null;
-      } catch { /* agregado malformado: se conserva el valor previo */ }
-    }
-    if (val != null && val !== this.reportados) {
+      if (res.ok) {
+        const n = (await res.json())?.por_estadoVerificacion?.Reportado;
+        if (typeof n === 'number' && Number.isFinite(n)) val = n;
+      }
+    } catch { /* sin red / respuesta malformada: val queda null → KPI oculto */ }
+    // Propagar incluso null: si la lectura falla, el KPI debe ocultarse, no
+    // conservar el último valor conocido.
+    if (val !== this.reportados) {
       this.reportados = val;
       this.notify();
     }
