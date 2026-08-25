@@ -16,7 +16,7 @@ check (locked)" section.
 Carries `design.md`'s "Risks / open decisions carried to tasks" into concrete gate tasks. Both
 block Phase 2/3 work that depends on their answer; do them first so no code has to be revisited.
 
-- [ ] **0.1** Read the current `web/js/stickers.js` markup/lifecycle (already done for this task
+- [x] **0.1** Read the current `web/js/stickers.js` markup/lifecycle (already done for this task
       list — confirmed: today's `shellHtml()` renders the evaluaciones section and the roster
       section back-to-back inside `#view-stickers` with **no segmented control / section-switch
       pattern** at all, `web/js/stickers.js:122-130`). Record this finding as the basis for **3.2**:
@@ -40,7 +40,7 @@ Commit: `feat(pipeline): cruce_sticker job`
 Depends on: Phase 0 (no blocking dependency — can start in parallel with 0.2, since defaults don't
 affect this phase).
 
-- [ ] **1.1** (RED) Write the offline `--check` self-test fixture and assertions FIRST, in
+- [x] **1.1** (RED) Write the offline `--check` self-test fixture and assertions FIRST, in
       `integracion_F1/cruce_sticker.py` (idiom: `_selfcheck_cruce_sticker`, mirrors the notebook's
       existing self-check and `cruce_gestor.py --check`). Assert, against a fixture
       Firestore-shaped dict (no network):
@@ -53,14 +53,14 @@ affect this phase).
       scenarios), *Requirement: `cruce_sticker.py` reuses the existing matching cascade* (`--check`
       passes offline scenario).
 
-- [ ] **1.2** (GREEN) Scaffold `integracion_F1/cruce_sticker.py` structured like `asignar_f3.py`:
+- [x] **1.2** (GREEN) Scaffold `integracion_F1/cruce_sticker.py` structured like `asignar_f3.py`:
       `main()`, `--check`, `--dry`, `--top N` flags, module docstring. Doc id function
       `doc_id(fuente, registro_id) -> f"{fuente}_{registro_id}"` (ADR-1) — pure, exported for 1.1's
       fixture to call directly.
       — Satisfies: *Requirement: `sticker_matches` document ownership and merge safety* (doc id
       stability scenario).
 
-- [ ] **1.3** (GREEN) Load Panel points the same way the notebook does: `inspections.json` +
+- [x] **1.3** (GREEN) Load Panel points the same way the notebook does: `inspections.json` +
       `puntos_israel_cali.json`, EXIF-corrected `x`/`y` coords (per `exploration.md` §1). Read
       `evaluaciones` from Firestore using the same 3-tier credential resolution as
       `subir_cruce_firebase.py` (`STICKERS_FIREBASE_SA` path → `FIREBASE_SERVICE_ACCOUNT_JSON` env
@@ -70,13 +70,13 @@ affect this phase).
       — Satisfies: *Requirement: `cruce_sticker.py` reuses the existing matching cascade* (input
       side).
 
-- [ ] **1.4** (GREEN) Run the matching cascade by importing `nearest`, `match_by_direccion`,
+- [x] **1.4** (GREEN) Run the matching cascade by importing `nearest`, `match_by_direccion`,
       `build_addr_index`, `addr_key` from `integracion_F1/cruce_gestor.py` directly — do not copy
       or fork their bodies into `cruce_sticker.py`.
       — Satisfies: *Requirement: `cruce_sticker.py` reuses the existing matching cascade* (matching
       logic lives in one place scenario).
 
-- [ ] **1.5** (GREEN) Implement the write path: for each point, split fields into the
+- [x] **1.5** (GREEN) Implement the write path: for each point, split fields into the
       pipeline-owned subset (ADR-1) and pre-read existence via `db.getAll()` batch (mirrors the
       `inspectores` join pattern in `api/stickers.js:70-73`) so a first-write can seed
       `estado_asignacion:'pendiente'` alongside the pipeline fields in the same `merge:true` set —
@@ -86,14 +86,16 @@ affect this phase).
       scenarios, now against real code), *Requirement: `cruce_sticker.py` reuses the existing
       matching cascade* (batched writes scenario).
 
-- [ ] **1.6** New file `integracion_F1/job_sticker.py`, wrapping `cruce_sticker.main()` with the
+- [x] **1.6** New file `integracion_F1/job_sticker.py`, wrapping `cruce_sticker.main()` with the
       same durable-logging harness as `job_asignaciones.py` (tee stdout/stderr to the mounted
       volume, `runs_sticker.jsonl`, non-zero exit on failure) — copy `job_asignaciones.py`'s
       structure (`integracion_F1/job_asignaciones.py:1-53`) verbatim, swap the wrapped module.
       — Satisfies: *Requirement: `cruce_sticker.py` reuses the existing matching cascade* (job
       runnability, indirect).
 
-- [ ] **1.7** Cron wiring — **correcting `design.md` ADR-2's claim that `integracion_F1/railway.json`
+- [ ] **1.7** — NOT COMPLETABLE BY sdd-apply (manual operator action, no repo diff — see
+      `apply-progress.md`). Cron wiring — **correcting `design.md` ADR-2's claim that
+      `integracion_F1/railway.json`
       gets a new `startCommand`/`cronSchedule` pair**: the actual `railway.json` in this repo is
       shared build config only (`"builder": "DOCKERFILE"`, no per-service fields) and its own
       comment states per-service `startCommand`/`cronSchedule` are set on each Railway service
