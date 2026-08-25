@@ -54,6 +54,32 @@ assert.deepStrictEqual(sa.pointsAlreadyAssigned([{ id: 'a', cuadrilla_id: null }
 assert.deepStrictEqual(sa.pointsAlreadyAssigned([], null), []);
 assert.deepStrictEqual(sa.pointsAlreadyAssigned(undefined, null), []);
 
+// ---- pointsWithSticker — no-sticker guard (stickered points never assign) --
+const stickerFixture = [
+  { id: 'no', tiene_sticker: false },
+  { id: 'yes', tiene_sticker: true },
+  { id: 'missing' }, // undefined -> treated as assignable, not stickered
+  { id: 'yes2', tiene_sticker: true },
+];
+assert.deepStrictEqual(sa.pointsWithSticker(stickerFixture), ['yes', 'yes2']);
+assert.deepStrictEqual(sa.pointsWithSticker([]), []);
+assert.deepStrictEqual(sa.pointsWithSticker(undefined), []);
+
+// ---- activeAssignedCount — 20-cap load (assigned to uid AND not 'hecho') ---
+const capFixture = [
+  { id: 'a', inspector_uid: 'u1', estado_asignacion: 'asignado' },
+  { id: 'b', inspector_uid: 'u1', estado_asignacion: 'en_proceso' },
+  { id: 'c', inspector_uid: 'u1', estado_asignacion: 'hecho' },   // done -> not active
+  { id: 'd', inspector_uid: 'u2', estado_asignacion: 'asignado' }, // other inspector
+  { id: 'e', inspector_uid: null, estado_asignacion: 'pendiente' },
+];
+assert.strictEqual(sa.activeAssignedCount(capFixture, 'u1'), 2, 'u1 has 2 active (hecho excluded)');
+assert.strictEqual(sa.activeAssignedCount(capFixture, 'u2'), 1);
+assert.strictEqual(sa.activeAssignedCount(capFixture, 'nobody'), 0);
+assert.strictEqual(sa.activeAssignedCount([], 'u1'), 0);
+assert.strictEqual(sa.activeAssignedCount(undefined, 'u1'), 0);
+assert.strictEqual(sa.MAX_ACTIVE_PER_INSPECTOR, 20);
+
 // ---- commitInChunks — never exceeds 500 ops/batch, covers every item -------
 async function checkChunks(n) {
   const commits = [];
