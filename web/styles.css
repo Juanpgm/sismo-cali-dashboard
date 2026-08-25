@@ -1844,6 +1844,35 @@ body:not([data-role="admin"]) .view-tab[data-view="analista"] { display: none !i
   .sticker-form-grid { grid-template-columns: 1fr; }
 }
 
+/* ============================================================
+   ASIGNACIÓN — sub-section inside the Stickers tab (design.md
+   ADR-4/ADR-5). Table/pill/map-legend styling all reuses
+   .table-scroll/.eval-pill/.map-legend as-is; only the segmented
+   control and the estado filter chips are genuinely new.
+   ============================================================ */
+.asignacion-segmented { display: flex; gap: 6px; margin-bottom: 22px; border-bottom: 1px solid var(--border); }
+.asignacion-segment {
+  padding: 9px 16px; background: none; border: none; border-bottom: 2px solid transparent;
+  color: var(--text-secondary); font-weight: 600; font-size: .88rem; cursor: pointer;
+  transition: color .12s ease, border-color .12s ease;
+}
+.asignacion-segment:hover { color: var(--text-primary); }
+.asignacion-segment.is-active { color: var(--accent); border-color: var(--accent); }
+
+.asignacion-filters { display: flex; gap: 8px; flex-wrap: wrap; }
+.asignacion-chip {
+  padding: 5px 12px; border-radius: 999px; font-size: .78rem; font-weight: 600; cursor: pointer;
+  color: var(--text-secondary); background: var(--surface-2); border: 1px solid var(--border);
+  transition: color .12s ease, border-color .12s ease, background .12s ease;
+}
+.asignacion-chip:hover { border-color: var(--border-strong); }
+.asignacion-chip.is-active { color: var(--accent); background: var(--accent-dim); border-color: var(--accent); }
+
+.asignacion-inline-field { flex-direction: row !important; align-items: center; gap: 6px !important; width: auto; }
+.asignacion-inline-field input { width: 76px; }
+.asignacion-check { width: 18px; height: 18px; cursor: pointer; accent-color: var(--accent); }
+.asignacion-inspector-select { justify-self: end; }
+
 /* ---- Login overlay ---- */
 .auth-overlay {
   position: fixed;
