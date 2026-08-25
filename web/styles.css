@@ -1916,7 +1916,80 @@ body:not([data-role="admin"]) .view-tab[data-view="analista"] { display: none !i
 .asignacion-inline-field { flex-direction: row !important; align-items: center; gap: 6px !important; width: auto; }
 .asignacion-inline-field input { width: 76px; }
 .asignacion-check { width: 18px; height: 18px; cursor: pointer; accent-color: var(--accent); }
-.asignacion-inspector-select { justify-self: end; }
+
+/* Header action cluster: editable cap field + «Reiniciar agrupación». */
+.asignacion-head-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+/* Cuadrilla row: code · identity · searchable inspector combobox · actions.
+   Flex (not grid) so it wraps gracefully — the combobox keeps its width and the
+   action buttons stay grouped beside/under it, never orphaned on a lonely line. */
+.asignacion-cuadrilla-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.asignacion-cuadrilla-row .sticker-identity { flex: 1 1 150px; }
+.asignacion-cuadrilla-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+.asignacion-cuadrilla-actions .sticker-action { padding: 6px 10px; font-size: .78rem; }
+
+.asignacion-combo { position: relative; min-width: 0; flex: 1 1 200px; }
+.asignacion-combo-input {
+  width: 100%; padding: 8px 32px 8px 11px; border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text-primary);
+  font-size: .9rem;
+}
+.asignacion-combo-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.asignacion-combo-input::placeholder { color: var(--text-muted); }
+/* Chevron affordance: reads as a dropdown, not a bare text field. */
+.asignacion-combo::after {
+  content: ""; position: absolute; top: 50%; right: 12px; width: 8px; height: 8px;
+  margin-top: -6px; pointer-events: none;
+  border-right: 2px solid var(--text-muted); border-bottom: 2px solid var(--text-muted);
+  transform: rotate(45deg);
+}
+.asignacion-combo-list {
+  list-style: none; margin: 6px 0 0; padding: 4px; position: absolute; z-index: 20;
+  top: 100%; left: 0; right: 0; max-height: 260px; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); box-shadow: var(--shadow-modal);
+}
+.asignacion-combo-option {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: var(--radius-sm); cursor: pointer;
+  font-size: .88rem; color: var(--text-primary);
+}
+.asignacion-combo-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asignacion-combo-count {
+  margin-left: auto; flex: none; font-size: .72rem; font-weight: 600;
+  font-variant-numeric: tabular-nums; padding: 2px 8px; border-radius: 999px;
+  color: var(--text-secondary); background: var(--surface-3);
+}
+.asignacion-combo-count.is-over {
+  color: var(--sticker-off);
+  background: color-mix(in srgb, var(--sticker-off) 16%, transparent);
+}
+.asignacion-combo-option:hover, .asignacion-combo-option.is-active { background: var(--accent-dim); color: var(--accent); }
+.asignacion-combo-option.is-over-cap { opacity: .55; color: var(--text-muted); cursor: not-allowed; }
+.asignacion-combo-option.is-over-cap:hover { background: transparent; color: var(--text-muted); }
+.asignacion-combo-empty { padding: 8px 10px; color: var(--text-muted); font-size: .85rem; }
+
+/* In-progress spinner for «Auto-agrupar» (reuses the accent). */
+.asignacion-spinner {
+  display: inline-block; width: 13px; height: 13px; margin-right: 8px;
+  vertical-align: -1px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, currentColor 35%, transparent);
+  border-top-color: currentColor;
+  animation: asignacion-spin .6s linear infinite;
+}
+@keyframes asignacion-spin { to { transform: rotate(360deg); } }
+
+/* Progress gauge card below the map: compact semicircle + count legend. */
+.asignacion-gauge-card { margin: 0; }
+.asignacion-gauge { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.asignacion-gauge-svg { width: 100%; max-width: 240px; height: auto; }
+.asignacion-gauge-pct { fill: var(--text-primary); font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.asignacion-gauge-cap { fill: var(--text-muted); font-size: 11px; }
+.asignacion-gauge-legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 16px; }
+.asignacion-gauge-item {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: .78rem; color: var(--text-secondary); font-variant-numeric: tabular-nums;
+}
 
 /* ---- Login overlay ---- */
 .auth-overlay {

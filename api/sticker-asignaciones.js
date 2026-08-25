@@ -106,6 +106,25 @@ function pointsAlreadyAssigned(points, targetCuadrillaId = null) {
     .map((p) => p.id);
 }
 
+// No-sticker guard: a point with tiene_sticker === true is already evaluated
+// (per the cruce with the form) and must never be assignable/groupable.
+// Returns the ids of such points. Exported for the self-check.
+function pointsWithSticker(points) {
+  return (points || [])
+    .filter((p) => p && p.tiene_sticker === true)
+    .map((p) => p.id);
+}
+
+// Hard-cap helper: how many of `points` are actively assigned to `inspectorUid`
+// (assigned AND not yet 'hecho'). "Active" is the load per day the 20-cap
+// bounds. Exported for the self-check.
+const MAX_ACTIVE_PER_INSPECTOR = 20;
+function activeAssignedCount(points, inspectorUid) {
+  return (points || []).filter(
+    (p) => p && p.inspector_uid === inspectorUid && p.estado_asignacion !== 'hecho',
+  ).length;
+}
+
 // ---- Firestore-backed actions ----------------------------------------------
 
 async function listPuntos(admin) {
@@ -130,7 +149,12 @@ async function runAutoAgrupar(admin, body) {
     .where('estado_asignacion', '==', 'pendiente')
     .where('cuadrilla_id', '==', null)
     .get();
-  const puntos = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  // Exclude already-stickered points in code rather than adding a third
+  // equality `where` (that would need a new composite index). A point with
+  // tiene_sticker === true is already evaluated and must never be grouped.
+  const puntos = snap.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .filter((p) => p.tiene_sticker !== true);
   if (puntos.length === 0) return [];
 
   const grupos = autoAgrupar(puntos, { maxRadiusM, maxSize });
@@ -163,10 +187,20 @@ async function crearCuadrilla(admin, body) {
   // window, wrap in db.runTransaction if two admins ever race here.
   const puntoRefs = puntos.map((id) => db.doc(`sticker_matches/${id}`));
   const puntoSnaps = await db.getAll(...puntoRefs);
-  const current = puntoSnaps.map((s) => ({ id: s.id, cuadrilla_id: s.exists ? (s.data().cuadrilla_id ?? null) : null }));
+  const current = puntoSnaps.map((s) => ({
+    id: s.id,
+    cuadrilla_id: s.exists ? (s.data().cuadrilla_id ?? null) : null,
+    tiene_sticker: s.exists ? (s.data().tiene_sticker === true) : false,
+  }));
+  // No-sticker guard: reject before the already-in-a-cuadrilla guard so the
+  // operator gets the more specific reason first.
+  const stickered = pointsWithSticker(current);
+  if (stickered.length) {
+    throw badRequest(`${stickered.length} punto(s) ya tienen sticker y no requieren visita; quitar esos puntos de la selección.`);
+  }
   const conflicts = pointsAlreadyAssigned(current, null);
   if (conflicts.length) {
-    throw badRequest(`${conflicts.length} punto(s) ya pertenecen a una cuadrilla; quitalos de su cuadrilla actual antes de reasignar.`);
+    throw badRequest(`${conflicts.length} punto(s) ya pertenecen a una cuadrilla; quitar esos puntos de su cuadrilla actual antes de reasignar.`);
   }
 
   const ref = db.collection('cuadrillas').doc();
@@ -237,6 +271,30 @@ async function asignarInspector(admin, body) {
   if (!snap.exists) throw badRequest(`No existe la cuadrilla ${cuadrillaId}.`);
 
   const puntos = (snap.data().puntos || []).map(String);
+
+  // Per-inspector cap: caller may override the default (20) via maxPorInspector,
+  // clamped to a sane 1..200; the server stays the hard enforcement point.
+  const rawCap = Number.parseInt(body.maxPorInspector, 10);
+  const cap = Number.isFinite(rawCap) ? Math.max(1, Math.min(200, rawCap)) : MAX_ACTIVE_PER_INSPECTOR;
+
+  // Hard cap: at most `cap` active points per inspector per day. After this
+  // operation the cuadrilla's points are all active ('asignado'), so the
+  // inspector would end up holding: their current active points NOT in this
+  // cuadrilla (unchanged) + every point in this cuadrilla. Counting distinct
+  // points this way avoids double-counting when the cuadrilla is already
+  // (partly) theirs.
+  const cuadrillaSet = new Set(puntos);
+  const assignedSnap = await db.collection('sticker_matches')
+    .where('inspector_uid', '==', inspectorUid).get();
+  const otherActive = assignedSnap.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .filter((p) => !cuadrillaSet.has(p.id) && p.estado_asignacion !== 'hecho')
+    .length;
+  const total = otherActive + puntos.length;
+  if (total > cap) {
+    throw badRequest(`El inspector ya tiene ${otherActive} punto(s) activos; asignar esta cuadrilla (${puntos.length}) superaría el máximo de ${cap} por día.`);
+  }
+
   const now = admin.firestore.FieldValue.serverTimestamp();
   const batch = db.batch();
   batch.set(ref, { inspector_uid: inspectorUid }, { merge: true });
@@ -249,6 +307,32 @@ async function asignarInspector(admin, body) {
   }
   await batch.commit();
   return { id: cuadrillaId };
+}
+
+// Removes the inspector from a cuadrilla: clears inspector_uid/asignado_en on
+// every member point and resets estado_asignacion to 'pendiente', but KEEPS
+// the cuadrilla and its cuadrilla_id membership (unlike eliminarCuadrilla).
+async function desasignarInspector(admin, body) {
+  const cuadrillaId = String(body.cuadrilla_id ?? '').trim();
+  if (!cuadrillaId) throw badRequest('Falta cuadrilla_id.');
+
+  const db = admin.firestore();
+  const ref = db.doc(`cuadrillas/${cuadrillaId}`);
+  const snap = await ref.get();
+  if (!snap.exists) throw badRequest(`No existe la cuadrilla ${cuadrillaId}.`);
+
+  const puntos = (snap.data().puntos || []).map(String);
+  const batch = db.batch();
+  batch.set(ref, { inspector_uid: null }, { merge: true });
+  for (const puntoId of puntos) {
+    batch.set(db.doc(`sticker_matches/${puntoId}`), {
+      inspector_uid: null,
+      asignado_en: null,
+      estado_asignacion: 'pendiente',
+    }, { merge: true });
+  }
+  await batch.commit();
+  return { puntos: puntos.length };
 }
 
 // Reassigns a single point to a different inspector, recording the previous
@@ -367,6 +451,7 @@ module.exports = async (req, res) => {
     if (action === 'crearCuadrilla') return res.status(201).json({ ok: true, ...(await crearCuadrilla(admin, body)) });
     if (action === 'editarCuadrilla') return res.status(200).json({ ok: true, ...(await editarCuadrilla(admin, body)) });
     if (action === 'asignarInspector') return res.status(200).json({ ok: true, ...(await asignarInspector(admin, body)) });
+    if (action === 'desasignarInspector') return res.status(200).json({ ok: true, ...(await desasignarInspector(admin, body)) });
     if (action === 'reasignarPunto') return res.status(200).json({ ok: true, ...(await reasignarPunto(admin, body)) });
     if (action === 'eliminarCuadrilla') return res.status(200).json({ ok: true, ...(await eliminarCuadrilla(admin, body)) });
     if (action === 'reiniciarAgrupacion') return res.status(200).json({ ok: true, ...(await reiniciarAgrupacion(admin)) });
@@ -383,5 +468,8 @@ module.exports.autoAgrupar = autoAgrupar;
 module.exports.haversineM = haversineM;
 module.exports.commitInChunks = commitInChunks;
 module.exports.pointsAlreadyAssigned = pointsAlreadyAssigned;
+module.exports.pointsWithSticker = pointsWithSticker;
+module.exports.activeAssignedCount = activeAssignedCount;
 module.exports.DEFAULT_MAX_RADIUS_M = DEFAULT_MAX_RADIUS_M;
 module.exports.DEFAULT_MAX_SIZE = DEFAULT_MAX_SIZE;
+module.exports.MAX_ACTIVE_PER_INSPECTOR = MAX_ACTIVE_PER_INSPECTOR;

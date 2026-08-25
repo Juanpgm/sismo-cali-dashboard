@@ -108,6 +108,63 @@ export function filterRows(rows, estado) {
   return rows.filter((r) => r.estado_asignacion === estado);
 }
 
+// Hard cap on active points per inspector (mirrors the backend's
+// MAX_ACTIVE_PER_INSPECTOR — kept in sync by hand, single source is the API).
+export const MAX_ACTIVE_PER_INSPECTOR = 20;
+
+/** Active-assigned count per inspector uid, computed from the already-fetched
+ *  rows (no extra API call). "Active" = assigned to them AND not yet 'hecho'. */
+export function activeCountsByInspector(rows) {
+  const counts = new Map();
+  for (const r of rows || []) {
+    if (r.inspector_uid && r.estado_asignacion !== 'hecho') {
+      counts.set(r.inspector_uid, (counts.get(r.inspector_uid) || 0) + 1);
+    }
+  }
+  return counts;
+}
+
+/** Would assigning `cuadrillaPuntoIds` to `inspectorUid` push them over the
+ *  cap? Counts their current active points NOT in this cuadrilla + the whole
+ *  cuadrilla (every member point becomes active on assignment) — same distinct
+ *  count the backend enforces, so the UI disable matches the 400 it would get. */
+export function wouldExceedCap(rows, cuadrillaPuntoIds, inspectorUid, cap = MAX_ACTIVE_PER_INSPECTOR) {
+  const inCuadrilla = new Set(cuadrillaPuntoIds || []);
+  let otherActive = 0;
+  for (const r of rows || []) {
+    if (r.inspector_uid === inspectorUid && r.estado_asignacion !== 'hecho' && !inCuadrilla.has(r.id)) {
+      otherActive += 1;
+    }
+  }
+  return otherActive + inCuadrilla.size > cap;
+}
+
+/** Field-sweep progress tallies for the gauge, computed from the UNFILTERED
+ *  rows: `barrido` = already has a field sticker (blue), else `asignado` when
+ *  assigned/in-progress (amber), else `pendiente` (red). Same precedence as
+ *  colorForPunto so gauge and map agree. */
+export function gaugeCounts(rows) {
+  let barrido = 0;
+  let asignado = 0;
+  let pendiente = 0;
+  for (const r of rows || []) {
+    if (r.tiene_sticker === true) barrido += 1;
+    else if (r.estado_asignacion === 'asignado' || r.estado_asignacion === 'en_proceso') asignado += 1;
+    else pendiente += 1;
+  }
+  return { barrido, asignado, pendiente, total: (rows || []).length };
+}
+
+/** Filter the roster by a free-text query over nombre/código/cédula. */
+export function filterInspectores(inspectores, query) {
+  const q = (query || '').trim().toLowerCase();
+  if (!q) return inspectores || [];
+  return (inspectores || []).filter((i) => {
+    const hay = `${i.nombre_completo || ''} ${i.codigo || ''} ${i.cedula || ''}`.toLowerCase();
+    return hay.includes(q);
+  });
+}
+
 // ---- markup ---------------------------------------------------------------
 
 function cardHead(title, subtitle, extra = '') {
@@ -154,7 +211,13 @@ function shellHtml() {
         </div>
 
         <div class="card">
-          ${cardHead('Paso 2 · Cuadrillas e inspectores', 'Asignar un inspector a cada cuadrilla. «Reiniciar agrupación» borra solo las automáticas.', '<button type="button" class="sticker-action sticker-action-off" id="asignacion-reiniciar">Reiniciar agrupación</button>')}
+          ${cardHead('Paso 2 · Cuadrillas e inspectores', 'Asignar un inspector a cada cuadrilla. «Reiniciar agrupación» borra solo las automáticas.', `<div class="asignacion-head-actions">
+            <label class="sticker-field asignacion-inline-field">
+              <span>Máx. por inspector</span>
+              <input type="number" id="asignacion-cap" min="1" max="200" value="20">
+            </label>
+            <button type="button" class="sticker-action sticker-action-off" id="asignacion-reiniciar">Reiniciar agrupación</button>
+          </div>`)}
           <div class="asignacion-cuadrillas-scroll" id="asignacion-cuadrillas"></div>
         </div>
 
@@ -170,6 +233,10 @@ function shellHtml() {
           ${cardHead('Mapa de puntos', 'Reasignar un punto desde su globo.')}
           <div class="eval-map asignacion-map" id="asignacion-map"></div>
         </div>
+        <div class="card asignacion-gauge-card">
+          ${cardHead('Avance del barrido', 'Puntos con sticker en campo sobre el total.')}
+          <div class="asignacion-gauge" id="asignacion-gauge"></div>
+        </div>
       </aside>
     </div>`;
 }
@@ -183,7 +250,6 @@ const SORTABLE = [
   ['direccion', 'Dirección'],
   ['zona', 'Zona'],
   ['estado_asignacion', 'Estado'],
-  ['cuadrillaLabel', 'Cuadrilla'],
   ['inspectorLabel', 'Inspector'],
   ['tier', 'Tier'],
 ];
@@ -198,15 +264,14 @@ function tableHtml(rows, sort, selected) {
   }).join('');
   const body = rows.length
     ? rows.map((r) => `<tr>
-        <td><input type="checkbox" class="asignacion-check" data-punto-check="${escapeHtml(r.id)}" ${selected.has(r.id) ? 'checked' : ''} ${r.cuadrilla_id ? 'disabled title="Ya pertenece a una cuadrilla"' : ''}></td>
+        <td><input type="checkbox" class="asignacion-check" data-punto-check="${escapeHtml(r.id)}" ${selected.has(r.id) ? 'checked' : ''} ${r.tiene_sticker ? 'disabled title="Ya tiene sticker; no requiere visita"' : (r.cuadrilla_id ? 'disabled title="Ya pertenece a una cuadrilla"' : '')}></td>
         <td>${escapeHtml(r.direccion || 'Sin dato')}</td>
         <td>${escapeHtml(r.zona || 'Sin dato')}</td>
         <td><span class="eval-pill" style="--eval-pill:${ESTADO_COLOR[r.estado_asignacion] || COLORS.unknown}">${escapeHtml(ESTADO_LABELS[r.estado_asignacion] || r.estado_asignacion)}</span></td>
-        <td>${escapeHtml(r.cuadrillaLabel)}</td>
         <td>${escapeHtml(r.inspectorLabel)}</td>
         <td>${escapeHtml(r.tier || '—')}</td>
       </tr>`).join('')
-    : `<tr><td colspan="7" class="sticker-empty">Sin puntos para este filtro.</td></tr>`;
+    : `<tr><td colspan="6" class="sticker-empty">Sin puntos para este filtro.</td></tr>`;
   return `<table><thead><tr><th></th>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
@@ -227,26 +292,120 @@ export function cuadrillaLabel(cuadrilla, index, zonaByPunto, zonaSeq) {
   return `Grupo ${index + 1}`;
 }
 
-function cuadrillasHtml(cuadrillas, inspectores, zonaByPunto = new Map()) {
+/** Roster display label for one inspector, with their current active load.
+ *  `Nombre — codigo (N/cap)` (spec §3). Cap is the editable per-inspector max. */
+export function inspectorOptionLabel(insp, count, cap = MAX_ACTIVE_PER_INSPECTOR) {
+  const name = insp.nombre_completo || `Brigada ${insp.codigo || '—'}`;
+  const code = insp.codigo ? ` — ${insp.codigo}` : '';
+  return `${name}${code} (${count}/${cap})`;
+}
+
+function cuadrillasHtml(cuadrillas, inspectores, zonaByPunto = new Map(), inspectorById = new Map()) {
   if (!cuadrillas.length) {
     return '<p class="sticker-empty">Todavía no hay cuadrillas. Usar «Auto-agrupar» o crear una manualmente desde la tabla.</p>';
   }
-  const optionsHtml = (selectedUid) => `<option value="">Sin asignar</option>${inspectores.map((i) => `<option value="${escapeHtml(i.uid)}" ${i.uid === selectedUid ? 'selected' : ''}>${escapeHtml(i.nombre_completo || `Brigada ${i.codigo || '—'}`)}</option>`).join('')}`;
   const zonaSeq = {};
   return `<ul class="sticker-list">
     ${cuadrillas.map((c, i) => {
       const n = (c.puntos || []).length;
       const label = cuadrillaLabel(c, i, zonaByPunto, zonaSeq);
-      return `<li class="sticker-row">
+      const insp = c.inspector_uid ? inspectorById.get(c.inspector_uid) : null;
+      const inspName = insp ? (insp.nombre_completo || `Brigada ${insp.codigo || '—'}`) : '';
+      const metaInsp = insp ? `Inspector: ${escapeHtml(inspName)}` : 'Sin asignar';
+      return `<li class="sticker-row asignacion-cuadrilla-row" data-cuadrilla-row="${escapeHtml(c.id)}">
         <span class="sticker-code" title="Origen">${c.origen === 'auto' ? 'AUTO' : 'MAN'}</span>
         <div class="sticker-identity">
           <span class="sticker-name" title="ID: ${escapeHtml(c.id)}">${escapeHtml(label)}</span>
-          <span class="sticker-meta">${n} punto${n === 1 ? '' : 's'}</span>
+          <span class="sticker-meta">${n} punto${n === 1 ? '' : 's'} · ${metaInsp}</span>
         </div>
-        <select class="asignacion-inspector-select" data-cuadrilla-id="${escapeHtml(c.id)}">${optionsHtml(c.inspector_uid)}</select>
+        <div class="asignacion-combo" data-combo-cuadrilla="${escapeHtml(c.id)}">
+          <input type="text" class="asignacion-combo-input" role="combobox" aria-expanded="false"
+            aria-autocomplete="list" autocomplete="off" spellcheck="false"
+            placeholder="${insp ? 'Cambiar inspector…' : 'Asignar inspector…'}" aria-label="Buscar inspector para asignar"
+            value="${escapeHtml(inspName)}">
+          <ul class="asignacion-combo-list" role="listbox" hidden></ul>
+        </div>
+        <div class="asignacion-cuadrilla-actions">
+          ${insp ? `<button type="button" class="sticker-action asignacion-desasignar" data-desasignar="${escapeHtml(c.id)}">Quitar asignación</button>` : ''}
+          <button type="button" class="sticker-action sticker-action-off asignacion-eliminar" data-eliminar="${escapeHtml(c.id)}">Eliminar</button>
+        </div>
       </li>`;
     }).join('')}
   </ul>`;
+}
+
+// Vanilla searchable combobox for one cuadrilla's inspector selector: a text
+// <input role="combobox"> + a filtered <ul role="listbox">. No library. Shows
+// each inspector's N/20 load and disables (never selects) any inspector this
+// cuadrilla would push over the cap. Keyboard: ArrowUp/Down move the active
+// option, Enter selects, Escape closes. `onSelect(uid)` fires the assignment.
+function mountCombobox(comboEl, { inspectores, counts, cuadrillaPuntoIds, rows, cap = MAX_ACTIVE_PER_INSPECTOR, onSelect }) {
+  const input = comboEl.querySelector('.asignacion-combo-input');
+  const list = comboEl.querySelector('.asignacion-combo-list');
+  let options = []; // [{ uid, disabled }] in current render order
+  let active = -1;
+
+  const close = () => {
+    list.hidden = true;
+    input.setAttribute('aria-expanded', 'false');
+    active = -1;
+  };
+
+  function render() {
+    const matches = filterInspectores(inspectores, input.value);
+    options = [];
+    list.innerHTML = matches.map((insp) => {
+      const count = counts.get(insp.uid) || 0;
+      const over = wouldExceedCap(rows, cuadrillaPuntoIds, insp.uid, cap);
+      options.push({ uid: insp.uid, disabled: over });
+      const name = insp.nombre_completo || `Brigada ${insp.codigo || '—'}`;
+      const code = insp.codigo ? ` — ${insp.codigo}` : '';
+      return `<li role="option" class="asignacion-combo-option${over ? ' is-over-cap' : ''}"
+        data-uid="${escapeHtml(insp.uid)}" ${over ? 'aria-disabled="true"' : ''}
+        title="${escapeHtml(over ? 'Superaría el máximo de ' + cap + ' puntos activos' : inspectorOptionLabel(insp, count, cap))}">
+        <span class="asignacion-combo-name">${escapeHtml(name + code)}</span>
+        <span class="asignacion-combo-count${over ? ' is-over' : ''}">${count}/${cap}</span></li>`;
+    }).join('') || '<li class="asignacion-combo-empty" aria-disabled="true">Sin coincidencias</li>';
+    active = -1;
+    list.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+  }
+
+  function highlight(from, step) {
+    const items = [...list.querySelectorAll('.asignacion-combo-option')];
+    if (!items.length) return;
+    // Walk in `step` direction, skipping disabled options.
+    let i = from;
+    while (i >= 0 && i < options.length && options[i].disabled) i += step;
+    if (i < 0 || i >= options.length) return;
+    active = i;
+    items.forEach((el, idx) => el.classList.toggle('is-active', idx === active));
+    items[active].scrollIntoView({ block: 'nearest' });
+  }
+
+  function choose(uid, disabled) {
+    if (disabled) return;
+    close();
+    onSelect(uid);
+  }
+
+  input.addEventListener('focus', render);
+  input.addEventListener('input', render);
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); if (list.hidden) render(); highlight(active < 0 ? 0 : active + 1, 1); }
+    else if (ev.key === 'ArrowUp') { ev.preventDefault(); highlight(active < 0 ? options.length - 1 : active - 1, -1); }
+    else if (ev.key === 'Enter') { ev.preventDefault(); if (active >= 0 && options[active]) choose(options[active].uid, options[active].disabled); }
+    else if (ev.key === 'Escape') { close(); }
+  });
+  list.addEventListener('mousedown', (ev) => {
+    // mousedown (not click) so it fires before the input's blur closes the list.
+    const li = ev.target.closest('.asignacion-combo-option');
+    if (!li) return;
+    ev.preventDefault();
+    const opt = options.find((o) => o.uid === li.dataset.uid);
+    choose(li.dataset.uid, opt ? opt.disabled : false);
+  });
+  input.addEventListener('blur', () => { setTimeout(close, 120); });
 }
 
 function popupHtml(row) {
@@ -368,6 +527,7 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
   let sortKey = 'estado_asignacion';
   let sortDir = 'asc';
   let estadoFilter = 'todos';
+  let capValue = MAX_ACTIVE_PER_INSPECTOR; // editable per-inspector cap (default 20)
   const selected = new Set();
   let busy = false;
 
@@ -382,6 +542,8 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
   const sizeInput = root.querySelector('#asignacion-max-size');
   const crearBtn = root.querySelector('#asignacion-crear');
   const reiniciarBtn = root.querySelector('#asignacion-reiniciar');
+  const capInput = root.querySelector('#asignacion-cap');
+  const gaugeEl = root.querySelector('#asignacion-gauge');
 
   const showOk = (msg) => { okBox.textContent = msg; okBox.hidden = !msg; };
 
@@ -415,6 +577,8 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
       btn.addEventListener('click', () => {
         estadoFilter = btn.dataset.estadoFilter;
         renderTable();
+        // Isolate the filtered estado on the map too (the gauge keeps full totals).
+        renderMapSection();
       });
     });
   }
@@ -429,24 +593,60 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
     }
   }
 
+  // Shared runner for the per-cuadrilla CRUD buttons/combobox: busy guard +
+  // reload, same idiom as the toolbar handlers.
+  async function runCuadrillaAction(body, okMsg) {
+    if (busy) return;
+    busy = true;
+    try {
+      await callApi(getToken, body);
+      showOk(okMsg);
+      await reload();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      busy = false;
+    }
+  }
+
   function renderCuadrillasSection() {
     const inspectores = getInspectores() || [];
+    const inspectorById = new Map(inspectores.map((i) => [i.uid, i]));
+    const counts = activeCountsByInspector(rows);
+    const cuadrillaById = new Map(cuadrillas.map((c) => [c.id, c]));
     const zonaByPunto = new Map(rows.map((r) => [r.id, r.zona]).filter(([, z]) => z));
-    cuadrillasWrap.innerHTML = cuadrillasHtml(cuadrillas, inspectores, zonaByPunto);
-    cuadrillasWrap.querySelectorAll('[data-cuadrilla-id]').forEach((sel) => {
-      sel.addEventListener('change', async () => {
-        if (busy || !sel.value) return;
-        busy = true;
-        sel.disabled = true;
-        try {
-          await callApi(getToken, { action: 'asignarInspector', cuadrilla_id: sel.dataset.cuadrillaId, inspector_uid: sel.value });
-          showOk('Inspector asignado.');
-          await reload();
-        } catch (err) {
-          alert(err.message);
-        } finally {
-          busy = false;
-        }
+    cuadrillasWrap.innerHTML = cuadrillasHtml(cuadrillas, inspectores, zonaByPunto, inspectorById);
+
+    cuadrillasWrap.querySelectorAll('[data-combo-cuadrilla]').forEach((comboEl) => {
+      const cuadrillaId = comboEl.dataset.comboCuadrilla;
+      const cuadrilla = cuadrillaById.get(cuadrillaId);
+      mountCombobox(comboEl, {
+        inspectores,
+        counts,
+        cuadrillaPuntoIds: (cuadrilla && cuadrilla.puntos) || [],
+        rows,
+        cap: capValue,
+        onSelect: (uid) => runCuadrillaAction(
+          { action: 'asignarInspector', cuadrilla_id: cuadrillaId, inspector_uid: uid, maxPorInspector: capValue },
+          'Inspector asignado.',
+        ),
+      });
+    });
+
+    cuadrillasWrap.querySelectorAll('[data-desasignar]').forEach((btn) => {
+      btn.addEventListener('click', () => runCuadrillaAction(
+        { action: 'desasignarInspector', cuadrilla_id: btn.dataset.desasignar },
+        'Asignación retirada; los puntos vuelven a pendiente.',
+      ));
+    });
+
+    cuadrillasWrap.querySelectorAll('[data-eliminar]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (!window.confirm('Eliminar esta cuadrilla y liberar sus puntos a pendiente. ¿Continuar?')) return;
+        runCuadrillaAction(
+          { action: 'eliminarCuadrilla', cuadrilla_id: btn.dataset.eliminar },
+          'Cuadrilla eliminada.',
+        );
       });
     });
   }
@@ -456,6 +656,51 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
     const n = renderMap(currentRows(), inspectores, reasignar);
     const sinCoords = rows.length - n;
     mapMeta.textContent = sinCoords ? `${n} en el mapa · ${sinCoords} sin coordenadas` : `${n} en el mapa`;
+  }
+
+  // Semicircle SVG gauge of field-sweep progress, always over the UNFILTERED
+  // rows (the estado filter narrows the map, not the overall progress). Three
+  // stacked arcs (blue barrido / amber asignado / red pendiente) along a 180°
+  // top semicircle; the barrido share fills from the left. No chart library.
+  function renderGauge() {
+    if (!gaugeEl) return;
+    const { barrido, asignado, pendiente, total } = gaugeCounts(rows);
+    const pct = total ? Math.round((barrido / total) * 100) : 0;
+    const cx = 110;
+    const cy = 104;
+    const r = 84;
+    const sw = 16;
+    const pointAt = (f) => {
+      const a = Math.PI * (1 - f); // f=0 -> left (π), f=1 -> right (0), sweeping over the top
+      return [cx + r * Math.cos(a), cy - r * Math.sin(a)];
+    };
+    const seg = (f0, f1, color) => {
+      if (f1 - f0 <= 0.0001) return '';
+      const [x0, y0] = pointAt(f0);
+      const [x1, y1] = pointAt(f1);
+      return `<path d="M ${x0.toFixed(1)} ${y0.toFixed(1)} A ${r} ${r} 0 0 1 ${x1.toFixed(1)} ${y1.toFixed(1)}" fill="none" stroke="${color}" stroke-width="${sw}"/>`;
+    };
+    const [tx0, ty0] = pointAt(0);
+    const [tx1, ty1] = pointAt(1);
+    const track = `<path d="M ${tx0.toFixed(1)} ${ty0.toFixed(1)} A ${r} ${r} 0 0 1 ${tx1.toFixed(1)} ${ty1.toFixed(1)}" fill="none" stroke="var(--surface-3)" stroke-width="${sw}" stroke-linecap="round"/>`;
+    let arcs = '';
+    if (total) {
+      const fB = barrido / total;
+      const fA = fB + asignado / total;
+      const fP = fA + pendiente / total;
+      arcs = seg(0, fB, MARKER_HEX.blue) + seg(fB, fA, MARKER_HEX.amber) + seg(fA, fP, MARKER_HEX.red);
+    }
+    gaugeEl.innerHTML = `
+      <svg class="asignacion-gauge-svg" viewBox="0 0 220 128" role="img" aria-label="Avance del barrido: ${pct}%">
+        ${track}${arcs}
+        <text x="${cx}" y="${cy - 12}" class="asignacion-gauge-pct" text-anchor="middle">${pct}%</text>
+        <text x="${cx}" y="${cy + 8}" class="asignacion-gauge-cap" text-anchor="middle">${barrido} de ${total} barridos</text>
+      </svg>
+      <div class="asignacion-gauge-legend">
+        <span class="asignacion-gauge-item"><span class="legend-swatch legend-circle" style="background:${MARKER_HEX.blue}"></span>Barrido ${barrido}</span>
+        <span class="asignacion-gauge-item"><span class="legend-swatch legend-circle" style="background:${MARKER_HEX.amber}"></span>Asignado ${asignado}</span>
+        <span class="asignacion-gauge-item"><span class="legend-swatch legend-circle" style="background:${MARKER_HEX.red}"></span>Pendiente ${pendiente}</span>
+      </div>`;
   }
 
   async function reload() {
@@ -473,16 +718,29 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
       renderTable();
       renderCuadrillasSection();
       renderMapSection();
+      renderGauge();
     } catch (err) {
       teardownMap();
       tableWrap.innerHTML = `<p class="sticker-error" role="alert">${escapeHtml(err.message)}</p>`;
     }
   }
 
+  // Update the editable per-inspector cap and re-render the comboboxes so their
+  // N/cap counts and over-cap disabling reflect the new limit immediately.
+  function applyCap() {
+    const v = parseInt(capInput.value, 10);
+    if (Number.isFinite(v)) capValue = Math.max(1, Math.min(200, v));
+    renderCuadrillasSection();
+  }
+  capInput.addEventListener('input', applyCap);
+  capInput.addEventListener('change', () => { capInput.value = String(capValue); applyCap(); });
+
   autoBtn.addEventListener('click', async () => {
     if (busy) return;
     busy = true;
     autoBtn.disabled = true;
+    const originalLabel = autoBtn.innerHTML;
+    autoBtn.innerHTML = '<span class="asignacion-spinner" aria-hidden="true"></span>Agrupando…';
     try {
       const body = { action: 'autoAgrupar' };
       if (radiusInput.value) body.maxRadiusM = Number(radiusInput.value);
@@ -495,6 +753,7 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
     } finally {
       busy = false;
       autoBtn.disabled = false;
+      autoBtn.innerHTML = originalLabel;
     }
   });
 
