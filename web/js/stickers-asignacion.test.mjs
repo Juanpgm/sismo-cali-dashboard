@@ -4,16 +4,34 @@ import assert from 'node:assert/strict';
 import {
   colorForPunto, buildRows, sortRows, filterRows,
   activeCountsByInspector, filterInspectores, inspectorOptionLabel,
-  gaugeCounts,
+  gaugeCounts, isHabilitado,
 } from './stickers-asignacion.js';
 
 // ---- colorForPunto — spec.md "Map view — 3-color legend" scenarios --------
+// 3 estados only: 'en_proceso' is a legacy value no write path in this repo
+// ever produces (buildRows folds it into 'asignado' before this is ever called).
 assert.equal(colorForPunto({ tiene_sticker: true, estado_asignacion: 'pendiente' }), 'blue');
 assert.equal(colorForPunto({ tiene_sticker: false, estado_asignacion: 'pendiente' }), 'red');
 assert.equal(colorForPunto({ tiene_sticker: false, estado_asignacion: 'asignado' }), 'amber');
-assert.equal(colorForPunto({ tiene_sticker: false, estado_asignacion: 'en_proceso' }), 'amber');
 // tiene_sticker wins even when also assigned — matched-and-assigned still reads as "done".
 assert.equal(colorForPunto({ tiene_sticker: true, estado_asignacion: 'asignado' }), 'blue');
+
+// ---- buildRows — derived estado: 'hecho' SOLO si tiene_sticker; un punto
+// asignado (o marcado 'hecho' por el inspector, aún sin confirmar por el cruce
+// diario) nunca retrocede a 'pendiente' --------------------------------------
+assert.equal(buildRows([{ id: 'p1', tiene_sticker: true, estado_asignacion: 'pendiente' }], [], [])[0].estado_asignacion, 'hecho');
+assert.equal(buildRows([{ id: 'p2', tiene_sticker: false, cuadrilla_id: 'c1' }], [], [])[0].estado_asignacion, 'asignado');
+assert.equal(buildRows([{ id: 'p3', tiene_sticker: false, inspector_uid: 'u1' }], [], [])[0].estado_asignacion, 'asignado');
+// El inspector marcó 'hecho' en campo, pero cruce_sticker.py (diario) todavía
+// no lo confirmó: sigue leyendo 'asignado', no 'pendiente'.
+assert.equal(buildRows([{ id: 'p4', tiene_sticker: false, inspector_uid: 'u1', estado_asignacion: 'hecho' }], [], [])[0].estado_asignacion, 'asignado');
+assert.equal(buildRows([{ id: 'p5', tiene_sticker: false }], [], [])[0].estado_asignacion, 'pendiente');
+
+// ---- isHabilitado — mismo criterio que stickers.js:rowHtml -----------------
+assert.equal(isHabilitado({ disabled: false, activo: true }), true);
+assert.equal(isHabilitado({ disabled: true, activo: true }), false);
+assert.equal(isHabilitado({ disabled: false, activo: false }), false);
+assert.equal(isHabilitado(null), false);
 
 // ---- buildRows — joins puntos with cuadrilla/inspector for the table -------
 const puntos = [
@@ -69,7 +87,7 @@ assert.deepEqual(onlyPendiente.map((r) => r.id), ['ede_2']);
 // ---- activeCountsByInspector — N/20 load from the already-fetched rows ------
 const loadRows = [
   { id: 'a', inspector_uid: 'u1', estado_asignacion: 'asignado' },
-  { id: 'b', inspector_uid: 'u1', estado_asignacion: 'en_proceso' },
+  { id: 'b', inspector_uid: 'u1', estado_asignacion: 'asignado' },
   { id: 'c', inspector_uid: 'u1', estado_asignacion: 'hecho' },    // done -> not counted
   { id: 'd', inspector_uid: 'u2', estado_asignacion: 'asignado' },
   { id: 'e', inspector_uid: null, estado_asignacion: 'pendiente' },
@@ -99,9 +117,9 @@ const gaugeRows = [
   { tiene_sticker: true, estado_asignacion: 'pendiente' },  // barrido (sticker wins)
   { tiene_sticker: true, estado_asignacion: 'asignado' },   // barrido (sticker wins)
   { tiene_sticker: false, estado_asignacion: 'asignado' },  // asignado
-  { tiene_sticker: false, estado_asignacion: 'en_proceso' },// asignado
+  { tiene_sticker: false, estado_asignacion: 'asignado' },  // asignado
   { tiene_sticker: false, estado_asignacion: 'pendiente' }, // pendiente
-  { tiene_sticker: false, estado_asignacion: 'hecho' },     // pendiente (not barrido, not assigned-active)
+  { tiene_sticker: false, estado_asignacion: 'hecho' },     // pendiente (raw 'hecho' but sticker unconfirmed — buildRows never emits this combo; gaugeCounts alone has no way to know)
 ];
 assert.deepEqual(gaugeCounts(gaugeRows), { barrido: 2, asignado: 2, pendiente: 2, total: 6 });
 assert.deepEqual(gaugeCounts([]), { barrido: 0, asignado: 0, pendiente: 0, total: 0 });

@@ -23,15 +23,17 @@ const CALI_BBOX = { latMin: 3.30, latMax: 3.55, lngMin: -76.60, lngMax: -76.40 }
 const DEFAULT_MAX_RADIUS_M = 800;
 const DEFAULT_MAX_SIZE = 8;
 
-const ESTADOS = ['pendiente', 'asignado', 'en_proceso', 'hecho'];
-const ESTADO_LABELS = { pendiente: 'Pendiente', asignado: 'Asignado', en_proceso: 'En proceso', hecho: 'Hecho' };
-// Same red -> orange -> yellow -> green ramp already used for habitability
-// (COLORS.status), reused here instead of inventing a fourth palette.
+// 3 estados: 'en_proceso' era una categoría heredada que ningún flujo de esta
+// app llegó a escribir nunca (ni el CRUD de admin ni el formulario del
+// inspector) — buildRows() ya no la produce, se pliega en 'asignado'.
+const ESTADOS = ['pendiente', 'asignado', 'hecho'];
+const ESTADO_LABELS = { pendiente: 'Pendiente', asignado: 'Asignado', hecho: 'Hecho' };
+// Same red -> orange -> green ramp already used for habitability (COLORS.status).
 const ESTADO_COLOR = {
-  pendiente: COLORS.status.i2, asignado: COLORS.status.r2, en_proceso: COLORS.status.r1, hecho: COLORS.status.h,
+  pendiente: COLORS.status.i2, asignado: COLORS.status.r2, hecho: COLORS.status.h,
 };
 // spec.md "Map view — 3-color legend": blue (tiene_sticker) / red (pendiente)
-// / amber (asignado|en_proceso). categorical[0] is the repo's existing blue.
+// / amber (asignado). categorical[0] is the repo's existing blue.
 const MARKER_HEX = { blue: COLORS.categorical[0], red: COLORS.status.i2, amber: COLORS.status.r2 };
 
 // cloned verbatim from web/js/stickers.js:19-30 (ENDPOINT swapped).
@@ -54,8 +56,21 @@ async function callApi(getToken, body) {
  *  estado (a matched-and-assigned point still reads as "done", not amber). */
 export function colorForPunto(punto) {
   if (punto && punto.tiene_sticker === true) return 'blue';
-  if (punto && (punto.estado_asignacion === 'asignado' || punto.estado_asignacion === 'en_proceso')) return 'amber';
+  if (punto && punto.estado_asignacion === 'asignado') return 'amber';
   return 'red';
+}
+
+/** Derived 3-state estado a row/punto displays: 'hecho' ONLY once the daily
+ *  cruce_sticker.py confirms the sticker (tiene_sticker) — an inspector's own
+ *  "marcarHecho" submission (api/inspector-asignaciones.js) flips the RAW
+ *  admin-owned estado_asignacion to 'hecho' first, but that's still just a
+ *  pending confirmation from the pipeline's point of view, so it reads here as
+ *  'asignado' (never regresses to 'pendiente' — see cuadrilla_id/inspector_uid
+ *  below) until tiene_sticker catches up. */
+function displayEstado(p) {
+  if (p && p.tiene_sticker === true) return 'hecho';
+  if (p && (p.cuadrilla_id || p.inspector_uid)) return 'asignado';
+  return 'pendiente';
 }
 
 /** Joins raw sticker_matches points with their cuadrilla/inspector for the
@@ -66,11 +81,12 @@ export function buildRows(puntos, cuadrillas, inspectores) {
   return (puntos || []).map((p) => {
     const cuadrilla = p.cuadrilla_id ? cuadrillaById.get(p.cuadrilla_id) : null;
     const inspector = p.inspector_uid ? inspectorById.get(p.inspector_uid) : null;
+    const estado = displayEstado(p);
     return {
       id: p.id,
       direccion: p.direccion || '',
       zona: p.zona_id || '',
-      estado_asignacion: p.estado_asignacion || 'pendiente',
+      estado_asignacion: estado,
       habitabilidad: (p.criterio_habitabilidad || '').toUpperCase(),
       colapso: p.colapso || 'no',
       cuadrilla_id: p.cuadrilla_id || null,
@@ -80,9 +96,17 @@ export function buildRows(puntos, cuadrillas, inspectores) {
       tier: p.tier || null,
       tiene_sticker: !!p.tiene_sticker,
       coords: p.coords || null,
-      color: colorForPunto(p),
+      color: colorForPunto({ tiene_sticker: p.tiene_sticker, estado_asignacion: estado }),
     };
   });
+}
+
+// Habilitado = ni Firebase Auth `disabled` ni el perfil `activo` en false —
+// mismo criterio que stickers.js:rowHtml (el toggle Habilitar/Inhabilitar del
+// roster). Un inspector inhabilitado no puede recibir NUEVAS asignaciones; uno
+// ya asignado sigue mostrando su nombre igual (inspectorLabelFor no filtra).
+export function isHabilitado(i) {
+  return !!i && !i.disabled && !!i.activo;
 }
 
 /** Ascending/descending string sort on one row field — client-side, over the
@@ -133,7 +157,7 @@ export function gaugeCounts(rows) {
   let pendiente = 0;
   for (const r of rows || []) {
     if (r.tiene_sticker === true) barrido += 1;
-    else if (r.estado_asignacion === 'asignado' || r.estado_asignacion === 'en_proceso') asignado += 1;
+    else if (r.estado_asignacion === 'asignado') asignado += 1;
     else pendiente += 1;
   }
   return { barrido, asignado, pendiente, total: (rows || []).length };
@@ -676,7 +700,11 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
   }
 
   function renderCuadrillasSection() {
+    // Roster completo para mostrar (nombre de un inspector ya asignado, aunque
+    // hoy esté inhabilitado); solo los habilitados entran al combobox de
+    // asignación — un inhabilitado no puede recibir cuadrillas nuevas.
     const inspectores = getInspectores() || [];
+    const seleccionables = inspectores.filter(isHabilitado);
     const inspectorById = new Map(inspectores.map((i) => [i.uid, i]));
     const counts = activeCountsByInspector(rows);
     const cuadrillaById = new Map(cuadrillas.map((c) => [c.id, c]));
@@ -687,7 +715,7 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
       const cuadrillaId = comboEl.dataset.comboCuadrilla;
       const cuadrilla = cuadrillaById.get(cuadrillaId);
       mountCombobox(comboEl, {
-        inspectores,
+        inspectores: seleccionables,
         counts,
         cuadrillaPuntoIds: (cuadrilla && cuadrilla.puntos) || [],
         rows,
@@ -720,7 +748,9 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
   }
 
   function renderMapSection() {
-    const inspectores = getInspectores() || [];
+    // Solo habilitados en el <select> "Reasignar a" del popup — mismo criterio
+    // que el combobox de cuadrillas.
+    const inspectores = (getInspectores() || []).filter(isHabilitado);
     const n = renderMap(currentRows(), inspectores, reasignar);
     const sinCoords = rows.length - n;
     mapMeta.textContent = sinCoords ? `${n} en el mapa · ${sinCoords} sin coordenadas` : `${n} en el mapa`;

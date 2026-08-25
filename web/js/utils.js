@@ -86,6 +86,9 @@ const KNOWN_LABELS = {
   si: 'Sí',
   'sí': 'Sí',
   no: 'No',
+  // sticker (cruce con evaluaciones, ver mapview.js colorBy 'sticker')
+  con: 'Con sticker',
+  sin: 'Sin sticker',
   // fuente de datos (origen del levantamiento)
   cali: 'Levantamiento Cali',
   israel: 'Inspectores de Israel',
@@ -237,6 +240,7 @@ const FIELD_LABELS = {
   habitabilidad_calc: 'Habitabilidad (calculada)',
   criterio_habitabilidad: 'Criterio de habitabilidad',
   suspension_servicios: 'Suspensión de servicios',
+  sticker: 'Sticker',
   justificacion_criterio: 'Justificación del criterio',
   requiere_evaluacion_adicional: 'Requiere evaluación adicional',
   eval_estructural: 'Evaluación estructural',
@@ -293,7 +297,7 @@ export const DETAIL_GROUPS = {
   ],
   'Evaluación': [
     'riesgo_ab', 'riesgo_ac', 'habitabilidad_calc', 'criterio_habitabilidad', 'suspension_servicios',
-    'justificacion_criterio',
+    'sticker', 'justificacion_criterio',
     'requiere_evaluacion_adicional', 'eval_estructural', 'eval_geotecnica', 'eval_otra',
     'intervencion_entades',
   ],
@@ -337,7 +341,7 @@ export function formatValue(field, value) {
   if (value === null || value === undefined || value === '') return 'Sin dato';
   if (field === 'fecha_inspeccion') return formatDate(value);
   if (field === 'fecha_hora' || field === 'CreationDate' || field === 'EditDate') return formatDateTime(value);
-  if (['criterio_habitabilidad', 'habitabilidad_calc', 'nivel_dano', 'severidad_danos', 'severidad_danos_calc', 'afectacion_planta', 'afectacion_planta_calc']
+  if (['criterio_habitabilidad', 'habitabilidad_calc', 'nivel_dano', 'severidad_danos', 'severidad_danos_calc', 'afectacion_planta', 'afectacion_planta_calc', 'sticker']
     .includes(field)) return labelForCode(value);
   if (typeof value === 'string' && /^(si|sí|no)$/i.test(value.trim())) return labelForCode(value);
   return String(value);

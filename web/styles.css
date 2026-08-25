@@ -1994,9 +1994,15 @@ body:not([data-role="admin"]) .view-tab[data-view="analista"] { display: none !i
 /* Panel sticker-coverage gauge, mounted as a .chart-tile in the stats grid
    alongside the donuts. Centers the gauge within the tile. */
 #panel-sticker-coverage .asignacion-gauge { width: 100%; max-width: 240px; margin: 8px auto 0; }
-/* Evaluaciones section coverage: label above a centered gauge, matching .eval-bar. */
-.eval-sticker-coverage { display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: 4px; }
-.eval-sticker-coverage .asignacion-gauge { width: 100%; max-width: 260px; }
+/* Evaluaciones section coverage: a discreet Leaflet control (topright corner
+   of #eval-map, see evaluaciones.js:setStickerGauge), not a block in the flow.
+   Reuses .map-legend's translucent frame; the count legend is dropped — the
+   corner badge only needs the headline %, the breakdown lives on the full
+   gauge (Panel tile, Stickers→Asignación). */
+.map-sticker-gauge { padding: 8px 10px; max-width: 130px; }
+.map-sticker-gauge .asignacion-gauge { gap: 0; }
+.map-sticker-gauge .asignacion-gauge-svg { max-width: 110px; }
+.map-sticker-gauge .asignacion-gauge-legend { display: none; }
 
 /* ---- Login overlay ---- */
 .auth-overlay {

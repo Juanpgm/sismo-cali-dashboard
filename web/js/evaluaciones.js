@@ -83,13 +83,6 @@ export function sectionHtml() {
       <div class="kpi-row eval-kpis" id="eval-kpis"></div>
       <div class="eval-bar" id="eval-bar"></div>
 
-      <!-- Cobertura de stickers en Panel (cruce con evaluaciones), misma cifra
-           que el gauge del Panel. Oculto si /api/sticker-status no resolvió. -->
-      <div class="eval-sticker-coverage" id="eval-sticker-coverage" hidden>
-        <span class="eval-bar-label">Cobertura de stickers en Panel</span>
-        <div class="asignacion-gauge" id="eval-sticker-gauge"></div>
-      </div>
-
       <div class="card eval-workspace-card">
         <div class="card-toolbar">
           <span class="eval-toolbar-title">Puntos de evaluación</span>
@@ -178,6 +171,7 @@ let map = null;
 let baseTile = null;
 let pointsLayer = null;
 let legendEl = null;
+let stickerGaugeEl = null;
 // Bounds fitted at build time. The map is built while its section is hidden
 // (0×0), so the build-time fit computes a wrong zoom; re-applied on invalidate
 // once the section is visible and correctly sized.
@@ -190,8 +184,31 @@ function teardownMap() {
   baseTile = null;
   pointsLayer = null;
   legendEl = null;
+  stickerGaugeEl = null;
   markerById = new Map();
 }
+
+// Cobertura de stickers en Panel (cruce con evaluaciones), misma cifra que el
+// gauge del Panel. Vive como control de Leaflet — esquina superior derecha,
+// libre (zoom en topleft, leyenda ATC-20 en bottomright) — en vez de un bloque
+// propio en el flujo: la cifra es contexto secundario, no merece su propia fila.
+// Oculto (display:none) hasta que /api/sticker-status resuelva.
+function setStickerGauge(coverage) {
+  if (!stickerGaugeEl) return;
+  const html = coverage ? coverageGaugeHtml(coverage) : '';
+  stickerGaugeEl.innerHTML = html;
+  stickerGaugeEl.style.display = html ? 'block' : 'none';
+}
+
+// Reacts to the SAME store notify the Panel gauge does: main.js's 15-min
+// refreshStickerStatus() calls store.setStickerCoverage(), which notifies
+// every subscriber. Without this, the map gauge only refreshed on the
+// section's OWN load()/poll cycle — which the fingerprint short-circuit in
+// load() below skips whenever the evaluaciones themselves haven't changed,
+// so the gauge could sit stale well past 15 minutes. Module scope like
+// themechange below: a listener registered inside initEvaluaciones() would
+// stack on every tab reopen.
+store.subscribe(() => setStickerGauge(store.stickerCoverage));
 
 // The Panel swaps its own tiles on theme change (mapview.applyMapTheme); this
 // map has to do the same or a light-mode dashboard keeps a dark basemap here.
@@ -265,6 +282,15 @@ function renderMap(containerId, evaluaciones, onDetail) {
     return legendEl;
   };
   legend.addTo(map);
+
+  const stickerGauge = L.control({ position: 'topright' });
+  stickerGauge.onAdd = () => {
+    stickerGaugeEl = L.DomUtil.create('div', 'map-legend map-sticker-gauge');
+    L.DomEvent.disableClickPropagation(stickerGaugeEl);
+    stickerGaugeEl.style.display = 'none';
+    return stickerGaugeEl;
+  };
+  stickerGauge.addTo(map);
 
   // Frame the actual data instead of a hardcoded city view — a single
   // evaluation in one corner of Cali is otherwise invisible at zoom 12.
@@ -383,17 +409,13 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   const modalBody = section.querySelector('#eval-modal-body');
   const modalTitle = section.querySelector('#eval-modal-title');
   const reloadBtn = section.querySelector('#eval-reload');
-  const coverageWrap = section.querySelector('#eval-sticker-coverage');
-  const coverageGauge = section.querySelector('#eval-sticker-gauge');
   let byId = new Map();
 
   // Panel-wide sticker coverage (same figure as the Panel gauge), from the store
-  // that main.js populates via /api/sticker-status. Hidden until it resolves.
-  const renderCoverage = () => {
-    const html = store.stickerCoverage ? coverageGaugeHtml(store.stickerCoverage) : '';
-    if (coverageGauge) coverageGauge.innerHTML = html;
-    if (coverageWrap) coverageWrap.hidden = !html;
-  };
+  // that main.js populates via /api/sticker-status. Lives on the map itself
+  // (setStickerGauge, a Leaflet control) — must run AFTER renderMap() below,
+  // since that call rebuilds the control from scratch each time.
+  const renderCoverage = () => setStickerGauge(store.stickerCoverage);
 
   const closeModal = () => {
     modal.classList.remove('is-open');
@@ -471,7 +493,6 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
       byId = new Map(evaluaciones.map((e) => [e.id, e]));
       kpis.innerHTML = kpisHtml(evaluaciones);
       barEl.innerHTML = barHtml(evaluaciones);
-      renderCoverage();
 
       if (!evaluaciones.length) {
         listEl.innerHTML = '<li class="eval-empty">Todavía no hay evaluaciones registradas desde el formulario.</li>';
@@ -481,6 +502,7 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
       }
 
       const conCoords = renderMap('eval-map', evaluaciones, openDetail);
+      renderCoverage(); // after renderMap: it rebuilds the control this writes into
       const sinCoords = evaluaciones.length - conCoords;
       mapMeta.textContent = sinCoords
         ? `${conCoords} en el mapa · ${sinCoords} sin coordenadas`
