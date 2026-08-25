@@ -11,6 +11,7 @@ import { initTable, renderTable, setTotalRecords, openDetailModal } from './tabl
 import { renderAcciones } from './acciones.js';
 import { initStickers } from './stickers.js';
 import { initUsuarios } from './usuarios.js';
+import { initAnalista } from './analista.js';
 import { initTheme } from './theme.js';
 import { initAuth, getIdToken, isAdmin } from './auth.js';
 import { debounce, setSourceLabels, sourceLabel, habBinary, labelForCode } from './utils.js';
@@ -201,6 +202,11 @@ function switchView(view) {
   // Usuarios pulls live data from /api/usuarios — (re)load it each time it opens.
   if (view === 'usuarios') {
     initUsuarios(document.getElementById('view-usuarios'), { getToken: getIdToken });
+  }
+  // Analista pulls live data (Blob snapshots + /api/source-status probe) —
+  // (re)load it each time it opens, same lifecycle as Stickers/Usuarios.
+  if (view === 'analista') {
+    initAnalista(document.getElementById('view-analista'), { getToken: getIdToken });
   }
   currentView = view;
   // Acciones works over ALL records and doesn't depend on the Panel filters —

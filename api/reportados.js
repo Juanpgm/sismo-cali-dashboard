@@ -155,3 +155,7 @@ module.exports = async (req, res) => {
     return res.status(status).json({ error: String((err && err.message) || err) });
   }
 };
+
+// Exposed for reuse (api/source-status.js's atencionsismo live probe); Vercel
+// uses the default export.
+module.exports.probeApi = probeApi;

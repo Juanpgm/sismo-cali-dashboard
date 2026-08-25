@@ -1560,7 +1560,8 @@ body:not([data-role="admin"]) #refresh-btn,
 body:not([data-role="admin"]) #transito-download,
 body:not([data-role="admin"]) .view-tab[data-view="acciones"],
 body:not([data-role="admin"]) .view-tab[data-view="stickers"],
-body:not([data-role="admin"]) .view-tab[data-view="usuarios"] { display: none !important; }
+body:not([data-role="admin"]) .view-tab[data-view="usuarios"],
+body:not([data-role="admin"]) .view-tab[data-view="analista"] { display: none !important; }
 
 /* TEMPORARY: the Acciones tab is suspended — visible but inert. Remove this
    rule (and the matching guard in main.js switchView) to reactivate it. */
@@ -1643,6 +1644,11 @@ body:not([data-role="admin"]) .view-tab[data-view="usuarios"] { display: none !i
 .sticker-pill { padding: 3px 10px; border-radius: 999px; font-size: .76rem; font-weight: 600; white-space: nowrap; }
 .sticker-pill-on { background: color-mix(in srgb, var(--sticker-on) 16%, transparent); color: var(--sticker-on); }
 .sticker-pill-off { background: color-mix(in srgb, var(--sticker-off) 16%, transparent); color: var(--sticker-off); }
+
+/* Analista tab: semáforo dot + label reusing the sticker-row grid (no new
+   list/row component — see design.md ADR-2). */
+.analista-estado { display: inline-flex; align-items: center; gap: 8px; font-size: .82rem; font-weight: 600; white-space: nowrap; }
+.analista-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
 
 .sticker-action {
   border-radius: var(--radius-sm); padding: 7px 12px; font-size: .82rem; font-weight: 600;
