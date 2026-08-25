@@ -1672,6 +1672,13 @@ body:not([data-role="admin"]) .view-tab[data-view="analista"] { display: none !i
   background: var(--surface-2); color: var(--text-primary); font-size: .95rem;
 }
 .sticker-field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.sticker-search { margin: 0 0 14px; }
+.sticker-search-input {
+  width: 100%; padding: 9px 12px; border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); background: var(--surface-2);
+  color: var(--text-primary); font-size: .95rem;
+}
+.sticker-search-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
 .sticker-form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
 .sticker-error { color: var(--sticker-off); font-size: .86rem; margin: 0; }
 .sticker-note { color: var(--text-muted); font-size: .78rem; line-height: 1.45; margin: 0; }
@@ -1859,7 +1866,26 @@ body:not([data-role="admin"]) .view-tab[data-view="analista"] { display: none !i
 .asignacion-segment:hover { color: var(--text-primary); }
 .asignacion-segment.is-active { color: var(--accent); border-color: var(--accent); }
 
-.asignacion-filters { display: flex; gap: 8px; flex-wrap: wrap; }
+/* Intro + step hint above the workflow cards. */
+.asignacion-intro { margin: 0 0 18px; }
+.asignacion-intro p { margin: 0 0 8px; color: var(--text-secondary); font-size: .88rem; line-height: 1.5; }
+.asignacion-steps {
+  margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 2px;
+  color: var(--text-muted); font-size: .82rem; line-height: 1.5;
+}
+.asignacion-steps strong { color: var(--text-secondary); font-weight: 600; }
+
+/* Card header: stacked title + subtitle on the left, optional action on the right. */
+.asignacion-card-titles { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.asignacion-subtitle { font-size: .74rem; font-weight: 400; color: var(--text-muted); }
+
+/* Group controls/chips to the left instead of stretching edge-to-edge. */
+.asignacion-actions-bar { justify-content: flex-start; }
+
+/* The map is secondary to the table here — a moderate height, not a full pane. */
+.asignacion-map { min-height: 320px; }
+
+.asignacion-filters { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-start; }
 .asignacion-chip {
   padding: 5px 12px; border-radius: 999px; font-size: .78rem; font-weight: 600; cursor: pointer;
   color: var(--text-secondary); background: var(--surface-2); border: 1px solid var(--border);

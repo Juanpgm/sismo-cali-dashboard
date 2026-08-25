@@ -12,6 +12,10 @@ const ENDPOINT = '/api/sticker-asignaciones';
 const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
 const CALI_CENTER = [3.42, -76.53];
 const CALI_ZOOM = 12;
+// A few point coords land outside Cali and would drag fitBounds north (we saw
+// it framing Cartago). Fit only to points inside this box; fall back to the
+// fixed city view if none qualify.
+const CALI_BBOX = { latMin: 3.30, latMax: 3.55, lngMin: -76.60, lngMax: -76.40 };
 
 // Mirrors api/sticker-asignaciones.js's own placeholders (task 0.2, still
 // unconfirmed) — display-only hints for the override inputs, not enforced
@@ -86,6 +90,11 @@ export function sortRows(rows, key, dir = 'asc') {
   return [...rows].sort((a, b) => {
     const av = String(a[key] ?? '').toLowerCase();
     const bv = String(b[key] ?? '').toLowerCase();
+    // Empty/missing values always sink to the bottom, both directions, so the
+    // ~101 blank-address points never float to the top of the table.
+    if (!av && !bv) return 0;
+    if (!av) return 1;
+    if (!bv) return -1;
     if (av < bv) return -1 * sign;
     if (av > bv) return 1 * sign;
     return 0;
@@ -101,6 +110,16 @@ export function filterRows(rows, estado) {
 
 // ---- markup ---------------------------------------------------------------
 
+function cardHead(title, subtitle, extra = '') {
+  return `<div class="card-toolbar asignacion-card-head">
+    <div class="asignacion-card-titles">
+      <span class="eval-toolbar-title">${title}</span>
+      <span class="asignacion-subtitle">${subtitle}</span>
+    </div>
+    ${extra}
+  </div>`;
+}
+
 function shellHtml() {
   return `
     <div class="section-bar">
@@ -109,8 +128,18 @@ function shellHtml() {
     </div>
     <p class="sticker-ok" id="asignacion-ok" role="status" hidden></p>
 
+    <div class="asignacion-intro">
+      <p>Estos son los puntos del Panel y su estado de sticker. Agrupá los pendientes en cuadrillas (automática por cercanía o manual seleccionando en la tabla) y asigná cada cuadrilla a un inspector.</p>
+      <ol class="asignacion-steps">
+        <li><strong>Agrupá</strong> los puntos pendientes en cuadrillas.</li>
+        <li><strong>Asigná</strong> un inspector a cada cuadrilla.</li>
+        <li><strong>Ajustá</strong> manualmente desde la tabla o el mapa si hace falta.</li>
+      </ol>
+    </div>
+
     <div class="card">
-      <div class="card-toolbar" id="asignacion-toolbar">
+      ${cardHead('Paso 1 · Agrupar', 'Agrupá automáticamente por cercanía, o marcá filas en la tabla y creá una cuadrilla manual.')}
+      <div class="card-toolbar asignacion-actions-bar" id="asignacion-toolbar">
         <button type="button" class="btn-primary" id="asignacion-auto">Auto-agrupar</button>
         <label class="sticker-field asignacion-inline-field">
           <span>Radio (m)</span>
@@ -124,19 +153,20 @@ function shellHtml() {
       </div>
     </div>
 
-    <div class="card eval-workspace-card">
-      <div class="card-toolbar"><span class="eval-toolbar-title">Mapa de puntos</span></div>
-      <div class="eval-map" id="asignacion-map"></div>
-    </div>
-
     <div class="card">
-      <div class="card-toolbar"><span class="eval-toolbar-title">Cuadrillas</span></div>
+      ${cardHead('Paso 2 · Cuadrillas e inspectores', 'Asigná un inspector a cada cuadrilla. «Reiniciar agrupación» borra solo las automáticas.', '<button type="button" class="sticker-action sticker-action-off" id="asignacion-reiniciar">Reiniciar agrupación</button>')}
       <div id="asignacion-cuadrillas"></div>
     </div>
 
     <div class="card">
+      ${cardHead('Puntos del Panel', 'Filtrá y ordená. Marcá filas para crear una cuadrilla manual en el Paso 1.')}
       <div class="card-toolbar asignacion-filters" id="asignacion-filters"></div>
       <div class="table-scroll" id="asignacion-table-wrap"></div>
+    </div>
+
+    <div class="card eval-workspace-card">
+      ${cardHead('Mapa de puntos', 'Vista de referencia. Reasigná un punto desde su globo.')}
+      <div class="eval-map asignacion-map" id="asignacion-map"></div>
     </div>`;
 }
 
@@ -287,8 +317,13 @@ function renderMap(rows, inspectores, onReasignar) {
   };
   legend.addTo(map);
 
-  if (conCoords.length) {
-    map.fitBounds(L.latLngBounds(conCoords.map((r) => [r.coords.lat, r.coords.lon])), { padding: [40, 40], maxZoom: 16 });
+  const inBox = conCoords.filter((r) =>
+    r.coords.lat >= CALI_BBOX.latMin && r.coords.lat <= CALI_BBOX.latMax
+    && r.coords.lon >= CALI_BBOX.lngMin && r.coords.lon <= CALI_BBOX.lngMax);
+  if (inBox.length) {
+    map.fitBounds(L.latLngBounds(inBox.map((r) => [r.coords.lat, r.coords.lon])), { padding: [40, 40], maxZoom: 16 });
+  } else {
+    map.setView(CALI_CENTER, CALI_ZOOM);
   }
   // The segment is hidden until stickers.js shows it, so Leaflet measures a
   // zero-height container on first mount.
@@ -305,7 +340,9 @@ function renderMap(rows, inspectores, onReasignar) {
 export function initStickersAsignacion(root, { getToken, getInspectores }) {
   let rows = [];
   let cuadrillas = [];
-  let sortKey = 'direccion';
+  // Default to an always-present column so the first view is meaningful and
+  // never fronted by the blank-address points.
+  let sortKey = 'estado_asignacion';
   let sortDir = 'asc';
   let estadoFilter = 'todos';
   const selected = new Set();
@@ -321,6 +358,7 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
   const radiusInput = root.querySelector('#asignacion-max-radius');
   const sizeInput = root.querySelector('#asignacion-max-size');
   const crearBtn = root.querySelector('#asignacion-crear');
+  const reiniciarBtn = root.querySelector('#asignacion-reiniciar');
 
   const showOk = (msg) => { okBox.textContent = msg; okBox.hidden = !msg; };
 
@@ -433,6 +471,25 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
     } finally {
       busy = false;
       autoBtn.disabled = false;
+    }
+  });
+
+  reiniciarBtn.addEventListener('click', async () => {
+    if (busy) return;
+    if (!window.confirm('Esto borra las cuadrillas automáticas y libera sus puntos a pendiente. Las cuadrillas manuales se conservan. ¿Continuar?')) return;
+    busy = true;
+    reiniciarBtn.disabled = true;
+    try {
+      const { eliminadas, puntosLiberados } = await callApi(getToken, { action: 'reiniciarAgrupacion' });
+      showOk(eliminadas
+        ? `${eliminadas} cuadrilla${eliminadas === 1 ? '' : 's'} automática${eliminadas === 1 ? '' : 's'} eliminada${eliminadas === 1 ? '' : 's'}; ${puntosLiberados} punto${puntosLiberados === 1 ? '' : 's'} liberado${puntosLiberados === 1 ? '' : 's'} a pendiente.`
+        : 'No había cuadrillas automáticas para reiniciar.');
+      await reload();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      busy = false;
+      reiniciarBtn.disabled = false;
     }
   });
 

@@ -21,6 +21,10 @@ import { openLightbox } from './table.js';
 const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
 const CALI_CENTER = [3.42, -76.53];
 const CALI_ZOOM = 12;
+// A few evaluation coords land outside Cali and would drag fitBounds north
+// (framing Cartago). Fit only to points inside this box; fall back to the
+// fixed city view if none qualify.
+const CALI_BBOX = { latMin: 3.30, latMax: 3.55, lngMin: -76.60, lngMax: -76.40 };
 
 // Placard classes in escalating severity. Labels are lowercase on purpose:
 // the KPI row reads as a sentence instead of shouting three states at once.
@@ -251,11 +255,16 @@ function renderMap(containerId, evaluaciones, onDetail) {
 
   // Frame the actual data instead of a hardcoded city view — a single
   // evaluation in one corner of Cali is otherwise invisible at zoom 12.
-  if (conCoords.length) {
-    map.fitBounds(L.latLngBounds(conCoords.map((e) => [e.coords.lat, e.coords.lng])), {
+  const inBox = conCoords.filter((e) =>
+    e.coords.lat >= CALI_BBOX.latMin && e.coords.lat <= CALI_BBOX.latMax
+    && e.coords.lng >= CALI_BBOX.lngMin && e.coords.lng <= CALI_BBOX.lngMax);
+  if (inBox.length) {
+    map.fitBounds(L.latLngBounds(inBox.map((e) => [e.coords.lat, e.coords.lng])), {
       padding: [40, 40],
       maxZoom: 16,
     });
+  } else {
+    map.setView(CALI_CENTER, CALI_ZOOM);
   }
   // The tab is hidden until switchView() shows it, so Leaflet measures a
   // zero-height container on first mount.

@@ -44,6 +44,20 @@ assert.deepEqual(byDireccionAsc.map((r) => r.id), ['ede_1', 'ede_2']);
 const byDireccionDesc = sortRows(rows, 'direccion', 'desc');
 assert.deepEqual(byDireccionDesc.map((r) => r.id), ['ede_2', 'ede_1']);
 
+// ---- sortRows — blank values always sink to the bottom, both directions ----
+// (the ~101 israel points have no direccion; they must never front the table).
+const withBlank = [
+  { id: 'has_addr', direccion: 'Cra 5' },
+  { id: 'blank', direccion: '' },
+  { id: 'null_addr', direccion: null },
+];
+assert.deepEqual(sortRows(withBlank, 'direccion', 'asc').map((r) => r.id)[0], 'has_addr', 'asc: non-empty first');
+assert.deepEqual(sortRows(withBlank, 'direccion', 'desc').map((r) => r.id)[0], 'has_addr', 'desc: non-empty still first, blanks last');
+const ascBlanks = sortRows(withBlank, 'direccion', 'asc');
+assert.ok(ascBlanks[ascBlanks.length - 1].direccion === '' || ascBlanks[ascBlanks.length - 1].direccion == null, 'asc: a blank is last');
+const descBlanks = sortRows(withBlank, 'direccion', 'desc');
+assert.ok(descBlanks[descBlanks.length - 1].direccion === '' || descBlanks[descBlanks.length - 1].direccion == null, 'desc: a blank is last');
+
 // ---- filterRows — spec.md "Filtering to a single estado" scenario ----------
 assert.equal(filterRows(rows, 'todos').length, 2);
 assert.equal(filterRows(rows, undefined).length, 2);

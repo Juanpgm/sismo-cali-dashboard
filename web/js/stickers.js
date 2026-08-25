@@ -61,12 +61,43 @@ const field = (name, label, attrs = '') => `<label class="sticker-field">
     <input name="${name}" ${attrs}>
   </label>`;
 
+// Case/accent-insensitive match across the identifying fields an operator is
+// likely to type: name, cédula, brigade code, entidad. Pure — no DOM.
+function normalizeSearch(s) {
+  return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+function filterInspectores(inspectores, query) {
+  const q = normalizeSearch(query).trim();
+  if (!q) return inspectores;
+  return inspectores.filter((i) => {
+    const hay = normalizeSearch([i.nombre_completo, i.cedula, i.codigo, i.entidad].filter(Boolean).join(' '));
+    return hay.includes(q);
+  });
+}
+
+// Just the list — re-rendered on every keystroke of the search box, so it
+// lives apart from the search input (whose focus must survive a filter).
+function rosterListHtml(inspectores, filtered) {
+  if (!inspectores.length) {
+    return '<p class="sticker-empty">Todavía no hay inspectores. Creá el primero con «Nuevo inspector».</p>';
+  }
+  if (!filtered.length) {
+    return '<p class="sticker-empty">Ningún inspector coincide con la búsqueda.</p>';
+  }
+  return `<ul class="sticker-list">${filtered.map(rowHtml).join('')}</ul>`;
+}
+
 function rosterHtml(inspectores) {
   const activos = inspectores.filter((i) => !i.disabled && i.activo).length;
   const off = inspectores.length - activos;
-  const roster = inspectores.length
-    ? `<ul class="sticker-list">${inspectores.map(rowHtml).join('')}</ul>`
-    : `<p class="sticker-empty">Todavía no hay inspectores. Creá el primero con «Nuevo inspector».</p>`;
+  const search = inspectores.length
+    ? `<div class="sticker-search">
+        <input type="search" id="sticker-search" class="sticker-search-input"
+          placeholder="Buscar por nombre, cédula, código o entidad…"
+          aria-label="Buscar inspectores" autocomplete="off">
+      </div>`
+    : '';
+  const roster = `<div id="sticker-roster-list">${rosterListHtml(inspectores, inspectores)}</div>`;
 
   // Counters ride in the section bar as inline chips instead of a second row
   // of stat cards: three numbers do not need three cards' worth of height.
@@ -86,6 +117,7 @@ function rosterHtml(inspectores) {
 
     <p class="sticker-ok" id="sticker-ok" role="status" hidden></p>
 
+    ${search}
     ${roster}
 
     <div class="modal" id="sticker-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="sticker-modal-title">
@@ -132,7 +164,7 @@ function shellHtml() {
     </header>
 
     <div class="asignacion-segmented" role="tablist" aria-label="Sección de Stickers">
-      <button type="button" class="asignacion-segment is-active" data-sticker-segment="roster" role="tab" aria-selected="true">Roster</button>
+      <button type="button" class="asignacion-segment is-active" data-sticker-segment="roster" role="tab" aria-selected="true">Inspectores</button>
       <button type="button" class="asignacion-segment" data-sticker-segment="evaluaciones" role="tab" aria-selected="false">Evaluaciones</button>
       <button type="button" class="asignacion-segment" data-sticker-segment="asignacion" role="tab" aria-selected="false">Asignación</button>
     </div>
@@ -256,21 +288,37 @@ export function initStickers(root, { getToken }) {
 
     // Scoped to the roster rows: the evaluaciones section reuses .sticker-action
     // for its own buttons, which must not get the enable/disable handler.
-    rosterRoot.querySelectorAll('.sticker-row .sticker-action[data-uid]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        if (busy) return;
-        busy = true;
-        btn.disabled = true;
-        try {
-          await callApi(getToken, { action: 'setEnabled', uid: btn.dataset.uid, enabled: btn.dataset.enable === 'true' });
-          await reload();
-        } catch (err) {
-          busy = false;
-          btn.disabled = false;
-          alert(err.message); // rare path (network/permission); surface it plainly
-        }
+    // Re-run after every search filter, since the list is re-rendered then.
+    function wireRows() {
+      rosterRoot.querySelectorAll('#sticker-roster-list .sticker-row .sticker-action[data-uid]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (busy) return;
+          busy = true;
+          btn.disabled = true;
+          try {
+            await callApi(getToken, { action: 'setEnabled', uid: btn.dataset.uid, enabled: btn.dataset.enable === 'true' });
+            await reload();
+          } catch (err) {
+            busy = false;
+            btn.disabled = false;
+            alert(err.message); // rare path (network/permission); surface it plainly
+          }
+        });
       });
-    });
+    }
+    wireRows();
+
+    // Client-side search over the already-loaded roster: filter and re-render
+    // only the list container so the search input keeps focus between keystrokes.
+    const searchInput = rosterRoot.querySelector('#sticker-search');
+    const listEl = rosterRoot.querySelector('#sticker-roster-list');
+    if (searchInput && listEl) {
+      searchInput.addEventListener('input', () => {
+        const filtered = filterInspectores(inspectoresCache, searchInput.value);
+        listEl.innerHTML = rosterListHtml(inspectoresCache, filtered);
+        wireRows();
+      });
+    }
   }
 
   reload();
