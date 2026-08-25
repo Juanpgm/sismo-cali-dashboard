@@ -27,8 +27,6 @@ async function callApi(getToken, body) {
 }
 
 const ROLE_LABEL = { admin: 'Administrador', usuario: 'Usuario', viewer: 'Viewer', inspector: 'Inspector', otro: 'Otro' };
-// Roles an admin can hand out from a row (matches api/usuarios.js ASSIGNABLE_ROLES).
-const ASSIGNABLE_ROLES = [['usuario', 'Usuario'], ['viewer', 'Viewer'], ['admin', 'Administrador']];
 const initials = (email) => (email || '').trim().slice(0, 2).toUpperCase() || '—';
 const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' }) : '—');
 
@@ -57,13 +55,10 @@ function rowHtml(u, ownUid, selected) {
     : `<button type="button" class="sticker-action sticker-action-on" data-uid="${escapeHtml(u.uid)}" data-enable="true">Habilitar</button>`);
   const del = isSelf ? '' : `<button type="button" class="sticker-action" data-uid="${escapeHtml(u.uid)}" data-delete="true">Eliminar</button>`;
   const reset = `<button type="button" class="sticker-action" data-email="${escapeHtml(u.email)}" data-reset="true">Resetear contraseña</button>`;
-  // "Cambiar rol": a dropdown of the assignable roles. Hidden on the caller's
-  // own row (the server blocks self-demotion anyway). If the current role isn't
-  // assignable (inspector/otro) it's shown as the selected option so the label
-  // is still accurate, and the admin can still promote from there.
-  const roleOptions = ASSIGNABLE_ROLES.map(([v, l]) => `<option value="${v}"${u.role === v ? ' selected' : ''}>${l}</option>`).join('')
-    + (ASSIGNABLE_ROLES.some(([v]) => v === u.role) ? '' : `<option value="${escapeHtml(u.role)}" selected>${escapeHtml(ROLE_LABEL[u.role] || u.role)}</option>`);
-  const roleSelect = isSelf ? '' : `<select class="sticker-action usuario-role-select" data-uid="${escapeHtml(u.uid)}" data-current="${escapeHtml(u.role)}" aria-label="Cambiar rol de ${escapeHtml(u.email)}">${roleOptions}</select>`;
+  // "Cambiar rol": a button that opens the role modal (assignable roles only, so
+  // a stray non-assignable claim like "operador" is never offered). Hidden on
+  // the caller's own row — the server blocks self-demotion anyway.
+  const roleBtn = isSelf ? '' : `<button type="button" class="sticker-action" data-role-uid="${escapeHtml(u.uid)}" data-role-current="${escapeHtml(u.role)}" data-role-email="${escapeHtml(u.email)}">Cambiar rol</button>`;
   const meta = `${ROLE_LABEL[u.role] || u.role} · último acceso: ${fmtDate(u.lastSignInTime)} · alta: ${fmtDate(u.creationTime)}`;
   return `<li class="sticker-row usuario-row${activo ? '' : ' is-off'}">
     ${lead}
@@ -72,7 +67,7 @@ function rowHtml(u, ownUid, selected) {
       <span class="sticker-meta">${escapeHtml(meta)}</span>
     </div>
     ${estado}
-    <div class="usuario-actions">${roleSelect}${reset}${toggle}${del}</div>
+    <div class="usuario-actions">${roleBtn}${reset}${toggle}${del}</div>
   </li>`;
 }
 
@@ -164,6 +159,32 @@ function rosterHtml(usuarios, filtered, pageItems, ownUid, { role, status, query
               <button type="submit" class="btn-primary" id="usuario-submit">Crear usuario</button>
             </div>
           </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal" id="usuario-role-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="usuario-role-title">
+      <div class="modal-backdrop" data-role-close></div>
+      <div class="modal-panel sticker-modal-panel">
+        <div class="modal-header">
+          <h2 id="usuario-role-title">Cambiar rol</h2>
+          <button type="button" class="btn-icon" data-role-close aria-label="Cerrar">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <p class="sticker-note" id="usuario-role-target"></p>
+          <div class="usuario-role-options" role="radiogroup" aria-label="Nuevo rol">
+            <label><input type="radio" name="usuario-role" value="usuario"> <span><strong>Usuario</strong> · solo Panel</span></label>
+            <label><input type="radio" name="usuario-role" value="viewer"> <span><strong>Viewer</strong> · solo Panel</span></label>
+            <label><input type="radio" name="usuario-role" value="admin"> <span><strong>Administrador</strong> · acceso total (Stickers, Usuarios, Actualizar)</span></label>
+          </div>
+          <p class="sticker-note">El cambio aplica cuando el usuario vuelve a iniciar sesión.</p>
+          <p class="sticker-error" id="usuario-role-error" role="alert" hidden></p>
+          <div class="sticker-form-actions">
+            <button type="button" class="btn-secondary" data-role-close>Cancelar</button>
+            <button type="button" class="btn-primary" id="usuario-role-save">Guardar</button>
+          </div>
         </div>
       </div>
     </div>`;
@@ -311,35 +332,56 @@ export function initUsuarios(root, { getToken }) {
       render(); // local mutation + re-render, no full page/API reload
     });
 
-    rosterRoot.querySelectorAll('.usuario-role-select').forEach((sel) => {
-      sel.addEventListener('change', async () => {
-        const uid = sel.dataset.uid;
-        const prev = sel.dataset.current;
-        const role = sel.value;
-        if (busy || role === prev) return;
-        const label = ROLE_LABEL[role] || role;
-        // confirm() guards against an accidental select change; the custom claim
-        // only lands in the target's token on their next login, so warn about it.
-        if (!confirm(`¿Cambiar el rol a ${label}? El usuario deberá volver a iniciar sesión para que aplique.`)) {
-          sel.value = prev;
-          return;
-        }
-        busy = true;
-        sel.disabled = true;
-        try {
-          await callApi(getToken, { action: 'setRole', uid, role });
-          const target = usuarios.find((u) => u.uid === uid);
-          if (target) target.role = role; // reflect locally; no refetch
-          notice = `Rol actualizado a ${label}. El usuario debe volver a iniciar sesión para que aplique.`;
-          busy = false;
-          render();
-        } catch (err) {
-          busy = false;
-          sel.disabled = false;
-          sel.value = prev;
-          alert(err.message); // e.g. the anti-lockout "tu propio rol" 403
-        }
+    // Cambiar rol: a per-row button opens a modal to pick an assignable role.
+    // roleEdit holds the target while the modal is open (no render happens between
+    // open and save, so a wire()-scoped var is safe).
+    let roleEdit = null;
+    const roleModal = rosterRoot.querySelector('#usuario-role-modal');
+    const roleErr = rosterRoot.querySelector('#usuario-role-error');
+    const showRoleError = (msg) => { roleErr.textContent = msg; roleErr.hidden = !msg; };
+    const closeRoleModal = () => {
+      roleModal.classList.remove('is-open');
+      roleModal.setAttribute('aria-hidden', 'true');
+      roleEdit = null;
+    };
+    roleModal.querySelectorAll('[data-role-close]').forEach((el) => el.addEventListener('click', closeRoleModal));
+    roleModal.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeRoleModal(); });
+
+    rosterRoot.querySelectorAll('[data-role-uid]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        roleEdit = { uid: btn.dataset.roleUid, email: btn.dataset.roleEmail, current: btn.dataset.roleCurrent };
+        showRoleError('');
+        rosterRoot.querySelector('#usuario-role-target').textContent =
+          `${roleEdit.email} — rol actual: ${ROLE_LABEL[roleEdit.current] || roleEdit.current}`;
+        // Pre-select the current role if it's assignable; otherwise leave blank.
+        roleModal.querySelectorAll('input[name="usuario-role"]').forEach((r) => { r.checked = r.value === roleEdit.current; });
+        roleModal.classList.add('is-open');
+        roleModal.setAttribute('aria-hidden', 'false');
       });
+    });
+
+    rosterRoot.querySelector('#usuario-role-save').addEventListener('click', async () => {
+      if (busy || !roleEdit) return;
+      const picked = roleModal.querySelector('input[name="usuario-role"]:checked');
+      if (!picked) { showRoleError('Elegí un rol.'); return; }
+      const role = picked.value;
+      if (role === roleEdit.current) { closeRoleModal(); return; }
+      const label = ROLE_LABEL[role] || role;
+      busy = true;
+      rosterRoot.querySelector('#usuario-role-save').disabled = true;
+      try {
+        await callApi(getToken, { action: 'setRole', uid: roleEdit.uid, role });
+        const target = usuarios.find((u) => u.uid === roleEdit.uid);
+        if (target) target.role = role; // reflect locally; no refetch
+        notice = `Rol actualizado a ${label}. El usuario debe volver a iniciar sesión para que aplique.`;
+        busy = false;
+        closeRoleModal();
+        render();
+      } catch (err) {
+        busy = false;
+        rosterRoot.querySelector('#usuario-role-save').disabled = false;
+        showRoleError(err.message); // e.g. the anti-lockout "tu propio rol" 403
+      }
     });
 
     const modal = rosterRoot.querySelector('#usuario-modal');
