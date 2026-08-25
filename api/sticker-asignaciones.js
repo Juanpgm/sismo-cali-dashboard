@@ -95,6 +95,17 @@ function autoAgrupar(puntos, { maxRadiusM, maxSize }) {
   return grupos;
 }
 
+// Uniqueness guard (one point -> at most one cuadrilla). Returns the ids of
+// points already bound to a *different* cuadrilla than the target (any
+// cuadrilla when targetCuadrillaId is null), so crear/editar can reject a
+// silent move/double-add instead of overwriting the point's cuadrilla_id.
+// Exported for the self-check.
+function pointsAlreadyAssigned(points, targetCuadrillaId = null) {
+  return (points || [])
+    .filter((p) => p && p.cuadrilla_id && p.cuadrilla_id !== targetCuadrillaId)
+    .map((p) => p.id);
+}
+
 // ---- Firestore-backed actions ----------------------------------------------
 
 async function listPuntos(admin) {
@@ -145,6 +156,19 @@ async function crearCuadrilla(admin, body) {
   if (!puntos.length) throw badRequest('crearCuadrilla necesita al menos un punto.');
 
   const db = admin.firestore();
+  // Read-before-write uniqueness guard: refuse to build a cuadrilla out of
+  // points that already belong to another one (a point -> at most one
+  // cuadrilla). ponytail: getAll-then-write, not a transaction — same
+  // pattern the rest of the file uses; a concurrent grab is a tiny TOCTOU
+  // window, wrap in db.runTransaction if two admins ever race here.
+  const puntoRefs = puntos.map((id) => db.doc(`sticker_matches/${id}`));
+  const puntoSnaps = await db.getAll(...puntoRefs);
+  const current = puntoSnaps.map((s) => ({ id: s.id, cuadrilla_id: s.exists ? (s.data().cuadrilla_id ?? null) : null }));
+  const conflicts = pointsAlreadyAssigned(current, null);
+  if (conflicts.length) {
+    throw badRequest(`${conflicts.length} punto(s) ya pertenecen a una cuadrilla; quitalos de su cuadrilla actual antes de reasignar.`);
+  }
+
   const ref = db.collection('cuadrillas').doc();
   const data = { nombre, puntos, inspector_uid: null, origen: 'manual' };
   const batch = db.batch();
@@ -168,6 +192,19 @@ async function editarCuadrilla(admin, body) {
   const ref = db.doc(`cuadrillas/${cuadrillaId}`);
   const snap = await ref.get();
   if (!snap.exists) throw badRequest(`No existe la cuadrilla ${cuadrillaId}.`);
+
+  // Adding a point that already belongs to a *different* cuadrilla would
+  // silently move it (a point -> at most one cuadrilla). Reject instead.
+  // Removing points is always fine, so only `add` is checked.
+  if (add.length) {
+    const addRefs = add.map((id) => db.doc(`sticker_matches/${id}`));
+    const addSnaps = await db.getAll(...addRefs);
+    const addCurrent = addSnaps.map((s) => ({ id: s.id, cuadrilla_id: s.exists ? (s.data().cuadrilla_id ?? null) : null }));
+    const conflicts = pointsAlreadyAssigned(addCurrent, cuadrillaId);
+    if (conflicts.length) {
+      throw badRequest(`${conflicts.length} punto(s) ya pertenecen a una cuadrilla; quitalos de su cuadrilla actual antes de reasignar.`);
+    }
+  }
 
   const current = new Set((snap.data().puntos || []).map(String));
   for (const id of remove) current.delete(id);
@@ -257,6 +294,42 @@ async function eliminarCuadrilla(admin, body) {
   return { id: cuadrillaId };
 }
 
+// Firestore caps a write batch at 500 ops; split a flat list of writes into
+// ≤500-op commits. Exported for the self-check.
+async function commitInChunks(db, items, apply) {
+  for (let i = 0; i < items.length; i += 500) {
+    const batch = db.batch();
+    for (const item of items.slice(i, i + 500)) apply(batch, item);
+    await batch.commit();
+  }
+}
+
+// Undoes every AUTO grouping: releases the member points of all `origen:'auto'`
+// cuadrillas back to `pendiente` (clearing cuadrilla/inspector/asignado_en),
+// then deletes those cuadrilla docs. MANUAL cuadrillas are left untouched.
+// Same "clear points before deleting the doc" order as eliminarCuadrilla so no
+// point is ever left pointing at a deleted cuadrilla.
+async function reiniciarAgrupacion(admin) {
+  const db = admin.firestore();
+  const snap = await db.collection('cuadrillas').where('origen', '==', 'auto').get();
+  if (snap.empty) return { eliminadas: 0, puntosLiberados: 0 };
+
+  const puntoIds = new Set();
+  for (const d of snap.docs) {
+    for (const p of (d.data().puntos || [])) puntoIds.add(String(p));
+  }
+
+  await commitInChunks(db, [...puntoIds], (batch, puntoId) => {
+    batch.set(db.doc(`sticker_matches/${puntoId}`), {
+      cuadrilla_id: null, inspector_uid: null, asignado_en: null,
+      estado_asignacion: 'pendiente',
+    }, { merge: true });
+  });
+  await commitInChunks(db, snap.docs, (batch, doc) => batch.delete(doc.ref));
+
+  return { eliminadas: snap.size, puntosLiberados: puntoIds.size };
+}
+
 function badRequest(message) {
   const err = new Error(message);
   err.status = 400;
@@ -296,6 +369,7 @@ module.exports = async (req, res) => {
     if (action === 'asignarInspector') return res.status(200).json({ ok: true, ...(await asignarInspector(admin, body)) });
     if (action === 'reasignarPunto') return res.status(200).json({ ok: true, ...(await reasignarPunto(admin, body)) });
     if (action === 'eliminarCuadrilla') return res.status(200).json({ ok: true, ...(await eliminarCuadrilla(admin, body)) });
+    if (action === 'reiniciarAgrupacion') return res.status(200).json({ ok: true, ...(await reiniciarAgrupacion(admin)) });
     return res.status(400).json({ error: `Acción desconocida: ${action}` });
   } catch (err) {
     const status = err && err.status ? err.status : 502;
@@ -307,5 +381,7 @@ module.exports = async (req, res) => {
 // the default export.
 module.exports.autoAgrupar = autoAgrupar;
 module.exports.haversineM = haversineM;
+module.exports.commitInChunks = commitInChunks;
+module.exports.pointsAlreadyAssigned = pointsAlreadyAssigned;
 module.exports.DEFAULT_MAX_RADIUS_M = DEFAULT_MAX_RADIUS_M;
 module.exports.DEFAULT_MAX_SIZE = DEFAULT_MAX_SIZE;

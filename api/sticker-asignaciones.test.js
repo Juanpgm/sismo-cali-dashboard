@@ -39,4 +39,43 @@ assert.deepStrictEqual(radiusGroups, [['seed'], ['far']]);
 // ---- empty input -> [] , no error ------------------------------------------
 assert.deepStrictEqual(sa.autoAgrupar([], { maxRadiusM: 800, maxSize: 8 }), []);
 
-console.log('sticker-asignaciones.test.js OK');
+// ---- pointsAlreadyAssigned — uniqueness guard (a point -> one cuadrilla) ---
+const guardFixture = [
+  { id: 'free', cuadrilla_id: null },
+  { id: 'in_c1', cuadrilla_id: 'c1' },
+  { id: 'in_c2', cuadrilla_id: 'c2' },
+];
+// crearCuadrilla case (target null): any already-grouped point conflicts.
+assert.deepStrictEqual(sa.pointsAlreadyAssigned(guardFixture, null), ['in_c1', 'in_c2']);
+// editarCuadrilla case (adding to c1): points already in c1 are fine, others conflict.
+assert.deepStrictEqual(sa.pointsAlreadyAssigned(guardFixture, 'c1'), ['in_c2']);
+// all free -> no conflicts; empty/undefined input -> [].
+assert.deepStrictEqual(sa.pointsAlreadyAssigned([{ id: 'a', cuadrilla_id: null }], null), []);
+assert.deepStrictEqual(sa.pointsAlreadyAssigned([], null), []);
+assert.deepStrictEqual(sa.pointsAlreadyAssigned(undefined, null), []);
+
+// ---- commitInChunks — never exceeds 500 ops/batch, covers every item -------
+async function checkChunks(n) {
+  const commits = [];
+  let current = [];
+  const fakeDb = {
+    batch: () => ({
+      set: (...a) => current.push(a),
+      delete: (...a) => current.push(a),
+      commit: async () => { commits.push(current); current = []; },
+    }),
+  };
+  const items = Array.from({ length: n }, (_, i) => i);
+  await sa.commitInChunks(fakeDb, items, (batch, item) => batch.set(item));
+  const total = commits.reduce((s, c) => s + c.length, 0);
+  assert.strictEqual(total, n, `all ${n} items must be written`);
+  for (const c of commits) assert.ok(c.length <= 500, `batch of ${c.length} exceeds 500`);
+  return commits.length;
+}
+(async () => {
+  assert.strictEqual(await checkChunks(0), 0, 'empty list -> no commits');
+  assert.strictEqual(await checkChunks(500), 1, '500 items -> exactly one batch');
+  assert.strictEqual(await checkChunks(501), 2, '501 items -> two batches');
+  assert.strictEqual(await checkChunks(1101), 3, '1101 items -> three batches');
+  console.log('sticker-asignaciones.test.js OK');
+})();
