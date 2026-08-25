@@ -558,25 +558,94 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
     });
   }
 
+  // Re-render every panel from the in-memory `rows`/`cuadrillas` — the same four
+  // renders reload() runs after fetching, minus the ~6s listPuntos+listCuadrillas
+  // round-trip. Used by the optimistic per-point/per-cuadrilla handlers below.
+  function renderAll() {
+    renderTable();
+    renderCuadrillasSection();
+    renderMapSection();
+    renderGauge();
+  }
+
+  // Resolve a roster label the same way buildRows does (spec §3), from the live
+  // getInspectores() roster; null uid -> em dash.
+  function inspectorLabelFor(uid) {
+    if (!uid) return '—';
+    const insp = (getInspectores() || []).find((i) => i.uid === uid);
+    return insp ? (insp.nombre_completo || insp.codigo || insp.uid) : '—';
+  }
+
+  // ---- optimistic local mutations (applied only after the API 200) ----
+  // Each mutates the same row objects the renders read, then callers renderAll().
+  function applyAsignar(cuadrillaId, uid) {
+    const label = inspectorLabelFor(uid);
+    for (const row of rows) {
+      if (row.cuadrilla_id === cuadrillaId) {
+        row.inspector_uid = uid;
+        row.estado_asignacion = 'asignado';
+        row.inspectorLabel = label;
+        row.color = colorForPunto(row);
+      }
+    }
+    const c = cuadrillas.find((x) => x.id === cuadrillaId);
+    if (c) c.inspector_uid = uid;
+  }
+
+  function applyDesasignar(cuadrillaId) {
+    for (const row of rows) {
+      if (row.cuadrilla_id === cuadrillaId) {
+        row.inspector_uid = null;
+        row.estado_asignacion = 'pendiente';
+        row.inspectorLabel = '—';
+        row.color = colorForPunto(row);
+      }
+    }
+    const c = cuadrillas.find((x) => x.id === cuadrillaId);
+    if (c) c.inspector_uid = null;
+  }
+
+  function applyEliminar(cuadrillaId) {
+    for (const row of rows) {
+      if (row.cuadrilla_id === cuadrillaId) {
+        row.cuadrilla_id = null;
+        row.inspector_uid = null;
+        row.estado_asignacion = 'pendiente';
+        row.cuadrillaLabel = '—';
+        row.inspectorLabel = '—';
+        row.color = colorForPunto(row);
+      }
+    }
+    cuadrillas = cuadrillas.filter((c) => c.id !== cuadrillaId);
+  }
+
   async function reasignar(puntoId, nuevoInspectorUid) {
     try {
       await callApi(getToken, { action: 'reasignarPunto', punto_id: puntoId, nuevo_inspector_uid: nuevoInspectorUid });
       showOk('Punto reasignado.');
-      await reload();
+      const row = rows.find((r) => r.id === puntoId);
+      if (row) {
+        row.inspector_uid = nuevoInspectorUid;
+        row.inspectorLabel = inspectorLabelFor(nuevoInspectorUid);
+        row.color = colorForPunto(row);
+      }
+      renderAll();
     } catch (err) {
       alert(err.message); // rare path (network/permission); same idiom as stickers.js
     }
   }
 
-  // Shared runner for the per-cuadrilla CRUD buttons/combobox: busy guard +
-  // reload, same idiom as the toolbar handlers.
-  async function runCuadrillaAction(body, okMsg) {
+  // Shared runner for the per-cuadrilla CRUD buttons/combobox: busy guard, then
+  // apply the change locally + renderAll() on success (no full refetch). Same
+  // idiom as the toolbar handlers, minus the ~6s reload.
+  async function runCuadrillaAction(body, okMsg, applyLocal) {
     if (busy) return;
     busy = true;
     try {
       await callApi(getToken, body);
       showOk(okMsg);
-      await reload();
+      applyLocal();
+      renderAll();
     } catch (err) {
       alert(err.message);
     } finally {
@@ -603,6 +672,7 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
         onSelect: (uid) => runCuadrillaAction(
           { action: 'asignarInspector', cuadrilla_id: cuadrillaId, inspector_uid: uid },
           'Inspector asignado.',
+          () => applyAsignar(cuadrillaId, uid),
         ),
       });
     });
@@ -611,6 +681,7 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
       btn.addEventListener('click', () => runCuadrillaAction(
         { action: 'desasignarInspector', cuadrilla_id: btn.dataset.desasignar },
         'Asignación retirada; los puntos vuelven a pendiente.',
+        () => applyDesasignar(btn.dataset.desasignar),
       ));
     });
 
@@ -620,6 +691,7 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
         runCuadrillaAction(
           { action: 'eliminarCuadrilla', cuadrilla_id: btn.dataset.eliminar },
           'Cuadrilla eliminada.',
+          () => applyEliminar(btn.dataset.eliminar),
         );
       });
     });
