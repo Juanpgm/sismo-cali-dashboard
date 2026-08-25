@@ -166,6 +166,19 @@ async function setRole(admin, body, callerUid) {
   return { uid, role };
 }
 
+// Set a new password directly (no reset email). Inspectors have synthetic
+// @sismocali.gov.co emails that never receive Firebase's password-reset mail, so
+// the admin hands them a new password here instead. Any password account is a
+// valid target; validated for length only.
+async function setPassword(admin, body) {
+  const uid = String(body.uid ?? '').trim();
+  const password = String(body.password ?? '');
+  if (!uid) throw badRequest('Falta el uid.');
+  if (!isValidPassword(password)) throw badRequest('La contraseña debe tener al menos 6 caracteres.');
+  await admin.auth().updateUser(uid, { password });
+  return { uid };
+}
+
 function badRequest(message) {
   const err = new Error(message);
   err.status = 400;
@@ -210,6 +223,7 @@ module.exports = async (req, res) => {
     if (action === 'setEnabled') return res.status(200).json({ ok: true, ...(await setEnabled(admin, body, callerUid)) });
     if (action === 'delete') return res.status(200).json({ ok: true, ...(await deleteUsuario(admin, body, callerUid)) });
     if (action === 'setRole') return res.status(200).json({ ok: true, ...(await setRole(admin, body, callerUid)) });
+    if (action === 'setPassword') return res.status(200).json({ ok: true, ...(await setPassword(admin, body)) });
     return res.status(400).json({ error: `Acción desconocida: ${action}` });
   } catch (err) {
     const status = err && err.status ? err.status : 502;

@@ -54,7 +54,12 @@ function rowHtml(u, ownUid, selected) {
     ? `<button type="button" class="sticker-action sticker-action-off" data-uid="${escapeHtml(u.uid)}" data-enable="false">Inhabilitar</button>`
     : `<button type="button" class="sticker-action sticker-action-on" data-uid="${escapeHtml(u.uid)}" data-enable="true">Habilitar</button>`);
   const del = isSelf ? '' : `<button type="button" class="sticker-action" data-uid="${escapeHtml(u.uid)}" data-delete="true">Eliminar</button>`;
-  const reset = `<button type="button" class="sticker-action" data-email="${escapeHtml(u.email)}" data-reset="true">Resetear contraseña</button>`;
+  // Inspectors have synthetic @sismocali emails that never receive Firebase's
+  // reset mail, so they get a direct "Cambiar contraseña" (set + hand over)
+  // instead of the email-based "Resetear contraseña".
+  const reset = u.role === 'inspector'
+    ? `<button type="button" class="sticker-action" data-setpass-uid="${escapeHtml(u.uid)}" data-setpass-email="${escapeHtml(u.email)}">Cambiar contraseña</button>`
+    : `<button type="button" class="sticker-action" data-email="${escapeHtml(u.email)}" data-reset="true">Resetear contraseña</button>`;
   // "Cambiar rol": a button that opens the role modal (assignable roles only, so
   // a stray non-assignable claim like "operador" is never offered). Hidden on
   // the caller's own row — the server blocks self-demotion anyway.
@@ -184,6 +189,31 @@ function rosterHtml(usuarios, filtered, pageItems, ownUid, { role, status, query
           <div class="sticker-form-actions">
             <button type="button" class="btn-secondary" data-role-close>Cancelar</button>
             <button type="button" class="btn-primary" id="usuario-role-save">Guardar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal" id="usuario-pass-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="usuario-pass-title">
+      <div class="modal-backdrop" data-pass-close></div>
+      <div class="modal-panel sticker-modal-panel">
+        <div class="modal-header">
+          <h2 id="usuario-pass-title">Cambiar contraseña</h2>
+          <button type="button" class="btn-icon" data-pass-close aria-label="Cerrar">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <p class="sticker-note" id="usuario-pass-target"></p>
+          <label class="sticker-field"><span>Nueva contraseña</span>
+            <input type="text" id="usuario-pass-new" autocomplete="off" placeholder="mínimo 6 caracteres"></label>
+          <label class="sticker-field"><span>Confirmar contraseña</span>
+            <input type="text" id="usuario-pass-confirm" autocomplete="off"></label>
+          <p class="sticker-note">Se aplica de inmediato, sin pedir la anterior. Entregala al inspector.</p>
+          <p class="sticker-error" id="usuario-pass-error" role="alert" hidden></p>
+          <div class="sticker-form-actions">
+            <button type="button" class="btn-secondary" data-pass-close>Cancelar</button>
+            <button type="button" class="btn-primary" id="usuario-pass-save">Guardar</button>
           </div>
         </div>
       </div>
@@ -384,6 +414,56 @@ export function initUsuarios(root, { getToken }) {
         busy = false;
         rosterRoot.querySelector('#usuario-role-save').disabled = false;
         showRoleError(err.message); // e.g. the anti-lockout "tu propio rol" 403
+      }
+    });
+
+    // Cambiar contraseña (inspectores): set a new password directly, no old one.
+    let passEdit = null;
+    const passModal = rosterRoot.querySelector('#usuario-pass-modal');
+    const passErr = rosterRoot.querySelector('#usuario-pass-error');
+    const passNew = rosterRoot.querySelector('#usuario-pass-new');
+    const passConfirm = rosterRoot.querySelector('#usuario-pass-confirm');
+    const showPassError = (msg) => { passErr.textContent = msg; passErr.hidden = !msg; };
+    const closePassModal = () => {
+      if (passModal.contains(document.activeElement)) document.activeElement.blur();
+      passModal.classList.remove('is-open');
+      passModal.setAttribute('aria-hidden', 'true');
+      passEdit = null;
+    };
+    passModal.querySelectorAll('[data-pass-close]').forEach((el) => el.addEventListener('click', closePassModal));
+    passModal.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePassModal(); });
+
+    rosterRoot.querySelectorAll('[data-setpass-uid]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        passEdit = { uid: btn.dataset.setpassUid, email: btn.dataset.setpassEmail };
+        showPassError('');
+        passNew.value = '';
+        passConfirm.value = '';
+        rosterRoot.querySelector('#usuario-pass-target').textContent = `Nueva contraseña para ${passEdit.email}`;
+        passModal.classList.add('is-open');
+        passModal.setAttribute('aria-hidden', 'false');
+        passNew.focus();
+      });
+    });
+
+    rosterRoot.querySelector('#usuario-pass-save').addEventListener('click', async () => {
+      if (busy || !passEdit) return;
+      const password = passNew.value;
+      if (password.length < 6) { showPassError('La contraseña debe tener al menos 6 caracteres.'); return; }
+      if (password !== passConfirm.value) { showPassError('Las contraseñas no coinciden.'); return; }
+      const email = passEdit.email;
+      busy = true;
+      rosterRoot.querySelector('#usuario-pass-save').disabled = true;
+      try {
+        await callApi(getToken, { action: 'setPassword', uid: passEdit.uid, password });
+        notice = `Contraseña actualizada para ${email}. Entregala al inspector.`;
+        busy = false;
+        closePassModal();
+        render();
+      } catch (err) {
+        busy = false;
+        rosterRoot.querySelector('#usuario-pass-save').disabled = false;
+        showPassError(err.message);
       }
     });
 
