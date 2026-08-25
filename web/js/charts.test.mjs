@@ -8,20 +8,28 @@ import { tipologiaDe, tipologiaCounts, colapsoHabCounts } from './charts.js';
 assert.equal(tipologiaDe({ n_pisos: null }), 'sin_dato');
 assert.equal(tipologiaDe({ n_pisos: '' }), 'sin_dato');
 assert.equal(tipologiaDe({ n_pisos: 0 }), 'erroneo'); // below 1
-assert.equal(tipologiaDe({ n_pisos: 1 }), 'casa');
-assert.equal(tipologiaDe({ n_pisos: 3 }), 'casa');
-assert.equal(tipologiaDe({ n_pisos: 4 }), 'edificacion');
-assert.equal(tipologiaDe({ n_pisos: 60 }), 'edificacion');
-assert.equal(tipologiaDe({ n_pisos: 61 }), 'erroneo');
-assert.equal(tipologiaDe({ n_pisos: 91980 }), 'erroneo');
-assert.equal(tipologiaDe({ n_pisos: 'no-numeric' }), 'erroneo');
+assert.equal(tipologiaDe({ n_pisos: 1, uso_edificacion: 'residencial' }), 'casa');
+assert.equal(tipologiaDe({ n_pisos: 3, uso_edificacion: 'residencial' }), 'casa');
+assert.equal(tipologiaDe({ n_pisos: 4, uso_edificacion: 'residencial' }), 'edificacion');
+assert.equal(tipologiaDe({ n_pisos: 60, uso_edificacion: 'residencial' }), 'edificacion');
+assert.equal(tipologiaDe({ n_pisos: 61, uso_edificacion: 'residencial' }), 'erroneo');
+assert.equal(tipologiaDe({ n_pisos: 91980, uso_edificacion: 'residencial' }), 'erroneo');
+assert.equal(tipologiaDe({ n_pisos: 'no-numeric', uso_edificacion: 'residencial' }), 'erroneo');
+
+// --- tipologiaDe: a casa MUST be residencial use — a low-rise commercial/
+// institutional/etc. building is an edificación regardless of floor count -----
+assert.equal(tipologiaDe({ n_pisos: 2, uso_edificacion: 'comercial' }), 'edificacion');
+assert.equal(tipologiaDe({ n_pisos: 1, uso_edificacion: 'educativo' }), 'edificacion');
+assert.equal(tipologiaDe({ n_pisos: 2 }), 'edificacion'); // no uso_edificacion at all -> not residencial
+// Mixed use (comma-joined multi-value): 'residencial' present anywhere still counts.
+assert.equal(tipologiaDe({ n_pisos: 2, uso_edificacion: 'comercial,residencial' }), 'casa');
 
 // --- fixed record fixture ---------------------------------------------------
 const fixture = [
   // casa, habitable, no colapso, 1 unidad
-  { n_pisos: 2, criterio_habitabilidad: 'H', colapso_total: 'no', colapso_parcial: 'no', n_residenciales: 1 },
+  { n_pisos: 2, uso_edificacion: 'residencial', criterio_habitabilidad: 'H', colapso_total: 'no', colapso_parcial: 'no', n_residenciales: 1 },
   // casa, no habitable (I2), colapso parcial, 2 unidades
-  { n_pisos: 3, criterio_habitabilidad: 'I2', colapso_total: 'no', colapso_parcial: 'si', n_residenciales: 2 },
+  { n_pisos: 3, uso_edificacion: 'residencial', criterio_habitabilidad: 'I2', colapso_total: 'no', colapso_parcial: 'si', n_residenciales: 2 },
   // edificacion, no habitable (I3), colapso total, 10 unidades
   { n_pisos: 5, criterio_habitabilidad: 'I3', colapso_total: 'si', colapso_parcial: 'no', n_residenciales: 10 },
   // edificacion, habitable, no colapso, 4 unidades

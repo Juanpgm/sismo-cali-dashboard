@@ -19,7 +19,7 @@ const registry = new Map();
 // explicación breve de cómo interpretar el elemento. Se inyecta una sola vez.
 const CHART_HELP = {
   'chart-timeseries': 'Ritmo de inspecciones en el tiempo. "Diarias" = inspecciones por día · "Acumuladas" = total corrido · "Momento 2 · Reportados" = universo de reportes ciudadanos, como referencia. El eje Y es logarítmico para que convivan magnitudes muy distintas; los totales van rotulados sobre cada línea.',
-  'chart-tipologia': 'Cuántas casas (3 pisos o menos) y edificaciones (más de 3) hay en cada color del semáforo: verde = habitable (H) · amarillo = uso restringido (R1/R2) · rojo = no habitable (I1/I2/I3).',
+  'chart-tipologia': 'Cuántas casas (3 pisos o menos y uso residencial) y edificaciones (más de 3 pisos, o de uso no residencial aunque tengan pocos pisos) hay en cada color del semáforo: verde = habitable (H) · amarillo = uso restringido (R1/R2) · rojo = no habitable (I1/I2/I3).',
   'chart-hab-tipologia': 'Registros habitables vs. no habitables, separando casas de edificaciones. Habitable = H · No habitable = R1/R2/I1/I2/I3.',
   'chart-colapso-tipologia': 'Registros con colapso total, colapso parcial y sin colapso ("No colapsadas"), por casa y edificación.',
   'chart-severidad': 'Cómo se reparten las inspecciones según la severidad de los daños observados.',
@@ -634,12 +634,20 @@ const TIPOLOGIAS = [
 ];
 const NPISOS_MAX = 60;
 
+/** Whether `uso_edificacion` (comma-joined, multi-value) includes 'residencial'. */
+function esUsoResidencial(r) {
+  return splitMultiValue(r.uso_edificacion).some((v) => normalize(v) === 'residencial');
+}
+
 export function tipologiaDe(r) {
   const raw = r.n_pisos;
   if (raw == null || String(raw).trim() === '') return 'sin_dato';
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 1 || n > NPISOS_MAX) return 'erroneo';
-  return n <= 3 ? 'casa' : 'edificacion';
+  // Una casa es, por definición, de uso residencial — un local de 2 pisos sin
+  // uso residencial es una edificación aunque tenga pocos pisos.
+  if (n <= 3) return esUsoResidencial(r) ? 'casa' : 'edificacion';
+  return 'edificacion';
 }
 
 /** Conteos edificaciones + suma de unidades residenciales por tipología×semáforo.
@@ -698,7 +706,8 @@ function renderTipologia(records) {
 }
 
 // ── Habitabilidad y colapso por tipología (Casa/Edificio) ───────────────────
-// Reusa tipologiaDe() (n_pisos <= 3 casa, > 3 edificación) y habBinary()
+// Reusa tipologiaDe() (n_pisos <= 3 Y uso residencial -> casa; si no, edificación)
+// y habBinary()
 // (habitable = H · no habitable = R1/R2/I1/I2/I3). Cuatro métricas por tipología,
 // en número de registros:
 //   · Habitable      = habBinary == 'habitable'
@@ -758,7 +767,7 @@ function renderColapsoHab(records) {
       <thead><tr><th scope="col">Tipología (pisos sobre el terreno)</th>${head}</tr></thead>
       <tbody>${bodyRows}${footRow}</tbody>
     </table>
-    <p class="chart-note">Valor principal = registros · valor secundario = unidades habitacionales (viviendas), un <strong>aproximado según los datos de la inspección</strong> (n_residenciales). Habitable = H · No habitable = R1/R2/I1/I2/I3. Casa = 3 pisos o menos · Edificación = más de 3 pisos. Un registro puede sumar en colapso y en habitabilidad a la vez.</p>`;
+    <p class="chart-note">Valor principal = registros · valor secundario = unidades habitacionales (viviendas), un <strong>aproximado según los datos de la inspección</strong> (n_residenciales). Habitable = H · No habitable = R1/R2/I1/I2/I3. Casa = 3 pisos o menos y uso residencial · Edificación = más de 3 pisos, o cualquier uso no residencial. Un registro puede sumar en colapso y en habitabilidad a la vez.</p>`;
   }
 
   renderTipologiaBar('chart-hab-tipologia', records, ['habitable', 'no_habitable']);

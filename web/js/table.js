@@ -29,8 +29,8 @@ const CANONICAL_ORDER = [
 
 const DEFAULT_VISIBLE = [
   'fecha_inspeccion', 'nombre_edificacion', 'barrio_vereda', 'direccion', 'uso_edificacion',
-  'nivel_dano', 'criterio_habitabilidad', 'suspension_servicios', 'sticker', 'n_muertos', 'n_heridos',
-  'observaciones_generales', 'recomendaciones',
+  'nivel_dano', 'criterio_habitabilidad', 'suspension_servicios', 'sticker',
+  'justificacion_criterio', 'observaciones_generales', 'recomendaciones',
 ];
 
 const LONG_TEXT_FIELDS = new Set([
