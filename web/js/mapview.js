@@ -43,6 +43,18 @@ let barriosGeo = null;
 let onDetailRequest = null;
 let highlightMarker = null;
 
+// GlobalIDs of Panel points that already have a field sticker, from the cruce
+// (api/sticker-status). Set by main.js when the store refreshes. Used by the
+// 'sticker' colorBy mode. Empty until the coverage lookup resolves.
+let stickerSet = new Set();
+/** @param {string[]} ids GlobalIDs con sticker (registro_id del cruce). */
+export function setStickerStatus(ids) {
+  stickerSet = new Set((ids || []).map(String));
+}
+// Azul = con sticker · Rojo = sin sticker (mismo código que Stickers→Asignación).
+const STICKER_CON = COLORS.categorical[0];
+const STICKER_SIN = COLORS.status.i2;
+
 const state = {
   mode: 'points', // points | heat | choropleth
   colorBy: 'criterio_habitabilidad',
@@ -132,6 +144,8 @@ function pointColor(record) {
       return dynamicColor('uso_edificacion', record.uso_edificacion);
     case 'fuente':
       return fuenteColor(record);
+    case 'sticker':
+      return stickerSet.has(String(record.GlobalID)) ? STICKER_CON : STICKER_SIN;
     case '41_a':
     case '42_a':
     case 'riesgo_caida':
@@ -259,6 +273,12 @@ function renderPointsLegend(records) {
   } else if (state.colorBy === 'fuente') {
     title = 'Fuente de datos';
     entries = Object.entries(FUENTE_COLORS).map(([code, color]) => ({ label: FUENTE_LABELS[code], color }));
+  } else if (state.colorBy === 'sticker') {
+    title = 'Sticker (cruce con evaluaciones)';
+    entries = [
+      { label: 'Con sticker', color: STICKER_CON },
+      { label: 'Sin sticker', color: STICKER_SIN },
+    ];
   } else if (RISK_FIELDS.has(state.colorBy)) {
     title = labelForField(state.colorBy);
     entries = [

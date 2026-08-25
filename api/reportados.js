@@ -35,6 +35,22 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // misconfigured credential (401) is distinguishable from an API outage.
 let lastFailure = null;
 
+// Leaf windows that exhausted their retries and returned nothing. countReportes
+// retries these once, sequentially, so a transient 504 on a dense day no longer
+// silently drops ~a day of reports (the undercount that made the live total read
+// ~14k instead of the true ~17k). Reset per request. See countReportes.
+let failedWindows = [];
+
+// Dedup key for "Inmuebles reportados" (agrupados por ubicación exacta): the
+// exact lat,lng pair. Null coords / (0,0) can't be grouped by location, so they
+// are excluded from the inmueble count (matching the source dashboard).
+function coordKey(lat, lng) {
+  const a = parseFloat(lat);
+  const b = parseFloat(lng);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || (a === 0 && b === 0)) return null;
+  return `${a},${b}`;
+}
+
 async function fetchWindow(auth, d0, d1) {
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
@@ -63,15 +79,19 @@ async function fetchWindow(auth, d0, d1) {
       return (json.reportes || []).map((r) => ({
         id: r.id,
         estado: r.estadoVerificacion || '—',
+        lat: r.latitud,
+        lng: r.longitud,
       }));
     } catch (err) {
       if (attempt === 2) {
         console.error(`window ${new Date(d0).toISOString()} failed:`, err.message || err);
+        failedWindows.push([d0, d1]);
         return [];
       }
       await sleep(2000);
     }
   }
+  failedWindows.push([d0, d1]);
   return [];
 }
 
@@ -103,18 +123,36 @@ async function countReportes(auth, desde) {
     windows.push([d0, d0 + DAY_MS - 1]);
   }
 
+  failedWindows = [];
   const seen = new Map(); // id -> estado (dedup across windows)
+  const coords = new Set(); // exact lat,lng pairs → "Inmuebles reportados"
+  const absorb = (reps) => {
+    for (const rep of reps) {
+      if (!rep.id || seen.has(rep.id)) continue;
+      seen.set(rep.id, rep.estado);
+      const key = coordKey(rep.lat, rep.lng);
+      if (key) coords.add(key);
+    }
+  };
+
   for (let i = 0; i < windows.length; i += CONCURRENCY) {
     const batch = windows.slice(i, i + CONCURRENCY);
     const results = await Promise.all(batch.map(([d0, d1]) => fetchWindow(auth, d0, d1)));
-    for (const reps of results) {
-      for (const rep of reps) if (rep.id && !seen.has(rep.id)) seen.set(rep.id, rep.estado);
-    }
+    results.forEach(absorb);
+  }
+
+  // One sequential retry pass over windows that gave up above. Sequential (not
+  // batched) so a rate-limit 504 storm doesn't just reproduce. Anything that
+  // fails twice stays dropped and is logged.
+  const retry = failedWindows.splice(0);
+  for (const [d0, d1] of retry) {
+    failedWindows = [];
+    absorb(await fetchWindow(auth, d0, d1));
   }
 
   const porEstado = {};
   for (const estado of seen.values()) porEstado[estado] = (porEstado[estado] || 0) + 1;
-  return { total: seen.size, por_estadoVerificacion: porEstado };
+  return { total: seen.size, inmuebles: coords.size, por_estadoVerificacion: porEstado };
 }
 
 module.exports = async (req, res) => {

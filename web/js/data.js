@@ -119,6 +119,16 @@ class Store {
     // Fallback: el agregado estático del pipeline. Global, no depende de los
     // filtros del tablero. null si ninguna fuente está disponible.
     this.reportados = null;
+    // Dos métricas globales adicionales del mismo endpoint, espejo del panel de
+    // atencionsismo: `reportesTotal` = total de reportes (tarjeta "Reportes",
+    // sin agrupar) e `inmuebles` = únicos por ubicación exacta (tarjeta
+    // "Inmuebles reportados"). null → tarjeta oculta, igual que reportados.
+    this.reportesTotal = null;
+    this.inmuebles = null;
+    // Cobertura de stickers (cruce con evaluaciones, vía /api/sticker-status):
+    // { total, con } para el gauge de Panel/Evaluaciones. main.js hace el fetch
+    // (necesita token) y llama setStickerCoverage. null → gauge oculto.
+    this.stickerCoverage = null;
     this.filters = {
       dateFrom: null,
       dateTo: null,
@@ -142,6 +152,14 @@ class Store {
   subscribe(fn) {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
+  }
+
+  // Coverage from /api/sticker-status (fetched by main.js, which owns the auth
+  // token). Store { total, con } for the gauge; notify so Panel/Evaluaciones
+  // re-render. Pass null to hide the gauge (endpoint failed / not logged in).
+  setStickerCoverage(cov) {
+    this.stickerCoverage = cov && typeof cov.total === 'number' ? cov : null;
+    this.notify();
   }
 
   notify() {
@@ -200,17 +218,24 @@ class Store {
   // único que saltea la caché CDN de 15 min (botón "Actualizar datos").
   async refreshReportados({ bust = false } = {}) {
     let val = null;
+    let total = null;
+    let inmuebles = null;
+    const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
     try {
       const res = await fetch(bust ? `/api/reportados?refresh=${Date.now()}` : '/api/reportados');
       if (res.ok) {
-        const n = (await res.json())?.por_estadoVerificacion?.Reportado;
-        if (typeof n === 'number' && Number.isFinite(n)) val = n;
+        const body = await res.json();
+        val = num(body?.por_estadoVerificacion?.Reportado);
+        total = num(body?.total);
+        inmuebles = num(body?.inmuebles);
       }
-    } catch { /* sin red / respuesta malformada: val queda null → KPI oculto */ }
-    // Propagar incluso null: si la lectura falla, el KPI debe ocultarse, no
+    } catch { /* sin red / respuesta malformada: todo queda null → KPIs ocultos */ }
+    // Propagar incluso null: si la lectura falla, los KPIs deben ocultarse, no
     // conservar el último valor conocido.
-    if (val !== this.reportados) {
+    if (val !== this.reportados || total !== this.reportesTotal || inmuebles !== this.inmuebles) {
       this.reportados = val;
+      this.reportesTotal = total;
+      this.inmuebles = inmuebles;
       this.notify();
     }
     return val;

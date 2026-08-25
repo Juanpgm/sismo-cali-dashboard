@@ -6,7 +6,9 @@ import { renderStatistics, resetCharts } from './charts.js';
 import {
   initMap, render as renderMap, setMode, setColorBy, setSizeBy, setHeatWeight,
   setChoroplethLevel, setChoroplethMetric, invalidateSize, highlightRecord, applyMapTheme,
+  setStickerStatus,
 } from './mapview.js';
+import { coverageGaugeHtml } from './coverage-gauge.js';
 import { initTable, renderTable, setTotalRecords, openDetailModal } from './table.js';
 import { renderAcciones } from './acciones.js';
 import { initStickers } from './stickers.js';
@@ -105,11 +107,42 @@ function applySourceLabelsToSelect() {
   });
 }
 
+const stickerCoverageSection = el('#panel-sticker-coverage');
+const stickerGaugeEl = el('#panel-sticker-gauge');
+
+// Paints the Panel coverage gauge from store.stickerCoverage; hides the card
+// while there is nothing to show (endpoint not yet resolved / failed).
+function renderStickerGauge() {
+  const html = store.stickerCoverage ? coverageGaugeHtml(store.stickerCoverage) : '';
+  if (stickerGaugeEl) stickerGaugeEl.innerHTML = html;
+  if (stickerCoverageSection) stickerCoverageSection.hidden = !html;
+}
+
+// Sticker coverage from the cruce (api/sticker-status). Authenticated (any
+// logged-in role), so it runs only after startApp. Fire-and-forget: feeds the
+// map's 'sticker' colorBy mode and the coverage gauge; on any failure both
+// degrade to empty rather than showing stale data.
+async function refreshStickerStatus() {
+  try {
+    const token = await getIdToken();
+    if (!token) { setStickerStatus([]); store.setStickerCoverage(null); return; }
+    const res = await fetch('/api/sticker-status', { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json();
+    setStickerStatus(Array.isArray(body.con_sticker) ? body.con_sticker : []);
+    store.setStickerCoverage({ total: body.total, con: body.con });
+  } catch (err) {
+    console.error('sticker-status falló (se reintenta en 15 min):', err);
+    setStickerStatus([]);
+    store.setStickerCoverage(null);
+  }
+}
+
 function onStoreChange() {
   if (searchInput.value !== (store.filters.searchRaw || '')) {
     searchInput.value = store.filters.searchRaw || '';
   }
-  renderKpis(kpiRow, store.filtered, store.records, store.reportados);
+  renderKpis(kpiRow, store.filtered, store.records, store.reportados, store.reportesTotal, store.inmuebles);
   setTotalRecords(store.records.length);
   renderTable(store.filtered);
   renderMap(store.filtered).catch((err) => {
@@ -117,6 +150,7 @@ function onStoreChange() {
     showToast('No se pudo cargar la capa geográfica.', 'error');
   });
   renderStatistics(store.filtered, store.records, store.reportados);
+  renderStickerGauge();
   // Acciones works over ALL records: the filters sidebar only applies to Panel.
   // Solo admin, and only while that tab is actually visible — skip the full
   // rebuild on every Panel filter keystroke otherwise (see switchView()).
@@ -586,10 +620,12 @@ const AUTO_REFRESH_MS = 15 * 60 * 1000;
 // chrome de admin (tab Acciones + botón Actualizar).
 function startApp() {
   loadAndRender();
+  refreshStickerStatus();
   setInterval(async () => {
     try {
       await store.load();
       renderHeaderMeta();
+      refreshStickerStatus();
     } catch (err) {
       console.error('auto-refresh falló (se reintenta en 15 min):', err);
     }

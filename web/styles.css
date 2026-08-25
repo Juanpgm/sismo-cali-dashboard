@@ -1991,6 +1991,13 @@ body:not([data-role="admin"]) .view-tab[data-view="analista"] { display: none !i
   font-size: .78rem; color: var(--text-secondary); font-variant-numeric: tabular-nums;
 }
 
+/* Panel sticker-coverage gauge, mounted as a .chart-tile in the stats grid
+   alongside the donuts. Centers the gauge within the tile. */
+#panel-sticker-coverage .asignacion-gauge { width: 100%; max-width: 240px; margin: 8px auto 0; }
+/* Evaluaciones section coverage: label above a centered gauge, matching .eval-bar. */
+.eval-sticker-coverage { display: flex; flex-direction: column; align-items: center; gap: 6px; margin-top: 4px; }
+.eval-sticker-coverage .asignacion-gauge { width: 100%; max-width: 260px; }
+
 /* ---- Login overlay ---- */
 .auth-overlay {
   position: fixed;

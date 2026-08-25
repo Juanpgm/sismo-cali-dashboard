@@ -102,6 +102,7 @@
               <option value="uso_edificacion">Uso de la edificación</option>
               <option value="tipologia">Casa / Edificación</option>
               <option value="fuente">Fuente de datos</option>
+              <option value="sticker">Sticker (con / sin)</option>
               <optgroup label="Riesgo externo">
                 <option value="41_a">Caída de objetos adyacentes</option>
                 <option value="42_a">Colapso de edificios adyacentes</option>
@@ -205,6 +206,13 @@
         <div class="chart-tile">
           <h3 class="chart-tile-title">Suspensión de servicios</h3>
           <canvas id="chart-suspension"></canvas>
+        </div>
+        <!-- Cobertura de stickers (cruce con evaluaciones). Oculta hasta que
+             /api/sticker-status resuelve; la rellena main.js:renderStickerGauge.
+             Colorear el mapa por "Sticker (con / sin)" pinta los mismos puntos. -->
+        <div class="chart-tile" id="panel-sticker-coverage" hidden>
+          <h3 class="chart-tile-title">Cobertura de stickers</h3>
+          <div class="asignacion-gauge" id="panel-sticker-gauge"></div>
         </div>
         <div class="chart-tile">
           <h3 class="chart-tile-title">Casas y edificios por semáforo</h3>

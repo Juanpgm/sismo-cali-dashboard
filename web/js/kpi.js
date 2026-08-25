@@ -138,8 +138,10 @@ function usoTilesHtml(records, total) {
 }
 
 /** @param {HTMLElement} container @param {object[]} filteredRecords @param {object[]} allRecords
- *  @param {number|null} reportados Reportes en estado "Reportado" de la API atencionsismo, en vivo (global, no filtrable) */
-export function renderKpis(container, filteredRecords, allRecords, reportados = null) {
+ *  @param {number|null} reportados Reportes en estado "Reportado" de la API atencionsismo, en vivo (global, no filtrable)
+ *  @param {number|null} reportesTotal Total de reportes ciudadanos (tarjeta "Reportes", sin agrupar)
+ *  @param {number|null} inmuebles Reportes únicos por ubicación exacta (tarjeta "Inmuebles reportados") */
+export function renderKpis(container, filteredRecords, allRecords, reportados = null, reportesTotal = null, inmuebles = null) {
   const values = computeKpis(filteredRecords);
   const total = filteredRecords.length;
   // Cifras de colapso: la tarjeta sigue siendo reactiva (se recalcula con los
@@ -153,13 +155,30 @@ export function renderKpis(container, filteredRecords, allRecords, reportados = 
     colapso_parcial: allRecords.filter((r) => isYes(r.colapso_parcial)).length,
   };
 
-  // Encabeza la sección: total de reportes ciudadanos en el sistema (dataset de
-  // reportes, independiente de los registros EDAN-F3 y de los filtros).
+  // Encabezan la sección tres cifras globales de la API atencionsismo (universo
+  // de reportes ciudadanos, independiente de los registros EDAN-F3 y de los
+  // filtros): total, únicos por ubicación, y el subconjunto aún en estado
+  // "Reportado". Cada una se oculta por separado si la API no la trajo.
+  const fmtNum = (n) => n.toLocaleString('es-CO');
+  const reportesTile = reportesTotal == null ? '' : `
+    <div class="kpi-tile">
+      <span class="kpi-label">Reportes</span>
+      <span class="kpi-value">${fmtNum(reportesTotal)}</span>
+      <div class="kpi-sub-row"><span class="kpi-sub">total de reportes ciudadanos</span></div>
+    </div>
+  `;
+  const inmueblesTile = inmuebles == null ? '' : `
+    <div class="kpi-tile">
+      <span class="kpi-label">Inmuebles reportados</span>
+      <span class="kpi-value">${fmtNum(inmuebles)}</span>
+      <div class="kpi-sub-row"><span class="kpi-sub">agrupados por ubicación exacta</span></div>
+    </div>
+  `;
   const reportadosTile = reportados == null ? '' : `
     <div class="kpi-tile">
       <span class="kpi-label">Reportados</span>
-      <span class="kpi-value">${reportados}</span>
-      <div class="kpi-sub-row"><span class="kpi-sub">reportes ciudadanos en el sistema</span></div>
+      <span class="kpi-value">${fmtNum(reportados)}</span>
+      <div class="kpi-sub-row"><span class="kpi-sub">en estado "Reportado" (sin atender)</span></div>
     </div>
   `;
 
@@ -192,7 +211,9 @@ export function renderKpis(container, filteredRecords, allRecords, reportados = 
   const tilesFor = (section) => TILE_DEFS
     .filter((d) => d.group === 'headline' && d.section === section)
     .map(tileHtml).join('');
-  const headlineHtml = sectionTitle('Por número de registros', 'Cada tarjeta cuenta INSPECCIONES (un registro por edificación evaluada). "Reportados" es el universo de reportes ciudadanos (Momento 2), independiente de las inspecciones. Todo se recalcula con los filtros.')
+  const headlineHtml = sectionTitle('Por número de registros', 'Las tres primeras tarjetas vienen EN VIVO de la API atencionsismo (universo de reportes ciudadanos, Momento 2): "Reportes" = total sin agrupar · "Inmuebles reportados" = únicos por ubicación exacta · "Reportados" = subconjunto aún en estado "Reportado". El resto cuenta INSPECCIONES (un registro por edificación evaluada) y se recalcula con los filtros.')
+    + reportesTile
+    + inmueblesTile
     + reportadosTile
     + tilesFor('registros')
     + sectionTitle('Por unidades habitacionales (viviendas)', 'Aquí se suman VIVIENDAS (n_residenciales), un aproximado según cada inspección — no inspecciones. Sirve para dimensionar cuántos hogares hay detrás de cada estado de habitabilidad.')

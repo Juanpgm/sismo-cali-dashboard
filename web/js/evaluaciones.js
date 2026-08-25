@@ -17,6 +17,8 @@
 import { COLORS, escapeHtml, basemapTileUrl } from './utils.js';
 import { buildMiniMap } from './mapview.js';
 import { openLightbox } from './table.js';
+import { store } from './data.js';
+import { coverageGaugeHtml } from './coverage-gauge.js';
 
 const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
 const CALI_CENTER = [3.42, -76.53];
@@ -80,6 +82,13 @@ export function sectionHtml() {
 
       <div class="kpi-row eval-kpis" id="eval-kpis"></div>
       <div class="eval-bar" id="eval-bar"></div>
+
+      <!-- Cobertura de stickers en Panel (cruce con evaluaciones), misma cifra
+           que el gauge del Panel. Oculto si /api/sticker-status no resolvió. -->
+      <div class="eval-sticker-coverage" id="eval-sticker-coverage" hidden>
+        <span class="eval-bar-label">Cobertura de stickers en Panel</span>
+        <div class="asignacion-gauge" id="eval-sticker-gauge"></div>
+      </div>
 
       <div class="card eval-workspace-card">
         <div class="card-toolbar">
@@ -374,7 +383,17 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   const modalBody = section.querySelector('#eval-modal-body');
   const modalTitle = section.querySelector('#eval-modal-title');
   const reloadBtn = section.querySelector('#eval-reload');
+  const coverageWrap = section.querySelector('#eval-sticker-coverage');
+  const coverageGauge = section.querySelector('#eval-sticker-gauge');
   let byId = new Map();
+
+  // Panel-wide sticker coverage (same figure as the Panel gauge), from the store
+  // that main.js populates via /api/sticker-status. Hidden until it resolves.
+  const renderCoverage = () => {
+    const html = store.stickerCoverage ? coverageGaugeHtml(store.stickerCoverage) : '';
+    if (coverageGauge) coverageGauge.innerHTML = html;
+    if (coverageWrap) coverageWrap.hidden = !html;
+  };
 
   const closeModal = () => {
     modal.classList.remove('is-open');
@@ -452,6 +471,7 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
       byId = new Map(evaluaciones.map((e) => [e.id, e]));
       kpis.innerHTML = kpisHtml(evaluaciones);
       barEl.innerHTML = barHtml(evaluaciones);
+      renderCoverage();
 
       if (!evaluaciones.length) {
         listEl.innerHTML = '<li class="eval-empty">Todavía no hay evaluaciones registradas desde el formulario.</li>';
