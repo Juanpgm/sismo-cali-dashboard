@@ -10,6 +10,23 @@ import { fetchIsraelRecords } from './israel-source.js';
 // for why — data.js can't be loaded standalone by Node's ESM loader for testing).
 export { bucketNpisos, suspensionServicios, bustParams };
 
+// The refresh-generated data (meta/inspections/reportes) lives in Vercel Blob,
+// updated by the pipeline every cron run WITHOUT a Vercel deploy. Reads are
+// public + CDN-cached. The repo's data/ copies are a frozen fallback: if Blob
+// is unreachable we serve the last-deployed data (stale) instead of a blank
+// dashboard. Static boundaries (comunas/barrios geojson) are NOT here — they
+// never change, so they stay served from the deploy. See deploy/refresh.sh +
+// deploy/blob_sync.py.
+const BLOB_DATA_BASE = 'https://xsr0euqif1ryb8id.public.blob.vercel-storage.com/data';
+
+export async function fetchData(name, { q = '', opts = {} } = {}) {
+  try {
+    const res = await fetch(`${BLOB_DATA_BASE}/${name}${q}`, opts);
+    if (res.ok) return res;
+  } catch { /* Blob unreachable — fall back to the deployed copy */ }
+  return fetch(`data/${name}${q}`, opts);
+}
+
 // Sidebar section order/labels for FILTER_FIELDS' `group` key.
 // Ordered so the severity-determining fields the assessor needs first come first.
 export const FILTER_GROUPS = [
@@ -147,8 +164,8 @@ class Store {
     // acá dejaba el tablero en blanco. Cuando llega, notify() pinta el KPI.
     this.refreshReportados().catch(() => {});
     const [metaRes, dataRes, israelRecords] = await Promise.all([
-      fetch(`data/meta.json${q}`, opts),
-      fetch(`data/inspections.json${q}`, opts),
+      fetchData('meta.json', { q, opts }),
+      fetchData('inspections.json', { q, opts }),
       fetchIsraelRecords(),
     ]);
     if (!metaRes.ok || !dataRes.ok) {
@@ -189,7 +206,7 @@ class Store {
     } catch { /* respuesta malformada o sin red: probamos el fallback */ }
     if (val == null) {
       try {
-        const res = await fetch(`data/reportes_agg.json?t=${Date.now()}`, { cache: 'no-store' });
+        const res = await fetchData('reportes_agg.json', { q: `?t=${Date.now()}`, opts: { cache: 'no-store' } });
         if (res.ok) val = (await res.json())?.por_estadoVerificacion?.Reportado ?? null;
       } catch { /* agregado malformado: se conserva el valor previo */ }
     }

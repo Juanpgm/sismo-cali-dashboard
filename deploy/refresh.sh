@@ -4,20 +4,31 @@
 # so it is picked up fresh on every cron run — edit it freely and the next run uses
 # it, NO image rebuild needed. Rebuild (`railway up`) only if entrypoint.sh changes.
 #
-# Regenerates the dashboard's static JSON directly from the public Survey123 layer
-# (no Google Sheets) and publishes by pushing to the connected repo (Vercel
-# auto-redeploys).
+# Regenerates the dashboard's JSON directly from the public Survey123 layer (no
+# Google Sheets) and publishes to Vercel Blob — NO git commit, so the ~15-min
+# refresh no longer spends a Vercel deploy (100/day free-tier cap). Data lands
+# live in seconds; deploys are reserved for real code changes.
 #
 # Required env (set in Railway, secret):
-#   DASHBOARD_REPO_TOKEN  GitHub token with contents:write on the dashboard repo
+#   DASHBOARD_REPO_TOKEN  GitHub token to clone the repo (used in entrypoint.sh)
+#   BLOB_READ_WRITE_TOKEN rw token for the sismo-dashboard-data Blob store
 # Optional:
 #   GOOGLE_MAPS_API_KEY   habilita el arbitraje por geocodificación (fail-soft si falta)
 #   VISITADOS_API_PASS    habilita el pull de reportes de la API (fail-soft si falta)
-#   DASHBOARD_BRANCH (default main)
 set -euo pipefail
 
-BRANCH="${DASHBOARD_BRANCH:-main}"
 _scrub() { sed "s/${DASHBOARD_REPO_TOKEN}/***/g"; }   # never echo the token
+
+# Publicación por Vercel Blob (NO git commit → NO deploy por refresh). El token
+# rw del store vive en Railway (secreto). Fail-closed: sin él no publicamos.
+: "${BLOB_READ_WRITE_TOKEN:?falta BLOB_READ_WRITE_TOKEN (token rw del store Blob sismo-dashboard-data)}"
+export BLOB_READ_WRITE_TOKEN
+
+# Sembrar la cache de geocode desde Blob antes del refresh: antes venía por git,
+# ahora vive en Blob. Best-effort — en la primera corrida / miss arranca vacía.
+mkdir -p /repo/web/data/geocode
+echo "Sembrando cache de geocode desde Blob…"
+python /repo/deploy/blob_sync.py download data/geocode/geocode_cache.json /repo/web/data/geocode/geocode_cache.json || true
 
 cd /repo/scripts
 # Fuente única: layer público de Survey123 (sin Google Sheets).
@@ -44,44 +55,25 @@ if int(d.get("row_count", 0)) <= 0:
 print(f"meta OK: {d['row_count']} filas, source={d.get('source')}")
 PY
 
-# Publish EVERY run so the dashboard's "última actualización" refleja la fecha de
-# corrida del script aunque los datos no cambien. meta.json.generated_at avanza
-# siempre, así que siempre hay algo que commitear (asumimos deploy cada corrida).
-git config user.email "sismo-refresh-bot@users.noreply.github.com"
-git config user.name "sismo-refresh-bot"
-# inspections.xlsx is fail-soft in refresh_data.py, so it may be absent — add it
-# only if it exists, or `git add` on a missing path aborts the publish (set -e).
-git add web/data/inspections.json web/data/meta.json
-[ -f web/data/inspections.xlsx ] && git add web/data/inspections.xlsx
-# API reportes (fail-soft above): add only if the fetch actually wrote them.
-for f in reportes.json reportes_meta.json reportes_agg.json; do
-  [ -f "web/data/$f" ] && git add "web/data/$f"
-done
-# Commit the geocode cache so future runs pay 0 API calls for known addresses.
-[ -f web/data/geocode/geocode_cache.json ] && git add web/data/geocode/geocode_cache.json
-if git diff --cached --quiet; then
-  echo "nada que publicar (ni meta.json cambió); salgo limpio."
-  exit 0
-fi
-git commit -m "chore: refresh dashboard data (auto)"
+# Publish to Vercel Blob EVERY run — no git commit, so NO Vercel deploy is
+# spent on data. meta.json.generated_at advances each run, so the dashboard's
+# "última actualización" moves even when the data is unchanged; the update lands
+# live in seconds (Blob is CDN-served), not minutes (a deploy). data.js reads
+# these; the repo's web/data/*.json stay frozen as an offline fallback.
+up() {  # up <localFile> <blobPathname> — fail-soft on missing files
+  if [ ! -f "$1" ]; then echo "  (omito $1: no existe)"; return 0; fi
+  echo "  → $2"
+  python /repo/deploy/blob_sync.py upload "$1" "$2" --max-age 60 >/dev/null
+}
 
-# El botón "Actualizar datos" redespliega dashboard-refresh Y cruce-gestion a la
-# vez (api/refresh.js), y ambos pushean a ${BRANCH}. El que llega segundo veía su
-# push rechazado (non-fast-forward) y, con `set -e`, el job de Railway moría.
-# Cada servicio toca archivos distintos en web/data/, así que un rebase sobre el
-# remoto es limpio: reintegramos y reintentamos en vez de fallar.
-push_ok=0
-for intento in 1 2 3 4 5; do
-  if git push origin "HEAD:${BRANCH}" 2>&1 | _scrub; then
-    push_ok=1; break
-  fi
-  echo "push rechazado (intento ${intento}); reintegro remoto y reintento…"
-  git fetch --depth=50 origin "$BRANCH" 2>&1 | _scrub || true
-  if ! git rebase "origin/${BRANCH}" 2>&1 | _scrub; then
-    git rebase --abort 2>/dev/null || true
-    echo "rebase con conflicto inesperado; reintento limpio."
-  fi
-  sleep $(( (RANDOM % 5) + 2 ))
-done
-[ "$push_ok" = 1 ] || { echo "no se pudo publicar tras 5 reintentos"; exit 1; }
-echo "Publicado: Vercel redesplegará desde ${BRANCH}."
+echo "Publicando datos a Vercel Blob…"
+up web/data/meta.json          data/meta.json
+up web/data/inspections.json   data/inspections.json
+up web/data/inspections.xlsx   data/inspections.xlsx
+up web/data/reportes.json      data/reportes.json
+up web/data/reportes_meta.json data/reportes_meta.json
+up web/data/reportes_agg.json  data/reportes_agg.json
+# Geocode cache = pipeline-internal state; persist in Blob (used to ride in git)
+# so future runs pay 0 geocoding API calls for known addresses.
+up web/data/geocode/geocode_cache.json data/geocode/geocode_cache.json
+echo "Publicado en Blob: el dashboard lo verá en segundos (sin deploy)."

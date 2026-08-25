@@ -1,5 +1,5 @@
 // Entry point: wires data store, filters, KPIs, map and table together.
-import { store } from './data.js';
+import { store, fetchData } from './data.js';
 import { initFilters } from './filters.js';
 import { renderKpis } from './kpi.js';
 import { renderStatistics, resetCharts } from './charts.js';
@@ -350,7 +350,7 @@ async function pollForFreshData(baseline) {
   for (let i = 0; i < POLL_MAX_TRIES; i += 1) {
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
     try {
-      const res = await fetch(`data/meta.json?t=${Date.now()}`, { cache: 'no-store' });
+      const res = await fetchData('meta.json', { q: `?t=${Date.now()}`, opts: { cache: 'no-store' } });
       if (res.ok) {
         const meta = await res.json();
         if (meta.generated_at && meta.generated_at !== baseline) {
