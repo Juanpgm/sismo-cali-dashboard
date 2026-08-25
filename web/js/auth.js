@@ -125,7 +125,7 @@ function buildOverlay() {
       </form>
 
       <p class="auth-error" id="auth-error" role="alert" hidden></p>
-      <p class="auth-foot">Solo personal autorizado. Los accesos con Google se limitan a cuentas <b>@${ALLOWED_DOMAIN}</b>.</p>
+      <p class="auth-foot">Solo personal autorizado. Google se limita a cuentas <b>@${ALLOWED_DOMAIN}</b>; los demás usuarios ingresan con correo y contraseña.</p>
     </div>`;
   document.body.appendChild(root);
   return root;
@@ -232,7 +232,7 @@ export function initAuth(onFirstAuthorized) {
       // Signed in but not allowed (e.g. Google account outside the domain).
       await signOut(auth);
       setBusy(overlay, false);
-      showError(overlay, `Solo cuentas @${ALLOWED_DOMAIN} pueden ingresar con Google. Usá tu correo institucional o una cuenta administradora.`);
+      showError(overlay, `Con Google solo entran cuentas @${ALLOWED_DOMAIN}. Si tenés un usuario del panel (cualquier dominio), ingresá con tu correo y contraseña abajo.`);
       return;
     }
 

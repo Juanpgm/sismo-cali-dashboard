@@ -340,6 +340,9 @@ export function initUsuarios(root, { getToken }) {
     const roleErr = rosterRoot.querySelector('#usuario-role-error');
     const showRoleError = (msg) => { roleErr.textContent = msg; roleErr.hidden = !msg; };
     const closeRoleModal = () => {
+      // Blur any focused control inside before hiding, or aria-hidden would trap
+      // focus from assistive tech (the a11y warning this silences).
+      if (roleModal.contains(document.activeElement)) document.activeElement.blur();
       roleModal.classList.remove('is-open');
       roleModal.setAttribute('aria-hidden', 'true');
       roleEdit = null;
