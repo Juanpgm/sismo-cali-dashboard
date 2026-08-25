@@ -25,9 +25,20 @@ import re
 import unicodedata
 from collections import Counter
 
-# Source property that holds the polygon's display name, per basemap file.
-COMUNAS_NAME_PROPERTY = "comuna_corregimiento"
-BARRIOS_NAME_PROPERTY = "barrio_vereda"
+# Source properties that hold the polygon's display name, per basemap file.
+# Both basemaps are raw shapefile-to-GeoJSON conversions (scripts/shp_to_geojson.py,
+# 2026-08-25) that ship the DBF's own field names — no `comuna_corregimiento` /
+# `barrio_vereda` property exists in them (that was a property added by an
+# earlier, now-replaced version of these files). Each layer combines two
+# related feature types in one FeatureCollection (comunas + corregimientos;
+# barrios + veredas), mutually exclusive per feature except for 3 barrio rows
+# that also carry a leftover VEREDA value from an upstream table join — see
+# get_barrio_name.
+COMUNA_NOMBRE_PROPERTY = "NOMBRE"  # set only on comuna features, e.g. "Comuna 6"
+COMUNA_NUMBER_PROPERTY = "COMUNA"  # numeric comuna id, e.g. 6 — used to rebuild "COMUNA 06"
+COMUNA_CORREGIMIENTO_PROPERTY = "CORREGIMIE"  # set only on corregimiento features, e.g. "Pance"
+BARRIO_PROPERTY = "BARRIO"  # set only on barrio (urban) features, e.g. "Chiminangos II"
+VEREDA_PROPERTY = "VEREDA"  # set only on vereda (rural) features
 
 COMUNAS_FILE = "basemaps/comunas_corregimientos.geojson"
 BARRIOS_FILE = "basemaps/barrios_veredas.geojson"
@@ -47,13 +58,30 @@ def slugify(name: str) -> str:
 
 
 def get_comuna_name(properties: dict) -> str | None:
-    value = properties.get(COMUNAS_NAME_PROPERTY)
-    return value.strip() if isinstance(value, str) else value
+    """'COMUNA 06' for an actual comuna — zero-padded 2-digit, rebuilt from the
+    numeric COMUNA field so it matches the dashboard's historical naming
+    (inspection records already tagged `comuna: "COMUNA 06"` by prior pipeline
+    runs) — else the corregimiento's own name unchanged, e.g. 'Pance'."""
+    nombre = properties.get(COMUNA_NOMBRE_PROPERTY)
+    if isinstance(nombre, str) and nombre.strip():
+        try:
+            n = int(properties.get(COMUNA_NUMBER_PROPERTY))
+        except (TypeError, ValueError):
+            return nombre.strip()  # unexpected shape — NOMBRE as-is beats no name at all
+        return f"COMUNA {n:02d}"
+    correg = properties.get(COMUNA_CORREGIMIENTO_PROPERTY)
+    return correg.strip() if isinstance(correg, str) else correg
 
 
 def get_barrio_name(properties: dict) -> str | None:
-    value = properties.get(BARRIOS_NAME_PROPERTY)
-    return value.strip() if isinstance(value, str) else value
+    """BARRIO when set (a real urban-barrio polygon) — 3/440 rows also carry a
+    leftover VEREDA value from an upstream table join; BARRIO is the actual
+    polygon identity there, so it wins. VEREDA otherwise."""
+    barrio = properties.get(BARRIO_PROPERTY)
+    if isinstance(barrio, str) and barrio.strip():
+        return barrio.strip()
+    vereda = properties.get(VEREDA_PROPERTY)
+    return vereda.strip() if isinstance(vereda, str) else vereda
 
 
 # --- U+FFFD mojibake repair for barrio_vereda names -------------------------

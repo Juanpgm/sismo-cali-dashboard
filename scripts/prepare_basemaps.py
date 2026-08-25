@@ -4,33 +4,40 @@ Reads the two full-resolution basemaps under `basemaps/` and writes
 simplified, minimal-property versions to `web/data/comunas.geojson` and
 `web/data/barrios.geojson`.
 
-Source property inspection (recorded here so the mapping is explicit):
-  - comunas_corregimientos.geojson: properties = {comuna_corregimiento, area}
-    -> name property is `comuna_corregimiento` (e.g. "COMUNA 06", "Pance").
-    37 features, all names unique.
-  - barrios_veredas.geojson: properties = {barrio_vereda, area}
-    -> name property is `barrio_vereda` (e.g. "Chiminangos II").
-    433 features; 10 names repeat (non-contiguous polygons of the same
-    barrio/vereda) so `id` gets a numeric suffix to stay unique while `name`
-    is left as-is — that's the value the frontend joins on.
+Source property inspection (recorded here so the mapping is explicit; both
+files are raw shapefile-to-GeoJSON conversions — scripts/shp_to_geojson.py,
+2026-08-25 — of the DIVIPOLA .shp layers under context/, so they ship the
+DBF's own field names, not a pre-shaped `comuna_corregimiento`/`barrio_vereda`
+property):
+  - comunas_corregimientos.geojson: NOMBRE set on comuna features ("Comuna 6",
+    rebuilt here as "COMUNA 06" to match the dashboard's historical naming),
+    CORREGIMIE set on corregimiento features ("Pance"). 37 features, mutually
+    exclusive, all names unique. See basemap_utils.get_comuna_name.
+  - barrios_veredas.geojson: BARRIO set on barrio (urban) features
+    ("Chiminangos II"), VEREDA on vereda (rural) ones. 440 features; BARRIO
+    wins on the 3 rows that carry both (a leftover VEREDA value from an
+    upstream table join — see basemap_utils.get_barrio_name). 13 names
+    repeat (non-contiguous polygons of the same barrio/vereda) so `id` gets a
+    numeric suffix to stay unique while `name` is left as-is — that's the
+    value the frontend joins on.
 
 Output feature shape: {"type": "Feature", "properties": {"id", "name"},
-"geometry": <simplified, 5-decimal-rounded geometry>}.
+"geometry": <simplified, 5-decimal-rounded geometry, buffer(0)-repaired if
+simplify() left it invalid>}.
 
 `id`/`name` derivation is shared with `refresh_data.py` via
 `basemap_utils.py` so the spatial-join output (`comuna`, `barrio_geo`)
 matches these polygon names exactly.
 
-Barrio-name repair: 76/433 names in barrios_veredas.geojson carry a U+FFFD
-replacement character where an accented letter was lost in some earlier
-export. This script repairs them (see `basemap_utils.repair_barrio_name`)
-using, in confidence order: (a) the free-text `Barrio/vereda:` survey
-answers in the local xlsx, (b) a small built-in dictionary of well-known
-Spanish words / Cali toponyms, (c) a narrow intervocalic-'ñ' heuristic, and
-(d) as a last resort, dropping the U+FFFD character so no replacement glyph
-ever reaches web/data/barrios.geojson. `refresh_data.py` reads names from
-*this script's output*, not from the raw basemap, so the repair only has to
-happen once and the join keys are guaranteed to match by construction.
+Barrio-name repair (dormant with the current source, kept as a safety net):
+`repair_barrio_name` fixes any U+FFFD replacement character in a name — a
+lossy-export artifact the 2026-08-25 shp_to_geojson.py source no longer has
+(0/440 corrupted on the last run; the confidence-ordered repair — xlsx
+reference tokens, a built-in Spanish/toponym dictionary, an intervocalic-'ñ'
+heuristic, last-resort character drop — only kicks in if a future basemap
+update reintroduces it). `refresh_data.py` reads names from *this script's
+output*, not from the raw basemap, so the repair only has to happen once and
+the join keys are guaranteed to match by construction.
 """
 
 from __future__ import annotations
@@ -110,6 +117,15 @@ def build_features(
         geom = shape(ft["geometry"])
         simplified = geom.simplify(tolerance, preserve_topology=True)
         simplified = round_geometry(simplified)
+        # simplify()+coordinate rounding occasionally leaves a self-touching
+        # ("bowtie") ring even with preserve_topology=True. An invalid polygon
+        # makes refresh_data.py's STRtree point-in-polygon join unreliable for
+        # that one feature (GEOS predicates assume valid input) — repair with
+        # the standard buffer(0) trick, which is a no-op on already-valid
+        # geometry and resolves this exact self-touch case.
+        if not simplified.is_valid:
+            print(f"  WARNING: {name!r} simplified to an invalid geometry — repairing with buffer(0).")
+            simplified = simplified.buffer(0)
 
         out_features.append(
             {
