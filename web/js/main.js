@@ -120,21 +120,25 @@ function renderStickerGauge() {
 
 // Sticker coverage from the cruce (api/sticker-status). Authenticated (any
 // logged-in role), so it runs only after startApp. Fire-and-forget: feeds the
-// map's 'sticker' colorBy mode and the coverage gauge; on any failure both
+// map's 'sticker' colorBy mode, the coverage gauge, and the store's 'sticker'
+// filter/table/xlsx field (store.setStickerIds); on any failure all three
 // degrade to empty rather than showing stale data.
 async function refreshStickerStatus() {
   try {
     const token = await getIdToken();
-    if (!token) { setStickerStatus([]); store.setStickerCoverage(null); return; }
+    if (!token) { setStickerStatus([]); store.setStickerCoverage(null); store.setStickerIds([]); return; }
     const res = await fetch('/api/sticker-status', { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = await res.json();
-    setStickerStatus(Array.isArray(body.con_sticker) ? body.con_sticker : []);
+    const conSticker = Array.isArray(body.con_sticker) ? body.con_sticker : [];
+    setStickerStatus(conSticker);
     store.setStickerCoverage({ total: body.total, con: body.con });
+    store.setStickerIds(conSticker);
   } catch (err) {
     console.error('sticker-status falló (se reintenta en 15 min):', err);
     setStickerStatus([]);
     store.setStickerCoverage(null);
+    store.setStickerIds([]);
   }
 }
 

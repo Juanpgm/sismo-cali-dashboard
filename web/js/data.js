@@ -65,6 +65,9 @@ export const FILTER_FIELDS = [
   { field: 'comuna', label: 'Comuna', group: 'ubicacion' },
   { field: 'barrio_geo', label: 'Barrio', emptyLabel: 'Sin barrio asignado', group: 'ubicacion' },
   { field: 'entidad', label: labelForField('entidad'), group: 'contexto' },
+  // Derived field (see Store.setStickerIds): cruce con /api/sticker-status, no
+  // en inspections.json. Siempre 'con'/'sin', nunca vacío — no necesita emptyLabel.
+  { field: 'sticker', label: 'Sticker', group: 'contexto' },
 ];
 
 // Numeric range fields — the "Rangos" sidebar section. Empty on purpose: n_pisos
@@ -128,6 +131,13 @@ class Store {
     // { total, con } para el gauge de Panel/Evaluaciones. main.js hace el fetch
     // (necesita token) y llama setStickerCoverage. null → gauge oculto.
     this.stickerCoverage = null;
+    // GlobalIDs con sticker de campo, del mismo cruce (main.js llama setStickerIds
+    // con el mismo body.con_sticker que alimenta el gauge y el colorBy del mapa
+    // — mapview.js mantiene su propio Set en paralelo por las mismas razones que
+    // stickerCoverage: main.js reparte el mismo fetch a varios consumidores).
+    // Respalda el campo derivado `sticker` ('con'/'sin') de cada record, para el
+    // filtro, la tabla de atributos y el export xlsx.
+    this.stickerIds = new Set();
     this.filters = {
       dateFrom: null,
       dateTo: null,
@@ -159,6 +169,27 @@ class Store {
   setStickerCoverage(cov) {
     this.stickerCoverage = cov && typeof cov.total === 'number' ? cov : null;
     this.notify();
+  }
+
+  // GlobalIDs con sticker, del mismo /api/sticker-status que alimenta el gauge
+  // (main.js llama esto junto con setStickerCoverage). Recalcula el campo
+  // derivado `sticker` de cada record y reaplica filtros/opciones: si el
+  // usuario ya tiene el filtro "Sticker" activo, debe reflejar el cruce fresco,
+  // no el estado con el que cargó la página.
+  setStickerIds(ids) {
+    this.stickerIds = new Set((ids || []).map(String));
+    this.applyStickerField();
+    this.computeOptions();
+    this.applyFilters(); // también notifica
+  }
+
+  // 'con' | 'sin' según this.stickerIds — nunca vacío, así que no hay bucket
+  // "sin dato" para este filtro. Se corre en load() (con this.stickerIds aún
+  // vacío la primera vez) y de nuevo en setStickerIds() una vez resuelve el cruce.
+  applyStickerField() {
+    for (const r of this.records) {
+      r.sticker = this.stickerIds.has(String(r.GlobalID)) ? 'con' : 'sin';
+    }
   }
 
   notify() {
@@ -203,6 +234,7 @@ class Store {
       n_pisos_rango: bucketNpisos(r.n_pisos),
       suspension_servicios: suspensionServicios(r),
     }));
+    this.applyStickerField(); // 'con'/'sin' contra this.stickerIds (vacío hasta setStickerIds)
     this.computeOptions();
     this.computeDateBounds();
     this.computeRangeBounds();
