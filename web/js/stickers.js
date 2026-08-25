@@ -13,6 +13,7 @@
 // no longer types it: the server allocates the lowest free code on create.
 import { escapeHtml } from './utils.js';
 import { sectionHtml as evalSectionHtml, initEvaluaciones } from './evaluaciones.js';
+import { initStickersAsignacion } from './stickers-asignacion.js';
 
 const ENDPOINT = '/api/stickers';
 
@@ -117,16 +118,30 @@ function rosterHtml(inspectores) {
 }
 
 // Rendered once per tab open. The roster reloads into #sticker-roster on its
-// own; keeping the evaluaciones section outside that subtree means toggling an
-// inspector doesn't tear down the map and refetch every evaluation.
+// own; keeping each section behind its own wrapper means switching segments
+// doesn't tear down the map (evaluaciones) or refetch Firestore (asignación).
+//
+// Three-way segmented control (Roster · Evaluaciones · Asignación) — the
+// first sub-nav pattern inside #view-stickers (0.1's finding: none existed
+// before this change, so nothing to extend).
 function shellHtml() {
   return `
     <header class="sticker-page-head">
       <h2 class="sticker-h1">Operación de campo</h2>
       <p class="sticker-lead">Lo que registran las brigadas y quién puede registrarlo.</p>
     </header>
-    ${evalSectionHtml()}
-    <section class="sticker-roster" id="sticker-roster"></section>`;
+
+    <div class="asignacion-segmented" role="tablist" aria-label="Sección de Stickers">
+      <button type="button" class="asignacion-segment is-active" data-sticker-segment="roster" role="tab" aria-selected="true">Roster</button>
+      <button type="button" class="asignacion-segment" data-sticker-segment="evaluaciones" role="tab" aria-selected="false">Evaluaciones</button>
+      <button type="button" class="asignacion-segment" data-sticker-segment="asignacion" role="tab" aria-selected="false">Asignación</button>
+    </div>
+
+    <div data-sticker-section="roster">
+      <section class="sticker-roster" id="sticker-roster"></section>
+    </div>
+    <div data-sticker-section="evaluaciones" hidden>${evalSectionHtml()}</div>
+    <div data-sticker-section="asignacion" hidden></div>`;
 }
 
 // initStickers(root, { getToken }) — renders the tab and wires its actions.
@@ -136,18 +151,51 @@ export function initStickers(root, { getToken }) {
   // Survives a roster reload so the "brigada 007 asignada" confirmation is
   // still on screen after the list comes back with the new inspector on it.
   let assignedNotice = '';
+  // Last roster response: the Asignación sub-section's inspector <select>s
+  // read this instead of issuing their own `list` call (spec.md "Inspector
+  // dropdown reuses the existing roster").
+  let inspectoresCache = [];
 
   root.innerHTML = shellHtml();
   const rosterRoot = root.querySelector('#sticker-roster');
+  const segmentButtons = root.querySelectorAll('[data-sticker-segment]');
+  const sections = {
+    roster: root.querySelector('[data-sticker-section="roster"]'),
+    evaluaciones: root.querySelector('[data-sticker-section="evaluaciones"]'),
+    asignacion: root.querySelector('[data-sticker-section="asignacion"]'),
+  };
+  // Set on first "Asignación" open; subsequent opens call .reload() instead
+  // of re-initializing (spec.md "Init runs once on first Asignación open").
+  let asignacionHandle = null;
 
   initEvaluaciones(root.querySelector('.eval-section'), {
     fetchEvaluaciones: async () => (await callApi(getToken, { action: 'evaluaciones' })).evaluaciones,
   });
 
+  function showSegment(name) {
+    for (const [key, el] of Object.entries(sections)) el.hidden = key !== name;
+    segmentButtons.forEach((btn) => {
+      const active = btn.dataset.stickerSegment === name;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-selected', String(active));
+    });
+    if (name !== 'asignacion') return;
+    if (asignacionHandle) {
+      asignacionHandle.reload();
+    } else {
+      asignacionHandle = initStickersAsignacion(sections.asignacion, {
+        getToken,
+        getInspectores: () => inspectoresCache,
+      });
+    }
+  }
+  segmentButtons.forEach((btn) => btn.addEventListener('click', () => showSegment(btn.dataset.stickerSegment)));
+
   async function reload() {
     rosterRoot.innerHTML = '<p class="sticker-loading">Cargando inspectores…</p>';
     try {
       const { inspectores } = await callApi(getToken, { action: 'list' });
+      inspectoresCache = inspectores;
       rosterRoot.innerHTML = rosterHtml(inspectores);
       wire();
       if (assignedNotice) {
