@@ -119,11 +119,10 @@ class Store {
     // Fallback: el agregado estático del pipeline. Global, no depende de los
     // filtros del tablero. null si ninguna fuente está disponible.
     this.reportados = null;
-    // Dos métricas globales adicionales del mismo endpoint, espejo del panel de
-    // atencionsismo: `reportesTotal` = total de reportes (tarjeta "Reportes",
-    // sin agrupar) e `inmuebles` = únicos por ubicación exacta (tarjeta
-    // "Inmuebles reportados"). null → tarjeta oculta, igual que reportados.
-    this.reportesTotal = null;
+    // `inmuebles` = reportes únicos por predio (ubicación exacta), depurados,
+    // del mismo endpoint (tarjeta "Inmuebles reportados"). null → tarjeta
+    // oculta. `reportados` (estado "Reportado") lo sigue usando el chart de
+    // series de tiempo (Momento 2), aunque ya no tenga tarjeta propia.
     this.inmuebles = null;
     // Cobertura de stickers (cruce con evaluaciones, vía /api/sticker-status):
     // { total, con } para el gauge de Panel/Evaluaciones. main.js hace el fetch
@@ -218,7 +217,6 @@ class Store {
   // único que saltea la caché CDN de 15 min (botón "Actualizar datos").
   async refreshReportados({ bust = false } = {}) {
     let val = null;
-    let total = null;
     let inmuebles = null;
     const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
     try {
@@ -226,15 +224,13 @@ class Store {
       if (res.ok) {
         const body = await res.json();
         val = num(body?.por_estadoVerificacion?.Reportado);
-        total = num(body?.total);
         inmuebles = num(body?.inmuebles);
       }
-    } catch { /* sin red / respuesta malformada: todo queda null → KPIs ocultos */ }
-    // Propagar incluso null: si la lectura falla, los KPIs deben ocultarse, no
+    } catch { /* sin red / respuesta malformada: todo queda null → KPI oculto */ }
+    // Propagar incluso null: si la lectura falla, el KPI debe ocultarse, no
     // conservar el último valor conocido.
-    if (val !== this.reportados || total !== this.reportesTotal || inmuebles !== this.inmuebles) {
+    if (val !== this.reportados || inmuebles !== this.inmuebles) {
       this.reportados = val;
-      this.reportesTotal = total;
       this.inmuebles = inmuebles;
       this.notify();
     }

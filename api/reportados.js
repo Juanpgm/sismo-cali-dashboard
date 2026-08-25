@@ -63,12 +63,21 @@ async function fetchWindow(auth, d0, d1) {
         },
         signal: AbortSignal.timeout(90_000),
       });
-      if ((res.status === 413 || res.status === 504) && d1 - d0 > MIN_WINDOW_MS) {
+      // A dense day answers 413 (payload too big), 504 (gateway timeout) OR
+      // 500/502 (the upstream chokes on the volume): all mean "too much for one
+      // window", so split instead of dropping the day. Diagnosis showed the live
+      // ~14.5k vs true ~17.3k gap was whole dense days (e.g. Aug 19, 24) that
+      // 500'd and were discarded — there is NO silent result cap, so splitting
+      // to a size the API can serve recovers every report.
+      const splittable = [413, 500, 502, 503, 504].includes(res.status);
+      if (splittable && d1 - d0 > MIN_WINDOW_MS) {
+        // Split SEQUENTIALLY, not with Promise.all: a concurrent split makes a
+        // dense window fan out into an exponential burst of simultaneous
+        // requests, worsening the rate-limiting. One half at a time (like
+        // scripts/fetch_reportes_api.py) caps peak concurrency at CONCURRENCY.
         const mid = Math.floor((d0 + d1) / 2);
-        const [a, b] = await Promise.all([
-          fetchWindow(auth, d0, mid),
-          fetchWindow(auth, mid + 1, d1),
-        ]);
+        const a = await fetchWindow(auth, d0, mid);
+        const b = await fetchWindow(auth, mid + 1, d1);
         return a.concat(b);
       }
       if (!res.ok) {
