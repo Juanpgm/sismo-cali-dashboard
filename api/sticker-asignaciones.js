@@ -115,16 +115,6 @@ function pointsWithSticker(points) {
     .map((p) => p.id);
 }
 
-// Hard-cap helper: how many of `points` are actively assigned to `inspectorUid`
-// (assigned AND not yet 'hecho'). "Active" is the load per day the 20-cap
-// bounds. Exported for the self-check.
-const MAX_ACTIVE_PER_INSPECTOR = 20;
-function activeAssignedCount(points, inspectorUid) {
-  return (points || []).filter(
-    (p) => p && p.inspector_uid === inspectorUid && p.estado_asignacion !== 'hecho',
-  ).length;
-}
-
 // ---- Firestore-backed actions ----------------------------------------------
 
 async function listPuntos(admin) {
@@ -272,28 +262,9 @@ async function asignarInspector(admin, body) {
 
   const puntos = (snap.data().puntos || []).map(String);
 
-  // Per-inspector cap: caller may override the default (20) via maxPorInspector,
-  // clamped to a sane 1..200; the server stays the hard enforcement point.
-  const rawCap = Number.parseInt(body.maxPorInspector, 10);
-  const cap = Number.isFinite(rawCap) ? Math.max(1, Math.min(200, rawCap)) : MAX_ACTIVE_PER_INSPECTOR;
-
-  // Hard cap: at most `cap` active points per inspector per day. After this
-  // operation the cuadrilla's points are all active ('asignado'), so the
-  // inspector would end up holding: their current active points NOT in this
-  // cuadrilla (unchanged) + every point in this cuadrilla. Counting distinct
-  // points this way avoids double-counting when the cuadrilla is already
-  // (partly) theirs.
-  const cuadrillaSet = new Set(puntos);
-  const assignedSnap = await db.collection('sticker_matches')
-    .where('inspector_uid', '==', inspectorUid).get();
-  const otherActive = assignedSnap.docs
-    .map((d) => ({ id: d.id, ...d.data() }))
-    .filter((p) => !cuadrillaSet.has(p.id) && p.estado_asignacion !== 'hecho')
-    .length;
-  const total = otherActive + puntos.length;
-  if (total > cap) {
-    throw badRequest(`El inspector ya tiene ${otherActive} punto(s) activos; asignar esta cuadrilla (${puntos.length}) superaría el máximo de ${cap} por día.`);
-  }
+  // No per-inspector cap: an inspector can hold any number of points (product
+  // decision — the 20/day limit was removed). Skipping the inspector-load query
+  // also makes assignment one Firestore read cheaper.
 
   const now = admin.firestore.FieldValue.serverTimestamp();
   const batch = db.batch();
@@ -469,7 +440,5 @@ module.exports.haversineM = haversineM;
 module.exports.commitInChunks = commitInChunks;
 module.exports.pointsAlreadyAssigned = pointsAlreadyAssigned;
 module.exports.pointsWithSticker = pointsWithSticker;
-module.exports.activeAssignedCount = activeAssignedCount;
 module.exports.DEFAULT_MAX_RADIUS_M = DEFAULT_MAX_RADIUS_M;
 module.exports.DEFAULT_MAX_SIZE = DEFAULT_MAX_SIZE;
-module.exports.MAX_ACTIVE_PER_INSPECTOR = MAX_ACTIVE_PER_INSPECTOR;

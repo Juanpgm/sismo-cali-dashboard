@@ -108,12 +108,9 @@ export function filterRows(rows, estado) {
   return rows.filter((r) => r.estado_asignacion === estado);
 }
 
-// Hard cap on active points per inspector (mirrors the backend's
-// MAX_ACTIVE_PER_INSPECTOR — kept in sync by hand, single source is the API).
-export const MAX_ACTIVE_PER_INSPECTOR = 20;
-
 /** Active-assigned count per inspector uid, computed from the already-fetched
- *  rows (no extra API call). "Active" = assigned to them AND not yet 'hecho'. */
+ *  rows (no extra API call). "Active" = assigned to them AND not yet 'hecho'.
+ *  Shown next to each inspector for balancing — there is no per-inspector cap. */
 export function activeCountsByInspector(rows) {
   const counts = new Map();
   for (const r of rows || []) {
@@ -122,21 +119,6 @@ export function activeCountsByInspector(rows) {
     }
   }
   return counts;
-}
-
-/** Would assigning `cuadrillaPuntoIds` to `inspectorUid` push them over the
- *  cap? Counts their current active points NOT in this cuadrilla + the whole
- *  cuadrilla (every member point becomes active on assignment) — same distinct
- *  count the backend enforces, so the UI disable matches the 400 it would get. */
-export function wouldExceedCap(rows, cuadrillaPuntoIds, inspectorUid, cap = MAX_ACTIVE_PER_INSPECTOR) {
-  const inCuadrilla = new Set(cuadrillaPuntoIds || []);
-  let otherActive = 0;
-  for (const r of rows || []) {
-    if (r.inspector_uid === inspectorUid && r.estado_asignacion !== 'hecho' && !inCuadrilla.has(r.id)) {
-      otherActive += 1;
-    }
-  }
-  return otherActive + inCuadrilla.size > cap;
 }
 
 /** Field-sweep progress tallies for the gauge, computed from the UNFILTERED
@@ -211,13 +193,7 @@ function shellHtml() {
         </div>
 
         <div class="card">
-          ${cardHead('Paso 2 · Cuadrillas e inspectores', 'Asignar un inspector a cada cuadrilla. «Reiniciar agrupación» borra solo las automáticas.', `<div class="asignacion-head-actions">
-            <label class="sticker-field asignacion-inline-field">
-              <span>Máx. por inspector</span>
-              <input type="number" id="asignacion-cap" min="1" max="200" value="20">
-            </label>
-            <button type="button" class="sticker-action sticker-action-off" id="asignacion-reiniciar">Reiniciar agrupación</button>
-          </div>`)}
+          ${cardHead('Paso 2 · Cuadrillas e inspectores', 'Asignar un inspector a cada cuadrilla. «Reiniciar agrupación» borra solo las automáticas.', '<button type="button" class="sticker-action sticker-action-off" id="asignacion-reiniciar">Reiniciar agrupación</button>')}
           <div class="asignacion-cuadrillas-scroll" id="asignacion-cuadrillas"></div>
         </div>
 
@@ -294,10 +270,11 @@ export function cuadrillaLabel(cuadrilla, index, zonaByPunto, zonaSeq) {
 
 /** Roster display label for one inspector, with their current active load.
  *  `Nombre — codigo (N/cap)` (spec §3). Cap is the editable per-inspector max. */
-export function inspectorOptionLabel(insp, count, cap = MAX_ACTIVE_PER_INSPECTOR) {
+export function inspectorOptionLabel(insp, count) {
   const name = insp.nombre_completo || `Brigada ${insp.codigo || '—'}`;
   const code = insp.codigo ? ` — ${insp.codigo}` : '';
-  return `${name}${code} (${count}/${cap})`;
+  // Informational count only — there is no per-inspector cap.
+  return `${name}${code} (${count})`;
 }
 
 function cuadrillasHtml(cuadrillas, inspectores, zonaByPunto = new Map(), inspectorById = new Map()) {
@@ -336,10 +313,10 @@ function cuadrillasHtml(cuadrillas, inspectores, zonaByPunto = new Map(), inspec
 
 // Vanilla searchable combobox for one cuadrilla's inspector selector: a text
 // <input role="combobox"> + a filtered <ul role="listbox">. No library. Shows
-// each inspector's N/20 load and disables (never selects) any inspector this
-// cuadrilla would push over the cap. Keyboard: ArrowUp/Down move the active
-// option, Enter selects, Escape closes. `onSelect(uid)` fires the assignment.
-function mountCombobox(comboEl, { inspectores, counts, cuadrillaPuntoIds, rows, cap = MAX_ACTIVE_PER_INSPECTOR, onSelect }) {
+// each inspector's current load (informational — no cap). Keyboard: ArrowUp/Down
+// move the active option, Enter selects, Escape closes. `onSelect(uid)` fires the
+// assignment.
+function mountCombobox(comboEl, { inspectores, counts, onSelect }) {
   const input = comboEl.querySelector('.asignacion-combo-input');
   const list = comboEl.querySelector('.asignacion-combo-list');
   let options = []; // [{ uid, disabled }] in current render order
@@ -356,15 +333,15 @@ function mountCombobox(comboEl, { inspectores, counts, cuadrillaPuntoIds, rows, 
     options = [];
     list.innerHTML = matches.map((insp) => {
       const count = counts.get(insp.uid) || 0;
-      const over = wouldExceedCap(rows, cuadrillaPuntoIds, insp.uid, cap);
-      options.push({ uid: insp.uid, disabled: over });
+      // No cap: every inspector is selectable; the count is shown for balancing.
+      options.push({ uid: insp.uid, disabled: false });
       const name = insp.nombre_completo || `Brigada ${insp.codigo || '—'}`;
       const code = insp.codigo ? ` — ${insp.codigo}` : '';
-      return `<li role="option" class="asignacion-combo-option${over ? ' is-over-cap' : ''}"
-        data-uid="${escapeHtml(insp.uid)}" ${over ? 'aria-disabled="true"' : ''}
-        title="${escapeHtml(over ? 'Superaría el máximo de ' + cap + ' puntos activos' : inspectorOptionLabel(insp, count, cap))}">
+      return `<li role="option" class="asignacion-combo-option"
+        data-uid="${escapeHtml(insp.uid)}"
+        title="${escapeHtml(inspectorOptionLabel(insp, count))}">
         <span class="asignacion-combo-name">${escapeHtml(name + code)}</span>
-        <span class="asignacion-combo-count${over ? ' is-over' : ''}">${count}/${cap}</span></li>`;
+        <span class="asignacion-combo-count">${count}</span></li>`;
     }).join('') || '<li class="asignacion-combo-empty" aria-disabled="true">Sin coincidencias</li>';
     active = -1;
     list.hidden = false;
@@ -527,7 +504,6 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
   let sortKey = 'estado_asignacion';
   let sortDir = 'asc';
   let estadoFilter = 'todos';
-  let capValue = MAX_ACTIVE_PER_INSPECTOR; // editable per-inspector cap (default 20)
   const selected = new Set();
   let busy = false;
 
@@ -542,7 +518,6 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
   const sizeInput = root.querySelector('#asignacion-max-size');
   const crearBtn = root.querySelector('#asignacion-crear');
   const reiniciarBtn = root.querySelector('#asignacion-reiniciar');
-  const capInput = root.querySelector('#asignacion-cap');
   const gaugeEl = root.querySelector('#asignacion-gauge');
 
   const showOk = (msg) => { okBox.textContent = msg; okBox.hidden = !msg; };
@@ -625,9 +600,8 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
         counts,
         cuadrillaPuntoIds: (cuadrilla && cuadrilla.puntos) || [],
         rows,
-        cap: capValue,
         onSelect: (uid) => runCuadrillaAction(
-          { action: 'asignarInspector', cuadrilla_id: cuadrillaId, inspector_uid: uid, maxPorInspector: capValue },
+          { action: 'asignarInspector', cuadrilla_id: cuadrillaId, inspector_uid: uid },
           'Inspector asignado.',
         ),
       });
@@ -724,16 +698,6 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
       tableWrap.innerHTML = `<p class="sticker-error" role="alert">${escapeHtml(err.message)}</p>`;
     }
   }
-
-  // Update the editable per-inspector cap and re-render the comboboxes so their
-  // N/cap counts and over-cap disabling reflect the new limit immediately.
-  function applyCap() {
-    const v = parseInt(capInput.value, 10);
-    if (Number.isFinite(v)) capValue = Math.max(1, Math.min(200, v));
-    renderCuadrillasSection();
-  }
-  capInput.addEventListener('input', applyCap);
-  capInput.addEventListener('change', () => { capInput.value = String(capValue); applyCap(); });
 
   autoBtn.addEventListener('click', async () => {
     if (busy) return;

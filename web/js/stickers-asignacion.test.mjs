@@ -3,8 +3,8 @@
 import assert from 'node:assert/strict';
 import {
   colorForPunto, buildRows, sortRows, filterRows,
-  activeCountsByInspector, wouldExceedCap, filterInspectores, inspectorOptionLabel,
-  gaugeCounts, MAX_ACTIVE_PER_INSPECTOR,
+  activeCountsByInspector, filterInspectores, inspectorOptionLabel,
+  gaugeCounts,
 } from './stickers-asignacion.js';
 
 // ---- colorForPunto — spec.md "Map view — 3-color legend" scenarios --------
@@ -78,19 +78,6 @@ const loadCounts = activeCountsByInspector(loadRows);
 assert.equal(loadCounts.get('u1'), 2, 'u1 has 2 active (hecho excluded)');
 assert.equal(loadCounts.get('u2'), 1);
 assert.equal(loadCounts.get('u3'), undefined);
-assert.equal(MAX_ACTIVE_PER_INSPECTOR, 20);
-
-// ---- wouldExceedCap — mirrors the backend distinct-count enforcement --------
-// u1 has 2 active (a,b). Assigning a 3-point cuadrilla of brand-new points -> 5, ok.
-assert.equal(wouldExceedCap(loadRows, ['x', 'y', 'z'], 'u1'), false);
-// A cuadrilla whose points reach the cap: 19 existing active + 2 new = 21 > 20.
-const heavy = Array.from({ length: 19 }, (_, i) => ({ id: `h${i}`, inspector_uid: 'busy', estado_asignacion: 'asignado' }));
-assert.equal(wouldExceedCap(heavy, ['n1', 'n2'], 'busy'), true, '19 + 2 new -> over cap');
-assert.equal(wouldExceedCap(heavy, ['n1'], 'busy'), false, '19 + 1 new = 20, exactly at cap');
-// Points already in the cuadrilla are not double-counted: 19 active where 18 of
-// them are the cuadrilla being (re)assigned -> distinct total stays 19.
-const alreadyMine = heavy.map((r) => r.id).slice(0, 18);
-assert.equal(wouldExceedCap(heavy, alreadyMine, 'busy'), false, 'reassigning own points does not double-count');
 
 // ---- filterInspectores — free-text over nombre/código/cédula ---------------
 const roster = [
@@ -103,9 +90,9 @@ assert.deepEqual(filterInspectores(roster, '999').map((i) => i.uid), ['u2']);
 assert.equal(filterInspectores(roster, '').length, 2, 'empty query -> full roster');
 assert.equal(filterInspectores(roster, 'zzz').length, 0);
 
-// ---- inspectorOptionLabel — `Nombre — codigo (N/20)` -----------------------
-assert.equal(inspectorOptionLabel(roster[0], 3), 'Ana Torres — 001 (3/20)');
-assert.equal(inspectorOptionLabel({ codigo: null }, 0), 'Brigada — (0/20)');
+// ---- inspectorOptionLabel — `Nombre — codigo (N)`, no cap ------------------
+assert.equal(inspectorOptionLabel(roster[0], 3), 'Ana Torres — 001 (3)');
+assert.equal(inspectorOptionLabel({ codigo: null }, 0), 'Brigada — (0)');
 
 // ---- gaugeCounts — barrido/asignado/pendiente split, colorForPunto precedence
 const gaugeRows = [
