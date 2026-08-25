@@ -559,24 +559,28 @@ def _photo_urls_from_groups(groups: list[dict]) -> dict[int, list[str]]:
     return urls
 
 
-def fetch_photo_urls() -> dict[int, list[str]]:
+def fetch_photo_urls(groups: list[dict] | None = None) -> dict[int, list[str]]:
     """Direct download URLs for each record's inspection photos, for the xlsx
     export. {objectid: [url, ...]}.
 
-    ponytail: does its own queryAttachments call (same as fetch_photo_coords);
-    if the doubled ~5 MB fetch ever matters, thread one _all_attachment_groups()
-    result through both."""
-    return _photo_urls_from_groups(_all_attachment_groups())
+    `groups` lets run_once() pass ONE _all_attachment_groups() result into both
+    this and fetch_photo_coords() — the ~5 MB queryAttachments fetch used to run
+    twice per refresh. Omit `groups` to fetch fresh (standalone/testing use)."""
+    return _photo_urls_from_groups(groups if groups is not None else _all_attachment_groups())
 
 
-def fetch_photo_coords() -> dict[int, dict]:
+def fetch_photo_coords(groups: list[dict] | None = None) -> dict[int, dict]:
     """Per-record GPS centroid from the photo attachments' EXIF metadata.
 
     Everything comes from queryAttachments with returnMetadata=true — no image
     downloads. Attachments without a GPS IFD (signatures, GPS-less photos) are
     skipped. Returns {objectid: {lat, lon, n_fotos_gps, gps_error_m}}.
+
+    `groups`: see fetch_photo_urls — pass a pre-fetched result to avoid a
+    second network round-trip; omit to fetch fresh.
     """
-    groups = _all_attachment_groups()
+    if groups is None:
+        groups = _all_attachment_groups()
 
     points: dict[int, list[tuple[float, float, float | None]]] = {}
     n_photos_gps = 0
@@ -632,11 +636,11 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 6371000.0 * 2 * math.asin(math.sqrt(a))
 
 
-def apply_photo_coords(df: pd.DataFrame) -> pd.DataFrame:
+def apply_photo_coords(df: pd.DataFrame, groups: list[dict] | None = None) -> pd.DataFrame:
     """Override the form x/y with the photo-EXIF GPS centroid where available,
     keeping the originals in x_form/y_form. Fail-soft: any attachments-endpoint
     failure logs a warning and publishes form coordinates unchanged — the
-    refresh is never blocked by ArcGIS."""
+    refresh is never blocked by ArcGIS. `groups`: see fetch_photo_urls."""
     df["x_form"] = df["x"]
     df["y_form"] = df["y"]
     df["n_fotos_gps"] = 0
@@ -647,7 +651,7 @@ def apply_photo_coords(df: pd.DataFrame) -> pd.DataFrame:
     df.loc[has_xy, "coords_fuente"] = "formulario"
 
     try:
-        centroids = fetch_photo_coords()
+        centroids = fetch_photo_coords(groups)
     except Exception as exc:  # noqa: BLE001 - fail-soft by design
         log.warning("Photo-EXIF coords unavailable (%s); publishing form coordinates.", exc)
         return df
@@ -1138,22 +1142,28 @@ def run_once(out_dir: Path) -> None:
     df = dedup_latest_by_globalid(df)
     log.info("Survey123: %d rows, %d columns.", len(df), len(df.columns))
 
+    # ONE queryAttachments fetch for the whole run (was two: EXIF coords +
+    # xlsx photo URLs each did their own ~5 MB call). Fail-soft: an empty list
+    # here just means both downstream uses fall back to "no photos" gracefully.
+    try:
+        groups = _all_attachment_groups()
+    except Exception as exc:  # noqa: BLE001 - fail-soft by design
+        log.warning("Attachment groups unavailable (%s); no photo coords/URLs this run.", exc)
+        groups = []
+
     # Photo-EXIF GPS centroids beat hand-placed form pins; every dashboard map
     # reads x/y, so correcting them here corrects every view at once.
-    df = apply_photo_coords(df)
+    df = apply_photo_coords(df, groups)
     # Geocoded address as third opinion for photo centroids far from the form
     # pin — reverts to the form coordinate when the address sides with it.
     df = validate_photo_coords(df)
     # Derived triage flag consumed by the dashboard and shipped in the xlsx.
     df = add_suspension_servicios(df)
 
-    # Direct photo download URLs for the xlsx export. Fail-soft: a broken
-    # attachments endpoint just ships the xlsx without the `fotos` column.
-    try:
-        photo_urls = fetch_photo_urls()
-        log.info("Photo URLs: %d records with photos for the xlsx.", len(photo_urls))
-    except Exception as exc:  # noqa: BLE001 - fail-soft by design
-        log.warning("Photo URLs unavailable (%s); xlsx without the fotos column.", exc)
+    # Direct photo download URLs for the xlsx export.
+    photo_urls = fetch_photo_urls(groups)
+    log.info("Photo URLs: %d records with photos for the xlsx.", len(photo_urls))
+    if not groups:
         photo_urls = None
 
     inspections_path, meta_path, n = write_outputs(df, out_dir, "survey123", photo_urls)

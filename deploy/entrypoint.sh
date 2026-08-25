@@ -23,7 +23,9 @@ echo "Clonando ${REPO}@${BRANCH}…"
 # falla con "destination path already exists". Limpiar siempre = clone idempotente
 # (no-op si el contenedor es fresco, salva si persiste).
 rm -rf /repo
-git clone --depth 1 --branch "$BRANCH" \
+# timeout: a hung clone (network/auth stall) previously blocked the container
+# forever with zero observable signal — fail loud within 2 min instead.
+timeout 120 git clone --depth 1 --branch "$BRANCH" \
   "https://x-access-token:${DASHBOARD_REPO_TOKEN}@github.com/${REPO}.git" /repo \
   2>&1 | sed "s/${DASHBOARD_REPO_TOKEN}/***/g"
 
