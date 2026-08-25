@@ -26,7 +26,9 @@ async function callApi(getToken, body) {
   return data;
 }
 
-const ROLE_LABEL = { admin: 'Admin', viewer: 'Viewer', inspector: 'Inspector', otro: 'Otro' };
+const ROLE_LABEL = { admin: 'Administrador', usuario: 'Usuario', viewer: 'Viewer', inspector: 'Inspector', otro: 'Otro' };
+// Roles an admin can hand out from a row (matches api/usuarios.js ASSIGNABLE_ROLES).
+const ASSIGNABLE_ROLES = [['usuario', 'Usuario'], ['viewer', 'Viewer'], ['admin', 'Administrador']];
 const initials = (email) => (email || '').trim().slice(0, 2).toUpperCase() || '—';
 const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' }) : '—');
 
@@ -55,6 +57,13 @@ function rowHtml(u, ownUid, selected) {
     : `<button type="button" class="sticker-action sticker-action-on" data-uid="${escapeHtml(u.uid)}" data-enable="true">Habilitar</button>`);
   const del = isSelf ? '' : `<button type="button" class="sticker-action" data-uid="${escapeHtml(u.uid)}" data-delete="true">Eliminar</button>`;
   const reset = `<button type="button" class="sticker-action" data-email="${escapeHtml(u.email)}" data-reset="true">Resetear contraseña</button>`;
+  // "Cambiar rol": a dropdown of the assignable roles. Hidden on the caller's
+  // own row (the server blocks self-demotion anyway). If the current role isn't
+  // assignable (inspector/otro) it's shown as the selected option so the label
+  // is still accurate, and the admin can still promote from there.
+  const roleOptions = ASSIGNABLE_ROLES.map(([v, l]) => `<option value="${v}"${u.role === v ? ' selected' : ''}>${l}</option>`).join('')
+    + (ASSIGNABLE_ROLES.some(([v]) => v === u.role) ? '' : `<option value="${escapeHtml(u.role)}" selected>${escapeHtml(ROLE_LABEL[u.role] || u.role)}</option>`);
+  const roleSelect = isSelf ? '' : `<select class="sticker-action usuario-role-select" data-uid="${escapeHtml(u.uid)}" data-current="${escapeHtml(u.role)}" aria-label="Cambiar rol de ${escapeHtml(u.email)}">${roleOptions}</select>`;
   const meta = `${ROLE_LABEL[u.role] || u.role} · último acceso: ${fmtDate(u.lastSignInTime)} · alta: ${fmtDate(u.creationTime)}`;
   return `<li class="sticker-row usuario-row${activo ? '' : ' is-off'}">
     ${lead}
@@ -63,7 +72,7 @@ function rowHtml(u, ownUid, selected) {
       <span class="sticker-meta">${escapeHtml(meta)}</span>
     </div>
     ${estado}
-    <div class="usuario-actions">${reset}${toggle}${del}</div>
+    <div class="usuario-actions">${roleSelect}${reset}${toggle}${del}</div>
   </li>`;
 }
 
@@ -78,6 +87,7 @@ function chipsHtml(usuarios) {
       <span class="sticker-chip is-on">${activos} activos</span>
       <span class="sticker-chip is-off">${off} inhabilitados</span>
       <span class="sticker-chip">${counts.admin || 0} admins</span>
+      <span class="sticker-chip">${counts.usuario || 0} usuarios</span>
       <span class="sticker-chip">${counts.viewer || 0} viewers</span>
       <span class="sticker-chip">${counts.inspector || 0} inspectores</span>
     </div>`;
@@ -108,7 +118,7 @@ function rosterHtml(usuarios, filtered, pageItems, ownUid, { role, status, query
       ${bulk}
       <button type="button" class="btn-primary sticker-new" id="usuario-new">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        Nuevo administrador
+        Nuevo usuario
       </button>
     </div>
 
@@ -118,7 +128,7 @@ function rosterHtml(usuarios, filtered, pageItems, ownUid, { role, status, query
       </label>
       <label class="sticker-field"><span>Rol</span>
         <select id="usuario-filter-role">
-          ${opt('', 'Todos', role)}${opt('admin', 'Admin', role)}${opt('viewer', 'Viewer', role)}${opt('inspector', 'Inspector', role)}${opt('otro', 'Otro', role)}
+          ${opt('', 'Todos', role)}${opt('admin', 'Administrador', role)}${opt('usuario', 'Usuario', role)}${opt('viewer', 'Viewer', role)}${opt('inspector', 'Inspector', role)}${opt('otro', 'Otro', role)}
         </select>
       </label>
       <label class="sticker-field"><span>Estado</span>
@@ -136,7 +146,7 @@ function rosterHtml(usuarios, filtered, pageItems, ownUid, { role, status, query
       <div class="modal-backdrop" data-modal-close></div>
       <div class="modal-panel sticker-modal-panel">
         <div class="modal-header">
-          <h2 id="usuario-modal-title">Nuevo administrador</h2>
+          <h2 id="usuario-modal-title">Nuevo usuario</h2>
           <button type="button" class="btn-icon" data-modal-close aria-label="Cerrar">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
           </button>
@@ -144,14 +154,14 @@ function rosterHtml(usuarios, filtered, pageItems, ownUid, { role, status, query
         <div class="modal-body">
           <form id="usuario-form" class="sticker-form" novalidate>
             <div class="sticker-form-grid">
-              ${field('email', 'Email *', 'type="email" required placeholder="admin@ejemplo.com" autocomplete="off"')}
+              ${field('email', 'Email *', 'type="email" required placeholder="usuario@ejemplo.com" autocomplete="off"')}
               ${field('password', 'Contraseña *', 'type="text" required placeholder="mínimo 6 caracteres" autocomplete="off"')}
             </div>
-            <p class="sticker-note">Crea una cuenta de administrador (contraseña). Los inspectores se crean desde la pestaña Stickers.</p>
+            <p class="sticker-note">Crea una cuenta de usuario (contraseña): ve solo el Panel. Promovela a administrador después con "Cambiar rol" si hace falta. Los inspectores se crean desde la pestaña Stickers.</p>
             <p class="sticker-error" id="usuario-form-error" role="alert" hidden></p>
             <div class="sticker-form-actions">
               <button type="button" class="btn-secondary" data-modal-close>Cancelar</button>
-              <button type="submit" class="btn-primary" id="usuario-submit">Crear administrador</button>
+              <button type="submit" class="btn-primary" id="usuario-submit">Crear usuario</button>
             </div>
           </form>
         </div>
@@ -301,6 +311,37 @@ export function initUsuarios(root, { getToken }) {
       render(); // local mutation + re-render, no full page/API reload
     });
 
+    rosterRoot.querySelectorAll('.usuario-role-select').forEach((sel) => {
+      sel.addEventListener('change', async () => {
+        const uid = sel.dataset.uid;
+        const prev = sel.dataset.current;
+        const role = sel.value;
+        if (busy || role === prev) return;
+        const label = ROLE_LABEL[role] || role;
+        // confirm() guards against an accidental select change; the custom claim
+        // only lands in the target's token on their next login, so warn about it.
+        if (!confirm(`¿Cambiar el rol a ${label}? El usuario deberá volver a iniciar sesión para que aplique.`)) {
+          sel.value = prev;
+          return;
+        }
+        busy = true;
+        sel.disabled = true;
+        try {
+          await callApi(getToken, { action: 'setRole', uid, role });
+          const target = usuarios.find((u) => u.uid === uid);
+          if (target) target.role = role; // reflect locally; no refetch
+          notice = `Rol actualizado a ${label}. El usuario debe volver a iniciar sesión para que aplique.`;
+          busy = false;
+          render();
+        } catch (err) {
+          busy = false;
+          sel.disabled = false;
+          sel.value = prev;
+          alert(err.message); // e.g. the anti-lockout "tu propio rol" 403
+        }
+      });
+    });
+
     const modal = rosterRoot.querySelector('#usuario-modal');
     const form = rosterRoot.querySelector('#usuario-form');
     const formErr = rosterRoot.querySelector('#usuario-form-error');
@@ -332,7 +373,7 @@ export function initUsuarios(root, { getToken }) {
       rosterRoot.querySelector('#usuario-submit').disabled = true;
       try {
         await callApi(getToken, body);
-        notice = `Administrador creado: ${body.email}.`;
+        notice = `Usuario creado: ${body.email}.`;
         closeModal();
         await reload();
       } catch (err) {

@@ -15,27 +15,25 @@
 // provider "password", caller NOT @sismocali.gov.co (inspectors are also
 // password-provider, so provider alone doesn't prove "admin").
 
-const { verifyFirebaseToken } = require('./refresh.js');
+const { verifyFirebaseToken, roleFrom, roleFromClaims } = require('./refresh.js');
 
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'sismo-agosto-sgred';
 const INSPECTOR_DOMAIN = '@sismocali.gov.co';
-const VIEWER_DOMAIN = '@cali.gov.co'; // ALLOWED_DOMAIN in web/js/firebase-config.js
 
 // ---- Pure validators / classifiers (exported for the self-check) ----------
 const isValidPassword = (v) => typeof v === 'string' && v.length >= 6;
 const hasProvider = (u, id) => (u.providerData || []).some((p) => p.providerId === id);
 
-// Ordered predicate — order matters because inspectors are ALSO
-// password-provider, so the inspector domain must be tested before the
-// generic "password" branch. Mirrors web/js/auth.js roleForUser() so the
-// server's notion of "who is an admin" cannot drift from the client's login
-// gate. design.md ADR-2.
+// Effective role for a listUsers UserRecord, delegating to the single source
+// of truth (refresh.js roleFrom) so the server's notion of role — including the
+// assignable custom claim and the superadmin bootstrap — cannot drift between
+// endpoints or from web/js/auth.js. customClaims ride on the UserRecord.
 function classify(u) {
-  const email = (u.email || '').toLowerCase();
-  if (email.endsWith(INSPECTOR_DOMAIN)) return 'inspector'; // password, but a field account
-  if (hasProvider(u, 'password')) return 'admin'; // password, non-sismocali
-  if (hasProvider(u, 'google.com') && email.endsWith(VIEWER_DOMAIN)) return 'viewer';
-  return 'otro'; // exists in Auth but not a live role
+  return roleFrom({
+    email: u.email,
+    claimRole: u.customClaims && u.customClaims.role,
+    provider: hasProvider(u, 'password') ? 'password' : (hasProvider(u, 'google.com') ? 'google.com' : ''),
+  });
 }
 
 const isEnabledAdmin = (u) => !u.disabled && classify(u) === 'admin';
@@ -145,6 +143,29 @@ async function deleteUsuario(admin, body, callerUid) {
   return { uid };
 }
 
+// Roles an admin can assign from the "Cambiar rol" UI. 'inspector'/'otro' are
+// derived, never hand-assigned here.
+const ASSIGNABLE_ROLES = ['admin', 'usuario', 'viewer'];
+
+// Sets the target's effective role via a Firebase custom claim. The claim rides
+// in the target's ID token, so it takes effect only after THEIR token refreshes
+// (re-login or ~1h) — the design's accepted trade-off for zero per-request
+// Firestore reads. Anti-lockout: you cannot strip your own admin role. The
+// SUPERADMIN_EMAIL account is un-lockable regardless (roleFrom ignores its
+// claim), so a valid Administrador always exists.
+async function setRole(admin, body, callerUid) {
+  const uid = String(body.uid ?? '').trim();
+  const role = String(body.role ?? '').trim();
+  if (!uid) throw badRequest('Falta el uid.');
+  if (!ASSIGNABLE_ROLES.includes(role)) throw badRequest(`Rol inválido: ${role}.`);
+  if (uid === callerUid && role !== 'admin') {
+    throw forbidden('No podés quitarte tu propio rol de administrador.');
+  }
+  const target = await admin.auth().getUser(uid);
+  await admin.auth().setCustomUserClaims(uid, { ...(target.customClaims || {}), role });
+  return { uid, role };
+}
+
 function badRequest(message) {
   const err = new Error(message);
   err.status = 400;
@@ -171,9 +192,7 @@ module.exports = async (req, res) => {
   let callerUid;
   try {
     const claims = await verifyFirebaseToken(idToken, FIREBASE_PROJECT_ID);
-    const provider = claims.firebase && claims.firebase.sign_in_provider;
-    const email = String(claims.email || '').toLowerCase();
-    if (provider !== 'password' || email.endsWith(INSPECTOR_DOMAIN)) {
+    if (roleFromClaims(claims) !== 'admin') {
       return res.status(403).json({ error: 'Solo administradores pueden gestionar usuarios.' });
     }
     callerUid = claims.sub;
@@ -190,6 +209,7 @@ module.exports = async (req, res) => {
     if (action === 'create') return res.status(201).json({ ok: true, ...(await createUsuario(admin, body)) });
     if (action === 'setEnabled') return res.status(200).json({ ok: true, ...(await setEnabled(admin, body, callerUid)) });
     if (action === 'delete') return res.status(200).json({ ok: true, ...(await deleteUsuario(admin, body, callerUid)) });
+    if (action === 'setRole') return res.status(200).json({ ok: true, ...(await setRole(admin, body, callerUid)) });
     return res.status(400).json({ error: `Acción desconocida: ${action}` });
   } catch (err) {
     const status = err && err.status ? err.status : 502;

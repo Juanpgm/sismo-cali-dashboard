@@ -53,6 +53,46 @@ async function verifyFirebaseToken(idToken, projectId) {
   return payload;
 }
 
+// ---- Effective dashboard role (single source of truth) ---------------------
+// Roles: 'admin' (Administrador — full access), 'usuario' (password default),
+// 'viewer' (Google @cali.gov.co), 'inspector' (@sismocali.gov.co field account),
+// 'otro'. Only 'admin' sees Stickers/Usuarios/Actualizar; everyone else sees
+// Panel only. Enforcement is server-side (here + stickers.js + usuarios.js);
+// the front-end gating is cosmetic.
+//
+// Precedence, and WHY:
+//   1. SUPERADMIN_EMAIL  → always 'admin', even without a claim. This is the
+//      bootstrap + anti-lockout: the one account that can never be demoted, so
+//      there is always at least one Administrador to hand out roles.
+//   2. explicit custom claim `role` → assigned via the "Cambiar rol" action.
+//   3. @sismocali.gov.co → 'inspector' (they are password-provider too, so the
+//      domain must be tested before the generic password branch).
+//   4. password (no claim) → 'usuario' (CHANGED: was 'admin' — password no
+//      longer implies admin; admin is now an explicit, assignable claim).
+//   5. google.com + @cali.gov.co → 'viewer'. Else 'otro'.
+const SUPERADMIN_EMAIL = (process.env.SUPERADMIN_EMAIL || 'juanp.gzmz@gmail.com').toLowerCase();
+const INSPECTOR_DOMAIN = '@sismocali.gov.co';
+const VIEWER_DOMAIN = '@cali.gov.co';
+
+function roleFrom({ email, claimRole, provider }) {
+  const e = String(email || '').toLowerCase();
+  if (e === SUPERADMIN_EMAIL) return 'admin';
+  if (claimRole) return claimRole;
+  if (e.endsWith(INSPECTOR_DOMAIN)) return 'inspector';
+  if (provider === 'password') return 'usuario';
+  if (provider === 'google.com' && e.endsWith(VIEWER_DOMAIN)) return 'viewer';
+  return 'otro';
+}
+
+// From a verified ID-token payload (custom claims sit at the top level).
+function roleFromClaims(claims) {
+  return roleFrom({
+    email: claims && claims.email,
+    claimRole: claims && claims.role,
+    provider: claims && claims.firebase && claims.firebase.sign_in_provider,
+  });
+}
+
 const SERVICE_ID = process.env.RAILWAY_SERVICE_ID || '156e97a2-596b-4861-95f4-4060dab408e2';
 // Cruce críticos↔survey (vista Gestión). El botón "Actualizar datos" refresca TODO:
 // datos del Panel (dashboard-refresh) + cruce de Gestión (cruce-gestion).
@@ -97,9 +137,9 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  // Solo administradores (login por usuario/contraseña) pueden disparar el
-  // refresh. Verificamos el ID token de Firebase y exigimos que la sesión sea
-  // por proveedor "password". Fail-closed: sin token válido → 401/403.
+  // Solo administradores (rol efectivo 'admin') pueden disparar el refresh.
+  // Verificamos el ID token de Firebase y exigimos rol admin. Fail-closed: sin
+  // token válido → 401/403.
   const authHeader = req.headers.authorization || '';
   const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
   if (!idToken) {
@@ -107,8 +147,7 @@ module.exports = async (req, res) => {
   }
   try {
     const claims = await verifyFirebaseToken(idToken, FIREBASE_PROJECT_ID);
-    const provider = claims.firebase && claims.firebase.sign_in_provider;
-    if (provider !== 'password') {
+    if (roleFromClaims(claims) !== 'admin') {
       return res.status(403).json({ error: 'Solo administradores pueden actualizar los datos.' });
     }
   } catch (err) {
@@ -143,3 +182,5 @@ module.exports = async (req, res) => {
 
 // Exposed for the self-check (api/refresh.test.js); Vercel uses the default export.
 module.exports.verifyFirebaseToken = verifyFirebaseToken;
+module.exports.roleFrom = roleFrom;
+module.exports.roleFromClaims = roleFromClaims;

@@ -1,17 +1,18 @@
 // Authentication gate for the dashboard.
 //
-// Roles are derived purely from HOW the user signed in:
-//   • Email/password (provider "password")  → ADMIN  — sees everything,
-//     including the "Acciones" tab and the "Actualizar datos" button.
-//     These users are created by hand in the Firebase console.
-//   • Google (provider "google.com") whose email ends in @cali.gov.co → VIEWER
-//     — Panel only; the Acciones tab and refresh button are hidden.
+// Roles (see roleForUser / api/refresh.js roleFrom — the shared source of truth):
+//   • ADMIN (Administrador) — sees everything: Stickers, Usuarios, "Actualizar
+//     datos", "Cambiar rol". Only juanp.gzmz@gmail.com by default (superadmin,
+//     un-lockable); others become admin via an assignable custom claim.
+//   • USUARIO — password account created from the Usuarios tab. Panel only.
+//   • VIEWER — Google @cali.gov.co (auto-provisioned on first sign-in). Panel only.
+//   • INSPECTOR — @sismocali.gov.co field account. Panel only.
 //   • Anything else (e.g. a Google account outside @cali.gov.co) is rejected.
 //
 // The role is applied to the document via `document.body.dataset.role`, which
-// CSS uses to hide admin-only chrome. The privileged action (refresh) is ALSO
-// verified server-side (api/refresh.js), so hiding the button is not the only
-// line of defense.
+// CSS uses to hide admin-only chrome for every non-admin role. The privileged
+// actions are ALSO enforced server-side (api/refresh.js, stickers.js,
+// usuarios.js), so hiding the chrome is not the only line of defense.
 //
 // ceiling: the static JSON in web/data/ stays publicly fetchable by URL — this
 // gates the UI and the refresh trigger, not the raw data files. Real data
@@ -24,8 +25,13 @@ import {
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
 import { ALLOWED_DOMAIN, isConfigured, getFirebaseApp } from './firebase-config.js';
 
+// Only juanp.gzmz@gmail.com is Administrador by default and can never be locked
+// out — mirrors SUPERADMIN_EMAIL in api/refresh.js. Everyone else is an
+// assignable role (admin via custom claim, otherwise usuario/viewer/inspector).
+const SUPERADMIN_EMAIL = 'juanp.gzmz@gmail.com';
+
 let auth = null;
-let currentRole = null; // 'admin' | 'viewer' | null
+let currentRole = null; // 'admin' | 'usuario' | 'viewer' | 'inspector' | null
 let overlayEl = null;   // referencia al overlay para cubrir desde cualquier lado
 
 export const getRole = () => currentRole;
@@ -62,13 +68,23 @@ export async function signOutUser() {
   }
 }
 
-function roleForUser(user) {
+// Effective dashboard role. Mirrors the server (api/refresh.js roleFrom) so the
+// UI gate and the API enforcement can never disagree. Reads the assignable
+// custom claim from the ID token. Precedence: superadmin email > custom claim >
+// @sismocali (inspector) > password (usuario) > google@cali (viewer) > reject.
+// Only 'admin' sees Stickers/Usuarios/Actualizar; the rest see Panel only.
+async function roleForUser(user) {
+  const email = (user.email || '').toLowerCase();
+  if (email === SUPERADMIN_EMAIL) return 'admin';
+  let claimRole = null;
+  try {
+    claimRole = (await user.getIdTokenResult()).claims.role || null;
+  } catch (_) { /* token read failed — fall through to the derived role */ }
+  if (claimRole) return claimRole;
+  if (email.endsWith('@sismocali.gov.co')) return 'inspector';
   const providers = (user.providerData || []).map((p) => p.providerId);
-  if (providers.includes('password')) return 'admin';
-  if (providers.includes('google.com')) {
-    const email = (user.email || '').toLowerCase();
-    return email.endsWith(`@${ALLOWED_DOMAIN}`) ? 'viewer' : null;
-  }
+  if (providers.includes('password')) return 'usuario';
+  if (providers.includes('google.com')) return email.endsWith(`@${ALLOWED_DOMAIN}`) ? 'viewer' : null;
   return null;
 }
 
@@ -211,7 +227,7 @@ export function initAuth(onFirstAuthorized) {
       return;
     }
 
-    const role = roleForUser(user);
+    const role = await roleForUser(user);
     if (!role) {
       // Signed in but not allowed (e.g. Google account outside the domain).
       await signOut(auth);
@@ -247,7 +263,7 @@ function mountUserChip(user, role) {
     const themeBtn = document.getElementById('theme-toggle');
     host.insertBefore(chip, themeBtn);
   }
-  const label = role === 'admin' ? 'Administrador' : 'Institucional';
+  const label = { admin: 'Administrador', usuario: 'Usuario', viewer: 'Institucional', inspector: 'Inspector' }[role] || role;
   chip.innerHTML = `
     <div class="user-chip-info">
       <span class="user-chip-role" data-role="${role}">${label}</span>

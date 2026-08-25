@@ -1553,11 +1553,14 @@ select.gestion-edit:focus, input.gestion-edit:focus { outline: none; border-colo
 /* Role gating: viewers (Google @cali.gov.co) don't get the Acciones tab
    nor the "Actualizar datos" button. The refresh endpoint is ALSO enforced
    server-side, so this is presentation, not the only guard. */
-body[data-role="viewer"] #refresh-btn,
-body[data-role="viewer"] #transito-download,
-body[data-role="viewer"] .view-tab[data-view="acciones"],
-body[data-role="viewer"] .view-tab[data-view="stickers"],
-body[data-role="viewer"] .view-tab[data-view="usuarios"] { display: none !important; }
+/* Only Administrador sees the privileged chrome. Every other role
+   (usuario / viewer / inspector) — and the logged-out state — is gated to
+   Panel only. Server-side enforcement lives in api/refresh|stickers|usuarios. */
+body:not([data-role="admin"]) #refresh-btn,
+body:not([data-role="admin"]) #transito-download,
+body:not([data-role="admin"]) .view-tab[data-view="acciones"],
+body:not([data-role="admin"]) .view-tab[data-view="stickers"],
+body:not([data-role="admin"]) .view-tab[data-view="usuarios"] { display: none !important; }
 
 /* TEMPORARY: the Acciones tab is suspended — visible but inert. Remove this
    rule (and the matching guard in main.js switchView) to reactivate it. */
@@ -1703,6 +1706,8 @@ body[data-role="viewer"] .view-tab[data-view="usuarios"] { display: none !import
 .usuario-row { grid-template-columns: auto 1fr auto auto; }
 .usuario-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-self: end; }
 .usuario-check { width: 20px; height: 20px; justify-self: center; cursor: pointer; accent-color: var(--sticker-off); }
+.usuario-role-select { appearance: auto; }
+.usuario-role-select:hover { border-color: var(--accent); color: var(--accent); }
 .usuario-search { flex: 1 1 220px; }
 .usuario-pager { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 16px; flex-wrap: wrap; }
 .usuario-pager-info { font-size: .82rem; color: var(--text-muted); text-align: center; margin-top: 12px; }
@@ -1954,7 +1959,9 @@ body[data-role="viewer"] .view-tab[data-view="usuarios"] { display: none !import
   text-transform: uppercase;
   color: var(--accent);
 }
-.user-chip-role[data-role="viewer"] { color: var(--text-secondary); }
+.user-chip-role[data-role="viewer"],
+.user-chip-role[data-role="usuario"],
+.user-chip-role[data-role="inspector"] { color: var(--text-secondary); }
 .user-chip-email {
   font-size: 0.72rem;
   color: var(--text-muted);

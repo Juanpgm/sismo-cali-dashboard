@@ -17,7 +17,7 @@
 // also `password` provider, so provider alone is not enough for user
 // management — we reject any caller whose own email is @sismocali.gov.co.
 
-const { verifyFirebaseToken } = require('./refresh.js');
+const { verifyFirebaseToken, roleFromClaims } = require('./refresh.js');
 
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'sismo-agosto-sgred';
 const INSPECTOR_DOMAIN = '@sismocali.gov.co';
@@ -228,17 +228,16 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  // Fail-closed auth: valid Firebase ID token, provider "password", and the
-  // caller must be a dashboard admin — NOT an inspector (inspectors are also
-  // password-provider, so we reject @sismocali.gov.co callers).
+  // Fail-closed auth: valid Firebase ID token AND effective role 'admin'.
+  // roleFromClaims already resolves inspectors (@sismocali, password-provider)
+  // to 'inspector' — not 'admin' — so this one check replaces the old
+  // provider + domain guard. See refresh.js roleFrom.
   const authHeader = req.headers.authorization || '';
   const idToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
   if (!idToken) return res.status(401).json({ error: 'Autenticación requerida.' });
   try {
     const claims = await verifyFirebaseToken(idToken, FIREBASE_PROJECT_ID);
-    const provider = claims.firebase && claims.firebase.sign_in_provider;
-    const email = String(claims.email || '').toLowerCase();
-    if (provider !== 'password' || email.endsWith(INSPECTOR_DOMAIN)) {
+    if (roleFromClaims(claims) !== 'admin') {
       return res.status(403).json({ error: 'Solo administradores pueden gestionar inspectores.' });
     }
   } catch (err) {
