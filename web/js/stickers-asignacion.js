@@ -71,6 +71,8 @@ export function buildRows(puntos, cuadrillas, inspectores) {
       direccion: p.direccion || '',
       zona: p.zona_id || '',
       estado_asignacion: p.estado_asignacion || 'pendiente',
+      habitabilidad: (p.criterio_habitabilidad || '').toUpperCase(),
+      colapso: p.colapso || 'no',
       cuadrilla_id: p.cuadrilla_id || null,
       cuadrillaLabel: cuadrilla ? (cuadrilla.nombre || cuadrilla.id) : '—',
       inspector_uid: p.inspector_uid || null,
@@ -225,10 +227,23 @@ function filtersHtml(active) {
 const SORTABLE = [
   ['direccion', 'Dirección'],
   ['zona', 'Zona'],
+  ['habitabilidad', 'Habitabilidad'],
+  ['colapso', 'Colapso'],
   ['estado_asignacion', 'Estado'],
   ['inspectorLabel', 'Inspector'],
   ['tier', 'Tier'],
 ];
+
+// Habitability criterion color (H green · R amber · I red) reusing the habitability
+// palette; collapse gets a red pill when total/parcial, muted when 'no'.
+const HABIT_COLOR = (h) => {
+  const v = String(h || '').toLowerCase();
+  if (v.startsWith('h')) return COLORS.status.h;
+  if (v.startsWith('r')) return COLORS.status.r2;
+  if (v.startsWith('i')) return COLORS.status.i2;
+  return COLORS.unknown;
+};
+const COLAPSO_LABEL = { total: 'Total', parcial: 'Parcial', no: '—' };
 
 function tableHtml(rows, sort, selected) {
   const head = SORTABLE.map(([key, label]) => {
@@ -243,11 +258,13 @@ function tableHtml(rows, sort, selected) {
         <td><input type="checkbox" class="asignacion-check" data-punto-check="${escapeHtml(r.id)}" ${selected.has(r.id) ? 'checked' : ''} ${r.tiene_sticker ? 'disabled title="Ya tiene sticker; no requiere visita"' : (r.cuadrilla_id ? 'disabled title="Ya pertenece a una cuadrilla"' : '')}></td>
         <td>${escapeHtml(r.direccion || 'Sin dato')}</td>
         <td>${escapeHtml(r.zona || 'Sin dato')}</td>
+        <td>${r.habitabilidad ? `<span class="eval-pill" style="--eval-pill:${HABIT_COLOR(r.habitabilidad)}">${escapeHtml(r.habitabilidad)}</span>` : '—'}</td>
+        <td>${r.colapso && r.colapso !== 'no' ? `<span class="eval-pill" style="--eval-pill:${COLORS.status.i2}">${escapeHtml(COLAPSO_LABEL[r.colapso] || r.colapso)}</span>` : '—'}</td>
         <td><span class="eval-pill" style="--eval-pill:${ESTADO_COLOR[r.estado_asignacion] || COLORS.unknown}">${escapeHtml(ESTADO_LABELS[r.estado_asignacion] || r.estado_asignacion)}</span></td>
         <td>${escapeHtml(r.inspectorLabel)}</td>
         <td>${escapeHtml(r.tier || '—')}</td>
       </tr>`).join('')
-    : `<tr><td colspan="6" class="sticker-empty">Sin puntos para este filtro.</td></tr>`;
+    : `<tr><td colspan="8" class="sticker-empty">Sin puntos para este filtro.</td></tr>`;
   return `<table><thead><tr><th></th>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
