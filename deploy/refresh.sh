@@ -40,6 +40,15 @@ report_status() {
       "$STATUS_STEP" "$code" "$(printf '%s' "$BASH_COMMAND" | python -c 'import json,sys;print(json.dumps(sys.stdin.read()))')" > "$tmp"
   fi
   python /repo/deploy/blob_sync.py upload "$tmp" data/_status.json --max-age 0 --content-type application/json >/dev/null 2>&1 || true
+  # Mirror via a git side-branch push too (uses DASHBOARD_REPO_TOKEN, not
+  # BLOB_READ_WRITE_TOKEN) — if the Blob upload above is what's silently
+  # failing, this independent channel still tells us the run happened and how
+  # far it got. main is the only branch Vercel builds, so this never deploys.
+  ( cd /repo && cp "$tmp" _status_debug.json \
+    && git checkout -q -B _status_debug \
+    && git add _status_debug.json \
+    && git -c user.email=bot@x -c user.name=bot commit -q -m status \
+    && git push -q -f origin _status_debug:_status_debug ) 2>&1 | _scrub || true
   rm -f "$tmp"
 }
 trap report_status EXIT
