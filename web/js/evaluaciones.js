@@ -169,6 +169,10 @@ let map = null;
 let baseTile = null;
 let pointsLayer = null;
 let legendEl = null;
+// Bounds fitted at build time. The map is built while its section is hidden
+// (0×0), so the build-time fit computes a wrong zoom; re-applied on invalidate
+// once the section is visible and correctly sized.
+let lastFitBounds = null;
 // id -> circleMarker, so hovering a row in the aside can point at the map.
 let markerById = new Map();
 
@@ -258,11 +262,9 @@ function renderMap(containerId, evaluaciones, onDetail) {
   const inBox = conCoords.filter((e) =>
     e.coords.lat >= CALI_BBOX.latMin && e.coords.lat <= CALI_BBOX.latMax
     && e.coords.lng >= CALI_BBOX.lngMin && e.coords.lng <= CALI_BBOX.lngMax);
-  if (inBox.length) {
-    map.fitBounds(L.latLngBounds(inBox.map((e) => [e.coords.lat, e.coords.lng])), {
-      padding: [40, 40],
-      maxZoom: 16,
-    });
+  lastFitBounds = inBox.length ? L.latLngBounds(inBox.map((e) => [e.coords.lat, e.coords.lng])) : null;
+  if (lastFitBounds) {
+    map.fitBounds(lastFitBounds, { padding: [40, 40], maxZoom: 16 });
   } else {
     map.setView(CALI_CENTER, CALI_ZOOM);
   }
@@ -485,4 +487,16 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
     if (document.visibilityState === 'hidden' || section.closest('[hidden]')) return;
     load({ silent: true }).catch(() => {});
   }, AUTO_REFRESH_MS);
+
+  // The map is built while this section is hidden (display:none → 0 size), so
+  // Leaflet renders broken tiles AND fits to a wrong zoom until it re-measures
+  // once visible. stickers.js calls this each time the Evaluaciones segment is
+  // opened: re-measure, then re-fit so the zoom matches the real container size.
+  return {
+    invalidate: () => {
+      if (!map) return;
+      map.invalidateSize();
+      if (lastFitBounds) map.fitBounds(lastFitBounds, { padding: [40, 40], maxZoom: 16 });
+    },
+  };
 }

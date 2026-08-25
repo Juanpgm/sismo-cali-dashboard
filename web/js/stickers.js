@@ -200,7 +200,7 @@ export function initStickers(root, { getToken }) {
   // of re-initializing (spec.md "Init runs once on first Asignación open").
   let asignacionHandle = null;
 
-  initEvaluaciones(root.querySelector('.eval-section'), {
+  const evaluacionesHandle = initEvaluaciones(root.querySelector('.eval-section'), {
     fetchEvaluaciones: async () => (await callApi(getToken, { action: 'evaluaciones' })).evaluaciones,
   });
 
@@ -211,6 +211,11 @@ export function initStickers(root, { getToken }) {
       btn.classList.toggle('is-active', active);
       btn.setAttribute('aria-selected', String(active));
     });
+    // Leaflet renders broken tiles when its container was hidden at build time;
+    // re-measure once the segment is actually visible.
+    if (name === 'evaluaciones' && evaluacionesHandle) {
+      setTimeout(() => evaluacionesHandle.invalidate(), 60);
+    }
     if (name !== 'asignacion') return;
     if (asignacionHandle) {
       asignacionHandle.reload();
