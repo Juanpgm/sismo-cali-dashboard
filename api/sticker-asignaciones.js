@@ -115,6 +115,16 @@ function pointsWithSticker(points) {
     .map((p) => p.id);
 }
 
+// Total-collapse guard: nothing left standing to post a sticker on, so a
+// totally collapsed point is never assignable/groupable either — 'parcial'
+// and 'no' both stay eligible, only 'total' is excluded. Returns the ids of
+// such points. Exported for the self-check.
+function pointsWithColapsoTotal(points) {
+  return (points || [])
+    .filter((p) => p && p.colapso === 'total')
+    .map((p) => p.id);
+}
+
 // ---- Firestore-backed actions ----------------------------------------------
 
 async function listPuntos(admin) {
@@ -139,12 +149,14 @@ async function runAutoAgrupar(admin, body) {
     .where('estado_asignacion', '==', 'pendiente')
     .where('cuadrilla_id', '==', null)
     .get();
-  // Exclude already-stickered points in code rather than adding a third
-  // equality `where` (that would need a new composite index). A point with
-  // tiene_sticker === true is already evaluated and must never be grouped.
+  // Exclude already-stickered and totally-collapsed points in code rather
+  // than adding more equality `where`s (that would need new composite
+  // indexes). A point with tiene_sticker === true is already evaluated and
+  // must never be grouped; a colapso:'total' point has nothing left standing
+  // to post a sticker on ('parcial' and 'no' both stay eligible).
   const puntos = snap.docs
     .map((d) => ({ id: d.id, ...d.data() }))
-    .filter((p) => p.tiene_sticker !== true);
+    .filter((p) => p.tiene_sticker !== true && p.colapso !== 'total');
   if (puntos.length === 0) return [];
 
   const grupos = autoAgrupar(puntos, { maxRadiusM, maxSize });
@@ -181,12 +193,17 @@ async function crearCuadrilla(admin, body) {
     id: s.id,
     cuadrilla_id: s.exists ? (s.data().cuadrilla_id ?? null) : null,
     tiene_sticker: s.exists ? (s.data().tiene_sticker === true) : false,
+    colapso: s.exists ? (s.data().colapso ?? null) : null,
   }));
-  // No-sticker guard: reject before the already-in-a-cuadrilla guard so the
-  // operator gets the more specific reason first.
+  // No-sticker / total-collapse guards: reject before the already-in-a-cuadrilla
+  // guard so the operator gets the more specific reason first.
   const stickered = pointsWithSticker(current);
   if (stickered.length) {
     throw badRequest(`${stickered.length} punto(s) ya tienen sticker y no requieren visita; quitar esos puntos de la selección.`);
+  }
+  const colapsados = pointsWithColapsoTotal(current);
+  if (colapsados.length) {
+    throw badRequest(`${colapsados.length} punto(s) tienen colapso total y no requieren visita; quitar esos puntos de la selección.`);
   }
   const conflicts = pointsAlreadyAssigned(current, null);
   if (conflicts.length) {
@@ -440,5 +457,6 @@ module.exports.haversineM = haversineM;
 module.exports.commitInChunks = commitInChunks;
 module.exports.pointsAlreadyAssigned = pointsAlreadyAssigned;
 module.exports.pointsWithSticker = pointsWithSticker;
+module.exports.pointsWithColapsoTotal = pointsWithColapsoTotal;
 module.exports.DEFAULT_MAX_RADIUS_M = DEFAULT_MAX_RADIUS_M;
 module.exports.DEFAULT_MAX_SIZE = DEFAULT_MAX_SIZE;

@@ -7,18 +7,21 @@ import {
   gaugeCounts, isHabilitado,
 } from './stickers-asignacion.js';
 
-// ---- colorForPunto — spec.md "Map view — 3-color legend" scenarios --------
-// 3 estados only: 'en_proceso' is a legacy value no write path in this repo
-// ever produces (buildRows folds it into 'asignado' before this is ever called).
+// ---- colorForPunto — spec.md "Map view" legend scenarios -------------------
 assert.equal(colorForPunto({ tiene_sticker: true, estado_asignacion: 'pendiente' }), 'blue');
 assert.equal(colorForPunto({ tiene_sticker: false, estado_asignacion: 'pendiente' }), 'red');
 assert.equal(colorForPunto({ tiene_sticker: false, estado_asignacion: 'asignado' }), 'amber');
-// tiene_sticker wins even when also assigned — matched-and-assigned still reads as "done".
+// en_proceso gets its OWN colour — a cuadrilla actively working the point,
+// distinct from just-assigned-not-started.
+assert.equal(colorForPunto({ tiene_sticker: false, estado_asignacion: 'en_proceso' }), 'yellow');
+// tiene_sticker wins even when also assigned/en_proceso — matched still reads as "done".
 assert.equal(colorForPunto({ tiene_sticker: true, estado_asignacion: 'asignado' }), 'blue');
+assert.equal(colorForPunto({ tiene_sticker: true, estado_asignacion: 'en_proceso' }), 'blue');
 
 // ---- buildRows — derived estado: 'hecho' SOLO si tiene_sticker; un punto
 // asignado (o marcado 'hecho' por el inspector, aún sin confirmar por el cruce
-// diario) nunca retrocede a 'pendiente' --------------------------------------
+// diario) nunca retrocede a 'pendiente'; en_proceso pasa tal cual si el doc ya
+// lo trae (nadie lo escribe todavía, pero no debe aplastarse a 'asignado') ---
 assert.equal(buildRows([{ id: 'p1', tiene_sticker: true, estado_asignacion: 'pendiente' }], [], [])[0].estado_asignacion, 'hecho');
 assert.equal(buildRows([{ id: 'p2', tiene_sticker: false, cuadrilla_id: 'c1' }], [], [])[0].estado_asignacion, 'asignado');
 assert.equal(buildRows([{ id: 'p3', tiene_sticker: false, inspector_uid: 'u1' }], [], [])[0].estado_asignacion, 'asignado');
@@ -26,6 +29,9 @@ assert.equal(buildRows([{ id: 'p3', tiene_sticker: false, inspector_uid: 'u1' }]
 // no lo confirmó: sigue leyendo 'asignado', no 'pendiente'.
 assert.equal(buildRows([{ id: 'p4', tiene_sticker: false, inspector_uid: 'u1', estado_asignacion: 'hecho' }], [], [])[0].estado_asignacion, 'asignado');
 assert.equal(buildRows([{ id: 'p5', tiene_sticker: false }], [], [])[0].estado_asignacion, 'pendiente');
+assert.equal(buildRows([{ id: 'p6', tiene_sticker: false, cuadrilla_id: 'c1', estado_asignacion: 'en_proceso' }], [], [])[0].estado_asignacion, 'en_proceso');
+// tiene_sticker todavía gana sobre en_proceso.
+assert.equal(buildRows([{ id: 'p7', tiene_sticker: true, estado_asignacion: 'en_proceso' }], [], [])[0].estado_asignacion, 'hecho');
 
 // ---- isHabilitado — mismo criterio que stickers.js:rowHtml -----------------
 assert.equal(isHabilitado({ disabled: false, activo: true }), true);

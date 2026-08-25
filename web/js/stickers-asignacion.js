@@ -23,18 +23,27 @@ const CALI_BBOX = { latMin: 3.30, latMax: 3.55, lngMin: -76.60, lngMax: -76.40 }
 const DEFAULT_MAX_RADIUS_M = 800;
 const DEFAULT_MAX_SIZE = 8;
 
-// 3 estados: 'en_proceso' era una categoría heredada que ningún flujo de esta
-// app llegó a escribir nunca (ni el CRUD de admin ni el formulario del
-// inspector) — buildRows() ya no la produce, se pliega en 'asignado'.
-const ESTADOS = ['pendiente', 'asignado', 'hecho'];
-const ESTADO_LABELS = { pendiente: 'Pendiente', asignado: 'Asignado', hecho: 'Hecho' };
-// Same red -> orange -> green ramp already used for habitability (COLORS.status).
+// 4 estados. 'en_proceso' = una cuadrilla ya está trabajando el punto en
+// campo (a diferencia de 'asignado', que solo significa que se le asignó un
+// inspector pero todavía no arrancó la visita) — ningún flujo de ESTA app lo
+// escribe todavía (ni el CRUD de admin ni el formulario del inspector), pero
+// sí puede llegar por edición manual en Firestore o por un flujo futuro, así
+// que displayEstado() lo respeta si lo encuentra en vez de aplastarlo contra
+// 'asignado'.
+const ESTADOS = ['pendiente', 'asignado', 'en_proceso', 'hecho'];
+const ESTADO_LABELS = { pendiente: 'Pendiente', asignado: 'Asignado', en_proceso: 'En proceso', hecho: 'Hecho' };
+// Red -> amber (asignado) -> yellow (en_proceso) -> green (hecho); mismo
+// esquema de COLORS.status que habitabilidad, con r1 como el escalón propio
+// de en_proceso — ya lo usaba la tabla antes, ahora también el mapa.
 const ESTADO_COLOR = {
-  pendiente: COLORS.status.i2, asignado: COLORS.status.r2, hecho: COLORS.status.h,
+  pendiente: COLORS.status.i2, asignado: COLORS.status.r2, en_proceso: COLORS.status.r1, hecho: COLORS.status.h,
 };
-// spec.md "Map view — 3-color legend": blue (tiene_sticker) / red (pendiente)
-// / amber (asignado). categorical[0] is the repo's existing blue.
-const MARKER_HEX = { blue: COLORS.categorical[0], red: COLORS.status.i2, amber: COLORS.status.r2 };
+// spec.md "Map view — legend": blue (tiene_sticker) / red (pendiente) / amber
+// (asignado) / yellow (en_proceso). categorical[0] is the repo's existing blue.
+const MARKER_HEX = {
+  blue: COLORS.categorical[0], red: COLORS.status.i2,
+  amber: COLORS.status.r2, yellow: COLORS.status.r1,
+};
 
 // cloned verbatim from web/js/stickers.js:19-30 (ENDPOINT swapped).
 async function callApi(getToken, body) {
@@ -52,23 +61,28 @@ async function callApi(getToken, body) {
 
 // ---- pure logic (exported for the self-check, stickers-asignacion.test.mjs) ----
 
-/** Map marker colour per spec.md's 3-color legend. `tiene_sticker` wins over
+/** Map marker colour per spec.md's map legend. `tiene_sticker` wins over
  *  estado (a matched-and-assigned point still reads as "done", not amber). */
 export function colorForPunto(punto) {
   if (punto && punto.tiene_sticker === true) return 'blue';
+  if (punto && punto.estado_asignacion === 'en_proceso') return 'yellow';
   if (punto && punto.estado_asignacion === 'asignado') return 'amber';
   return 'red';
 }
 
-/** Derived 3-state estado a row/punto displays: 'hecho' ONLY once the daily
+/** Derived estado a row/punto displays: 'hecho' ONLY once the daily
  *  cruce_sticker.py confirms the sticker (tiene_sticker) — an inspector's own
  *  "marcarHecho" submission (api/inspector-asignaciones.js) flips the RAW
  *  admin-owned estado_asignacion to 'hecho' first, but that's still just a
  *  pending confirmation from the pipeline's point of view, so it reads here as
  *  'asignado' (never regresses to 'pendiente' — see cuadrilla_id/inspector_uid
- *  below) until tiene_sticker catches up. */
+ *  below) until tiene_sticker catches up. 'en_proceso' passes through as-is
+ *  when the raw doc already carries it (no write path in THIS app sets it yet,
+ *  but a manual edit or a future flow might, and it shouldn't get silently
+ *  collapsed into 'asignado' when it does). */
 function displayEstado(p) {
   if (p && p.tiene_sticker === true) return 'hecho';
+  if (p && p.estado_asignacion === 'en_proceso') return 'en_proceso';
   if (p && (p.cuadrilla_id || p.inspector_uid)) return 'asignado';
   return 'pendiente';
 }
@@ -157,7 +171,10 @@ export function gaugeCounts(rows) {
   let pendiente = 0;
   for (const r of rows || []) {
     if (r.tiene_sticker === true) barrido += 1;
-    else if (r.estado_asignacion === 'asignado') asignado += 1;
+    // El gauge sigue siendo de 3 segmentos: en_proceso cuenta como "en marcha",
+    // igual que asignado — el color propio de en_proceso vive en la tabla y el
+    // mapa, no acá.
+    else if (r.estado_asignacion === 'asignado' || r.estado_asignacion === 'en_proceso') asignado += 1;
     else pendiente += 1;
   }
   return { barrido, asignado, pendiente, total: (rows || []).length };
@@ -279,7 +296,7 @@ function tableHtml(rows, sort, selected) {
   }).join('');
   const body = rows.length
     ? rows.map((r) => `<tr>
-        <td><input type="checkbox" class="asignacion-check" data-punto-check="${escapeHtml(r.id)}" ${selected.has(r.id) ? 'checked' : ''} ${r.tiene_sticker ? 'disabled title="Ya tiene sticker; no requiere visita"' : (r.cuadrilla_id ? 'disabled title="Ya pertenece a una cuadrilla"' : '')}></td>
+        <td><input type="checkbox" class="asignacion-check" data-punto-check="${escapeHtml(r.id)}" ${selected.has(r.id) ? 'checked' : ''} ${r.tiene_sticker ? 'disabled title="Ya tiene sticker; no requiere visita"' : (r.colapso === 'total' ? 'disabled title="Colapso total; no requiere visita"' : (r.cuadrilla_id ? 'disabled title="Ya pertenece a una cuadrilla"' : ''))}></td>
         <td>${escapeHtml(r.direccion || 'Sin dato')}</td>
         <td>${escapeHtml(r.zona || 'Sin dato')}</td>
         <td>${r.habitabilidad ? `<span class="eval-pill" style="--eval-pill:${HABIT_COLOR(r.habitabilidad)}">${escapeHtml(r.habitabilidad)}</span>` : '—'}</td>
@@ -517,7 +534,8 @@ function renderMap(rows, inspectores, onReasignar) {
       <div class="legend-title">Estado del sticker</div>
       <div class="legend-row"><span class="legend-swatch legend-circle" style="background:${MARKER_HEX.blue}"></span><span>Tiene sticker</span></div>
       <div class="legend-row"><span class="legend-swatch legend-circle" style="background:${MARKER_HEX.red}"></span><span>Pendiente</span></div>
-      <div class="legend-row"><span class="legend-swatch legend-circle" style="background:${MARKER_HEX.amber}"></span><span>Asignado / en proceso</span></div>`;
+      <div class="legend-row"><span class="legend-swatch legend-circle" style="background:${MARKER_HEX.amber}"></span><span>Asignado</span></div>
+      <div class="legend-row"><span class="legend-swatch legend-circle" style="background:${MARKER_HEX.yellow}"></span><span>En proceso</span></div>`;
     return legendEl;
   };
   legend.addTo(map);

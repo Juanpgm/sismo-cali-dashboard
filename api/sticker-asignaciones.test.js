@@ -65,6 +65,19 @@ assert.deepStrictEqual(sa.pointsWithSticker(stickerFixture), ['yes', 'yes2']);
 assert.deepStrictEqual(sa.pointsWithSticker([]), []);
 assert.deepStrictEqual(sa.pointsWithSticker(undefined), []);
 
+// ---- pointsWithColapsoTotal — total-collapse guard (only 'total' excluded,
+// 'parcial' and 'no' stay assignable) ----------------------------------------
+const colapsoFixture = [
+  { id: 'sin', colapso: 'no' },
+  { id: 'parcial', colapso: 'parcial' },
+  { id: 'total1', colapso: 'total' },
+  { id: 'missing' }, // undefined -> treated as assignable, not total
+  { id: 'total2', colapso: 'total' },
+];
+assert.deepStrictEqual(sa.pointsWithColapsoTotal(colapsoFixture), ['total1', 'total2']);
+assert.deepStrictEqual(sa.pointsWithColapsoTotal([]), []);
+assert.deepStrictEqual(sa.pointsWithColapsoTotal(undefined), []);
+
 // ---- commitInChunks — never exceeds 500 ops/batch, covers every item -------
 async function checkChunks(n) {
   const commits = [];
