@@ -102,6 +102,7 @@ def build_features(
     repair_stats: Counter = Counter()
 
     out_features = []
+    dropped = []
     for ft, raw_name in zip(features, names):
         name = raw_name
         if reference_tokens is not None and raw_name:
@@ -109,10 +110,6 @@ def build_features(
             repair_stats[source] += 1
             if source == "fallback_stripped":
                 print(f"  WARNING: no confident repair for {raw_name!r} -> fell back to {name!r}")
-
-        base_slug = slugify(name or "unknown")
-        slug_seen[base_slug] += 1
-        feature_id = base_slug if slug_seen[base_slug] == 1 else f"{base_slug}-{slug_seen[base_slug]}"
 
         geom = shape(ft["geometry"])
         simplified = geom.simplify(tolerance, preserve_topology=True)
@@ -126,6 +123,24 @@ def build_features(
         if not simplified.is_valid:
             print(f"  WARNING: {name!r} simplified to an invalid geometry — repairing with buffer(0).")
             simplified = simplified.buffer(0)
+        # A handful of source rows are near-zero-area sliver duplicates of a
+        # real, normal-sized barrio/comuna (a leftover artifact of whatever
+        # GIS overlay produced the combined barrio+vereda / comuna+corregimiento
+        # layer — e.g. two "Terron Colorado" rows, one real, one a ~1e-13 sq-deg
+        # sliver). 5-decimal coordinate rounding collapses a sliver that small
+        # to a degenerate/empty geometry, which Leaflet's L.geoJSON() then
+        # fails to render (and can abort rendering the REST of the layer too,
+        # not just that one feature). Drop it — the real, full-sized feature
+        # for the same name still comes through as its own row.
+        if simplified.is_empty:
+            print(f"  WARNING: {name!r} ({raw_name!r}) simplified to an empty geometry — dropping "
+                  f"(likely a near-zero-area duplicate row in the source; area={geom.area:.2e} sq deg).")
+            dropped.append(name)
+            continue
+
+        base_slug = slugify(name or "unknown")
+        slug_seen[base_slug] += 1
+        feature_id = base_slug if slug_seen[base_slug] == 1 else f"{base_slug}-{slug_seen[base_slug]}"
 
         out_features.append(
             {
@@ -134,6 +149,8 @@ def build_features(
                 "geometry": mapping(simplified),
             }
         )
+    if dropped:
+        print(f"  -> {len(dropped)} degenerate feature(s) dropped: {dropped}")
 
     return out_features, repair_stats
 
