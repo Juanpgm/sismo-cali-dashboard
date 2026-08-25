@@ -328,8 +328,11 @@ function mountCombobox(comboEl, { inspectores, counts, onSelect }) {
     active = -1;
   };
 
-  function render() {
-    const matches = filterInspectores(inspectores, input.value);
+  // `query` overrides the input value — on focus we pass '' so the FULL roster
+  // shows even when the input still holds the current inspector's name (so
+  // changing an already-assigned cuadrilla to another inspector is one click).
+  function render(query) {
+    const matches = filterInspectores(inspectores, query === undefined ? input.value : query);
     options = [];
     list.innerHTML = matches.map((insp) => {
       const count = counts.get(insp.uid) || 0;
@@ -366,10 +369,12 @@ function mountCombobox(comboEl, { inspectores, counts, onSelect }) {
     onSelect(uid);
   }
 
-  input.addEventListener('focus', render);
-  input.addEventListener('input', render);
+  // On focus: select the text so typing replaces the current name, and show the
+  // whole roster (query '') so another inspector is immediately pickable.
+  input.addEventListener('focus', () => { input.select(); render(''); });
+  input.addEventListener('input', () => render());
   input.addEventListener('keydown', (ev) => {
-    if (ev.key === 'ArrowDown') { ev.preventDefault(); if (list.hidden) render(); highlight(active < 0 ? 0 : active + 1, 1); }
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); if (list.hidden) render(''); highlight(active < 0 ? 0 : active + 1, 1); }
     else if (ev.key === 'ArrowUp') { ev.preventDefault(); highlight(active < 0 ? options.length - 1 : active - 1, -1); }
     else if (ev.key === 'Enter') { ev.preventDefault(); if (active >= 0 && options[active]) choose(options[active].uid, options[active].disabled); }
     else if (ev.key === 'Escape') { close(); }
