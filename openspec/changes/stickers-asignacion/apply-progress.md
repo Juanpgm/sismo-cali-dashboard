@@ -164,3 +164,139 @@ below). Phases 2–4 are separate PRs/batches, not started.
   with real credentials.
 - Carry task 1.7's open item forward: confirm with the operator whether the Railway cron service
   was created before or independently of Phase 2's apply session.
+
+---
+
+# Batch 2 — Phase 2: API (`feat/stickers-asignacion-2-api`)
+
+Branch: `feat/stickers-asignacion-2-api` (branched from `main`, Phase 1's openspec bookkeeping
+already merged). This PR lives entirely in `api/`, inside THIS repo (unlike Phase 1 — no subrepo
+topology issue here, `api/` is directly tracked by `sismo-cali-dashboard`).
+
+## Scope of this batch
+
+Phase 2 — API (`api/sticker-asignaciones.js` + `api/sticker-asignaciones.test.js`). Tasks 2.1–2.11.
+Task 0.2 (`maxRadiusM`/`maxSize` defaults) is still open — shipped as named placeholder constants
+per its own instruction, not blocking.
+
+## Completed tasks
+
+- [x] **2.1** — `api/sticker-asignaciones.js` scaffolded: 405 guard, Bearer token extraction,
+  `verifyFirebaseToken` + `roleFromClaims` from `./refresh.js`, fail-closed
+  `roleFromClaims(claims) !== 'admin'` → 403, try/router on `body.action`, `err.status || 502`.
+  `getAdmin()` singleton copied (not imported) from `api/stickers.js:50-61`, same self-contained
+  convention `api/usuarios.js` already documents for itself.
+- [x] **2.2** (RED) — `api/sticker-asignaciones.test.js` written first: determinism (same fixture
+  twice → identical group membership), `maxSize` cap (10 dense points, cap 3 → no group >3, every
+  point placed exactly once), `maxRadiusM` cap (far point never joins the near seed's group), empty
+  input → `[]`. Ran before `sticker-asignaciones.js` existed — confirmed `Cannot find module
+  './sticker-asignaciones.js'` (exit 1).
+- [x] **2.3** — `listPuntos` (`{ok, puntos}`, full `sticker_matches` read) and `listCuadrillas`
+  (`{ok, cuadrillas}`, full `cuadrillas` read) implemented; neither reads
+  `inspections.json`/`puntos_israel_cali.json` anywhere in the file (grep-confirmed, see Work Unit
+  Evidence).
+- [x] **2.4** (GREEN) — Pure `autoAgrupar(puntos, {maxRadiusM, maxSize})` per ADR-3's locked
+  pseudocode (stable `[lat, lon]` sort, no RNG, no k-means) + `haversineM` (no existing JS
+  haversine found in `web/js/*.js` — checked `evaluaciones.js` and the rest, none exists; ported the
+  same formula `scripts/refresh_data.py`'s `_haversine_m` and `scripts/geocode_validate.py`'s
+  `haversine_m` already use). Exported for the test file. Ran 2.2 again → GREEN (see Work Unit
+  Evidence). O(n²) scan marked with the exact `ponytail:` comment tasks.md specifies.
+- [x] **2.5** — `autoAgrupar` action handler (`runAutoAgrupar`) reads `pendiente` points with
+  `cuadrilla_id == null` via a Firestore compound query, calls the pure function with
+  `maxRadiusM`/`maxSize` (request override or the task-0.2 placeholder constants), batch-creates
+  `cuadrillas` docs with `origen:'auto'`, `inspector_uid:null`, sets `cuadrilla_id` on every member
+  point in the same batch. Does not touch `estado_asignacion` anywhere in this function. Empty
+  pending set short-circuits to `[]` before any Firestore write.
+- [x] **2.6** — `crearCuadrilla({nombre, puntos})` → new `cuadrillas` doc, `origen:'manual'`, sets
+  `cuadrilla_id` on every listed point in the same batch. Rejects an empty `puntos` array
+  (`badRequest`).
+- [x] **2.7** — `editarCuadrilla({cuadrilla_id, add, remove})` merges add/remove into the existing
+  `puntos` set (dedup via `Set`), writes the new membership plus `cuadrilla_id`/`null` on affected
+  points in one batch; throws (no writes) if the `cuadrillas` doc doesn't exist.
+- [x] **2.8** — `asignarInspector({cuadrilla_id, inspector_uid})` reads the cuadrilla's current
+  `puntos`, batch-sets `inspector_uid`, `asignado_en` (`admin.firestore.FieldValue.serverTimestamp()`),
+  `estado_asignacion:'asignado'` on every member point plus `inspector_uid` on the cuadrilla doc
+  itself.
+- [x] **2.9** — `reasignarPunto({punto_id, nuevo_inspector_uid})` reads the point's current
+  `inspector_uid` (defaults to `null` if unset), sets `reasignado_de` to that previous value and
+  `inspector_uid` to the new one via `merge:true` — `cuadrilla_id` is never touched by this
+  function.
+- [x] **2.10** — `eliminarCuadrilla({cuadrilla_id})` clears `cuadrilla_id`/`inspector_uid` on every
+  member point in one batch **committed before** the `cuadrillas` doc delete call (two separate
+  Firestore operations, ordered — matches the spec's "no point left referencing a nonexistent
+  cuadrilla even if the delete step fails partway").
+- [x] **2.11** — `node api/sticker-asignaciones.test.js` → `sticker-asignaciones.test.js OK` (exit
+  0). `node --check api/sticker-asignaciones.js` → syntax clean. Sibling self-checks re-run as a
+  regression safety net: `node api/stickers.test.js` → OK, `node api/usuarios.test.js` → OK (neither
+  touched by this batch). Grep for any `evaluaciones` write call
+  (`\.collection\('evaluaciones'\)\.(set|update|delete|add)`) in `api/sticker-asignaciones.js` →
+  zero matches (the only `evaluaciones` occurrence in the file is a code comment referencing
+  `web/js/evaluaciones.js` by name, not a Firestore call).
+
+## Deviations from design / risks discovered
+
+- **None that require correction.** Implementation matches `design.md` ADR-1 (field-group
+  ownership respected — this endpoint only ever writes admin-owned fields, never the pipeline-owned
+  subset), ADR-3 (endpoint shape, action table, greedy-clustering algorithm verbatim from the
+  pseudocode, including the exact `ponytail:` comment), and every Phase-2 spec requirement/scenario
+  in `specs/stickers-asignacion/spec.md`.
+- **Task 0.2 still open, as expected.** `maxRadiusM`/`maxSize` (800m/8 points) shipped as named
+  constants (`DEFAULT_MAX_RADIUS_M`, `DEFAULT_MAX_SIZE`) at the top of `api/sticker-asignaciones.js`,
+  not magic numbers — `runAutoAgrupar` also accepts a per-call override (`body.maxRadiusM`/
+  `body.maxSize`) so Phase 3's frontend settings affordance (task 3.5) can override without another
+  backend change. No operator confirmation obtained this batch; flagged again here per instruction.
+- **`editarCuadrilla`'s `add`/`remove` field names are not spelled out verbatim in `design.md`**
+  (design.md's ADR-3 table just says "add/remove points from an existing cuadrilla" without naming
+  the request fields). Chose `{cuadrilla_id, add: [...], remove: [...]}` as the natural shape given
+  spec.md's two scenarios (add and remove are independent operations) — no spec scenario asserts a
+  specific field name, so this is a request-shape implementation detail, not a deviation from a
+  locked contract. Documented here for Phase 3's frontend to consume as-is.
+- **No use of a live/emulated Firestore in this batch** — same constraint as Phase 1 (no credentials
+  in this environment). All 8 action handlers are code-reviewed against the proven `api/stickers.js`/
+  `api/usuarios.js` batch-write shapes (`db.batch()`, `db.getAll()`-equivalent reads,
+  `merge:true` sets); the pure `autoAgrupar`/`haversineM` core (the only actually-testable-offline
+  logic per the locked "Runnable check" in design.md) has full self-check coverage instead.
+
+## TDD Cycle Evidence
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 2.1–2.11 | `api/sticker-asignaciones.test.js` (`node api/sticker-asignaciones.test.js`) | Unit (pure fixture, offline) | ✅ `node api/stickers.test.js` + `node api/usuarios.test.js` both OK before and after (neither file touched) | ✅ Written first; ran against a nonexistent module, confirmed `Cannot find module './sticker-asignaciones.js'` (exit 1) | ✅ Full `autoAgrupar`/`haversineM` implementation written, self-check passes (exit 0) | ✅ 4 cases: determinism (same input twice), `maxSize` cap (10 dense points → cap 3, every point placed once), `maxRadiusM` cap (far point excluded), empty input → `[]` | ✅ `node --check` clean; re-ran self-check after the syntax pass, still green |
+
+### Test Summary
+- **Total tests written**: 1 self-check file, 8 assertions (2 determinism, 1 `deepStrictEqual`
+  group-count, 1 membership check, 2 `maxSize`-cap loop/sum assertions, 2 `maxRadiusM`-cap
+  assertions, 1 empty-input assertion — plus the `assert.ok`/`assert.strictEqual`/
+  `assert.deepStrictEqual` calls inside those blocks).
+- **Total tests passing**: 8/8 (see Work Unit Evidence below for exact command output).
+- **Layers used**: Unit (1 — the pure `autoAgrupar`/`haversineM` core), Integration (0 — no
+  live/emulated Firestore in this batch, same constraint as Phase 1), E2E (0).
+- **Approval tests**: None — no refactoring of existing files in this batch (`api/stickers.js`,
+  `api/usuarios.js`, `api/refresh.js` were read as reference only, never modified).
+- **Pure functions created**: `autoAgrupar`, `haversineM`. Firestore I/O (`listPuntos`,
+  `listCuadrillas`, `runAutoAgrupar`, `crearCuadrilla`, `editarCuadrilla`, `asignarInspector`,
+  `reasignarPunto`, `eliminarCuadrilla`) is isolated in its own async functions, all calling the
+  pure core for any clustering decision.
+
+## Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused test command and exact result | `node api/sticker-asignaciones.test.js` → RED (before implementation): `Error: Cannot find module './sticker-asignaciones.js'` (exit 1). After implementation → GREEN: `sticker-asignaciones.test.js OK` (exit 0). `node --check api/sticker-asignaciones.js` → clean (no output, exit 0). |
+| Runtime harness command/scenario and exact result | No live/emulated Firestore available in this environment (same constraint recorded in Phase 1's batch). All 8 Firestore-backed action handlers were exercised via `node --check` (syntax) plus manual code review against `api/stickers.js`/`api/usuarios.js`'s proven `db.batch()`/`merge:true`/`db.getAll()`-equivalent patterns — no handler diverges from those shapes. The one piece of logic with a real runtime decision boundary (`autoAgrupar`'s clustering) is fully covered by the offline self-check instead (4 scenarios, all passing). Grep-based scope check: `rg "collection\('evaluaciones'\)\.(set\|update\|delete\|add)" api/sticker-asignaciones.js` → zero matches, satisfying spec.md's "Scope boundaries" scenario without needing a live collection. |
+| Rollback boundary | Two new, independent files: `api/sticker-asignaciones.js`, `api/sticker-asignaciones.test.js`. Neither is imported by any other module in the repo yet (Phase 3's `web/js/stickers-asignacion.js` doesn't exist yet and isn't wired into `web/index.html`/`stickers.js` — no runtime caller). `git rm api/sticker-asignaciones.js api/sticker-asignaciones.test.js` (or `git revert` this commit) fully reverts this batch with zero impact on any other file, including Phase 1's untouched `integracion_F1/` files. |
+
+## Next batch (Phase 3 — separate PR/branch)
+
+- New branch (per `chain_strategy: stacked-to-main`) targeting `main` after this PR merges,
+  implementing `web/js/stickers-asignacion.js` + `web/index.html`/`web/js/stickers.js`/
+  `web/styles.css` wiring (tasks 3.1–3.9).
+- Phase 3 calls `/api/sticker-asignaciones` (this batch's endpoint) directly from the browser via
+  the existing `callApi(getToken, body)` pattern — no further backend work needed for Phase 3 to
+  start.
+- Carry task 0.2 forward again: Phase 3's task 3.5 (CRUD controls) explicitly plans a "small settings
+  affordance to override" `maxRadiusM`/`maxSize` — the per-call override this batch's
+  `runAutoAgrupar` already accepts (`body.maxRadiusM`/`body.maxSize`) is what that affordance should
+  call; still no operator-confirmed default.
+- Carry Phase 1's task 1.7 forward unchanged (Railway cron service creation, manual operator step,
+  independent of Phase 2/3's PR chain).

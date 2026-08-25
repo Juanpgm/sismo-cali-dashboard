@@ -119,7 +119,7 @@ Depends on: none at the code level (reads/writes Firestore directly, not `cruce_
 output at build time) — but exercising it end-to-end needs Phase 1's job to have run at least once
 against a real/emulated Firestore. Can be written in parallel with Phase 1.
 
-- [ ] **2.1** Scaffold `api/sticker-asignaciones.js` as a byte-for-byte copy of the
+- [x] **2.1** Scaffold `api/sticker-asignaciones.js` as a byte-for-byte copy of the
       `api/stickers.js` auth preamble and skeleton (`api/stickers.js:225-262`): 405 guard, Bearer
       token extraction, `verifyFirebaseToken` + `roleFromClaims` from `./refresh.js`, fail-closed
       `roleFromClaims(claims) !== 'admin'` → 403, `try` router dispatching on `body.action`,
@@ -128,7 +128,7 @@ against a real/emulated Firestore. Can be written in parallel with Phase 1.
       — Satisfies: *Requirement: `api/sticker-asignaciones.js` is admin-only* (non-admin call
       rejected scenario).
 
-- [ ] **2.2** (RED) Write `api/sticker-asignaciones.test.js` FIRST, `assert`-based `demo()`
+- [x] **2.2** (RED) Write `api/sticker-asignaciones.test.js` FIRST, `assert`-based `demo()`
       self-check (no framework, mirrors the self-check idiom already exported from
       `api/stickers.js:264-270` for its own pure helpers), covering the `autoAgrupar` clustering
       function in isolation:
@@ -142,13 +142,13 @@ against a real/emulated Firestore. Can be written in parallel with Phase 1.
       — Satisfies: *Requirement: `autoAgrupar` clusters pending points deterministically* (all 4
       scenarios); locked "Runnable check" in `design.md`.
 
-- [ ] **2.3** Implement `listPuntos` (`{ok, puntos}`, full `sticker_matches` read, no
+- [x] **2.3** Implement `listPuntos` (`{ok, puntos}`, full `sticker_matches` read, no
       `inspections.json`/`puntos_israel_cali.json` read anywhere in the handler) and
       `listCuadrillas` (`{ok, cuadrillas}`, full `cuadrillas` read).
       — Satisfies: *Requirement: `listPuntos` returns lean point data without loading full Panel*,
       *Requirement: `listCuadrillas` returns current groups*.
 
-- [ ] **2.4** (GREEN) Implement the pure `autoAgrupar(puntos, {maxRadiusM, maxSize})` clustering
+- [x] **2.4** (GREEN) Implement the pure `autoAgrupar(puntos, {maxRadiusM, maxSize})` clustering
       function per ADR-3's greedy nearest-neighbor pseudocode (stable `[lat, lon]` sort order, no
       RNG, no k-means), plus a `haversineM` helper (five-line port if the repo has no existing JS
       haversine — check `web/js/evaluaciones.js` and `web/js/*.js` for one first before adding a
@@ -158,7 +158,7 @@ against a real/emulated Firestore. Can be written in parallel with Phase 1.
       — Satisfies: *Requirement: `autoAgrupar` clusters pending points deterministically* (now
       against real code).
 
-- [ ] **2.5** Wire the `autoAgrupar` action handler: read `pendiente` points with no
+- [x] **2.5** Wire the `autoAgrupar` action handler: read `pendiente` points with no
       `cuadrilla_id`, call 2.4's pure function with `maxRadiusM`/`maxSize` (from **0.2**'s
       confirmed or placeholder constants), create `cuadrillas` docs with `origen:'auto'`,
       `inspector_uid:null`, set `cuadrilla_id` on member points — MUST NOT touch
@@ -167,34 +167,34 @@ against a real/emulated Firestore. Can be written in parallel with Phase 1.
       assign an inspector scenario, empty-set no-op scenario), *Requirement: `cuadrillas` document
       shape* (cuadrilla creation sets membership scenario).
 
-- [ ] **2.6** Implement `crearCuadrilla` (`{nombre, puntos}` → new doc, `origen:'manual'`, sets
+- [x] **2.6** Implement `crearCuadrilla` (`{nombre, puntos}` → new doc, `origen:'manual'`, sets
       `cuadrilla_id` on every listed point).
       — Satisfies: *Requirement: `crearCuadrilla` supports manual grouping*, *Requirement:
       `cuadrillas` document shape* (membership scenario, manual case).
 
-- [ ] **2.7** Implement `editarCuadrilla` (add/remove points from an existing cuadrilla, keeping
+- [x] **2.7** Implement `editarCuadrilla` (add/remove points from an existing cuadrilla, keeping
       `cuadrilla_id` on member points consistent with `puntos[]`; error + no writes if the
       `cuadrilla_id` doesn't exist).
       — Satisfies: *Requirement: `editarCuadrilla` supports adding/removing points* (both
       scenarios).
 
-- [ ] **2.8** Implement `asignarInspector` (`{cuadrilla_id, inspector_uid}` → propagate
+- [x] **2.8** Implement `asignarInspector` (`{cuadrilla_id, inspector_uid}` → propagate
       `inspector_uid`, `asignado_en` (server timestamp), `estado_asignacion:'asignado'` to every
       member point of that cuadrilla).
       — Satisfies: *Requirement: `asignarInspector` propagates to every point in a cuadrilla*.
 
-- [ ] **2.9** Implement `reasignarPunto` (`{punto_id, nuevo_inspector_uid}` → set
+- [x] **2.9** Implement `reasignarPunto` (`{punto_id, nuevo_inspector_uid}` → set
       `reasignado_de` = the point's current `inspector_uid` (or `null` if it had none),
       `inspector_uid` = new value; `cuadrilla_id` untouched).
       — Satisfies: *Requirement: `reasignarPunto` reassigns a single point with a breadcrumb* (both
       scenarios).
 
-- [ ] **2.10** Implement `eliminarCuadrilla` (clear `cuadrilla_id`/`inspector_uid` on every member
+- [x] **2.10** Implement `eliminarCuadrilla` (clear `cuadrilla_id`/`inspector_uid` on every member
       point BEFORE deleting the `cuadrillas` doc, so no point is left referencing a nonexistent
       cuadrilla even if the delete step fails partway).
       — Satisfies: *Requirement: `eliminarCuadrilla` clears membership before deleting*.
 
-- [ ] **2.11** Runnable check pass: `node api/sticker-asignaciones.test.js` (or
+- [x] **2.11** Runnable check pass: `node api/sticker-asignaciones.test.js` (or
       `node --test` if the repo's `api/` self-checks run that way — match whatever
       `api/stickers.test.js`/`api/usuarios.test.js` actually use) green end to end; manually confirm
       *Requirement: Scope boundaries*' "evaluaciones collection is never written" by grepping this
