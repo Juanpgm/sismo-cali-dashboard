@@ -1866,24 +1866,43 @@ body:not([data-role="admin"]) .view-tab[data-view="analista"] { display: none !i
 .asignacion-segment:hover { color: var(--text-primary); }
 .asignacion-segment.is-active { color: var(--accent); border-color: var(--accent); }
 
-/* Intro + step hint above the workflow cards. */
-.asignacion-intro { margin: 0 0 18px; }
-.asignacion-intro p { margin: 0 0 8px; color: var(--text-secondary); font-size: .88rem; line-height: 1.5; }
+/* Compact intro + inline step hints above the workflow. */
+.asignacion-intro { margin: 0 0 8px; color: var(--text-secondary); font-size: .86rem; line-height: 1.5; }
 .asignacion-steps {
-  margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 2px;
-  color: var(--text-muted); font-size: .82rem; line-height: 1.5;
+  list-style: none; margin: 0 0 16px; padding: 0;
+  display: flex; flex-wrap: wrap; gap: 8px 18px;
+  color: var(--text-muted); font-size: .8rem;
 }
-.asignacion-steps strong { color: var(--text-secondary); font-weight: 600; }
+.asignacion-steps li { display: flex; align-items: center; gap: 7px; }
+.asignacion-step-n {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 999px; flex: none;
+  background: var(--accent-dim); color: var(--accent); font-size: .72rem; font-weight: 700;
+}
+
+/* Two-column workspace: scrollable workflow on the left, always-visible sticky
+   map on the right so it never gets buried under a long cuadrillas list. */
+.asignacion-workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 420px); gap: 16px; align-items: start; }
+.asignacion-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.asignacion-aside { position: sticky; top: 12px; }
+.asignacion-map-card { margin: 0; }
+.asignacion-map { min-height: 460px; height: calc(100vh - 220px); max-height: 620px; }
+/* Bound the long lists so the columns stay compact and the map stays in view. */
+.asignacion-cuadrillas-scroll { max-height: 340px; overflow-y: auto; }
+.asignacion-table-scroll { max-height: 420px; overflow: auto; }
+@media (max-width: 900px) {
+  .asignacion-workspace { grid-template-columns: 1fr; }
+  .asignacion-aside { position: static; }
+  .asignacion-map { height: 380px; }
+}
 
 /* Card header: stacked title + subtitle on the left, optional action on the right. */
+.asignacion-card-head { flex-wrap: wrap; gap: 8px; }
 .asignacion-card-titles { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .asignacion-subtitle { font-size: .74rem; font-weight: 400; color: var(--text-muted); }
 
 /* Group controls/chips to the left instead of stretching edge-to-edge. */
 .asignacion-actions-bar { justify-content: flex-start; }
-
-/* The map is secondary to the table here — a moderate height, not a full pane. */
-.asignacion-map { min-height: 320px; }
 
 .asignacion-filters { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-start; }
 .asignacion-chip {
@@ -1922,6 +1941,12 @@ body:not([data-role="admin"]) .view-tab[data-view="analista"] { display: none !i
 }
 .auth-overlay.is-authed { opacity: 0; pointer-events: none; }
 .auth-overlay.is-busy { cursor: progress; }
+
+/* Session check: hide the login form until auth resolves, so a persisted
+   session never flashes the login screen before the dashboard appears. */
+.auth-resolving { display: none; text-align: center; color: var(--text-muted); font-size: 0.9rem; padding: 8px 0; }
+.auth-overlay.is-resolving .auth-body { display: none; }
+.auth-overlay.is-resolving .auth-resolving { display: block; }
 
 .auth-card {
   width: 100%;

@@ -103,7 +103,10 @@ function buildOverlay() {
         </div>
       </div>
 
-      <p class="auth-lead">Ingresá para ver el panel de inspecciones.</p>
+      <p class="auth-resolving" id="auth-resolving">Verificando sesión…</p>
+
+      <div class="auth-body" id="auth-body">
+      <p class="auth-lead">Ingresar para ver el panel de inspecciones.</p>
 
       <button type="button" class="auth-google" id="auth-google">
         <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.6 6.5 29.6 4.5 24 4.5 13.2 4.5 4.5 13.2 4.5 24S13.2 43.5 24 43.5 43.5 34.8 43.5 24c0-1.2-.1-2.3-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.6 6.5 29.6 4.5 24 4.5 16.3 4.5 9.7 8.9 6.3 14.7z"/><path fill="#4CAF50" d="M24 43.5c5.5 0 10.4-1.9 14.1-5.2l-6.5-5.5c-2 1.5-4.6 2.4-7.6 2.4-5.2 0-9.6-3.3-11.2-7.9l-6.5 5C9.6 39 16.2 43.5 24 43.5z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.1-4.1 5.4l6.5 5.5C42.6 35.9 43.5 30.4 43.5 24c0-1.2-.1-2.3-.4-3.5z"/></svg>
@@ -126,7 +129,9 @@ function buildOverlay() {
 
       <p class="auth-error" id="auth-error" role="alert" hidden></p>
       <p class="auth-foot">Solo personal autorizado. Google se limita a cuentas <b>@${ALLOWED_DOMAIN}</b>; los demás usuarios ingresan con correo y contraseña.</p>
+      </div>
     </div>`;
+  root.classList.add('is-resolving'); // oculta el form hasta que se resuelva la sesión (evita el flash del login)
   document.body.appendChild(root);
   return root;
 }
@@ -220,6 +225,7 @@ export function initAuth(onFirstAuthorized) {
       currentRole = null;
       delete document.body.dataset.role;
       coverInstant(); // overlay opaco YA, sin fade → nunca se ve el contenido detrás
+      overlay.classList.remove('is-resolving'); // no hay sesión: ahora sí, revelar el login
       const form = overlay.querySelector('#auth-form');
       if (form) form.reset();
       showError(overlay, '');

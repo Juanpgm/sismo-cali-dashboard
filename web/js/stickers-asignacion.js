@@ -37,7 +37,7 @@ const MARKER_HEX = { blue: COLORS.categorical[0], red: COLORS.status.i2, amber: 
 // cloned verbatim from web/js/stickers.js:19-30 (ENDPOINT swapped).
 async function callApi(getToken, body) {
   const token = await getToken();
-  if (!token) throw new Error('Sesión no válida. Volvé a iniciar sesión.');
+  if (!token) throw new Error('Sesión no válida. Volver a iniciar sesión.');
   const res = await fetch(ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -128,45 +128,49 @@ function shellHtml() {
     </div>
     <p class="sticker-ok" id="asignacion-ok" role="status" hidden></p>
 
-    <div class="asignacion-intro">
-      <p>Estos son los puntos del Panel y su estado de sticker. Agrupá los pendientes en cuadrillas (automática por cercanía o manual seleccionando en la tabla) y asigná cada cuadrilla a un inspector.</p>
-      <ol class="asignacion-steps">
-        <li><strong>Agrupá</strong> los puntos pendientes en cuadrillas.</li>
-        <li><strong>Asigná</strong> un inspector a cada cuadrilla.</li>
-        <li><strong>Ajustá</strong> manualmente desde la tabla o el mapa si hace falta.</li>
-      </ol>
-    </div>
+    <p class="asignacion-intro">Puntos del Panel y su estado de sticker. Agrupar los pendientes en cuadrillas y asignar cada una a un inspector.</p>
+    <ol class="asignacion-steps">
+      <li><span class="asignacion-step-n">1</span> Agrupar los puntos pendientes.</li>
+      <li><span class="asignacion-step-n">2</span> Asignar un inspector a cada cuadrilla.</li>
+      <li><span class="asignacion-step-n">3</span> Ajustar desde la tabla o el mapa.</li>
+    </ol>
 
-    <div class="card">
-      ${cardHead('Paso 1 · Agrupar', 'Agrupá automáticamente por cercanía, o marcá filas en la tabla y creá una cuadrilla manual.')}
-      <div class="card-toolbar asignacion-actions-bar" id="asignacion-toolbar">
-        <button type="button" class="btn-primary" id="asignacion-auto">Auto-agrupar</button>
-        <label class="sticker-field asignacion-inline-field">
-          <span>Radio (m)</span>
-          <input type="number" id="asignacion-max-radius" min="50" step="50" placeholder="${DEFAULT_MAX_RADIUS_M}">
-        </label>
-        <label class="sticker-field asignacion-inline-field">
-          <span>Tamaño máx.</span>
-          <input type="number" id="asignacion-max-size" min="2" step="1" placeholder="${DEFAULT_MAX_SIZE}">
-        </label>
-        <button type="button" class="sticker-action" id="asignacion-crear" disabled>Crear cuadrilla de la selección</button>
+    <div class="asignacion-workspace">
+      <div class="asignacion-main">
+        <div class="card">
+          ${cardHead('Paso 1 · Agrupar', 'Automáticamente por cercanía, o marcar filas en la tabla para crear una cuadrilla manual.')}
+          <div class="card-toolbar asignacion-actions-bar" id="asignacion-toolbar">
+            <button type="button" class="btn-primary" id="asignacion-auto">Auto-agrupar</button>
+            <label class="sticker-field asignacion-inline-field">
+              <span>Radio (m)</span>
+              <input type="number" id="asignacion-max-radius" min="50" step="50" placeholder="${DEFAULT_MAX_RADIUS_M}">
+            </label>
+            <label class="sticker-field asignacion-inline-field">
+              <span>Tamaño máx.</span>
+              <input type="number" id="asignacion-max-size" min="2" step="1" placeholder="${DEFAULT_MAX_SIZE}">
+            </label>
+            <button type="button" class="sticker-action" id="asignacion-crear" disabled>Crear cuadrilla de la selección</button>
+          </div>
+        </div>
+
+        <div class="card">
+          ${cardHead('Paso 2 · Cuadrillas e inspectores', 'Asignar un inspector a cada cuadrilla. «Reiniciar agrupación» borra solo las automáticas.', '<button type="button" class="sticker-action sticker-action-off" id="asignacion-reiniciar">Reiniciar agrupación</button>')}
+          <div class="asignacion-cuadrillas-scroll" id="asignacion-cuadrillas"></div>
+        </div>
+
+        <div class="card">
+          ${cardHead('Puntos del Panel', 'Filtrar y ordenar. Marcar filas para crear una cuadrilla manual en el Paso 1.')}
+          <div class="card-toolbar asignacion-filters" id="asignacion-filters"></div>
+          <div class="table-scroll asignacion-table-scroll" id="asignacion-table-wrap"></div>
+        </div>
       </div>
-    </div>
 
-    <div class="card">
-      ${cardHead('Paso 2 · Cuadrillas e inspectores', 'Asigná un inspector a cada cuadrilla. «Reiniciar agrupación» borra solo las automáticas.', '<button type="button" class="sticker-action sticker-action-off" id="asignacion-reiniciar">Reiniciar agrupación</button>')}
-      <div id="asignacion-cuadrillas"></div>
-    </div>
-
-    <div class="card">
-      ${cardHead('Puntos del Panel', 'Filtrá y ordená. Marcá filas para crear una cuadrilla manual en el Paso 1.')}
-      <div class="card-toolbar asignacion-filters" id="asignacion-filters"></div>
-      <div class="table-scroll" id="asignacion-table-wrap"></div>
-    </div>
-
-    <div class="card eval-workspace-card">
-      ${cardHead('Mapa de puntos', 'Vista de referencia. Reasigná un punto desde su globo.')}
-      <div class="eval-map asignacion-map" id="asignacion-map"></div>
+      <aside class="asignacion-aside">
+        <div class="card eval-workspace-card asignacion-map-card">
+          ${cardHead('Mapa de puntos', 'Reasignar un punto desde su globo.')}
+          <div class="eval-map asignacion-map" id="asignacion-map"></div>
+        </div>
+      </aside>
     </div>`;
 }
 
@@ -206,18 +210,37 @@ function tableHtml(rows, sort, selected) {
   return `<table><thead><tr><th></th>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
-function cuadrillasHtml(cuadrillas, inspectores) {
+/** Human-readable cuadrilla label (spec: keep the id as the underlying key, but
+ *  never show the raw hash to the operator). A user-typed `nombre` wins; else
+ *  the dominant zona of its member points + a per-zona counter; else "Grupo N".
+ *  `zonaByPunto` maps punto id -> zona so we can name auto cuadrillas by sector. */
+export function cuadrillaLabel(cuadrilla, index, zonaByPunto, zonaSeq) {
+  if (cuadrilla.nombre && cuadrilla.nombre.trim()) return cuadrilla.nombre.trim();
+  const zonas = (cuadrilla.puntos || []).map((id) => zonaByPunto.get(id)).filter(Boolean);
+  if (zonas.length) {
+    const counts = {};
+    for (const z of zonas) counts[z] = (counts[z] || 0) + 1;
+    const dominant = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
+    const seq = (zonaSeq[dominant] = (zonaSeq[dominant] || 0) + 1);
+    return `${dominant} · grupo ${seq}`;
+  }
+  return `Grupo ${index + 1}`;
+}
+
+function cuadrillasHtml(cuadrillas, inspectores, zonaByPunto = new Map()) {
   if (!cuadrillas.length) {
-    return '<p class="sticker-empty">Todavía no hay cuadrillas. Usá «Auto-agrupar» o creá una manualmente desde la tabla.</p>';
+    return '<p class="sticker-empty">Todavía no hay cuadrillas. Usar «Auto-agrupar» o crear una manualmente desde la tabla.</p>';
   }
   const optionsHtml = (selectedUid) => `<option value="">Sin asignar</option>${inspectores.map((i) => `<option value="${escapeHtml(i.uid)}" ${i.uid === selectedUid ? 'selected' : ''}>${escapeHtml(i.nombre_completo || `Brigada ${i.codigo || '—'}`)}</option>`).join('')}`;
+  const zonaSeq = {};
   return `<ul class="sticker-list">
-    ${cuadrillas.map((c) => {
+    ${cuadrillas.map((c, i) => {
       const n = (c.puntos || []).length;
+      const label = cuadrillaLabel(c, i, zonaByPunto, zonaSeq);
       return `<li class="sticker-row">
         <span class="sticker-code" title="Origen">${c.origen === 'auto' ? 'AUTO' : 'MAN'}</span>
         <div class="sticker-identity">
-          <span class="sticker-name">${escapeHtml(c.nombre || c.id)}</span>
+          <span class="sticker-name" title="ID: ${escapeHtml(c.id)}">${escapeHtml(label)}</span>
           <span class="sticker-meta">${n} punto${n === 1 ? '' : 's'}</span>
         </div>
         <select class="asignacion-inspector-select" data-cuadrilla-id="${escapeHtml(c.id)}">${optionsHtml(c.inspector_uid)}</select>
@@ -408,7 +431,8 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
 
   function renderCuadrillasSection() {
     const inspectores = getInspectores() || [];
-    cuadrillasWrap.innerHTML = cuadrillasHtml(cuadrillas, inspectores);
+    const zonaByPunto = new Map(rows.map((r) => [r.id, r.zona]).filter(([, z]) => z));
+    cuadrillasWrap.innerHTML = cuadrillasHtml(cuadrillas, inspectores, zonaByPunto);
     cuadrillasWrap.querySelectorAll('[data-cuadrilla-id]').forEach((sel) => {
       sel.addEventListener('change', async () => {
         if (busy || !sel.value) return;
