@@ -488,6 +488,7 @@ function shellHtml() {
           </label>
           <fieldset class="asignacion-grupo-miembros">
             <legend>Miembros — máximo ${MAX_MIEMBROS_GRUPO} (cualquiera podrá completar los puntos del grupo)</legend>
+            <input type="search" id="planeacion-grupo-miembros-buscar" class="sticker-search" placeholder="Buscar inspector…" autocomplete="off" aria-label="Buscar inspector">
             <div id="planeacion-grupo-miembros-list" class="asignacion-grupo-miembros-list"></div>
           </fieldset>
           <p class="sticker-error" id="planeacion-grupo-error" role="alert" hidden></p>
@@ -1536,25 +1537,59 @@ export function initPlaneacion(root, { getToken }) {
   const grupoModal = root.querySelector('#planeacion-grupo-modal');
   const grupoErr = root.querySelector('#planeacion-grupo-error');
   const grupoMiembrosList = root.querySelector('#planeacion-grupo-miembros-list');
+  const grupoMiembrosBuscar = root.querySelector('#planeacion-grupo-miembros-buscar');
   let grupoOriginalMiembros = [];
+  // Live selection for the member picker: it MUST survive search filtering — a
+  // checked inspector the query hides from the DOM must not be lost on save.
+  const grupoSelected = new Set();
 
-  function openGrupoModal(grupoId) {
+  function renderGrupoMiembros(query = '') {
+    const habilitados = getInspectores().filter(isHabilitado);
+    const matches = filterInspectores(habilitados, query);
+    grupoMiembrosList.innerHTML = habilitados.length
+      ? (matches.length
+        ? matches.map((i) => `
+        <label class="asignacion-grupo-miembro">
+          <input type="checkbox" value="${escapeHtml(i.uid)}" ${grupoSelected.has(i.uid) ? 'checked' : ''}>
+          <span>${escapeHtml(i.nombre_completo || i.codigo || i.uid)}</span>
+        </label>`).join('')
+        : '<p class="sticker-empty">Sin coincidencias.</p>')
+      : '<p class="sticker-empty">Sin inspectores habilitados.</p>';
+    applyMiembrosCap();
+  }
+
+  function applyMiembrosCap() {
+    const atCap = grupoSelected.size >= MAX_MIEMBROS_GRUPO;
+    grupoMiembrosList.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+      cb.disabled = !cb.checked && atCap;
+    });
+    grupoErr.hidden = grupoSelected.size <= MAX_MIEMBROS_GRUPO;
+    if (grupoSelected.size > MAX_MIEMBROS_GRUPO) {
+      grupoErr.textContent = `Un grupo admite máximo ${MAX_MIEMBROS_GRUPO} miembros.`;
+    }
+  }
+
+  async function openGrupoModal(grupoId) {
     grupoErr.hidden = true;
     const grupo = grupoId ? grupos.find((g) => g.id === grupoId) : null;
     grupoOriginalMiembros = grupo ? [...(grupo.miembros || [])] : [];
+    grupoSelected.clear();
+    grupoOriginalMiembros.forEach((uid) => grupoSelected.add(uid));
     root.querySelector('#planeacion-grupo-id').value = grupoId || '';
     root.querySelector('#planeacion-grupo-nombre').value = grupo ? (grupo.nombre || '') : '';
-    const miembrosSet = new Set(grupoOriginalMiembros);
-    const inspectores = getInspectores().filter(isHabilitado);
-    grupoMiembrosList.innerHTML = inspectores.length
-      ? inspectores.map((i) => `
-        <label class="asignacion-grupo-miembro">
-          <input type="checkbox" value="${escapeHtml(i.uid)}" ${miembrosSet.has(i.uid) ? 'checked' : ''}>
-          <span>${escapeHtml(i.nombre_completo || i.codigo || i.uid)}</span>
-        </label>`).join('')
-      : '<p class="sticker-empty">Sin inspectores habilitados.</p>';
+    grupoMiembrosBuscar.value = '';
     grupoModal.classList.add('is-open');
     grupoModal.setAttribute('aria-hidden', 'false');
+    // Roster loads lazily (once per init). The grupo modal may be the FIRST
+    // thing an admin opens, so ensure it here — otherwise the picker renders
+    // empty ("Sin inspectores habilitados") and there's nobody to search.
+    grupoMiembrosList.innerHTML = '<p class="sticker-empty">Cargando inspectores…</p>';
+    try {
+      await ensureInspectores();
+    } catch {
+      // fall through — renderGrupoMiembros shows the empty state on fetch failure
+    }
+    renderGrupoMiembros('');
   }
   function closeGrupoModal() {
     grupoModal.classList.remove('is-open');
@@ -1562,26 +1597,24 @@ export function initPlaneacion(root, { getToken }) {
   }
   grupoModal.querySelectorAll('[data-grupo-close]').forEach((el) => el.addEventListener('click', closeGrupoModal));
   grupoCrearBtn.addEventListener('click', () => openGrupoModal(null));
+  grupoMiembrosBuscar.addEventListener('input', () => renderGrupoMiembros(grupoMiembrosBuscar.value));
 
   // UI-side hint ONLY, mirroring the backend's own MAX_MIEMBROS_GRUPO — the
-  // endpoint is the real boundary (see that constant's own comment). Once
-  // the cap is reached, further UNCHECKED boxes are disabled so the admin
-  // gets immediate feedback instead of a round trip that always fails.
-  grupoMiembrosList.addEventListener('change', () => {
-    const boxes = [...grupoMiembrosList.querySelectorAll('input[type="checkbox"]')];
-    const checkedCount = boxes.filter((cb) => cb.checked).length;
-    boxes.forEach((cb) => { cb.disabled = !cb.checked && checkedCount >= MAX_MIEMBROS_GRUPO; });
-    grupoErr.hidden = checkedCount <= MAX_MIEMBROS_GRUPO;
-    if (checkedCount > MAX_MIEMBROS_GRUPO) {
-      grupoErr.textContent = `Un grupo admite máximo ${MAX_MIEMBROS_GRUPO} miembros.`;
-    }
+  // endpoint is the real boundary (see that constant's own comment). Selection
+  // lives in `grupoSelected` (survives search filtering), so the cap is checked
+  // against the Set, not just the checkboxes currently in the DOM.
+  grupoMiembrosList.addEventListener('change', (ev) => {
+    const cb = ev.target.closest('input[type="checkbox"]');
+    if (!cb) return;
+    if (cb.checked) grupoSelected.add(cb.value); else grupoSelected.delete(cb.value);
+    applyMiembrosCap();
   });
 
   root.querySelector('#planeacion-grupo-save').addEventListener('click', async () => {
     if (busy) return;
     const grupoId = root.querySelector('#planeacion-grupo-id').value;
     const nombre = root.querySelector('#planeacion-grupo-nombre').value.trim();
-    const checked = [...grupoMiembrosList.querySelectorAll('input[type="checkbox"]:checked')].map((cb) => cb.value);
+    const checked = [...grupoSelected];
     if (!nombre) {
       grupoErr.textContent = 'El nombre es obligatorio.';
       grupoErr.hidden = false;
