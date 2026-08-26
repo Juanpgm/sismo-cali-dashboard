@@ -432,3 +432,215 @@ against the real URL for 2.3; (2) if parity holds, apply 2.4's already-fully-spe
 `formulario/js/form.js` in one commit + manual Vercel redeploy; (3) confirm 2.5. After that, Slice 2 is
 complete and Slice 3 (`reportados` unified day-walk + snapshot, tasks 3.1-3.7,
 `~350-450` lines, suggested 3a/3b split) can start — it depends only on Phase 1, already merged.
+
+---
+
+## Batch 3 — `reportados` unified day-walk + snapshot (3.1-3.5 COMPLETE; 3.6/3.7 prep done, BLOCKED on 1.4)
+
+Branch: `feat/fastapi-consolidation-3-reportados` (off `main`, not pushed). Slice 1+2 confirmed merged
+to `main` before this batch started (`python -m pytest backend/tests/ -q` on `main` → 45 passed before
+branching).
+
+### Completed Tasks
+
+- [x] **3.1** (RED) `backend/tests/services/test_atencionsismo.py` — 32 cases via
+      `httpx.MockTransport` fixtures: `DEFAULT_USER` constant parity (`"juanp.gzmz@gmail.com"`,
+      confirmed identical in `api/reportados.js:27` and `scripts/fetch_reportes_api.py:48` — no "JS
+      wins" substitution needed, design open question 3 resolved); `credentials_from_env`
+      read/default/raise; `coord_key` valid/null/zero-zero; `summarize` dedup/inmuebles/estado-tally,
+      incl. accepting BOTH the live day-walk's shape AND the Blob-published `reportes.json` shape;
+      `probe_api` alive-status/down-status/network-failure; `fetch_window` success mapping,
+      split-on-{413,500,502,503,504} down to `MIN_WINDOW_MS`, retry-then-give-up,
+      failed-window recording; `count_reportes` concurrency-batched dedup across windows +
+      sequential-retry-pass recovery of a transiently-failed window; `fetch_reportados` payload shape
+      + zero-total guard. Confirmed failing: `ImportError: cannot import name 'atencionsismo' from
+      'app.services'` (1 collection error, 0 collected).
+- [x] **3.2** (GREEN) `backend/app/services/atencionsismo.py` — the single day-walk implementation,
+      extracted from `scripts/fetch_reportes_api.py`'s skeleton but following `api/reportados.js` (the
+      CURRENTLY LIVE endpoint) for exact behavior, since `web/js/data.js` is the actual consumer and
+      reads the JS response shape (`por_estadoVerificacion.Reportado`, `inmuebles`). Two behavioral
+      gaps closed vs the Python script, both resolved toward the JS side per the apply agent's scope
+      instructions: (1) split status set widened from the Python script's `{413,504}` to JS's
+      `{413,500,502,503,504}` — the narrower Python set is WHY dense 500/502/503 days were previously
+      undercounted, per `api/reportados.js`'s own inline comment history; (2) added the probe (1-min
+      window before the full walk) and the sequential failed-window retry pass, neither of which exist
+      in `scripts/fetch_reportes_api.py`. First GREEN pass, no rework — 32/32.
+- [x] **3.3** (RED) `backend/tests/services/test_snapshot.py` — 12 cases: `ReportadosSnapshot.get()`
+      unavailable/fresh/stale/servable-within-86400s-even-past-900s; `has_entry`; `seed_from_blob`
+      unset-env/success/HTTP-error/empty-records/non-list-JSON (all via injected
+      `httpx.AsyncClient(transport=MockTransport)`, no real network); `refresh_loop` stores a
+      completed refresh then stops (via a pre-set `stop_event`), and survives a failed refresh
+      (missing `VISITADOS_API_PASS`) without raising. Confirmed failing: `ImportError: cannot import
+      name 'snapshot' from 'app.services'` (1 collection error, 0 collected).
+- [x] **3.4** (GREEN) `backend/app/services/snapshot.py` — `ReportadosSnapshot` (process-wide
+      in-memory store, no locking needed: asyncio is single-threaded and `store()` is one attribute
+      assignment), `seed_from_blob` (best-effort cold start, NEVER raises), `refresh_loop`
+      (lifespan-owned forever task: refresh → store → sleep 900s, a failed cycle is logged and never
+      kills the loop). **Open question 1 resolved**: read `deploy/refresh.sh`'s publish step (lines
+      88-93) — it uploads `data/meta.json`, `data/inspections.json(.xlsx)`, `data/reportes.json`,
+      `data/reportes_meta.json`, `data/reportes_agg.json`, `data/geocode/geocode_cache.json`. Chose
+      `data/reportes.json` (raw stripped records with `id`/`estadoVerificacion`/`lat`/`lng` —
+      `scripts/fetch_reportes_api.py`'s `strip_report()`) as the seed source over `reportes_agg.json`
+      (which lacks an `inmuebles` coord-dedup field entirely) — new plain env var
+      `REPORTES_BLOB_URL`, full public Blob URL, same "plain secret, full-URL-as-env-var" pattern
+      `INSPECTIONS_URL` already uses for `integracion_F1/cruce_sticker.py`/`cruce_criticos_survey.py`.
+      This lets the Blob-seed path reuse `atencionsismo.summarize()` verbatim — the EXACT counting
+      logic a live refresh uses — instead of writing a second parallel aggregation. First GREEN pass,
+      no rework — 44/44 combined with 3.1-3.3.
+- [x] **3.5** (GREEN) `backend/app/routers/reportados.py` — `GET /reportados`, no auth,
+      `REQUIRED_CLIENTS = ()` (never touches Firestore/S3), serves from
+      `request.app.state.reportados_snapshot`, sets `Cache-Control: public, s-maxage=900,
+      stale-while-revalidate=86400` (verbatim from `api/reportados.js`) and `X-Snapshot-Age`; maps
+      `SnapshotUnavailableError`/`SnapshotStaleError` to `503 + Retry-After: 60`. No dedicated RED task
+      is listed for this router in tasks.md (same gap as batch 1b's 1.9/1.13); Strict TDD Mode is
+      active, so `backend/tests/routers/test_reportados.py` (6 cases) was written FIRST — confirmed
+      failing (`AttributeError: 'State' object has no attribute 'reportados_snapshot'` /
+      `ImportError: cannot import name 'reportados'`, 6 failed, 0 passed) — before this task's GREEN
+      landed. `app/main.py` gained its first `lifespan` (previously none existed): best-effort
+      Blob-seed → start the forever-refresh background task → on shutdown, cancel + await the task.
+      `app.state.reportados_snapshot` is attached SYNCHRONOUSLY inside `create_app()` (NOT inside
+      `lifespan`) specifically so router tests can populate/replace it via a plain `TestClient(app)`
+      without entering `with TestClient(app) as client:` — every other router test file in this suite
+      (`test_sign.py`, `test_cors.py`, `test_startup.py`) already relies on that same
+      no-context-manager pattern, and breaking it would have forced rewriting all of them. Manually
+      smoke-tested the FULL lifespan cycle end-to-end via `with TestClient(app) as client:` (not just
+      the plain-TestClient unit tests): startup → seed attempt → `GET /reportados` → 503+Retry-After:60
+      (misconfigured env, as expected) → clean shutdown, task cancelled without a stray-task warning.
+      First GREEN pass, no rework — 95/95 full suite.
+
+### Design Interpretation (flag for verify)
+
+**Seeded-snapshot age semantics** (open question 1, see 3.4 above): the Blob-seeded snapshot's
+`X-Snapshot-Age` reflects time-since-THIS-PROCESS-downloaded-it, not time-since-the-cron-originally-
+published-it (`reportes_meta.json`'s `generated_at`, which this batch does NOT fetch). Design.md ADR-5
+says the cold start should "serve immediately with its age" — read strictly, that phrase could mean
+either. I chose the download-time interpretation because: (1) it needs zero extra Blob fetch/env var,
+(2) none of backend-platform spec's three "In-Process Caching..." scenarios require the seeded age to
+reflect original publish time — they need `X-Snapshot-Age` PRESENT and the 86400s hard bound enforced,
+both of which this implementation satisfies regardless of which clock anchors "age". A stricter reading
+(fetch `REPORTES_META_BLOB_URL` too, anchor `fetched_at` to its `generated_at`) is a small, isolated
+follow-up if verify disagrees — `seed_from_blob`'s signature already isolates this decision to one
+function.
+
+**`VISITADOS_API_PASS` is NOT wired into `create_app()`'s fail-fast startup union.** Design.md ADR-4's
+table marks it a "plain secret" with Load rule "fail-fast only if a mounted route needs it" — since
+`/reportados` is now unconditionally mounted, a stricter reading could argue this should crash startup
+like `sismo`/`s3` do. I did NOT implement that: no reportados spec scenario in tasks.md 3.1-3.7 requires
+it, and ADR-5's whole design point is graceful degradation (503+Retry-After) for every reportados
+failure mode rather than hard crashes — extending that same philosophy to a missing credential felt
+more consistent than singling it out for a startup crash. `credentials_from_env()` raises
+`ApiCredentialsError` (caught by `refresh_loop`'s broad except, logged, loop continues) instead. Flagging
+for verify to confirm or override.
+
+### Deviations from Design
+
+None beyond the two open-question resolutions above (both explicitly deferred to task-time by
+design.md's "Open questions carried to tasks" section, not deviations from settled design).
+
+### Issues Found
+
+None.
+
+### Blocked Tasks (3.6, 3.7 partial)
+
+- **3.6** VERIFY (ADR-5 parity-diff plan) — BLOCKED, no live Railway URL (task 1.4 not started, same
+  blocker as 2.3/2.4/2.5). Repo-side prep done: `backend/scripts/verify_reportados_parity.py`, a
+  standalone MANUAL operator tool (not imported by `app/`/`tests/`, never run in CI) that, given
+  `NEW_REPORTADOS_URL` (+ optional `OLD_REPORTADOS_URL`/`DRIFT_TOLERANCE`), calls both endpoints (no
+  auth needed — public route) within the same run, prints both payloads for the PR description,
+  checks the new route's response time against the <2s budget (backend-platform "reportados responds
+  fast from snapshot"), and compares `por_estadoVerificacion.Reportado`/`inmuebles` within a
+  configurable drift tolerance (default 50, allowing for a live report landing mid-window). Verified
+  its BLOCKED guard: running it with no env vars set exits 2 with an explanatory stderr message.
+- **3.7** REPOINT — PARTIAL. `web/js/api-config.js` created (repo-side, inert): a per-endpoint URL map
+  covering every `web/`-side `/api/*` call found by grepping `web/js/*.js` (`reportados`,
+  `sticker-status`, `refresh`, `stickers`, `sticker-asignaciones`, `usuarios`, `source-status`), each
+  defaulting to today's relative path — zero behavior change, verified via `node --check` +
+  a dynamic-import smoke test (no build step exists for `web/js`, so this was the closest available
+  syntax/load verification). The "flip the `reportados` entry to the Railway base URL" half is
+  BLOCKED on 1.4: `web/js/data.js` intentionally NOT touched this batch. This was a deliberate
+  boundary, not an oversight — wiring `refreshReportados()` to read from `api-config.js` only makes
+  sense once the `reportados` entry actually resolves to a live Railway URL; wiring it now (while every
+  entry still resolves to the exact same relative path it already hardcodes) would be a no-op edit
+  requiring a second touch-and-re-review once 1.4 lands, for zero benefit today. `formulario/`'s
+  separate `DASHBOARD_API`/`FOTO_SIGNER_URL` constants are intentionally OUT of `api-config.js`'s
+  scope — ADR-7 keeps those as their own existing constants, flipped directly by their own slices
+  (5.5, 2.4).
+
+### Files Changed (Batch 3)
+
+| File | Action | What Was Done |
+|---|---|---|
+| `backend/tests/services/__init__.py` | Created | Test package marker |
+| `backend/tests/services/test_atencionsismo.py` | Created | 32 cases: constants, credentials, coord_key, summarize, probe_api, fetch_window (success/split/retry/give-up), count_reportes, fetch_reportados |
+| `backend/app/services/atencionsismo.py` | Created | Unified day-walk client: probe, split-retry fetch_window, count_reportes, summarize, fetch_reportados |
+| `backend/tests/services/test_snapshot.py` | Created | 12 cases: ReportadosSnapshot store/get/staleness, seed_from_blob, refresh_loop |
+| `backend/app/services/snapshot.py` | Created | ReportadosSnapshot, seed_from_blob, refresh_loop |
+| `backend/tests/routers/test_reportados.py` | Created | 6 cases: 200+body, X-Snapshot-Age header, Cache-Control header, 503 unavailable, 503 stale, REQUIRED_CLIENTS==() |
+| `backend/app/routers/reportados.py` | Created | `GET /reportados` — serves from snapshot, maps errors to 503+Retry-After |
+| `backend/app/main.py` | Modified | Added `_lifespan` (Blob-seed + background refresh task lifecycle); mounts `reportados` in `_ROUTERS`; attaches `app.state.reportados_snapshot` synchronously in `create_app()` |
+| `backend/scripts/verify_reportados_parity.py` | Created | MANUAL operator tool for task 3.6, not imported anywhere, not run in CI |
+| `web/js/api-config.js` | Created | Per-endpoint URL map, all entries default to current relative paths (inert — no consumer wired yet) |
+
+### TDD Cycle Evidence
+
+| Task | RED (command + result) | GREEN (command + result) |
+|---|---|---|
+| 3.1/3.2 (`test_atencionsismo.py` / `atencionsismo.py`) | `python -m pytest tests/services/test_atencionsismo.py -v` → `ImportError: cannot import name 'atencionsismo' from 'app.services'` (1 collection error, 0 collected) | `python -m pytest tests/services/test_atencionsismo.py -v` → `32 passed` |
+| 3.3/3.4 (`test_snapshot.py` / `snapshot.py`) | `python -m pytest tests/services/test_snapshot.py -v` → `ImportError: cannot import name 'snapshot' from 'app.services'` (1 collection error, 0 collected) | `python -m pytest tests/services/test_snapshot.py tests/services/test_atencionsismo.py -v` → `44 passed` |
+| 3.5 (`test_reportados.py` / `reportados.py` + `main.py`) | `python -m pytest tests/routers/test_reportados.py -v` → `AttributeError: 'State' object has no attribute 'reportados_snapshot'` / `ImportError: cannot import name 'reportados'` (6 failed, 0 passed) | `python -m pytest tests/routers/test_reportados.py -v` → `6 passed`; full suite `python -m pytest tests/ -q` → `95 passed, 0 failed` |
+
+Full-suite confirmation (end of batch 3): `python -m pytest backend/tests/ -v` → **95 passed, 0
+failed**. Manual smoke test (`with TestClient(create_app()) as client:`, no mocked lifespan): startup
+completed, `GET /reportados` → `503` + `Retry-After: 60` (expected — no `VISITADOS_API_PASS` set in
+the smoke env), clean shutdown, no stray-task warning.
+
+### Workload / PR Boundary
+
+- Mode: chained PR slice (`auto-chain` / `stacked-to-main`), Chain PR #3.
+- Work units (commits, in order): (1) `test(backend): add failing atencionsismo day-walk/split-retry
+  tests (RED)` (`3a63b7b`); (2) `feat(backend): extract unified atencionsismo day-walk client (GREEN)`
+  (`b0a73a9`); (3) `test(backend): add failing reportados snapshot cache tests (RED)` (`a481525`);
+  (4) `feat(backend): implement reportados in-process snapshot cache (GREEN)` (`9dadf7f`);
+  (5) `test(backend): add failing GET /reportados router tests (RED)` (`65f7623`);
+  (6) `feat(backend): mount GET /reportados with lifespan-owned snapshot refresh (GREEN)` (`47f634c`);
+  (7) `chore(backend,web): add manual reportados parity script + inert api-config.js` (`5e292c7`).
+- Boundary: starts from slice 1+2's merged `create_app()` (health + sign routes, 45/45 tests green on
+  `main`); ends at a tested `GET /reportados` route with a lifespan-owned background snapshot
+  refresher, still zero consumer repointed (`web/js/data.js` untouched) — no production dashboard KPI
+  path changed.
+- **Review budget flag**: `git diff --stat main..HEAD -- backend/ web/js/api-config.js` → **1434
+  insertions, 3 deletions** across 10 files — well ABOVE the Review Workload Forecast's ~350-450
+  estimate for slice 3 and its own suggested 3a/3b split (~200 / ~200-250), and above the chained-pr
+  skill's ≤400-line single-PR budget. The overrun is almost entirely test volume required by Strict
+  TDD Mode's coverage expectations for a day-walk/split-retry algorithm with 5 splittable status codes
+  and a concurrency-batched retry pass (`test_atencionsismo.py` alone is 378 lines; `test_snapshot.py`
+  223; `test_reportados.py` 99 — 700 of the 1434 lines are tests). **Recommend the forecast's own
+  3a/3b split, mapped onto this batch's existing work-unit commit boundaries** (no history rewrite
+  needed — the commits already fall on that exact seam): **3a** = commits `3a63b7b`..`b0a73a9`
+  (atencionsismo test+impl, 684 lines: `test_atencionsismo.py` 378 + `atencionsismo.py` 306) as its own
+  PR targeting `main`; **3b** = commits `a481525`..`5e292c7` (snapshot, router, lifespan wiring, parity
+  script, api-config.js — 750 lines) as a second stacked PR targeting 3a's branch/main once 3a merges.
+  Left as one branch here per this batch's explicit instruction not to push/PR; flagging for whoever
+  opens the actual PR(s), same practice batch 2 used for `verify_sign_parity.py`.
+- Rollback: delete the branch / do not merge. `web/js/data.js` and every other `web/` consumer
+  untouched — zero production impact regardless of how this branch is split into PRs.
+
+### Status
+
+**Slice 3: 5/7 tasks complete** (3.1-3.5). **3.6 has repo-side prep complete but execution BLOCKED on
+1.4.** **3.7 is PARTIAL** (`api-config.js` created and inert; the actual repoint half is BLOCKED on
+1.4, deliberately not touching `web/js/data.js` yet). Full `backend/tests/` suite: **95 passed, 0
+failed**.
+
+### Next Batch
+
+Slice 3 cannot fully close without task 1.4 (manual Railway "web" service creation) — the same blocker
+batches 1b and 2 already flagged; it now also blocks slice 3's 3.6/3.7 the same way it blocks slice 2's
+2.3/2.4. Once 1.4 is done AND the background snapshot refresh has completed at least once: (1) run
+`backend/scripts/verify_reportados_parity.py` against the real URL for 3.6; (2) if parity holds, wire
+`web/js/data.js`'s `refreshReportados()` to read the `reportados` URL from `api-config.js` and flip
+that one entry to the Railway base URL for 3.7, + manual Vercel redeploy of `web/`. After that, Slice 3
+is complete and Slice 4 (`sticker-status` + `source-status`, tasks 4.1-4.6, `~180-230` lines, low
+400-line risk, single PR) can start — it depends on Phase 1 (merged) and Phase 3 (reuses
+`api-config.js`, now scaffolded).

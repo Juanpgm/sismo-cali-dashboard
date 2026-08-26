@@ -140,6 +140,13 @@ Per endpoint: repoint the consumer config constant back to the old Vercel URL (o
 - The 3 SA JSONs + existing secrets (`BLOB_READ_WRITE_TOKEN`, S3 keys, `INSPECTIONS_URL`, etc.) provisioned as Railway env vars.
 - Access to redeploy `formulario/` and `web/` on Vercel for repoint slices.
 
+## Continuity Guarantees (user directive, 2026-08-25, binding at every cutover and at slice 9)
+
+1. **Endpoint completeness**: no consumer (web/, formulario/) may ever hit a missing endpoint — every legacy route exists on the consolidated app and answers with contract parity BEFORE its consumer repoints, and the slice-9 decommission gate re-checks the full route inventory one final time.
+2. **Config completeness**: every env var / secret each route or job needs is provisioned on the Railway service before its slice cuts over (startup fail-fast enforces the web set; job sets are checked per job slice).
+3. **Firestore collections**: every collection the apps depend on (inspectores, evaluaciones, sticker_matches, cuadrillas, inspecciones_israel reads, and the new survey_cali + its history) exists and is reachable through its designated access path before any consumer depends on it; survey_cali ingestion seeds the collection before any UI reads it.
+4. **Live data over cached files where not necessary**: in-process/live serving is the default for API responses (e.g. reportados serves from a live-refreshed in-memory snapshot, never a stale file); Blob-published files remain ONLY where they are genuinely necessary today (the static dashboard's inspections/meta/geojson fetch contract, xlsx export). Any future move of those to live API reads is a separate change — this change must not silently add NEW cached-file indirection.
+
 ## Success Criteria
 
 - [ ] All consumers (`web/js/*`, `formulario/js/*`) point at the consolidated app; parity checks green per endpoint before each switch.
