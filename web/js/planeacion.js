@@ -238,9 +238,9 @@ function shellHtml() {
               <input type="number" id="planeacion-max-size" min="2" step="1" placeholder="${DEFAULT_MAX_SIZE}">
             </label>
             <button type="button" class="sticker-action" id="planeacion-crear" disabled>Crear cuadrilla de la selección</button>
-            <label class="asignacion-inline-field planeacion-toggle-field" title="Bloqueado: el endpoint listPuntos del backend filtra tiene_survey=false de forma incondicional (sin parámetro para incluir levantados). Ver 'Issues Found' en apply-progress.md.">
-              <input type="checkbox" id="planeacion-incluir-levantados" disabled>
-              <span>Incluir levantados (pendiente de soporte en el backend)</span>
+            <label class="asignacion-inline-field planeacion-toggle-field" title="Muestra también los puntos que ya tienen encuesta, para revisar o corregir un cierre automático equivocado.">
+              <input type="checkbox" id="planeacion-incluir-levantados">
+              <span>Incluir levantados</span>
             </label>
           </div>
         </div>
@@ -959,14 +959,9 @@ export function initPlaneacion(root, { getToken }) {
     tableWrap.innerHTML = '<p class="sticker-loading">Cargando planeación…</p>';
     try {
       await ensureInspectores();
-      // NOTE: no "incluir levantados" param is sent — the backend's
-      // list_puntos() applies `tiene_survey == False` unconditionally at the
-      // Firestore query level (backend/app/routers/planeacion_asignaciones.py),
-      // with no parameter to override it. The toolbar checkbox is disabled
-      // and labelled accordingly rather than wired to a call that would
-      // silently no-op. See apply-progress.md "Issues Found".
+      const incluirLevantados = !!root.querySelector('#planeacion-incluir-levantados')?.checked;
       const [listResp, cuadrillasResp, resumenResp] = await Promise.all([
-        callApi(getToken, { action: 'listPuntos' }),
+        callApi(getToken, { action: 'listPuntos', incluirLevantados }),
         callApi(getToken, { action: 'listCuadrillas' }),
         callApi(getToken, { action: 'resumen' }),
       ]);
@@ -1044,6 +1039,12 @@ export function initPlaneacion(root, { getToken }) {
       busy = false;
     }
   });
+
+  // Widening the set to already-surveyed points changes the Firestore query
+  // itself, so it needs a real round trip — unlike the client-side estado
+  // filter, which just re-renders `rows`.
+  root.querySelector('#planeacion-incluir-levantados')
+    ?.addEventListener('change', () => { reload(); });
 
   reload();
   return { reload };

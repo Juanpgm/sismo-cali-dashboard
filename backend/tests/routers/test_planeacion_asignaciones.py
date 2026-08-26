@@ -897,3 +897,42 @@ def test_get_enlace_survey_fails_loud_when_form_url_unset(monkeypatch):
 
     assert resp.status_code == 503
     assert "SURVEY123_FORM_URL" in resp.json()["detail"]
+
+
+# incluirLevantados override (Phase 4 found the gap: the tiene_survey filter
+# was unconditional, so the tab's "incluir levantados" toggle had no way to
+# work) -------------------------------------------------------------------
+
+
+def test_list_puntos_incluir_levantados_returns_surveyed_points_too(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "pendiente": _punto(),
+        "levantado": _punto(tiene_survey=True),
+        "excluido": _punto(estado_asignacion="no_aplica"),
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "listPuntos", "incluirLevantados": True},
+    )
+
+    assert resp.status_code == 200
+    ids = {p["id"] for p in resp.json()["puntos"]}
+    assert ids == {"pendiente", "levantado"}, (
+        "incluirLevantados must widen the set to surveyed points, while "
+        "no_aplica stays excluded (it is an explicit operator exclusion, "
+        "not a survey-state fact)"
+    )
+
+
+def test_list_puntos_omitting_the_flag_still_excludes_surveyed(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {"a": _punto(), "b": _punto(tiene_survey=True)}
+    client = _admin_client(monkeypatch, stores)
+
+    for payload in ({"action": "listPuntos"},
+                    {"action": "listPuntos", "incluirLevantados": False}):
+        resp = client.post("/planeacion-asignaciones", json=payload)
+        assert {p["id"] for p in resp.json()["puntos"]} == {"a"}, payload

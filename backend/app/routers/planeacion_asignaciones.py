@@ -256,11 +256,19 @@ def list_puntos(db: Any, params: dict[str, Any]) -> dict[str, Any]:
 
     effective_limit = _clamp_limit(params.get("limit"))
     estado = params.get("estado")
+    # `incluirLevantados` widens the set to points that ALREADY have a survey,
+    # for reviewing/correcting what the cruce matched (a wrong auto-close is
+    # only findable if you can see closed points). Default stays False: the
+    # working set is "what still needs a survey". `no_aplica` is NOT widened
+    # by this flag — that is an explicit operator exclusion, not a survey-state
+    # fact, so it needs the `estado` filter to surface.
+    incluir_levantados = bool(params.get("incluirLevantados"))
 
+    query = db.collection(PLANEACION_PUNTOS_COLLECTION)
+    if not incluir_levantados:
+        query = query.where("tiene_survey", "==", False)
     query = (
-        db.collection(PLANEACION_PUNTOS_COLLECTION)
-        .where("tiene_survey", "==", False)
-        .order_by("prioridad_score", direction=_fs.Query.DESCENDING)
+        query.order_by("prioridad_score", direction=_fs.Query.DESCENDING)
         .limit(LIMIT_MAX + 1)
     )
     puntos = [{"id": d.id, **(d.to_dict() or {})} for d in query.get()]
@@ -754,6 +762,10 @@ class PlaneacionAsignacionesRequest(BaseModel):
     prioridad: str | None = None
     comuna: str | None = None
     soloPendientes: bool | None = None
+    # Widens listPuntos to points that already have a survey, so a wrong
+    # auto-close is reviewable (a closed point is only correctable if it can
+    # be seen). Default False keeps the working set at "still needs a survey".
+    incluirLevantados: bool | None = None
     limit: Any = None
     # autoAgrupar
     maxRadiusM: Any = None
