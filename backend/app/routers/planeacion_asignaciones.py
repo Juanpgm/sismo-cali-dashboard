@@ -1317,6 +1317,7 @@ def list_vehiculos(db: Any) -> list[dict[str, Any]]:
 def crear_vehiculo(db: Any, body: dict[str, Any], claims: dict[str, Any]) -> dict[str, Any]:
     placa = str(body.get("placa") or "").strip().upper()
     tipo = body.get("tipo")
+    empresa = str(body.get("empresa") or "").strip()
     if not placa:
         raise bad_request("crearVehiculo necesita una placa.")
     if _placa_conflict(db, placa):
@@ -1327,6 +1328,7 @@ def crear_vehiculo(db: Any, body: dict[str, Any], claims: dict[str, Any]) -> dic
     data = {
         "placa": placa,
         "tipo": str(tipo).strip() if tipo else None,
+        "empresa": empresa or None,
         "conductor_id": conductor_id,
         "activo": True,
         "creado_en": _now(),
@@ -1356,6 +1358,9 @@ def editar_vehiculo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     raw_tipo = body.get("tipo")
     if raw_tipo is not None:
         fields["tipo"] = str(raw_tipo).strip()
+    raw_empresa = body.get("empresa")
+    if raw_empresa is not None:
+        fields["empresa"] = str(raw_empresa).strip() or None
     raw_activo = body.get("activo")
     if raw_activo is not None:
         fields["activo"] = bool(raw_activo)
@@ -1570,6 +1575,7 @@ class PlaneacionAsignacionesRequest(BaseModel):
     vehiculo_id: str | None = None
     placa: str | None = None
     tipo: str | None = None
+    empresa: str | None = None
     activo: bool | None = None
 
     # Feature H (conductores): driver CRUD + link vehiculo->conductor.

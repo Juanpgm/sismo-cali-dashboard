@@ -221,6 +221,32 @@ export function buildHistorialFiltro({ tipo, usuario, fecha } = {}) {
   return body;
 }
 
+// ---- vehiculo save payloads (feature H frontend) --------------------------
+// Two pure builders so the modal's two-step "create driver then vehicle" flow
+// is testable without the DOM. The handler resolves conductor_id at runtime
+// (an existing id, or the one crearConductor returns) and passes it in here.
+export function buildVehiculoPayload({ vehiculoId, placa, tipo, empresa, activo, conductorId } = {}) {
+  const base = {
+    placa: (placa || '').trim(),
+    tipo: (tipo || '').trim(),
+    empresa: (empresa || '').trim(),
+    conductor_id: conductorId || '',
+  };
+  return vehiculoId
+    ? { action: 'editarVehiculo', vehiculo_id: vehiculoId, ...base, activo: !!activo }
+    : { action: 'crearVehiculo', ...base };
+}
+
+export function buildConductorPayload(nuevo = {}) {
+  return {
+    action: 'crearConductor',
+    nombre_completo: (nuevo.nombre_completo || '').trim(),
+    cedula: (nuevo.cedula || '').trim(),
+    email: (nuevo.email || '').trim(),
+    telefono: (nuevo.telefono || '').trim(),
+  };
+}
+
 export function filterInspectores(inspectores, query) {
   const q = (query || '').trim().toLowerCase();
   if (!q) return inspectores || [];
@@ -490,6 +516,27 @@ function shellHtml() {
           <label class="sticker-field"><span>Tipo</span>
             <input type="text" id="planeacion-vehiculo-tipo" placeholder="Camioneta">
           </label>
+          <label class="sticker-field"><span>Empresa</span>
+            <input type="text" id="planeacion-vehiculo-empresa" placeholder="Empresa">
+          </label>
+          <label class="sticker-field"><span>Conductor</span>
+            <select id="planeacion-vehiculo-conductor"></select>
+          </label>
+          <fieldset class="sticker-field" id="planeacion-vehiculo-conductor-nuevo" hidden>
+            <legend>Crear conductor</legend>
+            <label class="sticker-field"><span>Nombre</span>
+              <input type="text" id="planeacion-conductor-nombre" placeholder="Nombre">
+            </label>
+            <label class="sticker-field"><span>Cédula</span>
+              <input type="text" id="planeacion-conductor-cedula" placeholder="Cédula">
+            </label>
+            <label class="sticker-field"><span>Email</span>
+              <input type="email" id="planeacion-conductor-email" placeholder="Email">
+            </label>
+            <label class="sticker-field"><span>Teléfono</span>
+              <input type="text" id="planeacion-conductor-telefono" placeholder="Teléfono">
+            </label>
+          </fieldset>
           <label class="sticker-field asignacion-inline-field" id="planeacion-vehiculo-activo-field" hidden>
             <input type="checkbox" id="planeacion-vehiculo-activo">
             <span>Activo</span>
@@ -920,6 +967,7 @@ export function initPlaneacion(root, { getToken }) {
   let cuadrillas = [];
   let grupos = []; // grupos de INSPECTORES — `grupos-inspectores` change
   let vehiculos = []; // `grupos-inspectores` follow-up (2026-08-26)
+  let conductores = []; // feature H — driver roster for the vehiculo selector
   let metricasData = null; // `metricasProgreso` — `puntos-disponibles` change (2026-08-26)
   let resumenData = null;
   let inspectoresCache = [];
@@ -1399,12 +1447,35 @@ export function initPlaneacion(root, { getToken }) {
   const vehiculoModal = root.querySelector('#planeacion-vehiculo-modal');
   const vehiculoErr = root.querySelector('#planeacion-vehiculo-error');
   const vehiculoActivoField = root.querySelector('#planeacion-vehiculo-activo-field');
+  const conductorSelect = root.querySelector('#planeacion-vehiculo-conductor');
+  const conductorNuevoBox = root.querySelector('#planeacion-vehiculo-conductor-nuevo');
+  const NUEVO_CONDUCTOR = '__nuevo__';
+  function fillConductorSelect(selectedId) {
+    const opts = ['<option value="">— Sin conductor —</option>'];
+    for (const c of conductores) {
+      const label = `${c.nombre_completo || ''} — ${c.cedula || ''}`;
+      const sel = c.id === selectedId ? ' selected' : '';
+      opts.push(`<option value="${escapeHtml(c.id)}"${sel}>${escapeHtml(label)}</option>`);
+    }
+    opts.push(`<option value="${NUEVO_CONDUCTOR}">— Crear nuevo conductor —</option>`);
+    conductorSelect.innerHTML = opts.join('');
+  }
+  function syncConductorNuevo() {
+    conductorNuevoBox.hidden = conductorSelect.value !== NUEVO_CONDUCTOR;
+  }
+  conductorSelect.addEventListener('change', syncConductorNuevo);
   function openVehiculoModal(vehiculoId) {
     vehiculoErr.hidden = true;
     const vehiculo = vehiculoId ? vehiculos.find((v) => v.id === vehiculoId) : null;
     root.querySelector('#planeacion-vehiculo-id').value = vehiculoId || '';
     root.querySelector('#planeacion-vehiculo-placa').value = vehiculo ? (vehiculo.placa || '') : '';
     root.querySelector('#planeacion-vehiculo-tipo').value = vehiculo ? (vehiculo.tipo || '') : '';
+    root.querySelector('#planeacion-vehiculo-empresa').value = vehiculo ? (vehiculo.empresa || '') : '';
+    fillConductorSelect(vehiculo ? (vehiculo.conductor_id || '') : '');
+    ['nombre', 'cedula', 'email', 'telefono'].forEach((k) => {
+      root.querySelector(`#planeacion-conductor-${k}`).value = '';
+    });
+    syncConductorNuevo();
     root.querySelector('#planeacion-vehiculo-activo').checked = vehiculo ? vehiculo.activo !== false : true;
     vehiculoActivoField.hidden = !vehiculoId; // "activo" only makes sense once a vehículo exists
     vehiculoModal.classList.add('is-open');
@@ -1422,21 +1493,33 @@ export function initPlaneacion(root, { getToken }) {
     const vehiculoId = root.querySelector('#planeacion-vehiculo-id').value;
     const placa = root.querySelector('#planeacion-vehiculo-placa').value.trim();
     const tipo = root.querySelector('#planeacion-vehiculo-tipo').value.trim();
+    const empresa = root.querySelector('#planeacion-vehiculo-empresa').value.trim();
+    const activo = root.querySelector('#planeacion-vehiculo-activo').checked;
     if (!placa) {
       vehiculoErr.textContent = 'La placa es obligatoria.';
       vehiculoErr.hidden = false;
       return;
     }
+    const nuevoConductor = conductorSelect.value === NUEVO_CONDUCTOR;
     busy = true;
     try {
-      if (vehiculoId) {
-        const activo = root.querySelector('#planeacion-vehiculo-activo').checked;
-        await callApi(getToken, { action: 'editarVehiculo', vehiculo_id: vehiculoId, placa, tipo, activo });
-        showOk('Vehículo actualizado.');
-      } else {
-        await callApi(getToken, { action: 'crearVehiculo', placa, tipo });
-        showOk('Vehículo creado.');
+      let conductorId = nuevoConductor ? '' : conductorSelect.value;
+      if (nuevoConductor) {
+        // Two-step: create the driver first, then link the returned id. If
+        // crearConductor throws (e.g. duplicate cédula → 400) we surface it
+        // and never reach crearVehiculo.
+        const { id } = await callApi(getToken, buildConductorPayload({
+          nombre_completo: root.querySelector('#planeacion-conductor-nombre').value,
+          cedula: root.querySelector('#planeacion-conductor-cedula').value,
+          email: root.querySelector('#planeacion-conductor-email').value,
+          telefono: root.querySelector('#planeacion-conductor-telefono').value,
+        }));
+        conductorId = id;
       }
+      // ponytail: a vehiculo-create failure after crearConductor leaves an
+      // orphan driver in the roster; acceptable, no transaction built.
+      await callApi(getToken, buildVehiculoPayload({ vehiculoId, placa, tipo, empresa, activo, conductorId }));
+      showOk(vehiculoId ? 'Vehículo actualizado.' : 'Vehículo creado.');
       closeVehiculoModal();
       await reload();
     } catch (err) {
@@ -1601,17 +1684,19 @@ export function initPlaneacion(root, { getToken }) {
     try {
       await ensureInspectores();
       const incluirLevantados = !!root.querySelector('#planeacion-incluir-levantados')?.checked;
-      const [listResp, cuadrillasResp, resumenResp, gruposResp, vehiculosResp, metricasResp] = await Promise.all([
+      const [listResp, cuadrillasResp, resumenResp, gruposResp, vehiculosResp, metricasResp, conductoresResp] = await Promise.all([
         callApi(getToken, { action: 'listPuntos', incluirLevantados }),
         callApi(getToken, { action: 'listCuadrillas' }),
         callApi(getToken, { action: 'resumen' }),
         callApi(getToken, { action: 'listGrupos' }),
         callApi(getToken, { action: 'listVehiculos' }),
         callApi(getToken, { action: 'metricasProgreso' }),
+        callApi(getToken, { action: 'listConductores' }),
       ]);
       cuadrillas = cuadrillasResp.cuadrillas || [];
       grupos = gruposResp.grupos || [];
       vehiculos = vehiculosResp.vehiculos || [];
+      conductores = conductoresResp.conductores || [];
       metricasData = metricasResp.metricas || null;
       resumenData = resumenResp.resumen || null;
       rows = buildRows(listResp.puntos, cuadrillas, getInspectores());

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   colorForPunto, buildRows, sortRows, filterRows, formatTruncacion, metricasHtml,
   buildHistorialRows, buildHistorialFiltro,
+  buildVehiculoPayload, buildConductorPayload,
 } from './planeacion.js';
 
 // ---- colorForPunto — design.md ADR-10 map legend, 5 states -----------------
@@ -166,6 +167,31 @@ assert.deepEqual(
 assert.deepEqual(
   buildHistorialFiltro({ fecha: '2026-08-20' }),
   { action: 'listAuditoria', desde: '2026-08-20T00:00:00', antes_de: '2026-08-20T23:59:59' },
+);
+
+// ---- buildVehiculoPayload / buildConductorPayload — feature H frontend -----
+// Existing-conductor branch: one crearVehiculo with the chosen conductor_id.
+assert.deepEqual(
+  buildVehiculoPayload({ placa: ' abc123 ', tipo: ' Moto ', empresa: ' Acme ', conductorId: 'c1' }),
+  { action: 'crearVehiculo', placa: 'abc123', tipo: 'Moto', empresa: 'Acme', conductor_id: 'c1' },
+);
+// Edit branch keeps vehiculo_id + activo, still carries empresa/conductor_id.
+assert.deepEqual(
+  buildVehiculoPayload({ vehiculoId: 'v1', placa: 'XYZ', tipo: '', empresa: 'Co', activo: false, conductorId: 'c2' }),
+  { action: 'editarVehiculo', vehiculo_id: 'v1', placa: 'XYZ', tipo: '', empresa: 'Co', conductor_id: 'c2', activo: false },
+);
+// No conductor chosen → empty conductor_id (backend reads "" as no driver).
+assert.equal(buildVehiculoPayload({ placa: 'A' }).conductor_id, '');
+
+// New-conductor branch (step 1): crearConductor payload from the inline inputs.
+assert.deepEqual(
+  buildConductorPayload({ nombre_completo: ' Ana ', cedula: ' 123 ', email: ' a@x.com ', telefono: ' 555 ' }),
+  { action: 'crearConductor', nombre_completo: 'Ana', cedula: '123', email: 'a@x.com', telefono: '555' },
+);
+// Step 2: the vehiculo payload uses the id crearConductor returned.
+assert.equal(
+  buildVehiculoPayload({ placa: 'A', conductorId: 'new-id-from-backend' }).conductor_id,
+  'new-id-from-backend',
 );
 
 console.log('ok — planeacion.js pure table/map/filter logic');

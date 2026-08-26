@@ -1874,6 +1874,26 @@ def test_editar_vehiculo_can_clear_conductor(monkeypatch):
     assert stores[VEHICULOS]["v1"]["conductor_id"] is None
 
 
+def test_crear_vehiculo_persists_empresa(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={
+        "action": "crearVehiculo", "placa": "abc123", "empresa": "  Acme S.A.  "})
+    assert resp.status_code == 201
+    vid = resp.json()["id"]
+    assert stores[VEHICULOS][vid]["empresa"] == "Acme S.A."
+
+
+def test_editar_vehiculo_updates_empresa(monkeypatch):
+    stores = _stores()
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "empresa": "Old"}}
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={
+        "action": "editarVehiculo", "vehiculo_id": "v1", "empresa": "New Co"})
+    assert resp.status_code == 200
+    assert stores[VEHICULOS]["v1"]["empresa"] == "New Co"
+
+
 # ── `planeacion-auditoria` change, Phase 2 (2026-08-26): the dispatch-site
 # hook. design.md ADR-1/ADR-2; spec `Append-only write on successful
 # mutation`, `A logging failure never alters a completed mutation`. ────────
