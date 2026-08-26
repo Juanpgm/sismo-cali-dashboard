@@ -121,7 +121,11 @@ def _parse_desde(desde: str) -> int:
     return int(dt.timestamp() * 1000)
 
 
-def _now_iso() -> str:
+def now_iso() -> str:
+    """UTC timestamp for the `generado` response field. Public (not
+    `_now_iso`) — `app/services/snapshot.py`'s Blob-seed path reuses it so
+    a seeded snapshot's `generado` field is stamped the same way a live
+    refresh's is."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -296,7 +300,7 @@ async def fetch_reportados(
         raise ApiEmptyResultError("la API devolvió 0 reportes")
     return {
         "ok": True,
-        "generado": _now_iso(),
+        "generado": now_iso(),
         "fuente": "api:informe/json",
         **counts,
     }
