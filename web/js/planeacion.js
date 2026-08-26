@@ -1019,22 +1019,6 @@ function renderMap(rows, inspectores) {
       radius: 4, color: '#0B1D33', weight: 1, fillColor: MARKER_HEX[r.color], fillOpacity: 0.9,
     });
     marker.bindPopup(popupHtml(r), { maxWidth: 280 });
-    marker.on('popupopen', (ev) => {
-      const sel = ev.popup.getElement().querySelector('[data-reasignar-select]');
-      if (!sel) return;
-      inspectores.forEach((i) => {
-        const opt = document.createElement('option');
-        opt.value = i.uid;
-        opt.textContent = i.nombre_completo || `Brigada ${i.codigo || '—'}`;
-        if (i.uid === r.inspector_uid) opt.selected = true;
-        sel.appendChild(opt);
-      });
-      sel.addEventListener('change', async () => {
-        if (!sel.value) return;
-        sel.disabled = true;
-        try { await onReasignar(r.id, sel.value); } finally { sel.disabled = false; }
-      });
-    });
     marker.addTo(pointsLayer);
   }
 

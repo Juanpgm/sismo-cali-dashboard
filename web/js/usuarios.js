@@ -45,7 +45,7 @@ async function callApi(getToken, body, endpointName = 'usuarios') {
 
 const INSPECTOR_DOMAIN = '@sismocali.gov.co';
 const TIPO_LABEL = { admin: 'Administrador', viewer: 'Viewer', usuario: 'Usuario', inspector: 'Inspector', conductor: 'Conductor' };
-const DEFAULT_TIPO_NOTE = 'Crea una cuenta de usuario (contraseña): ve solo el Panel. Promovela a administrador después con "Cambiar rol" si hace falta.';
+const DEFAULT_TIPO_NOTE = 'Crea una cuenta de usuario (contraseña): ve solo el Panel. Se puede promover a administrador después con "Cambiar rol" si hace falta.';
 const TIPO_NOTE = {
   admin: DEFAULT_TIPO_NOTE,
   viewer: DEFAULT_TIPO_NOTE,
@@ -240,7 +240,7 @@ function rosterHtml(usuarios, filtered, pageItems, ownUid, { role, status, query
               ${field('email', 'Email', 'type="email" placeholder="conductor@ejemplo.com" autocomplete="off" disabled')}
               ${field('telefono', 'Teléfono', 'placeholder="3001234567" autocomplete="off" disabled')}
             </div>
-            <p class="sticker-note" id="usuario-form-note">Crea una cuenta de usuario (contraseña): ve solo el Panel. Promovela a administrador después con "Cambiar rol" si hace falta.</p>
+            <p class="sticker-note" id="usuario-form-note">Crea una cuenta de usuario (contraseña): ve solo el Panel. Se puede promover a administrador después con "Cambiar rol" si hace falta.</p>
             <p class="sticker-error" id="usuario-form-error" role="alert" hidden></p>
             <div class="sticker-form-actions">
               <button type="button" class="btn-secondary" data-modal-close>Cancelar</button>
