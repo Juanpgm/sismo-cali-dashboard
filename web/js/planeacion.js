@@ -256,6 +256,59 @@ export function filterInspectores(inspectores, query) {
   });
 }
 
+// ---- Inspectores roster (Slice B — moved from stickers.js, `usuarios-
+// personas-unificadas` change, Phase 3). Ported verbatim from
+// stickers.js:33-76 except the search helper's name — see
+// `filterRosterInspectores`'s own comment for why. --------------------------
+
+const rosterInitials = (name) => (name || '').trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '—';
+
+/** One roster row: brigade code, avatar initials, name/cédula/entidad meta,
+ *  active/inhabilitado pill, and the enable/disable toggle button — ported
+ *  verbatim from stickers.js:35-57 (rowHtml). */
+export function rowHtml(i) {
+  const activo = !i.disabled && i.activo;
+  const estado = activo
+    ? '<span class="sticker-pill sticker-pill-on">Activo</span>'
+    : '<span class="sticker-pill sticker-pill-off">Inhabilitado</span>';
+  const toggle = activo
+    ? `<button type="button" class="sticker-action sticker-action-off" data-uid="${escapeHtml(i.uid)}" data-enable="false">Inhabilitar</button>`
+    : `<button type="button" class="sticker-action sticker-action-on" data-uid="${escapeHtml(i.uid)}" data-enable="true">Habilitar</button>`;
+  const warn = i.registrado ? '' : '<span class="sticker-warn" title="Sin perfil en Firestore">sin perfil</span>';
+  const n = Number.isFinite(i.registros) ? i.registros : null;
+  const registros = n === null ? '— registros' : `${n} registro${n === 1 ? '' : 's'}`;
+  const meta = [i.entidad, registros].filter(Boolean).join(' · ');
+  return `<li class="sticker-row${activo ? '' : ' is-off'}">
+    <span class="sticker-code" title="Código de brigada">${escapeHtml(i.codigo || '—')}</span>
+    <span class="sticker-avatar" aria-hidden="true">${escapeHtml(rosterInitials(i.nombre_completo))}</span>
+    <div class="sticker-identity">
+      <span class="sticker-name">${escapeHtml(i.nombre_completo || '—')} ${warn}</span>
+      <span class="sticker-meta">${escapeHtml(i.cedula)}${meta ? ` · ${escapeHtml(meta)}` : ''}</span>
+    </div>
+    ${estado}
+    ${toggle}
+  </li>`;
+}
+
+function normalizeRosterSearch(s) {
+  return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
+/** Roster search over nombre/cédula/código/entidad, accent/case-insensitive —
+ *  ported from stickers.js:64-76 (filterInspectores + normalizeSearch).
+ *  Named DIFFERENTLY from this module's OWN `filterInspectores` above (the
+ *  narrower nombre/código/cédula-only match used by the assign-inspector
+ *  combobox) so porting the richer roster search never shadows or collides
+ *  with it — both stay, neither is merged into the other. */
+export function filterRosterInspectores(inspectores, query) {
+  const q = normalizeRosterSearch(query).trim();
+  if (!q) return inspectores || [];
+  return (inspectores || []).filter((i) => {
+    const hay = normalizeRosterSearch([i.nombre_completo, i.cedula, i.codigo, i.entidad].filter(Boolean).join(' '));
+    return hay.includes(q);
+  });
+}
+
 // ---- markup -----------------------------------------------------------------
 
 function cardHead(title, subtitle, extra = '') {
@@ -282,6 +335,7 @@ function shellHtml() {
       <button type="button" class="asignacion-segment" data-subtab-btn="grupos" id="planeacion-tab-grupos" role="tab" aria-selected="false" aria-controls="planeacion-panel-grupos">Grupos</button>
       <button type="button" class="asignacion-segment" data-subtab-btn="vehiculos" id="planeacion-tab-vehiculos" role="tab" aria-selected="false" aria-controls="planeacion-panel-vehiculos">Vehículos</button>
       <button type="button" class="asignacion-segment" data-subtab-btn="historial" id="planeacion-tab-historial" role="tab" aria-selected="false" aria-controls="planeacion-panel-historial">Historial</button>
+      <button type="button" class="asignacion-segment" data-subtab-btn="inspectores" id="planeacion-tab-inspectores" role="tab" aria-selected="false" aria-controls="planeacion-panel-inspectores">Inspectores</button>
     </nav>
 
     <section class="planeacion-subpanel" data-subtab="puntos" id="planeacion-panel-puntos" role="tabpanel" aria-labelledby="planeacion-tab-puntos">
@@ -392,6 +446,10 @@ function shellHtml() {
         <div class="table-scroll asignacion-table-scroll" id="planeacion-historial-wrap"></div>
         <button type="button" class="sticker-action" id="planeacion-historial-mas" hidden>Ver más</button>
       </div>
+    </section>
+
+    <section class="planeacion-subpanel" data-subtab="inspectores" id="planeacion-panel-inspectores" role="tabpanel" aria-labelledby="planeacion-tab-inspectores" hidden>
+      <div id="planeacion-inspector-roster"></div>
     </section>
 
     <div class="modal" id="planeacion-editar-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="planeacion-editar-title">
@@ -774,6 +832,83 @@ function historialHtml(rows) {
   </tbody></table>`;
 }
 
+/** Just the list — re-rendered on every keystroke of the search box, so it
+ *  lives apart from the search input (whose focus must survive a filter).
+ *  Ported from stickers.js:78-88 (rosterListHtml). */
+function inspectorRosterListHtml(inspectores, filtered) {
+  if (!inspectores.length) {
+    return '<p class="sticker-empty">Todavía no hay inspectores. Crear el primero con «Nuevo inspector».</p>';
+  }
+  if (!filtered.length) {
+    return '<p class="sticker-empty">Ningún inspector coincide con la búsqueda.</p>';
+  }
+  return `<ul class="sticker-list">${filtered.map(rowHtml).join('')}</ul>`;
+}
+
+/** Inspectores roster segment (Slice B — moved from stickers.js). Self-
+ *  contained like stickers.js's own `rosterHtml` was: search + chips +
+ *  "Nuevo inspector" + list + the create-inspector modal all in one string,
+ *  re-rendered together on every roster refresh (create/toggle/search). */
+function inspectorRosterHtml(inspectores) {
+  const activos = inspectores.filter(isHabilitado).length;
+  const off = inspectores.length - activos;
+  const search = inspectores.length
+    ? `<div class="sticker-search">
+        <input type="search" id="planeacion-inspector-search" class="sticker-search-input"
+          placeholder="Buscar por nombre, cédula, código o entidad…"
+          aria-label="Buscar inspectores" autocomplete="off">
+      </div>`
+    : '';
+  const roster = `<div id="planeacion-inspector-roster-list">${inspectorRosterListHtml(inspectores, inspectores)}</div>`;
+  return `
+    <div class="card">
+      ${cardHead('Inspectores de campo', 'Alta, baja y búsqueda del roster — el mismo que usan las cuadrillas, los grupos y el mapa.', '<button type="button" class="btn-primary" id="planeacion-inspector-new">Nuevo inspector</button>')}
+      <div class="sticker-chips" aria-label="Resumen de inspectores">
+        <span class="sticker-chip">${inspectores.length} total</span>
+        <span class="sticker-chip is-on">${activos} activos</span>
+        <span class="sticker-chip is-off">${off} inhabilitados</span>
+      </div>
+      ${search}
+      ${roster}
+    </div>
+
+    <div class="modal" id="planeacion-inspector-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="planeacion-inspector-modal-title">
+      <div class="modal-backdrop" data-inspector-modal-close></div>
+      <div class="modal-panel sticker-modal-panel">
+        <div class="modal-header">
+          <h2 id="planeacion-inspector-modal-title">Nuevo inspector</h2>
+          <button type="button" class="btn-icon" data-inspector-modal-close aria-label="Cerrar">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <form id="planeacion-inspector-form" class="sticker-form" novalidate>
+            <div class="sticker-form-grid">
+              <label class="sticker-field"><span>Cédula *</span>
+                <input name="cedula" inputmode="numeric" required placeholder="1020735324" autocomplete="off">
+              </label>
+              <label class="sticker-field"><span>Nombre completo</span>
+                <input name="nombre_completo" placeholder="Andrés Torres" autocomplete="off">
+              </label>
+              <label class="sticker-field"><span>Entidad</span>
+                <input name="entidad" placeholder="SGRED" autocomplete="off">
+              </label>
+              <label class="sticker-field"><span>Contraseña *</span>
+                <input name="password" type="text" required placeholder="mínimo 6 caracteres" autocomplete="off">
+              </label>
+            </div>
+            <p class="sticker-note">El código de brigada se asigna solo: el servidor toma el número libre más bajo (001, 002, …) y nunca reutiliza uno ya entregado.</p>
+            <p class="sticker-error" id="planeacion-inspector-error" role="alert" hidden></p>
+            <div class="sticker-form-actions">
+              <button type="button" class="btn-secondary" data-inspector-modal-close>Cancelar</button>
+              <button type="submit" class="btn-primary" id="planeacion-inspector-submit">Crear inspector</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>`;
+}
+
 // Vanilla searchable combobox — same shape as stickers-asignacion.js's own
 // mountCombobox (no cap, keyboard nav, mousedown-before-blur selection).
 //
@@ -977,6 +1112,7 @@ export function initPlaneacion(root, { getToken }) {
   const historialUsuarioSelect = root.querySelector('#planeacion-historial-usuario');
   const historialFechaInput = root.querySelector('#planeacion-historial-fecha');
   const historialMasBtn = root.querySelector('#planeacion-historial-mas');
+  const inspectorRosterRoot = root.querySelector('#planeacion-inspector-roster');
 
   // `planeacion-auditoria` change: unlike Grupos/Vehículos above (eagerly
   // fetched by reload()), Historial fetches only on first switch to its
@@ -1375,6 +1511,115 @@ export function initPlaneacion(root, { getToken }) {
     });
   }
 
+  // ---- Inspectores roster section (Slice B — moved from stickers.js,
+  // `usuarios-personas-unificadas` Phase 3). Self-contained re-render, same
+  // idiom as stickers.js's own reload()/wire() split: set innerHTML from
+  // `inspectorRosterHtml(getInspectores())`, then (re)wire the fresh DOM.
+  // `ensureInspectores()` already ran at the top of `reload()`, so this
+  // section never issues its own list() call — only create/setEnabled do,
+  // via the module's existing `callStickersApi`. --------------------------
+  function renderInspectorRoster() {
+    const inspectores = getInspectores();
+    inspectorRosterRoot.innerHTML = inspectorRosterHtml(inspectores);
+    wireInspectorRoster();
+  }
+
+  async function refreshInspectoresAfterWrite() {
+    // Force a real re-fetch (not just re-reading the stale cache) so every
+    // OTHER Planeación section (grupo-modal member picker, historial's
+    // "usuario" filter) sees the new/changed inspector the next time it
+    // renders — no full tab reload required.
+    inspectoresLoaded = false;
+    await ensureInspectores();
+    renderInspectorRoster();
+  }
+
+  function wireInspectorRoster() {
+    const modal = inspectorRosterRoot.querySelector('#planeacion-inspector-modal');
+    const form = inspectorRosterRoot.querySelector('#planeacion-inspector-form');
+    const errBox = inspectorRosterRoot.querySelector('#planeacion-inspector-error');
+    const showError = (msg) => { errBox.textContent = msg; errBox.hidden = !msg; };
+
+    const openModal = () => {
+      showError('');
+      form.reset();
+      modal.classList.add('is-open');
+      modal.setAttribute('aria-hidden', 'false');
+      form.querySelector('[name="cedula"]').focus();
+    };
+    const closeModal = () => {
+      modal.classList.remove('is-open');
+      modal.setAttribute('aria-hidden', 'true');
+    };
+
+    inspectorRosterRoot.querySelector('#planeacion-inspector-new').addEventListener('click', openModal);
+    modal.querySelectorAll('[data-inspector-modal-close]').forEach((el) => el.addEventListener('click', closeModal));
+    modal.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (busy) return;
+      showError('');
+      const body = { action: 'create' };
+      new FormData(form).forEach((v, k) => { body[k] = String(v).trim(); });
+      busy = true;
+      inspectorRosterRoot.querySelector('#planeacion-inspector-submit').disabled = true;
+      try {
+        // The server allocates the brigade code, so the admin only learns it
+        // from the response — surface it instead of silently closing.
+        const { codigo } = await callStickersApi(getToken, body);
+        closeModal();
+        await refreshInspectoresAfterWrite();
+        showOk(`Inspector creado. Código de brigada asignado: ${codigo}.`);
+      } catch (err) {
+        showError(err.message);
+        inspectorRosterRoot.querySelector('#planeacion-inspector-submit').disabled = false;
+      } finally {
+        busy = false;
+      }
+    });
+
+    // Scoped to the roster rows: re-run after every search filter, since the
+    // list is re-rendered then.
+    function wireInspectorRows() {
+      inspectorRosterRoot.querySelectorAll('#planeacion-inspector-roster-list .sticker-row .sticker-action[data-uid]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          if (busy) return;
+          busy = true;
+          btn.disabled = true;
+          try {
+            await callStickersApi(getToken, { action: 'setEnabled', uid: btn.dataset.uid, enabled: btn.dataset.enable === 'true' });
+            await refreshInspectoresAfterWrite();
+          } catch (err) {
+            alert(err.message); // rare path (network/permission); surface it plainly
+          } finally {
+            // CRITICAL — carried over VERBATIM from stickers.js:308-313 (the
+            // F5-toggle fix, commit 7977fb7): reset on BOTH success and error,
+            // otherwise a successful toggle leaves `busy` stuck true and every
+            // later toggle no-ops until F5. `btn` is a detached node by the
+            // time this runs (refreshInspectoresAfterWrite replaced the DOM),
+            // so these two lines are then a harmless no-op — same as stickers.js.
+            busy = false;
+            btn.disabled = false;
+          }
+        });
+      });
+    }
+    wireInspectorRows();
+
+    // Client-side search over the already-loaded roster: filter and re-render
+    // only the list container so the search input keeps focus between keystrokes.
+    const searchInput = inspectorRosterRoot.querySelector('#planeacion-inspector-search');
+    const listEl = inspectorRosterRoot.querySelector('#planeacion-inspector-roster-list');
+    if (searchInput && listEl) {
+      searchInput.addEventListener('input', () => {
+        const filtered = filterRosterInspectores(getInspectores(), searchInput.value);
+        listEl.innerHTML = inspectorRosterListHtml(getInspectores(), filtered);
+        wireInspectorRows();
+      });
+    }
+  }
+
   // ---- progreso section (`metricasProgreso`, `puntos-disponibles` change,
   // 2026-08-26) — read-only, no actions of its own; just renders whatever
   // `reload()` fetched into `metricasData`. Inspector names resolved via
@@ -1645,6 +1890,7 @@ export function initPlaneacion(root, { getToken }) {
       renderVehiculosSection();
       renderMetricasSection();
       renderMapSection();
+      renderInspectorRoster();
     } catch (err) {
       teardownMap();
       tableWrap.innerHTML = `<p class="sticker-error" role="alert">${escapeHtml(err.message)}</p>`;

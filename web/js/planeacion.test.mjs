@@ -5,6 +5,7 @@ import {
   colorForPunto, buildRows, sortRows, filterRows, formatTruncacion, metricasHtml,
   buildHistorialRows, buildHistorialFiltro,
   buildVehiculoPayload, buildConductorPayload,
+  rowHtml, filterRosterInspectores, filterInspectores,
 } from './planeacion.js';
 
 // ---- colorForPunto — design.md ADR-10 map legend, 5 states -----------------
@@ -193,5 +194,50 @@ assert.equal(
   buildVehiculoPayload({ placa: 'A', conductorId: 'new-id-from-backend' }).conductor_id,
   'new-id-from-backend',
 );
+
+// ---- rowHtml / filterRosterInspectores — Slice B roster port from
+// stickers.js (usuarios-personas-unificadas, Phase 3, task 3.1) ------------
+
+// Active inspector: pill "Activo", "Inhabilitar" toggle with data-enable=false.
+const activoHtml = rowHtml({ uid: 'u1', codigo: '001', nombre_completo: 'Ana Torres', cedula: '123', activo: true, disabled: false, registrado: true });
+assert.match(activoHtml, /Activo/);
+assert.match(activoHtml, /data-enable="false"/);
+assert.match(activoHtml, /Inhabilitar/);
+
+// disabled: true (Firebase Auth) -> reads as inactive regardless of `activo`.
+const disabledHtml = rowHtml({ uid: 'u2', codigo: '002', nombre_completo: 'Beto Ruiz', cedula: '456', activo: true, disabled: true, registrado: true });
+assert.match(disabledHtml, /Inhabilitado/);
+assert.match(disabledHtml, /data-enable="true"/);
+assert.match(disabledHtml, /Habilitar/);
+
+// activo: false (Firestore profile) -> also reads as inactive.
+const inactivoHtml = rowHtml({ uid: 'u3', codigo: '003', nombre_completo: 'Cami Ríos', cedula: '789', activo: false, disabled: false, registrado: true });
+assert.match(inactivoHtml, /Inhabilitado/);
+
+// Missing i.registrado -> "sin perfil" warning shown.
+const sinPerfilHtml = rowHtml({ uid: 'u4', codigo: '004', nombre_completo: 'Dana Paz', cedula: '111', activo: true, disabled: false, registrado: false });
+assert.match(sinPerfilHtml, /sin perfil/);
+const conPerfilHtml = rowHtml({ uid: 'u5', codigo: '005', nombre_completo: 'Edu Soto', cedula: '222', activo: true, disabled: false, registrado: true });
+assert.ok(!conPerfilHtml.includes('sin perfil'));
+
+// Missing i.codigo falls back to em dash.
+const sinCodigoHtml = rowHtml({ uid: 'u6', nombre_completo: 'Fer Luna', cedula: '333', activo: true, disabled: false, registrado: true });
+assert.match(sinCodigoHtml, /—/);
+
+// filterRosterInspectores — accent/case-insensitive across nombre/cédula/código/entidad.
+const roster = [
+  { uid: 'u1', nombre_completo: 'María José Peña', cedula: '1020735324', codigo: '007', entidad: 'SGRED' },
+  { uid: 'u2', nombre_completo: 'Carlos Ruiz', cedula: '99887766', codigo: '008', entidad: 'DAGMA' },
+];
+assert.deepEqual(filterRosterInspectores(roster, 'maria jose').map((i) => i.uid), ['u1']);
+assert.deepEqual(filterRosterInspectores(roster, 'MARÍA').map((i) => i.uid), ['u1']);
+assert.deepEqual(filterRosterInspectores(roster, '1020735324').map((i) => i.uid), ['u1']);
+assert.deepEqual(filterRosterInspectores(roster, '008').map((i) => i.uid), ['u2']);
+assert.deepEqual(filterRosterInspectores(roster, 'dagma').map((i) => i.uid), ['u2']);
+assert.equal(filterRosterInspectores(roster, '').length, 2);
+assert.equal(filterRosterInspectores(roster, 'nomatch').length, 0);
+// planeacion.js's OWN filterInspectores (narrower, nombre/código/cédula-only)
+// stays a separate function — this is not a rename, both coexist.
+assert.notEqual(filterInspectores, filterRosterInspectores);
 
 console.log('ok — planeacion.js pure table/map/filter logic');

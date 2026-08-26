@@ -7,6 +7,7 @@
 // Lazy-initialized by web/js/stickers.js the first time this segment opens
 // (spec.md "Mounted as a sub-section of the existing Stickers tab").
 import { COLORS, escapeHtml, basemapTileUrl } from './utils.js';
+import { apiUrl } from './api-config.js';
 
 const ENDPOINT = '/api/sticker-asignaciones';
 const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
@@ -50,6 +51,25 @@ async function callApi(getToken, body) {
   const token = await getToken();
   if (!token) throw new Error('Sesión no válida. Volver a iniciar sesión.');
   const res = await fetch(ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+  return data;
+}
+
+// Roster read-only reuse of Stickers' own endpoint. The Roster segment that
+// used to preload this for the whole Stickers tab moved to Planeación
+// (`usuarios-personas-unificadas` Phase 3), so this sub-section now fetches
+// its own copy — same 8-line client `planeacion.js`/`stickers.js` already
+// carry (a 3rd near-identical copy is fine here, not worth a shared module
+// for 8 lines per this repo's own precedent).
+async function callStickersApi(getToken, body) {
+  const token = await getToken();
+  if (!token) throw new Error('Sesión no válida. Volver a iniciar sesión.');
+  const res = await fetch(apiUrl('stickers'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
@@ -556,13 +576,19 @@ function renderMap(rows, inspectores, onReasignar) {
 
 // ---- entry point --------------------------------------------------------------
 
-/** initStickersAsignacion(root, { getToken, getInspectores }) — renders the
- *  sub-section once, fetches listPuntos+listCuadrillas, wires CRUD. Returns
- *  { reload } so web/js/stickers.js can re-fetch on subsequent opens instead
- *  of calling this twice (spec.md "Init runs once on first Asignación open"). */
-export function initStickersAsignacion(root, { getToken, getInspectores }) {
+/** initStickersAsignacion(root, { getToken }) — renders the sub-section once,
+ *  fetches its own inspector roster + listPuntos+listCuadrillas, wires CRUD.
+ *  Returns { reload } so web/js/stickers.js can re-fetch on subsequent opens
+ *  instead of calling this twice (spec.md "Init runs once on first Asignación
+ *  open"). */
+export function initStickersAsignacion(root, { getToken }) {
   let rows = [];
   let cuadrillas = [];
+  // Own copy of the roster (Phase 3: the Roster segment that used to preload
+  // this for the whole Stickers tab moved to Planeación) — fetched once on
+  // init and again on reload(), same lifecycle as `rows`/`cuadrillas`.
+  let inspectoresCache = [];
+  function getInspectores() { return inspectoresCache; }
   // Default to an always-present column so the first view is meaningful and
   // never fronted by the blank-address points.
   let sortKey = 'estado_asignacion';
@@ -823,10 +849,12 @@ export function initStickersAsignacion(root, { getToken, getInspectores }) {
     showOk('');
     tableWrap.innerHTML = '<p class="sticker-loading">Cargando asignación…</p>';
     try {
-      const [{ puntos }, { cuadrillas: cuadrillasResp }] = await Promise.all([
+      const [{ inspectores }, { puntos }, { cuadrillas: cuadrillasResp }] = await Promise.all([
+        callStickersApi(getToken, { action: 'list' }),
         callApi(getToken, { action: 'listPuntos' }),
         callApi(getToken, { action: 'listCuadrillas' }),
       ]);
+      inspectoresCache = inspectores || [];
       cuadrillas = cuadrillasResp;
       rows = buildRows(puntos, cuadrillas, getInspectores() || []);
       selected.clear();
