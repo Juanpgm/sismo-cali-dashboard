@@ -36,6 +36,9 @@ export const API_CONFIG = {
   // parity check to pass before flipping. It starts on Railway from day
   // one (design.md ADR-10's own note; the Planeación tab itself is
   // Phase 4, not wired to this entry yet).
+  // Pin manual de cuál inspección representa a un edificio duplicado.
+  // Endpoint nuevo, sin gemelo legacy en Vercel: nace en Railway.
+  panelRepresentante: `${RAILWAY_BASE_URL}/panel-representante`,
   planeacionAsignaciones: `${RAILWAY_BASE_URL}/planeacion-asignaciones`,
 };
 

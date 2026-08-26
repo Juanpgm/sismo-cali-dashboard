@@ -322,6 +322,90 @@ export function openLightbox(urls, startIndex) {
   lightboxEl.classList.add('is-open');
 }
 
+// Un edificio puede tener varias inspecciones (re-visitas, reenvíos). El
+// pipeline agrupa por edificio y elige UNA para las cifras: por defecto la
+// MÁS RECIENTE. Ninguna regla automática acierta siempre, así que desde acá
+// se puede fijar a mano cuál cuenta.
+//
+// El bloque aparece SOLO en registros que pertenecen a un grupo con más de
+// una inspección — en los otros 941 no habría nada que decidir y sería ruido.
+function duplicadoHtml(record) {
+  const n = Number(record.dup_n) || 1;
+  if (n <= 1) return '';
+
+  const esRep = record.es_representante !== false;
+  const grupo = record.dup_grupo_id || '';
+  const gid = record.GlobalID || '';
+
+  return `
+    <section class="detail-group detail-duplicado">
+      <h3>Edificio con ${n} inspecciones</h3>
+      <p class="detail-duplicado-nota">
+        ${esRep
+          ? 'Esta es la inspección que cuenta en las cifras del Panel.'
+          : 'Las cifras del Panel usan otra inspección de este mismo edificio.'}
+        Ninguna se borra: todas siguen en la tabla.
+      </p>
+      <div class="detail-duplicado-acciones">
+        ${esRep
+          ? `<button type="button" class="btn-secondary" data-quitar-representante
+                     data-grupo="${escapeHtml(grupo)}">Volver a la regla automática</button>`
+          : `<button type="button" class="btn-primary" data-fijar-representante
+                     data-grupo="${escapeHtml(grupo)}" data-gid="${escapeHtml(gid)}">
+               Usar esta inspección para las cifras
+             </button>`}
+        <span class="detail-duplicado-estado" data-duplicado-estado></span>
+      </div>
+    </section>
+  `;
+}
+
+// Fija/quita el representante y RECARGA, porque cambiar cuál inspección
+// cuenta cambia los KPIs, el mapa y los gráficos a la vez — reconstruirlos a
+// mano desde acá sería fácil de desincronizar.
+function wireDuplicadoAcciones(body) {
+  const estado = body.querySelector('[data-duplicado-estado]');
+  const fijar = body.querySelector('[data-fijar-representante]');
+  const quitar = body.querySelector('[data-quitar-representante]');
+  if (!fijar && !quitar) return;
+
+  const llamar = async (btn, method, payload) => {
+    btn.disabled = true;
+    if (estado) estado.textContent = 'Guardando…';
+    try {
+      const token = await duplicadoDeps.getToken?.();
+      if (!token) throw new Error('Sesión no disponible.');
+      const res = await fetch(duplicadoDeps.endpoint, {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (estado) estado.textContent = 'Listo. Actualizando cifras…';
+      await duplicadoDeps.onChange?.();
+    } catch (err) {
+      // Se muestra el error en vez de tragárselo: si no se guardó, el usuario
+      // debe saberlo — creer que fijó un dato y que no haya quedado es peor
+      // que no tener el botón.
+      if (estado) estado.textContent = `No se pudo guardar: ${err.message}`;
+      btn.disabled = false;
+    }
+  };
+
+  fijar?.addEventListener('click', () => llamar(fijar, 'POST', {
+    dup_grupo_id: fijar.dataset.grupo, global_id: fijar.dataset.gid,
+  }));
+  quitar?.addEventListener('click', () => llamar(quitar, 'DELETE', {
+    dup_grupo_id: quitar.dataset.grupo,
+  }));
+}
+
+// Inyectado por main.js (initTable): el token y el recargador viven allá.
+let duplicadoDeps = { endpoint: '/panel-representante' };
+export function configurarRepresentante(deps) {
+  duplicadoDeps = { ...duplicadoDeps, ...deps };
+}
+
 export function openDetailModal(record) {
   const modal = document.getElementById('detail-modal');
   const body = modal.querySelector('[data-modal-body]');
@@ -340,6 +424,7 @@ export function openDetailModal(record) {
   const orderedGroupNames = [...Object.keys(DETAIL_GROUPS), 'Otros'].filter((g) => groups[g] && groups[g].length);
 
   body.innerHTML = `
+    ${duplicadoHtml(record)}
     <div class="detail-media">
       <div class="detail-minimap" data-minimap></div>
       <div class="detail-photos" data-photos><span class="detail-photos-empty">Cargando fotos…</span></div>
@@ -362,6 +447,8 @@ export function openDetailModal(record) {
   const miniMapEl = body.querySelector('[data-minimap]');
   buildMiniMap(miniMapEl, record);
   loadPhotos(record.ObjectID, body.querySelector('[data-photos]'));
+
+  wireDuplicadoAcciones(body);
 
   modal.classList.add('is-open');
   modal.setAttribute('aria-hidden', 'false');

@@ -9,7 +9,7 @@ import {
   setStickerStatus,
 } from './mapview.js';
 import { coverageGaugeHtml } from './coverage-gauge.js';
-import { initTable, renderTable, setTotalRecords, openDetailModal } from './table.js';
+import { initTable, renderTable, setTotalRecords, openDetailModal, configurarRepresentante } from './table.js';
 import { renderAcciones } from './acciones.js';
 import { initStickers } from './stickers.js';
 import { initPlaneacion } from './planeacion.js';
@@ -307,6 +307,14 @@ async function loadAndRender({ isRefresh = false, bust = false } = {}) {
         if (record) openDetailModal(record);
       } });
       initTable(tableCard, store.records, { onRowClick });
+      // El botón «usar esta inspección» del modal necesita el token y una
+      // forma de recargar: cambiar el representante mueve KPIs, mapa y
+      // gráficos a la vez, así que se recarga en vez de parchear a mano.
+      configurarRepresentante({
+        endpoint: apiUrl('panelRepresentante'),
+        getToken: getIdToken,
+        onChange: async () => { await store.load(); },
+      });
       wireMapControls();
       wireViewTabs();
       initTheme();

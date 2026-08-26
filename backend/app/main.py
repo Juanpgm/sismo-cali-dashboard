@@ -17,6 +17,7 @@ from app.credentials import clients as credentials
 from app.routers import (
     health,
     inspector_asignaciones,
+    panel_representante,
     planeacion_asignaciones,
     refresh,
     reportados,
@@ -46,6 +47,7 @@ _ROUTERS = (
     planeacion_asignaciones,
     survey_cali,
     usuarios,
+    panel_representante,
 )
 
 

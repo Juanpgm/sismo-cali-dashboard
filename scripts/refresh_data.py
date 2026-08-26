@@ -1198,6 +1198,41 @@ def _clave_edificio(row) -> str:
     return f"id:{row.get('GlobalID')}"
 
 
+def leer_representantes_fijados() -> dict:
+    """Pins set by an operator from the Panel (`panel_representante`).
+
+    Best-effort ON PURPOSE: if Firestore is unreachable or unconfigured this
+    returns `{}` and the automatic recency rule decides every group. A data
+    refresh must never fail because an optional override store was down —
+    losing today's figures entirely is far worse than losing a handful of
+    manual pins until the next run.
+    """
+    try:
+        import json as _json
+        import os as _os
+
+        sa_raw = _os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
+        if not sa_raw:
+            return {}
+        from google.cloud import firestore
+        from google.oauth2 import service_account
+
+        info = _json.loads(sa_raw)
+        creds = service_account.Credentials.from_service_account_info(info)
+        db = firestore.Client(project=info.get("project_id"), credentials=creds)
+        pins = {}
+        for doc in db.collection("panel_representante").stream():
+            gid = (doc.to_dict() or {}).get("global_id")
+            if gid:
+                pins[doc.id] = gid
+        if pins:
+            log.info("Representantes fijados a mano: %d.", len(pins))
+        return pins
+    except Exception as exc:  # noqa: BLE001 - best-effort, see docstring
+        log.warning("No se pudieron leer los representantes fijados (%s); se usa la regla automática.", exc)
+        return {}
+
+
 def add_dup_group(df: pd.DataFrame, overrides: dict | None = None) -> pd.DataFrame:
     """Tag every row with `dup_grupo_id` / `dup_n` / `es_representante`.
 
@@ -1255,7 +1290,7 @@ def normalize(rows_raw: pd.DataFrame) -> pd.DataFrame:
     df = add_id_edan(df)
     df = add_address_norm(df)
     # AFTER add_address_norm: the grouping keys off `direccion_norm`.
-    df = add_dup_group(df)
+    df = add_dup_group(df, overrides=leer_representantes_fijados())
     log.info(
         "Edificios: %d registros -> %d edificios unicos (%d duplicados agrupados).",
         len(df), int(df["es_representante"].sum()), len(df) - int(df["es_representante"].sum()),
