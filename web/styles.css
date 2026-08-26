@@ -1867,6 +1867,11 @@ body:not([data-role="admin"]) .view-tab[data-view="analista"] { display: none !i
 .asignacion-segment:hover { color: var(--text-primary); }
 .asignacion-segment.is-active { color: var(--accent); border-color: var(--accent); }
 
+/* Planeación sub-tab panels (Puntos / Grupos / Vehículos). Explicit
+   [hidden] rule so no `display:` on <section> can override the attribute. */
+.planeacion-subtabs { margin-top: 4px; }
+.planeacion-subpanel[hidden] { display: none; }
+
 /* Compact intro + inline step hints above the workflow. */
 .asignacion-intro { margin: 0 0 8px; color: var(--text-secondary); font-size: .86rem; line-height: 1.5; }
 .asignacion-steps {

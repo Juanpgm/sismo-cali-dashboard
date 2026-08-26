@@ -219,6 +219,13 @@ function shellHtml() {
     <p class="sticker-ok" id="planeacion-ok" role="status" hidden></p>
     <p class="sticker-error" id="planeacion-error" role="alert" hidden></p>
 
+    <nav class="asignacion-segmented planeacion-subtabs" role="tablist" aria-label="Vistas de Planeación">
+      <button type="button" class="asignacion-segment is-active" data-subtab-btn="puntos" id="planeacion-tab-puntos" role="tab" aria-selected="true" aria-controls="planeacion-panel-puntos">Puntos</button>
+      <button type="button" class="asignacion-segment" data-subtab-btn="grupos" id="planeacion-tab-grupos" role="tab" aria-selected="false" aria-controls="planeacion-panel-grupos">Grupos</button>
+      <button type="button" class="asignacion-segment" data-subtab-btn="vehiculos" id="planeacion-tab-vehiculos" role="tab" aria-selected="false" aria-controls="planeacion-panel-vehiculos">Vehículos</button>
+    </nav>
+
+    <section class="planeacion-subpanel" data-subtab="puntos" id="planeacion-panel-puntos" role="tabpanel" aria-labelledby="planeacion-tab-puntos">
     <p class="asignacion-intro">Reportes del API sin levantamiento EDAN todavía, priorizados. Agrupar en cuadrillas, asignar inspectores y abrir el enlace de Survey123 prellenado para cada punto.</p>
     <ol class="asignacion-steps">
       <li><span class="asignacion-step-n">1</span> Priorizar.</li>
@@ -265,16 +272,6 @@ function shellHtml() {
         </div>
 
         <div class="card">
-          ${cardHead('Grupos de inspectores', `Un grupo de inspectores (máximo ${MAX_MIEMBROS_GRUPO} personas): cualquier miembro puede completar los puntos asignados al grupo, ya sea de stickers o de survey. Cada grupo sale en un vehículo.`, '<button type="button" class="btn-primary" id="planeacion-grupo-crear">Crear grupo</button>')}
-          <div class="asignacion-cuadrillas-scroll" id="planeacion-grupos"></div>
-        </div>
-
-        <div class="card">
-          ${cardHead('Vehículos', 'Vehículos disponibles para asignar a un grupo — un vehículo solo puede estar en un grupo a la vez.', '<button type="button" class="btn-primary" id="planeacion-vehiculo-crear">Crear vehículo</button>')}
-          <div class="asignacion-cuadrillas-scroll" id="planeacion-vehiculos"></div>
-        </div>
-
-        <div class="card">
           ${cardHead('Progreso por grupo e inspector', 'Avance combinado de ambas campañas (stickers y encuesta EDAN), con el detalle de cada una.')}
           <div id="planeacion-metricas"></div>
         </div>
@@ -293,6 +290,21 @@ function shellHtml() {
         </div>
       </aside>
     </div>
+    </section>
+
+    <section class="planeacion-subpanel" data-subtab="grupos" id="planeacion-panel-grupos" role="tabpanel" aria-labelledby="planeacion-tab-grupos" hidden>
+      <div class="card">
+        ${cardHead('Grupos de inspectores', `Un grupo de inspectores (máximo ${MAX_MIEMBROS_GRUPO} personas): cualquier miembro puede completar los puntos asignados al grupo, ya sea de stickers o de survey. Cada grupo sale en un vehículo.`, '<button type="button" class="btn-primary" id="planeacion-grupo-crear">Crear grupo</button>')}
+        <div class="asignacion-cuadrillas-scroll" id="planeacion-grupos"></div>
+      </div>
+    </section>
+
+    <section class="planeacion-subpanel" data-subtab="vehiculos" id="planeacion-panel-vehiculos" role="tabpanel" aria-labelledby="planeacion-tab-vehiculos" hidden>
+      <div class="card">
+        ${cardHead('Vehículos', 'Vehículos disponibles para asignar a un grupo — un vehículo solo puede estar en un grupo a la vez.', '<button type="button" class="btn-primary" id="planeacion-vehiculo-crear">Crear vehículo</button>')}
+        <div class="asignacion-cuadrillas-scroll" id="planeacion-vehiculos"></div>
+      </div>
+    </section>
 
     <div class="modal" id="planeacion-editar-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="planeacion-editar-title">
       <div class="modal-backdrop" data-editar-close></div>
@@ -763,13 +775,16 @@ function renderMap(rows, inspectores, onReasignar) {
   teardownMap();
   const conCoords = rows.filter((r) => r.coords && Number.isFinite(r.coords.lat) && Number.isFinite(r.coords.lon));
 
-  map = L.map('planeacion-map', { zoomControl: true, minZoom: 10, maxZoom: 18 }).setView(CALI_CENTER, CALI_ZOOM);
+  // preferCanvas: circleMarkers render on a single <canvas> instead of one
+  // SVG node each — the decisive perf win when the point set grows (no
+  // thousands of DOM nodes to lay out / repaint on pan/zoom).
+  map = L.map('planeacion-map', { zoomControl: true, minZoom: 10, maxZoom: 18, preferCanvas: true }).setView(CALI_CENTER, CALI_ZOOM);
   baseTile = L.tileLayer(basemapTileUrl(), { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20 }).addTo(map);
   pointsLayer = L.layerGroup().addTo(map);
 
   for (const r of conCoords) {
     const marker = L.circleMarker([r.coords.lat, r.coords.lon], {
-      radius: 7, color: '#0B1D33', weight: 1, fillColor: MARKER_HEX[r.color], fillOpacity: 0.9,
+      radius: 4, color: '#0B1D33', weight: 1, fillColor: MARKER_HEX[r.color], fillOpacity: 0.9,
     });
     marker.bindPopup(popupHtml(r), { maxWidth: 280 });
     marker.on('popupopen', (ev) => {
@@ -859,6 +874,28 @@ export function initPlaneacion(root, { getToken }) {
   const grupoCrearBtn = root.querySelector('#planeacion-grupo-crear');
   const vehiculosWrap = root.querySelector('#planeacion-vehiculos');
   const vehiculoCrearBtn = root.querySelector('#planeacion-vehiculo-crear');
+
+  // ---- sub-tabs (Puntos / Grupos / Vehículos) — show/hide panels that share
+  // the same in-memory state; switching never reloads. The map lives in the
+  // Puntos panel and Leaflet cannot measure a hidden container, so re-entering
+  // Puntos triggers an invalidateSize() (same fix renderMap already applies
+  // on first mount). ----------------------------------------------------------
+  function switchSubtab(name) {
+    root.querySelectorAll('[data-subtab-btn]').forEach((btn) => {
+      const active = btn.dataset.subtabBtn === name;
+      btn.classList.toggle('is-active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    root.querySelectorAll('[data-subtab]').forEach((panel) => {
+      panel.hidden = panel.dataset.subtab !== name;
+    });
+    if (name === 'puntos' && map) {
+      setTimeout(() => { if (map) map.invalidateSize(); }, 0);
+    }
+  }
+  root.querySelectorAll('[data-subtab-btn]').forEach((btn) => {
+    btn.addEventListener('click', () => switchSubtab(btn.dataset.subtabBtn));
+  });
 
   const showOk = (msg) => { okBox.textContent = msg; okBox.hidden = !msg; };
   const showErr = (msg) => { errBox.textContent = msg; errBox.hidden = !msg; };
