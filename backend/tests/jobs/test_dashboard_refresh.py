@@ -162,3 +162,67 @@ def test_main_check_flag_runs_offline_selfcheck_and_returns_zero(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["dashboard_refresh.py", "--check"])
 
     assert job.main() == 0
+
+
+# --- ingest_survey_cali: wires the Survey123 fetch's output into Firestore -
+# (task 7.5, design.md ADR-11) -- reuses web/data/inspections.json, the file
+# refresh_data.py JUST wrote (no second Survey123 upstream call), and
+# delegates every write to app.services.survey_cali.ingest_records (never a
+# direct Firestore call here -- ADR-9's sole-writer allowlist covers THIS
+# module precisely because it only ever calls INTO survey_cali.py).
+
+
+def test_ingest_survey_cali_reads_inspections_json_and_delegates_to_service(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    records = [
+        {"GlobalID": "g1", "EditDate": "2026-08-01T00:00:00", "direccion": "Calle 1"},
+        {"GlobalID": "g2", "EditDate": "2026-08-01T00:00:00", "direccion": "Calle 2"},
+    ]
+    (tmp_path / "inspections.json").write_text(json.dumps(records), encoding="utf-8")
+
+    captured: list[list[dict]] = []
+
+    def _fake_ingest_records(recs, **kwargs):
+        captured.append(recs)
+        return {"created": 2, "updated": 0, "skipped": 0}
+
+    monkeypatch.setattr(job.survey_cali, "ingest_records", _fake_ingest_records)
+
+    summary = job.ingest_survey_cali()
+
+    assert summary == {"created": 2, "updated": 0, "skipped": 0}
+    assert captured == [records]
+
+
+def test_ingest_survey_cali_missing_inspections_json_is_a_noop(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    calls: list[object] = []
+    monkeypatch.setattr(job.survey_cali, "ingest_records", lambda *a, **k: calls.append(1))
+
+    summary = job.ingest_survey_cali()
+
+    assert summary == {"created": 0, "updated": 0, "skipped": 0}
+    assert calls == []  # no Firestore call at all when there's nothing to ingest
+
+
+def test_ingest_survey_cali_failure_does_not_propagate_out_of_run_refresh_step(tmp_path, monkeypatch):
+    """The main refresh pipeline (meta_guard/publish_blob) must never be
+    blocked by a survey_cali/Firestore hiccup -- same fail-soft convention
+    fetch_reportes() already uses. This test exercises the SAME try/except
+    shape run_refresh() wraps ingest_survey_cali() in, without invoking the
+    full pipeline (which needs subprocess/Blob -- out of scope for this
+    offline suite, same precedent every other run_refresh() step follows)."""
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    (tmp_path / "inspections.json").write_text("[]", encoding="utf-8")
+
+    def _boom(*a, **k):
+        raise RuntimeError("firestore is down")
+
+    monkeypatch.setattr(job.survey_cali, "ingest_records", _boom)
+
+    try:
+        job.ingest_survey_cali()
+        raised = False
+    except RuntimeError:
+        raised = True
+    assert raised  # ingest_survey_cali() itself propagates; run_refresh() is what catches it
