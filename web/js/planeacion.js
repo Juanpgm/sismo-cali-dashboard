@@ -618,15 +618,7 @@ function cuadrillasHtml(cuadrillas, inspectorById) {
           <span class="sticker-name" title="ID: ${escapeHtml(c.id)}">${escapeHtml(c.nombre || c.id)}</span>
           <span class="sticker-meta">${n} punto${n === 1 ? '' : 's'} · ${metaInsp}</span>
         </div>
-        <div class="asignacion-combo" data-combo-cuadrilla="${escapeHtml(c.id)}">
-          <input type="text" class="asignacion-combo-input" role="combobox" aria-expanded="false"
-            aria-autocomplete="list" autocomplete="off" spellcheck="false"
-            placeholder="${insp ? 'Cambiar inspector…' : 'Asignar inspector…'}" aria-label="Buscar inspector para asignar"
-            value="${escapeHtml(inspName)}">
-          <ul class="asignacion-combo-list" role="listbox" hidden></ul>
-        </div>
         <div class="asignacion-cuadrilla-actions">
-          ${insp ? `<button type="button" class="sticker-action asignacion-desasignar" data-desasignar="${escapeHtml(c.id)}">Quitar asignación</button>` : ''}
           <button type="button" class="sticker-action sticker-action-off asignacion-eliminar" data-eliminar="${escapeHtml(c.id)}">Eliminar</button>
         </div>
       </li>`;
@@ -849,10 +841,6 @@ function popupHtml(row) {
       <dt>Comuna</dt><dd>${escapeHtml(row.comuna || 'Sin dato')}</dd>
       <dt>Cuadrilla</dt><dd>${escapeHtml(row.cuadrillaLabel)}</dd>
     </dl>
-    <label class="sticker-field">
-      <span>Reasignar a</span>
-      <select data-reasignar-select="${escapeHtml(row.id)}"><option value="">— Elegir inspector —</option></select>
-    </label>
   </div>`;
 }
 
@@ -880,7 +868,7 @@ if (typeof document !== 'undefined') {
   });
 }
 
-function renderMap(rows, inspectores, onReasignar) {
+function renderMap(rows, inspectores) {
   teardownMap();
   const conCoords = rows.filter((r) => r.coords && Number.isFinite(r.coords.lat) && Number.isFinite(r.coords.lon));
 
@@ -1286,42 +1274,8 @@ export function initPlaneacion(root, { getToken }) {
 
   function renderCuadrillasSection() {
     const inspectores = getInspectores();
-    const seleccionables = inspectores.filter(isHabilitado);
     const inspectorById = new Map(inspectores.map((i) => [i.uid, i]));
-    const cuadrillaById = new Map(cuadrillas.map((c) => [c.id, c]));
     cuadrillasWrap.innerHTML = cuadrillasHtml(cuadrillas, inspectorById);
-
-    // Speed follow-up (2026-08-26): a production board can carry hundreds
-    // of cuadrilla rows, and eagerly mounting a full combobox (5 listeners
-    // + closures each) for every one of them on every render was pure
-    // wasted work for the rows an admin never touches. Mount lazily, on
-    // the row's OWN first focus — a plain input has zero combobox cost
-    // until it is actually used, and the visible behaviour is unchanged
-    // (autoOpen replays the exact "open on focus" effect the eager version
-    // already had, on the same focus event that triggered the mount).
-    cuadrillasWrap.querySelectorAll('[data-combo-cuadrilla]').forEach((comboEl) => {
-      const cuadrillaId = comboEl.dataset.comboCuadrilla;
-      const input = comboEl.querySelector('.asignacion-combo-input');
-      const mount = () => {
-        input.removeEventListener('focus', mount);
-        mountCombobox(comboEl, {
-          inspectores: seleccionables,
-          onSelect: (uid) => runCuadrillaAction(
-            { action: 'asignarInspector', cuadrilla_id: cuadrillaId, inspector_uid: uid },
-            'Inspector asignado.',
-          ),
-          autoOpen: true,
-        });
-      };
-      input.addEventListener('focus', mount, { once: true });
-    });
-
-    cuadrillasWrap.querySelectorAll('[data-desasignar]').forEach((btn) => {
-      btn.addEventListener('click', () => runCuadrillaAction(
-        { action: 'desasignarInspector', cuadrilla_id: btn.dataset.desasignar },
-        'Asignación retirada; los puntos vuelven a pendiente.',
-      ));
-    });
 
     cuadrillasWrap.querySelectorAll('[data-eliminar]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -1629,22 +1583,9 @@ export function initPlaneacion(root, { getToken }) {
     );
   });
 
-  async function reasignar(puntoId, nuevoInspectorUid) {
-    try {
-      await callApi(getToken, { action: 'reasignarPunto', punto_id: puntoId, nuevo_inspector_uid: nuevoInspectorUid });
-      showOk('Punto reasignado.');
-      applyPuntoPatch(puntoId, { inspector_uid: nuevoInspectorUid });
-      const row = rows.find((r) => r.id === puntoId);
-      if (row) row.inspectorLabel = inspectorLabelFor(nuevoInspectorUid);
-      renderAll();
-    } catch (err) {
-      showErr(err.message);
-    }
-  }
-
   function renderMapSection() {
     const inspectores = getInspectores().filter(isHabilitado);
-    const n = renderMap(currentRows(), inspectores, reasignar);
+    const n = renderMap(currentRows(), inspectores);
     const sinCoords = rows.length - n;
     mapMeta.textContent = sinCoords ? `${n} en el mapa · ${sinCoords} sin coordenadas` : `${n} en el mapa`;
   }
