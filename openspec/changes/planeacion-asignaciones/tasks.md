@@ -560,7 +560,7 @@ Chain PR #4. Commit: `feat(web): Planeación tab`
 Depends on: Phase 3 (calls `/planeacion-asignaciones`), Phase 0.3/0.4 (clustering defaults, roster
 question).
 
-- [ ] **4.1** (RED) Write `web/js/planeacion.test.mjs` FIRST (`node --test "js/**/*.test.mjs"` from
+- [x] **4.1** (RED) Write `web/js/planeacion.test.mjs` FIRST (`node --test "js/**/*.test.mjs"` from
       `web/`, mirroring the existing `stickers-asignacion.test.mjs`), covering the pure helpers the
       module will export: `colorForPunto` returns the correct one of the five legend colours for
       each state (surveyed / pending-alta / pending-other / assigned-or-in-progress / no_aplica);
@@ -569,16 +569,23 @@ question).
       narrows by `prioridad` and `comuna`. MUST fail.
       — Satisfies: *Requirement: Planeación UI — priority table, map, and correction affordances*
       (ordering, filtering, legend scenarios).
+      — STATUS: DONE. RED confirmed: `node --test js/planeacion.test.mjs` → `ERR_MODULE_NOT_FOUND`
+      for `planeacion.js` (module did not exist yet). Also added `formatTruncacion` tests (beyond
+      the task's literal 4-function list) per this batch's "Also required" section covering
+      truncation messaging as pure/testable logic.
 
-- [ ] **4.2** (GREEN) Create `web/js/planeacion.js` cloning `web/js/stickers-asignacion.js`'s
+- [x] **4.2** (GREEN) Create `web/js/planeacion.js` cloning `web/js/stickers-asignacion.js`'s
       structure: the `callApi(getToken, body)` helper (endpoint resolved via
       `apiUrl('planeacionAsignaciones')`, NOT a literal path),
       `initPlaneacion(root, { getToken }) -> { reload }` with a render-shell-once / `reload()` /
       re-render lifecycle, and the pure exported helpers 4.1 tests. Run 4.1, confirm green.
       — Satisfies: *Requirement: Planeación UI — priority table, map, and correction affordances*;
       *Requirement: Planeación tab mounting and admin-only role gating* (config-map scenario).
+      — STATUS: DONE. GREEN confirmed: `node --test js/planeacion.test.mjs` → 1 passed (all
+      assertions in one script-style test file, matching `stickers-asignacion.test.mjs`'s own
+      convention — plain asserts + a trailing `console.log`, not per-case `test()` blocks).
 
-- [ ] **4.3** Load the inspector roster **inside** `initPlaneacion` (design.md ADR-10): Planeación is
+- [x] **4.3** Load the inspector roster **inside** `initPlaneacion` (design.md ADR-10): Planeación is
       a top-level tab, so unlike `initStickersAsignacion` nothing has loaded the roster for it. Call
       `/api/stickers` `{action:'list'}` once per init, cache for the session, filter by the same
       `habilitado` rule (`stickers-asignacion.js:122`'s `isHabilitado`). If **0.4**'s answer to Q3 is
@@ -586,8 +593,13 @@ question).
       this call.
       — Satisfies: *Requirement: Planeación UI — priority table, map, and correction affordances*
       (roster available in a top-level tab scenario).
+      — STATUS: DONE. `ensureInspectores()` calls `apiUrl('stickers')` `{action:'list'}` once (guarded
+      by `inspectoresLoaded`), caches to `inspectoresCache`, filtered by the ported `isHabilitado`.
+      Per this batch's binding constraint #1 (assignee pool = the SAME roster as Stickers, user
+      decision — Q3 answered), no distinct professional-group source was used; no separate roster UI
+      was built.
 
-- [ ] **4.4** Build step 1 "Priorizar": KPI tiles fed by `resumen` (including the `por_match_via`
+- [x] **4.4** Build step 1 "Priorizar": KPI tiles fed by `resumen` (including the `por_match_via`
       tally — this is what makes a silent `codigoapp` prefill failure visible, `proposal.md` risk 2);
       the working-set table ordered by effective priority; filter chips for `prioridad`, `comuna`,
       `afectacion`; the "Auto-agrupar" control with **visible** radius/size inputs defaulted from
@@ -595,21 +607,55 @@ question).
       — Satisfies: *Requirement: Planeación UI — priority table, map, and correction affordances*
       (ordering, filtering, truncation scenarios); *Requirement: `resumen` returns aggregate tallies
       without shipping the working set* (match-provenance scenario, UI side).
+      — STATUS: DONE. `kpisHtml(resumen)` renders total/levantados/pendientes/prioridad-alta tiles
+      plus a wide tile listing the `por_match_via` tally verbatim (`clave: N · cercania: N · ...`).
+      `filtersHtml` renders prioridad chips (all 3 + "todas") and a dynamic comuna chip row derived
+      from the current working set. `formatTruncacion` (4.1) backs the truncation banner, shown only
+      when `listPuntos` returns `truncado:true`. Radius/size inputs default from `DEFAULT_MAX_RADIUS_M
+      = 800` / `DEFAULT_MAX_SIZE = 10` — **10, not 8**, matching Phase 3's own binding user decision
+      (2026-08-26), NOT design.md's literal "0.3" placeholder text (0.3 was never separately re-run in
+      this batch; Phase 3's already-shipped `DEFAULT_MAX_SIZE=10` is the authoritative source, and the
+      UI must match the backend's own default or the placeholder text would be misleading).
 
-- [ ] **4.5** Build the Leaflet map: clone `stickers-asignacion.js`'s map setup, one
+- [x] **4.5** Build the Leaflet map: clone `stickers-asignacion.js`'s map setup, one
       `L.circleMarker` per point in the returned working set only (never the full collection —
       design.md ADR-9), the five-colour legend from `colorForPunto`, `fitBounds()` on load, a
       per-point popup, and an explicit "incluir levantados" toggle that **re-queries** rather than
       filtering client-side.
       — Satisfies: *Requirement: Planeación UI — priority table, map, and correction affordances*
       (map legend scenario).
+      — STATUS: DONE, with ONE flagged, unresolved backend/frontend contract gap — reported rather
+      than worked around. `renderMap` is a structural clone of `stickers-asignacion.js`'s own
+      `renderMap`/`teardownMap`/`popupHtml`/legend/`fitBounds`/`themechange` listener, backed by
+      `colorForPunto`'s 5-state legend. **The "incluir levantados" toggle is NOT wired to a working
+      re-query**, because `backend/app/routers/planeacion_asignaciones.py`'s `list_puntos()` applies
+      `.where("tiene_survey", "==", False)` UNCONDITIONALLY at the Firestore query level — there is
+      no request parameter (`estado`/`soloPendientes`/anything else in
+      `PlaneacionAsignacionesRequest`) that can override it. Wiring the checkbox to send some request
+      body and claim it "re-queries" would silently no-op, which is exactly the anti-pattern this
+      batch's instructions warn against. **Resolution taken**: the checkbox is present in the DOM
+      (`#planeacion-incluir-levantados`) but rendered `disabled`, with its label changed to "Incluir
+      levantados (pendiente de soporte en el backend)" and a `title` tooltip pointing at this note and
+      apply-progress.md's "Issues Found". No `change` listener is attached. This is a genuine,
+      previously-undiscovered gap between design.md ADR-9's own text ("MUST default to excluding...",
+      implying an overridable default) and Phase 3's actual shipped implementation (unconditional
+      filter) — see apply-progress.md's "Issues Found" for the full analysis and the fix options for
+      a future Phase 3 patch. NOT fixed here per this batch's explicit "you should not be touching
+      backend" instruction.
 
-- [ ] **4.6** Build step 2 "Cuadrillas e inspectores": cuadrilla cards, the searchable inspector
+- [x] **4.6** Build step 2 "Cuadrillas e inspectores": cuadrilla cards, the searchable inspector
       combobox (`filterInspectores` pattern), assign / unassign / delete, and `reiniciarAgrupacion`
       behind a confirmation.
       — Satisfies: *Requirement: Assignment lifecycle actions* (UI side).
+      — STATUS: DONE. `cuadrillasHtml`/`mountCombobox` are structural clones of
+      `stickers-asignacion.js`'s own (no per-inspector cap, same keyboard/mousedown-before-blur
+      selection idiom). `asignarInspector`/`desasignarInspector`/`eliminarCuadrilla` all call
+      `runCuadrillaAction`, which — unlike the sticker template's own optimistic local-mutation
+      helpers — does a full `reload()` after each cuadrilla-level action (see Deviations in
+      apply-progress.md for why). `reiniciarAgrupacion` is behind `window.confirm(...)`, matching the
+      template's own confirmation copy pattern.
 
-- [ ] **4.7** Build step 3 "Puntos" and the correction affordances: per-row reassign `<select>`;
+- [x] **4.7** Build step 3 "Puntos" and the correction affordances: per-row reassign `<select>`;
       "Editar asignación" modal (estado, `prioridad_override`, notas → `editarAsignacion`);
       "No aplica" modal with a **required** reason field, and a revert action for already-excluded
       points (→ `marcarNoAplica`); "Abrir survey" / "Copiar enlace" (→ `getEnlaceSurvey`, opening
@@ -619,8 +665,22 @@ question).
       — Satisfies: *Requirement: Assignment correction actions* (UI side); *Requirement: Planeación
       UI — priority table, map, and correction affordances* (survey link, correction-without-reload
       scenarios).
+      — STATUS: DONE. Per-row reassign `<select>` lives in the map popup (`popupHtml`/`reasignar`),
+      matching the template exactly. "Editar asignación" modal → `editarAsignacion` with the
+      `_UNSET`-vs-`null` distinction respected (an empty select = "no cambiar" = key omitted;
+      the notas field always sends `notas: notas || null`, matching the router's partial-write
+      contract's "explicit null clears" scenario). "No aplica" modal enforces a non-empty reason
+      client-side (in addition to the backend's own 400) and a per-row "Revertir" action appears for
+      already-`no_aplica` rows. A per-row "Reabrir" action appears for `hecho` rows, calling the
+      dedicated `reopen` action (binding constraint #2 — see below). "Survey123" per-row button opens
+      a dedicated modal calling `getEnlaceSurvey`; both `web`/`app` links render as `<a>` (openable)
+      plus a "Copiar enlace" button (`navigator.clipboard`); the 503/400 error message is rendered
+      verbatim in the modal body, never swallowed. Correction actions (`editarAsignacion`,
+      `marcarNoAplica`, `reopen`) use optimistic local `applyPuntoPatch()` + a targeted `renderAll()`
+      (no `reload()`); only the toolbar actions (`autoAgrupar`, `reiniciarAgrupacion`, `crearCuadrilla`)
+      and the cuadrilla-level actions (4.6) do a full `reload()`.
 
-- [ ] **4.8** Wire the tab, all five files (design.md ADR-10's table):
+- [x] **4.8** Wire the tab, all five files (design.md ADR-10's table):
       (a) `web/index.html:70-77` — new `<button ... data-view="planeacion" role="tab"
       aria-selected="false">Planeación</button>` after the Stickers tab;
       (b) `web/index.html:~279` — new `<section id="view-planeacion" data-view-panel="planeacion"
@@ -636,13 +696,27 @@ question).
       Vercel twin (design.md ADR-10).
       — Satisfies: *Requirement: Planeación tab mounting and admin-only role gating* (all 5
       scenarios).
+      — STATUS: DONE for (a)-(d). (e) was ALREADY DONE in Phase 3/Batch 2 (`api-config.js`'s
+      `planeacionAsignaciones` entry pre-existed this batch — confirmed by reading it before writing
+      any code, per this batch's own "Required reading" instructions); this batch only CONSUMES it
+      via `apiUrl('planeacionAsignaciones')`, never a literal path. (a) tab button placed
+      immediately after Stickers, before Usuarios. (b) empty `<section>` added between the Stickers
+      and Usuarios sections. (c) `main.js` imports `initPlaneacion` and adds the
+      `if (view === 'planeacion') initPlaneacion(...)` branch alongside the Stickers/Usuarios/Analista
+      ones. (d) role-gating line confirmed below in this batch's own report.
 
-- [ ] **4.9** Add `.planeacion-*` styles to `web/styles.css` only for what genuinely differs from
+- [x] **4.9** Add `.planeacion-*` styles to `web/styles.css` only for what genuinely differs from
       the existing `.sticker-*` / `.asignacion-*` table, chip, modal, and legend styles — reuse the
       rest, matching the precedent every prior tab change in this repo set.
       — Satisfies: no single requirement; supports 4.4-4.7's rendering.
+      — STATUS: DONE. Five small rules added (`.planeacion-truncacion`, `.planeacion-toggle-field`,
+      `.planeacion-row-actions` + its `.sticker-action` size override, `.planeacion-survey-links`) —
+      everything else (`.card`, `.kpi-row`/`.kpi-tile`, `.asignacion-workspace/-main/-aside/-map*
+      /-chip/-combo*/-cuadrilla*/-inline-field`, `.sticker-*`, `.table-scroll`, `.eval-pill`,
+      `.modal*`) is reused verbatim with zero new selectors, confirmed by grep — none of those
+      existing class names were touched.
 
-- [ ] **4.10** Run `node --test "js/**/*.test.mjs"` from `web/` (all modules green, including the new
+- [x] **4.10** Run `node --test "js/**/*.test.mjs"` from `web/` (all modules green, including the new
       one) and `node -e "import('./js/planeacion.js')"` to catch syntax/import-cycle errors. Then
       **flag for a real browser session** (not performable by the apply agent): admin-vs-non-admin
       tab visibility, the map legend and `fitBounds` against real data, the truncation notice, and
@@ -652,6 +726,17 @@ question).
       — Satisfies: *Requirement: Planeación tab mounting and admin-only role gating*; *Requirement:
       Planeación UI — priority table, map, and correction affordances* — PARTIALLY, pending the
       browser session.
+      — STATUS: DONE (the automatable half). `node --test "js/**/*.test.mjs"` → 6 passed, 1 failed;
+      the ONE failure (`js/evaluaciones.test.mjs`, `ERR_UNSUPPORTED_ESM_URL_SCHEME`) is PRE-EXISTING
+      and unrelated to this batch — confirmed by `git stash`-ing every change in this batch and
+      re-running the same file on the unmodified branch tip (`6a7e180`), which fails identically.
+      `planeacion.test.mjs` itself: 1 passed. `node -e "import('./js/planeacion.js')"` → `IMPORT OK`,
+      no syntax/import-cycle errors. **NOT verified in a real browser session** (not performable by
+      this apply batch, per the task's own instruction) — admin-vs-non-admin tab visibility, the map
+      legend/`fitBounds` against real ~14.8k-scale data, the truncation notice against a real
+      `truncado:true` response, and every correction/survey-link round trip against the live Railway
+      endpoint all remain unverified. State plainly here rather than claimed: this batch verified
+      module-load correctness and pure-logic behavior only.
 
 ---
 

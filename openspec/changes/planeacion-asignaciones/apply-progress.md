@@ -558,3 +558,240 @@ new sole-writer invariants green, scope-boundary grep clean, no CLOSED allowlist
 Phase 4 (`web/js/planeacion.js` + tab wiring) depends on this batch's endpoint contract (above) and
 on Phase 0.3/0.4's clustering-default/roster-question resolution (still open, per design.md's
 "Risks / open decisions"). Phase 5 is Railway/Firebase console work, not a repo diff.
+
+---
+
+## Batch 3 — Planeación tab
+
+Branch: `feat/planeacion-1-2-cruce` (unchanged, still local-commits-only). Baseline measured at this
+batch's start: **368 backend tests passing** (tip `6a7e180`), `cd formulario && npm run test:unit` →
+**53 passing**. Scope: Phase 4 ONLY (the "Planeación" dashboard tab). Phase 5 (manual operator steps)
+remains out of scope and is not a repo diff.
+
+Strict TDD Mode: ACTIVE. Test runner (frontend): `node --test "js/**/*.test.mjs"` from `web/`.
+
+### Completed Tasks
+
+- [x] **4.1** (RED) `web/js/planeacion.test.mjs` written first, covering `colorForPunto`,
+      `buildRows`, `sortRows`, `filterRows`, plus `formatTruncacion` (truncation messaging).
+- [x] **4.2** (GREEN) `web/js/planeacion.js` created — `callApi` via `apiUrl('planeacionAsignaciones')`,
+      `initPlaneacion(root, { getToken }) -> { reload }`.
+- [x] **4.3** Inspector roster fetched inside `initPlaneacion` via `apiUrl('stickers')`
+      `{action:'list'}`, cached per session, filtered by `isHabilitado`.
+- [x] **4.4** Step 1 "Priorizar": KPI tiles from `resumen` (incl. `por_match_via`), filter chips
+      (prioridad/comuna), Auto-agrupar with visible radius/size inputs, truncation banner.
+- [x] **4.5** Leaflet map cloned from the template; "incluir levantados" toggle present but
+      **disabled** — see Issues Found #1 (backend contract gap, not fixed here).
+- [x] **4.6** Step 2 "Cuadrillas e inspectores": cards, searchable combobox, assign/unassign/delete,
+      `reiniciarAgrupacion` behind confirmation.
+- [x] **4.7** Step 3 "Puntos" + correction affordances: reassign `<select>`, "Editar asignación"
+      modal, "No aplica" modal (mandatory reason) + revert, "Reabrir" (`reopen`), Survey123 modal
+      (open/copy both links, 503/400 surfaced verbatim).
+- [x] **4.8** All 5 wiring files: `index.html` tab button + section, `main.js` import + branch,
+      `styles.css` role-gating line, `api-config.js` entry (pre-existing from Batch 2, consumed here).
+- [x] **4.9** `.planeacion-*` CSS additions — only what genuinely differs; everything else reused.
+- [x] **4.10** `node --test "js/**/*.test.mjs"` + `node -e "import('./js/planeacion.js')"` run;
+      browser session explicitly NOT performed (not performable by this apply batch).
+
+### Files Changed
+
+| File | Action | What Was Done |
+|---|---|---|
+| `web/js/planeacion.js` | Created | The Phase 4 tab module — KPI tiles, filterable/sortable priority table, Leaflet map (5-colour legend), cuadrilla cards + combobox, 3 modals (editar asignación / no aplica / survey link), reopen action, optimistic per-item mutation + full reload for toolbar actions |
+| `web/js/planeacion.test.mjs` | Created | 1 script-style test file (matching `stickers-asignacion.test.mjs`'s own convention): `colorForPunto`, `buildRows`, `sortRows`, `filterRows`, `formatTruncacion` |
+| `web/index.html` | Modified | New `<button data-view="planeacion">` tab (after Stickers, before Usuarios) + new empty `<section id="view-planeacion" data-view-panel="planeacion" hidden>` (after Stickers section, before Usuarios section) |
+| `web/js/main.js` | Modified | Import `initPlaneacion`; new `if (view === 'planeacion') initPlaneacion(...)` branch in `switchView()`, alongside Stickers/Usuarios/Analista |
+| `web/styles.css` | Modified | Added `.view-tab[data-view="planeacion"]` to the admin-only role-gating selector list (line ~1563); added 5 small `.planeacion-*` rules (truncation banner, toggle field, row-actions, survey-link body) |
+| `openspec/changes/planeacion-asignaciones/tasks.md` | Modified | Checked off Phase 4 tasks (4.1-4.10) with STATUS notes |
+| `openspec/changes/planeacion-asignaciones/apply-progress.md` | Modified | This section |
+
+`web/js/api-config.js` was NOT modified this batch — its `planeacionAsignaciones` entry already
+existed from Batch 2 (Phase 3); this batch only consumes it via `apiUrl('planeacionAsignaciones')`.
+
+### TDD Cycle Evidence
+
+| Task | RED (command + result) | GREEN (command + result) |
+|---|---|---|
+| 4.1/4.2 (`planeacion.js` pure helpers) | `node --test js/planeacion.test.mjs` → `ERR_MODULE_NOT_FOUND` for `./js/planeacion.js` (module did not exist) | Same command after implementing `planeacion.js` → `1 passed` (`colorForPunto` 5-state legend, `buildRows` join, `sortRows` override-aware ordering, `filterRows` prioridad/comuna/afectacion narrowing, `formatTruncacion` message text) |
+| 4.10 (full suite + import check) | — | `node --test "js/**/*.test.mjs"` → `6 passed, 1 failed`; `node -e "import('./js/planeacion.js')"` → `IMPORT OK`; `node --check` on `planeacion.js`, `planeacion.test.mjs`, `main.js` → all OK |
+
+**On the ONE failing test (`js/evaluaciones.test.mjs`)**: confirmed PRE-EXISTING and unrelated to
+this batch. `git stash`-ed every change in this batch, re-ran `node --test js/evaluaciones.test.mjs`
+against the unmodified branch tip (`6a7e180`) — it fails identically
+(`ERR_UNSUPPORTED_ESM_URL_SCHEME`, a Node 25 / Windows absolute-path ESM resolution issue in that
+file, unrelated to Planeación). `git stash pop` restored this batch's changes before continuing. Not
+fixed here — out of scope for Phase 4, and fixing it would be an undocumented, unrequested change to
+a file this batch never touches.
+
+### Constraint Compliance (explicit confirmation, per this batch's instructions)
+
+1. **Assignee pool = the SAME inspector roster as Stickers.** `ensureInspectores()` calls
+   `apiUrl('stickers')` `{action:'list'}` — the exact same endpoint/action `stickers.js`'s own
+   `reload()` uses — once per `initPlaneacion` call, caches the result, and filters selectable
+   inspectors with the ported `isHabilitado(i)` (`!i.disabled && i.activo`), byte-identical logic to
+   `stickers-asignacion.js:122`. No separate roster UI, no new roster endpoint, no roster CRUD.
+
+2. **`reopen` is reachable from the UI.** Any row whose `estado_asignacion === 'hecho'` renders a
+   "Reabrir" button (`tableHtml`'s `data-reopen` button), wired to
+   `runPuntoAction({ action: 'reopen', punto_id }, 'Punto reabierto a pendiente.')` — optimistic
+   local patch + `renderAll()`, no full reload. This is the ONLY UI path to `reopen`; it does not
+   overload `editarAsignacion` for this transition, matching the backend's own purpose-built,
+   separately-validated action.
+
+3. **`getEnlaceSurvey` is the centerpiece, made hard to miss.** Every row in the "Puntos" table
+   carries a dedicated "Survey123" button (`data-abrir-survey`) that opens a modal
+   (`#planeacion-survey-modal`) calling `getEnlaceSurvey`. The modal renders:
+   - the raw `clave_integracion` in a `<code>` tag (so an admin can visually confirm it, or read it
+     aloud over a phone call to a field crew);
+   - the web link as BOTH a real, clickable `<a href="..." target="_blank">` (not just displayed
+     text) AND a "Copiar enlace web" button (`navigator.clipboard.writeText`);
+   - the app deep link, identically dual-affordance (`<a>` + copy button), rendered ONLY when the
+     backend returns a non-null `app` — otherwise an explicit note explaining WHY it's absent
+     (`SURVEY123_FIELD_APP_ITEM_ID` not configured), not a silently missing button;
+   - on failure (400 point-not-found, or the backend's own 503 when `SURVEY123_FORM_URL` is unset),
+     the exact error message is rendered as a `sticker-error` in the modal body — never swallowed,
+     never replaced with a generic "algo salió mal".
+   This satisfies the user's explicit "make it obvious and hard to miss" instruction: it is a
+   dedicated per-row button (not buried in a dropdown or a details panel) leading to a
+   dedicated modal whose entire content is the two links plus their copy actions.
+
+4. **Scale — summary counts surfaced, truncation made visible, never silently partial.** `resumen`'s
+   KPI tiles (total/levantados/pendientes/prioridad-alta/por_match_via) render on every load,
+   independent of whatever `listPuntos` returns. `formatTruncacion(shown, totalPendientes)` backs a
+   dedicated banner (`#planeacion-truncacion`), shown ONLY when `listPuntos` returns `truncado:true`,
+   reading "Mostrando los N puntos de mayor prioridad de M pendientes." — the exact phrasing
+   design.md ADR-9 specifies. The table and map both render `rows` (the already-bounded working set
+   returned by `listPuntos`), never a client-side-paginated full collection.
+
+### Deviations from Design
+
+1. **Header-click "sort" on the Puntos table is a no-op re-render, not a real column sort.**
+   `sortRows(rows)` (4.1's pure helper) sorts ONLY by effective priority — that is what the RED task
+   4.1 and the spec's own "Table is ordered by priority by default" scenario asked for, and it is
+   what `wireTable()`'s header-click handler currently falls back to (`renderTable()` with no other
+   state change). The `SORTABLE` column headers render as clickable buttons (visual affordance
+   matching the sticker template) but do not yet reorder by an arbitrary column — the working set is
+   ALWAYS priority-ordered, which satisfies the spec's own binding scenario, but a reviewer expecting
+   `stickers-asignacion.js`'s generic multi-column `sortRows(rows, key, dir)` will find this module's
+   `sortRows` deliberately narrower. Recorded here rather than silently generalized beyond what 4.1
+   specified and tested.
+2. **Cuadrilla-level actions (`asignarInspector`/`desasignarInspector`/`eliminarCuadrilla`) do a full
+   `reload()`, not the sticker template's own optimistic local-mutation pattern.** The template's
+   `applyAsignar`/`applyDesasignar`/`applyEliminar` mutate `rows` in place using ALREADY-LOADED
+   `cuadrilla.puntos` membership. At ~14.8k-point scale, `rows` only ever holds the CURRENT bounded
+   `listPuntos` page (ADR-9) — mutating "every row whose `cuadrilla_id` matches" is safe and correct
+   at that scale identically to the sticker template, so this deviation is NOT a scale concern; it
+   was a scope/time tradeoff for this batch. Left as `reload()` (correct but slower — one extra
+   network round trip) rather than porting the three optimistic-mutation functions, and flagged here
+   rather than silently reducing scope from what 4.6 asked for ("assign / unassign / delete") without
+   noting the implementation difference. Per-POINT actions (`editarAsignacion`, `marcarNoAplica`,
+   `reopen`, `reasignarPunto` from the map popup) DO use the optimistic `applyPuntoPatch()` +
+   `renderAll()` pattern, matching 4.7's explicit instruction.
+3. **`DEFAULT_MAX_RADIUS_M = 800` / `DEFAULT_MAX_SIZE = 10` are duplicated as display-only placeholder
+   constants in `planeacion.js`**, mirroring `stickers-asignacion.js`'s own precedent of NOT importing
+   backend constants into the frontend (there is no shared-constants module in this repo). `10`
+   matches Phase 3's actual binding-decision default (`backend/app/routers/planeacion_asignaciones.py`
+   `DEFAULT_MAX_SIZE = 10`), confirmed by reading that file before writing this one — NOT design.md's
+   literal, now-stale "8" placeholder text.
+
+### Issues Found
+
+1. **UNRESOLVED, reported rather than worked around: `listPuntos` cannot return already-surveyed
+   points under ANY parameter, so task 4.5's "incluir levantados" toggle cannot be honestly wired.**
+   `backend/app/routers/planeacion_asignaciones.py`'s `list_puntos()`:
+   ```python
+   query = (
+       db.collection(PLANEACION_PUNTOS_COLLECTION)
+       .where("tiene_survey", "==", False)
+       .order_by("prioridad_score", direction=_fs.Query.DESCENDING)
+       .limit(LIMIT_MAX + 1)
+   )
+   ```
+   applies `tiene_survey == False` UNCONDITIONALLY at the Firestore query level, before any of the
+   request body's fields (`estado`, `prioridad`, `comuna`, `soloPendientes`, `limit`) are even
+   inspected. There is no parameter anywhere in `PlaneacionAsignacionesRequest` that can override
+   this. design.md ADR-9 itself says `listPuntos`'s default filter is "`tiene_survey == false` AND
+   `estado_asignacion != 'no_aplica'`" — the word "default" implies an overridable behavior, and the
+   spec's own requirement text says "MUST **default to** excluding points that already have a
+   survey" (same implication) — but Phase 3's shipped implementation (already committed, already
+   tested, 366/368 of the current 368 backend tests predate this batch) makes it unconditional, not a
+   default.
+
+   **What was tried and rejected**: sending `{ action: 'listPuntos', soloPendientes: false }` (or any
+   other existing param) as if it toggled `tiene_survey` inclusion. Verified by reading `list_puntos`
+   line by line that NONE of `estado`/`prioridad`/`comuna`/`soloPendientes` touches the `tiene_survey`
+   Firestore filter — `soloPendientes` only narrows to `estado_asignacion == 'pendiente'` AFTER the
+   query already excluded every surveyed point. Wiring the checkbox to send such a param would make it
+   APPEAR to work (no error, a `change` event fires, `reload()` runs) while silently returning the
+   exact same result set every time — indistinguishable from a real bug to anyone testing it in a
+   browser. This is precisely the kind of "quietly slipping past a real blocker" this batch's own
+   instructions explicitly prohibit.
+
+   **Resolution taken**: the checkbox is rendered in the DOM (`#planeacion-incluir-levantados`,
+   inside the Step 1 toolbar, where design.md ADR-10 places it) but `disabled`, with its label reading
+   "Incluir levantados (pendiente de soporte en el backend)" and a `title` tooltip pointing at this
+   note. No `change` listener is attached — there is nothing honest to wire it to today. This keeps
+   the design's intended affordance visible (a reviewer/admin can see where the feature will live)
+   without pretending it functions.
+
+   **What would actually fix it** (a future Phase 3 patch, NOT performed in this batch — backend
+   changes were explicitly out of scope): add a request parameter, e.g.
+   `incluirLevantados: bool = False`, and make the `.where("tiene_survey", "==", False)` clause
+   conditional on it — trivial in isolation, but it is a backend code change with its own test
+   coverage obligations (at minimum a new router test asserting a surveyed point IS returned when the
+   flag is set), which is why it is reported here rather than silently added as an "incidental" fix
+   inside a frontend-only batch.
+
+2. **Verified, not a finding**: `resumen`'s response shape (`{total, levantados, pendientes,
+   por_prioridad, por_comuna, por_estado_asignacion, por_match_via}`, per Batch 2's own "Actions
+   Implemented" table) matches exactly what `kpisHtml()` reads — no field-name guessing was needed;
+   confirmed by reading `backend/app/routers/planeacion_asignaciones.py`'s `resumen()` function
+   before writing `planeacion.js`.
+
+3. **Verified, not a finding**: `editarAsignacion`'s response is `{ok, punto}` and `punto.editado_en`
+   is already `.isoformat()`-serialized by the backend (confirmed by reading `editar_asignacion`'s
+   final `punto["editado_en"] = now.isoformat()` line) — `applyPuntoPatch()` does not need its own
+   date parsing/formatting.
+
+### Workload / PR Boundary
+
+- Mode: chained PR slice (`auto-chain` / `stacked-to-main`), Phase 4 (chain PR #4) of the four-PR
+  split `design.md`'s "Size and commit/PR split" locks — the last of the four; Phase 5 has no repo
+  diff.
+- Current work unit: `feat(web): Planeación tab`, one local commit on `feat/planeacion-1-2-cruce`,
+  matching this branch's own established one-commit-per-phase precedent (Batches 1-2).
+- Boundary: starts from no `planeacion.js`/tab wiring and ends with the tab fully implemented,
+  role-gated, wired into `main.js`/`index.html`/`styles.css`, and self-check-verified (module load +
+  pure-logic tests); zero backend files touched (confirmed: `git diff --stat` for this batch touches
+  only files under `web/` and `openspec/changes/planeacion-asignaciones/`); zero Phase 5 (manual
+  console/ArcGIS) surface touched.
+- Estimated review budget impact: `web/js/planeacion.js` (1050 lines, `wc -l`) +
+  `web/js/planeacion.test.mjs` (96 lines) + `index.html`/`main.js`/`styles.css` wiring (~30 lines
+  combined) ≈ **~1176 lines** — meaningfully above design.md's own ~570-730 estimate for Phase 4,
+  because `planeacion.js` inlines 3 full modals (editar asignación / no aplica / survey link) plus
+  the entire cuadrilla combobox/map/legend machinery as one cohesive module (matching
+  `stickers-asignacion.js`'s own single-file precedent, which is itself 905 lines), and because the
+  module docstring/comments document the `tiene_survey` toggle gap and the roster/scale deviations
+  from the template at the length needed to not silently bury them. Still smaller than Phase 3's own
+  commit (~2238 lines per Batch 2's own report), but this batch's own single-commit-per-phase
+  precedent (Batches 1-2) means a real PR opened from this branch would still exceed the 400-line
+  budget on its own — flagged here, consistent with Batches 1-2's own "local-commit-only, PR-split
+  decision deferred to when a PR is actually opened" reasoning.
+- Rollback: `git revert` this commit — removes the tab button, section, wiring, and module; the
+  Planeación endpoint (Phase 3, already merged in this branch's history) is unaffected and simply
+  goes back to having no frontend consumer, exactly as it was between Batch 2 and this batch.
+
+### Status
+
+**Phase 4: 10/10 tasks complete**, with ONE explicitly unresolved, reported (not hidden) backend
+contract gap (Issue 1 above — the "incluir levantados" toggle). 368/368 backend tests unchanged (this
+batch touched zero backend files). `formulario`: 53/53 unchanged. `web` JS tests: 6/7 passing, the
+one failure pre-existing and unrelated (confirmed via `git stash`). Browser-session verification
+explicitly NOT performed, per the task's own instruction not to claim it.
+
+### Next Batch
+
+Phase 5 (Railway/Firebase console + ArcGIS org steps) is not a repo diff — nothing further to apply
+here. If a real PR is opened from this branch, Issue 1 (the `tiene_survey` toggle gap) should be
+resolved as a small, separately-reviewed Phase 3 patch before or alongside Phase 4's PR, since the
+UI currently ships a visibly-disabled control rather than a working one.
