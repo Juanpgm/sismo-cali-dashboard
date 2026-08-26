@@ -304,9 +304,12 @@ export function initStickers(root, { getToken }) {
             await callApi(getToken, { action: 'setEnabled', uid: btn.dataset.uid, enabled: btn.dataset.enable === 'true' });
             await reload();
           } catch (err) {
+            alert(err.message); // rare path (network/permission); surface it plainly
+          } finally {
+            // Reset on BOTH success and error — otherwise a successful toggle
+            // leaves `busy` stuck true and every later toggle no-ops until F5.
             busy = false;
             btn.disabled = false;
-            alert(err.message); // rare path (network/permission); surface it plainly
           }
         });
       });
