@@ -235,47 +235,103 @@ not started (manual). See `apply-progress.md` "Batch 2" for full detail.
 
 Chain PR #3 (may need 3a/3b split — see forecast). Depends on: Phase 1. Public route, easy parity diff.
 
-- [ ] **3.1** (RED) Write `backend/tests/services/test_atencionsismo.py` FIRST: day-walk/split-retry
+- [x] **3.1** (RED) Write `backend/tests/services/test_atencionsismo.py` FIRST: day-walk/split-retry
       via `httpx.MockTransport` fixtures — split-on-413/500/502/503/504 down to 1-min windows,
       concurrency 4 (ADR-5). Confirm the Basic-auth username constant (design open question 3) matches
       between `scripts/fetch_reportes_api.py` and `api/reportados.js` before extraction; if they
       differ, use the value `api/reportados.js` (currently live) uses. MUST fail.
       — Satisfies: design.md ADR-5 (single implementation, foundation for backend-platform's caching
       requirements).
+      — STATUS: done. Confirmed RED — `ImportError: cannot import name 'atencionsismo' from
+      'app.services'` (1 collection error) before 3.2 landed. Confirmed the username constant: both
+      `api/reportados.js:27` and `scripts/fetch_reportes_api.py:48` hardcode
+      `"juanp.gzmz@gmail.com"` — identical, no "JS wins" substitution needed.
 
-- [ ] **3.2** (GREEN) Extract `backend/app/services/atencionsismo.py` from
+- [x] **3.2** (GREEN) Extract `backend/app/services/atencionsismo.py` from
       `scripts/fetch_reportes_api.py` (single implementation; `api/reportados.js`'s JS twin is
       retired, not ported). Run 3.1, confirm green.
       — Satisfies: design.md ADR-5.
+      — STATUS: done. First GREEN pass, no rework (32/32). Followed `api/reportados.js`'s (the
+      CURRENTLY LIVE implementation) wider `{413,500,502,503,504}` split set, probe, failed-window
+      retry pass, and `coordKey`/dedup semantics — NOT `scripts/fetch_reportes_api.py`'s narrower
+      `{413,504}` set, per the apply agent's scope instructions.
 
-- [ ] **3.3** (RED) Write `backend/tests/services/test_snapshot.py` FIRST: Blob-seed cold start serves
+- [x] **3.3** (RED) Write `backend/tests/services/test_snapshot.py` FIRST: Blob-seed cold start serves
       immediately with age; Blob-seed failure + no completed refresh → 503 + `Retry-After: 60`; snapshot
       older than 86400s → 503; `X-Snapshot-Age` header present. MUST fail.
       — Satisfies: backend-platform "reportados snapshot staleness bound".
+      — STATUS: done. Confirmed RED — `ImportError: cannot import name 'snapshot' from
+      'app.services'` (1 collection error) before 3.4 landed.
 
-- [ ] **3.4** (GREEN) Implement `backend/app/services/snapshot.py`: asyncio task in FastAPI `lifespan`,
+- [x] **3.4** (GREEN) Implement `backend/app/services/snapshot.py`: asyncio task in FastAPI `lifespan`,
       refresh → store `{payload, fetched_at}` → sleep 900s; cold-start best-effort Blob seed (confirm
       exact `reportes*.json` filename/env var per design open question 1 — read `deploy/refresh.sh`'s
       publish step before hardcoding). Run 3.3, confirm green.
       — Satisfies: backend-platform "In-Process Caching Preserves Or Improves Response Behavior".
+      — STATUS: done. First GREEN pass, no rework (44/44 combined with 3.1-3.3). Open question 1
+      resolved: `deploy/refresh.sh` publishes `data/reportes.json` (raw stripped records, has
+      `estadoVerificacion`/`lat`/`lng`), `data/reportes_meta.json` (freshness only, no counts), and
+      `data/reportes_agg.json` (aggregations WITHOUT an `inmuebles` coord-dedup field). Chose
+      `REPORTES_BLOB_URL` → `reportes.json` as the seed source (new plain env var, full public Blob
+      URL, same pattern `INSPECTIONS_URL` already uses for `cruce_sticker`) so the seed reuses
+      `atencionsismo.summarize()` — the exact same counting logic a live refresh uses — instead of a
+      second parallel aggregation. Design interpretation (flagged in `snapshot.py`'s module
+      docstring for verify): the seeded snapshot's age is measured from THIS process's download time,
+      not from `reportes_meta.json`'s `generated_at` — simpler, and every reportados spec scenario
+      only needs `X-Snapshot-Age` present + the 86400s hard bound enforced, not that the seeded age
+      reflect the cron's original publish time.
 
-- [ ] **3.5** (GREEN) Implement `backend/app/routers/reportados.py`: `GET /reportados`, no auth,
+- [x] **3.5** (GREEN) Implement `backend/app/routers/reportados.py`: `GET /reportados`, no auth,
       serves from snapshot, sets `X-Snapshot-Age` and `Cache-Control: s-maxage=900,
       stale-while-revalidate=86400`.
       — Satisfies: backend-platform "Public route requires no token"; "Cache-Control headers
       preserved".
+      — STATUS: done. No dedicated RED task is listed for this router in tasks.md (same gap as
+      1.9/1.13 in batch 1b); Strict TDD Mode is active, so `backend/tests/routers/test_reportados.py`
+      was written FIRST (confirmed failing — `AttributeError: 'State' object has no attribute
+      'reportados_snapshot'` / `ImportError: cannot import name 'reportados'`, 6 failed) before this
+      task's GREEN implementation, flagged here rather than silently claimed as paired RED/GREEN.
+      `app/main.py` gained a `lifespan` (previously none existed) that best-effort Blob-seeds then
+      starts the forever-refresh background task; `app.state.reportados_snapshot` itself is attached
+      SYNCHRONOUSLY in `create_app()` (not inside `lifespan`) so router tests can populate it via a
+      plain `TestClient(app)`, matching every other router test file in this suite (none use `with
+      TestClient(app) as client:`). Manually smoke-tested `with TestClient(app) as client:` end-to-end
+      (lifespan startup → `GET /reportados` → 503+Retry-After when misconfigured → clean shutdown) —
+      confirmed no hang/crash. Full suite: 95/95 passed.
 
 - [ ] **3.6** VERIFY (ADR-5 parity-diff plan): within the same 15-min window, fetch live
       `sismo-cali-dashboard.vercel.app/api/reportados` and the Railway route; compare JSON shape and
       consumed fields (`reportados` total, `inmuebles`) with tolerance for in-flight drift; confirm
       <2s response; record both payloads in the PR description.
       — Satisfies: backend-platform "reportados responds fast from snapshot".
+      — STATUS: BLOCKED on 1.4 (no live Railway URL exists yet), same blocker as 2.3/2.4/2.5.
+      Repo-side prep done: `backend/scripts/verify_reportados_parity.py` — a standalone MANUAL
+      operator tool (not imported by `app/`/`tests/`, never run in CI) that, given
+      `NEW_REPORTADOS_URL` (+ optional `OLD_REPORTADOS_URL`/`DRIFT_TOLERANCE`), calls both endpoints
+      (no auth — `/reportados` is public), prints both payloads for the PR description, checks the
+      new route's response time against the <2s budget, and compares
+      `por_estadoVerificacion.Reportado`/`inmuebles` within a configurable drift tolerance. Verified
+      its BLOCKED guard runs correctly with no env vars set (exit 2, explanatory message). Run it once
+      1.4 lands AND the background refresh has completed at least once; no further code changes
+      needed for 3.6 itself.
 
 - [ ] **3.7** REPOINT: introduce `web/js/api-config.js` (per-endpoint URL map, default = current
       relative path, per ADR-7) and flip the `reportados` entry to the Railway base URL in
       `web/js/data.js`. MANUAL Vercel redeploy of `web/`.
       — Satisfies: backend-platform "Rollback is a config revert" (establishes the mechanism reused by
       every later repoint).
+      — STATUS: repo-side prep done, PARTIAL. `web/js/api-config.js` created — a per-endpoint URL map
+      covering every `web/`-side `/api/*` call found by grep (`reportados`, `sticker-status`,
+      `refresh`, `stickers`, `sticker-asignaciones`, `usuarios`, `source-status`), each defaulting to
+      today's relative path (zero behavior change; verified with a standalone `node --check` +
+      dynamic-import smoke test, no build step exists for `web/js`). The actual "flip the `reportados`
+      entry" half is BLOCKED on 1.4: `web/js/data.js` intentionally NOT touched this batch — wiring
+      `refreshReportados()` to read from `api-config.js` only makes sense once that one entry actually
+      points at a live Railway URL; wiring it now while every entry still resolves to the same
+      relative path would be a no-op edit that still needs re-touching (and re-reviewing) once 1.4
+      lands. `formulario/`'s own `DASHBOARD_API`/`FOTO_SIGNER_URL` constants are OUT of this file's
+      scope (ADR-7: those slices flip their existing constants directly, not through
+      `web/js/api-config.js`).
 
 **ROLLBACK BOUNDARY (Slice 3)**: revert the single `reportados` entry in `api-config.js`; redeploy
 `web/`. Old `api/reportados.js` untouched.
