@@ -1,4 +1,4 @@
-# Consolidated FastAPI backend — ONE image, N Railway services (web + 5 crons).
+# Consolidated FastAPI backend — ONE image, N Railway services (web + 2 crons).
 # Build context is the REPO ROOT (design.md ADR-1): the dashboard-refresh job
 # needs scripts/ and deploy/ alongside the backend/ package, so the Railway
 # service points root directory = repo root, dockerfilePath = backend/Dockerfile
