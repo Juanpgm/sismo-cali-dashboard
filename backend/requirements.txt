@@ -8,7 +8,7 @@ httpx>=0.28              # atencionsismo day-walk client (slice 3) + test client
 cryptography>=43.0       # RS256 verification against Google's rotating x509 certs
 firebase-admin>=6.6      # sismo() — Firestore + Auth admin (sismo-agosto-sgred)
 google-cloud-firestore>=2.19  # sismo() — Firestore (sismo-agosto-sgred)
-# boto3 (S3 presigner) is added in slice 2 when app/routers/sign.py lands.
+boto3>=1.35               # s3() — presigned upload URLs (slice 2, app/routers/sign.py)
 
 # --- test ---
 pytest>=8.3
