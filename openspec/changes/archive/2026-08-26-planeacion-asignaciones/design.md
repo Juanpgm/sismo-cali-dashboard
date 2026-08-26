@@ -201,6 +201,16 @@ read.
 - *Rejected:* reusing `integracion_F1/asignar_f3.py:259-267`'s `id_asignacion()`. Excluded surface
   (proposal.md's dagma directive) and its own semantics are tied to the F3 assignment domain.
 
+> **Post-implementation correction, recorded here for audit** (see `apply-progress.md`'s "Follow-up
+> fix — Issue 1 resolved"): the "verify by stateless recompute" mechanism this ADR described could
+> not be implemented for real UUID-shaped `registro_id` values (the 24-char slug cap is lossy for a
+> 32/36-char UUID, so a checksum recomputed from the parsed slug can never match the digest computed
+> over the full raw id). The checksum property this ADR protects is instead enforced by exact
+> membership lookup against an index of freshly-minted keys for known points — every safety property
+> (a damaged/forged key resolves to no point; a slug collision cannot pair two different points) is
+> preserved unconditionally under that mechanism. `verify_clave_integracion` is structural-only
+> (prefix / charset / slug length / digest length) as shipped.
+
 ## ADR-4 — Prioritization: the product decision, made explicit
 
 **Decision.** A deterministic additive score in `[0, 100]`, bucketed into three tiers, computed by a
@@ -464,6 +474,9 @@ wrong (proposal.md question Q4). Named constants + a UI override make retuning a
   `sticker_asignaciones.py`, `inspector_asignaciones.py`); one novel router style would be an
   inconsistency with no benefit.
 
+> **Post-implementation note**: `DEFAULT_MAX_SIZE` shipped as `10`, per the BINDING user decision
+> recorded in proposal.md's question round (Q4), overriding this ADR's own carried-over "8" default.
+
 ## ADR-9 — Scale: bounded queries, not "load everything"
 
 **This is the main structural departure from the sticker precedent, and it is forced by the data.**
@@ -499,6 +512,15 @@ instances, and a table the browser sorts on the main thread — a performance cl
   browser instead of removing it.
 - *Rejected:* a materialized "pendientes" mirror collection maintained by the job. A second copy that
   can drift, for a problem an index and a `limit` already solve.
+
+> **Post-implementation note**: `list_puntos` shipped as an over-fetch-then-re-sort (fetch
+> `LIMIT_MAX + 1` by raw `prioridad_score`, then re-sort in code by override-aware effective
+> priority) rather than a single Firestore-level sort, because `prioridad_override` is intentionally
+> invisible to the pipeline (ADR-1) and Firestore cannot express that sort at the query level. Also,
+> `LIMIT_DEFAULT` was later lowered from 2000 to 300 for frontend render speed (Batch 4/Phase 6). The
+> first composite index actually required by the live query differed from this ADR's prediction —
+> `(tiene_survey ASC, prioridad_score DESC)` — because `estado_asignacion` is filtered in code, not
+> in the Firestore query itself. See `apply-progress.md` and the final `tasks.md` Phase 5/6 notes.
 
 ## ADR-10 — Frontend: a top-level tab, and why it fetches its own roster
 
@@ -581,6 +603,14 @@ Expect `app/main.py` to need an entry if the router module's own name ever colli
 literal — it does not here (`planeacion_asignaciones` ≠ `planeacion_puntos`), unlike the
 `survey_cali` case that forced `main.py` into that allowlist (`test_sole_writer.py:112-122`).
 
+> **Post-implementation note**: `ALLOWED_MODULES_PLANEACION_PUNTOS` ultimately gained a THIRD entry,
+> `routers/inspector_asignaciones.py`, added in the Phase 6 follow-up to give an assigned inspector
+> own-uid-scoped read/write access to their own pending points (`misPuntosPlaneacion`/
+> `marcarHechoPlaneacion`) — distinct from the pipeline and the admin dashboard. `planeacion_cruce.py`
+> also required one flagged, read-only entry in the pre-existing, otherwise-CLOSED
+> `ALLOWED_MODULES_SURVEY_CALI` set, since it genuinely reads `survey_cali` for the cascade. Both
+> additions are annotated in the invariant file rather than obfuscated.
+
 ## Runnable checks (locked)
 
 Test runner: **`python -m pytest backend/tests/ -v`** (259 passing on `main` before this change).
@@ -639,3 +669,15 @@ Five work units, `auto-chain` / `stacked-to-main`:
 6. **First-run write volume** — ~14.8k documents in 30 batched commits. One-off, but confirm the
    cron service's timeout accommodates it, and that `--dry` is used for the first rehearsal.
 7. Carries proposal.md risks 1-7 unchanged into task-level acceptance criteria.
+
+## Closure note (recorded at archive, 2026-08-26)
+
+Every ADR above shipped to production across Phases 1-4 (chained PRs on `main`) plus a Phase 6
+follow-up (inspector-facing visibility + tab speed). Phase 0 (operator confirmation of the weight
+table, cluster defaults, roster question, cron cadence, Survey123 URL) and Phase 5 (Railway/Firebase
+console provisioning, end-to-end spot check) remain formally unchecked in `tasks.md` — these are
+operator/gathering steps with no repo diff, not implementation work, and several of their outcomes
+(Survey123 URL, Railway env vars, Firestore indexes) were independently confirmed done in
+`proposal.md`'s "Manual operator steps" section as of 2026-08-26. The `planeacion-cruce` Railway cron
+and the Planeación tab are live in production at archive time.
+</content>

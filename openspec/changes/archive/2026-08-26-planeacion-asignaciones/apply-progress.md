@@ -956,3 +956,15 @@ true Firestore `count()` aggregation query — both need their own design decisi
 override-promotion edge case Batch 2 already documented, not a speculative bundle into this batch.
 Otherwise, Phase 5 (Railway/Firebase console + ArcGIS org steps) remains the only other open item on
 this change, and is not a repo diff.
+
+---
+
+## Closure note (recorded at archive, 2026-08-26)
+
+No formal `verify-report.md` was produced for this change. It is archived on the basis that its code
+is complete and shipped: Phases 1-4 and Phase 6 are all merged and live in production (the
+`planeacion-cruce` Railway cron runs; the admin Planeación tab and the inspector-facing survey-link
+surface are both live), and this feature's output (`planeacion_puntos`/`clave_integracion`) is
+independently exercised by later work built on top of it. See the archive report for the full
+rationale, at the operator's explicit direction.
+</content>

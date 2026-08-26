@@ -158,3 +158,14 @@ SUGGESTION:
 PASS WITH WARNINGS
 
 All 27 tasks are complete, all in-scope spec requirements are implemented correctly (verified by direct diff/code inspection, not by trusting apply claims), both untouched-file guarantees hold, the F5-toggle-busy fix was carried over verbatim, and both test suites (555 backend, 7-of-8 frontend with the 1 frontend failure independently confirmed pre-existing at the parent commit) pass as claimed. The two WARNINGs - manual smoke not yet executed, and no recorded review-lens pass for the over-400-line Phase 3 commit - are process gates for the orchestrator to close before archive, not defects in the shipped code.
+
+---
+
+## Archive-time addendum (2026-08-26)
+
+Per the orchestrator: apply is complete (commits `5df7278`/`7ac81ea`/`69f2396`/`47ff9c8`), the
+Phase-3 WARNING above (no review-lens artifact) has since been closed — reviewed with
+reliability+readability lenses, fixes landed in `9208748` — and the change has shipped to
+production. The manual-smoke WARNING remains a user-facing follow-up, not a blocker: no CRITICAL
+findings exist at any point in this change's lifecycle, so the archive proceeds per the
+Strict-vs-OpenSpec Archive Policy (CRITICAL-only hard block).

@@ -49,7 +49,7 @@ into concrete gate tasks. None blocks *starting* implementation; each blocks *lo
 
 - [ ] **0.4** Confirm the cron cadence (design.md proposes **hourly**, vs the sticker job's daily)
       and confirm the inspector roster question (Q3: is the assignee pool the existing
-      `inspectores/{uid}` roster, or a distinct professional group?). Q3's answer changes **4.3**;
+      `inspectores/{uid}` roster, or a distinct professional group?). Q3's answer changes **4.3**'s;
       Q4's answer changes only a Railway cron expression (manual step 5), not a repo diff.
       — Satisfies: `proposal.md` risk 5, question Q3; `design.md` ADR-10.
 
@@ -913,3 +913,22 @@ assignment was written to Firestore and died there.
   changes **4.3**'s data source, not just a call;
   (d) **0.5** — the Survey123 form share URL, which blocks **5.4**'s end-to-end proof (though not
   any code, since `survey_link` is pure and config-driven).
+
+---
+
+## Closure note (recorded at archive, 2026-08-26)
+
+Phases 1-4 and Phase 6 are fully implemented, tested, and merged/live in production (the
+`planeacion-cruce` Railway cron runs, the Planeación admin tab and the inspector-facing
+"Abrir encuesta" surface are both live). Phase 0 (0.1-0.5) and Phase 5 (5.1-5.5) remain formally
+unchecked — these are exclusively operator/gathering/provisioning steps with no repo diff (enumerate
+live category values, confirm weights with the ops lead, obtain/verify the Survey123 URL, provision
+Railway env vars and the cron service, add Firestore indexes/rules, run an end-to-end spot check).
+Per `proposal.md`'s own "Manual operator steps" section, several of these were independently
+confirmed done as of 2026-08-26 (the Survey123 form URL/item id resolved and Railway `web` env vars
+provisioned in step 1/4; the Firestore composite indexes created in step 6). This change is archived
+on the basis that its code is complete, shipped, and independently exercised by later work built on
+top of it (the follow-up Phase 6 batch and other in-flight changes consume `planeacion_puntos`/
+`clave_integracion` in production), at the operator's explicit direction, and without a formal
+`verify-report.md` — see the archive report for the full rationale.
+</content>

@@ -334,3 +334,4 @@ the API)?
 data from the planner would create a second, silent source of truth for the atencionsismo record.
 
 Ask for a second round if any answer changes the shape rather than just a constant.
+</content>

@@ -204,3 +204,4 @@ security rules and "the backend is sole writer" must hold by construction.
 - `web/index.html`, `web/js/main.js`, `web/styles.css`, `web/js/api-config.js` — tab wiring
 - `web/js/stickers-asignacion.js` — the frontend template
 - `openspec/changes/fastapi-backend-consolidation/proposal.md:109-118` — the binding dagma exclusion
+</content>

@@ -642,3 +642,4 @@ data (address, coordinates, severity) through the assignment endpoint.
   the Firestore client SDK
 - WHEN the read is attempted
 - THEN Firestore security rules deny it
+</content>
