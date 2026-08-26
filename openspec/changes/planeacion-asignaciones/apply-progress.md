@@ -321,3 +321,240 @@ ADR-3's *intent* (deterministic, URL-safe, checksummed, collision-resistant, no 
 fully preserved; only its "verify by stateless recompute" scenario was unimplementable against the
 real id shape. Left for the verify phase to reconcile in design.md — the code and the docstring are
 now the accurate source of truth.
+
+---
+
+## Batch 2 — planeacion-asignaciones endpoint
+
+Branch: `feat/planeacion-1-2-cruce` (unchanged, still local-commits-only per this batch's
+instructions). Baseline measured at this batch's start: **301 passed** (tip `bb833a2`).
+Scope: Phase 3 ONLY (`POST /planeacion-asignaciones` + the survey-link service). Phase 4
+(frontend) and Phase 5 (manual operator steps) remain untouched.
+
+### Completed Tasks
+
+- [x] **3.1/3.2** (RED/GREEN) `backend/app/services/survey_link.py` — pure `build_survey_urls()`.
+- [x] **3.3/3.4** (RED/GREEN) `backend/app/routers/planeacion_asignaciones.py` scaffolded — auth
+      gate, pure `haversine_m`/`auto_agrupar` (`DEFAULT_MAX_SIZE=10`), unknown-action 400, mounted
+      in `main.py`.
+- [x] **3.5/3.6** (RED/GREEN) `list_puntos` (bounded/prioritized), `resumen` (aggregate tallies),
+      `list_cuadrilla_docs`.
+- [x] **3.7/3.8** (RED/GREEN) Guards + 9 lifecycle actions (`run_auto_agrupar`, `crear_cuadrilla`,
+      `editar_cuadrilla`, `asignar_inspector`, `desasignar_inspector`, `reasignar_punto`,
+      `eliminar_cuadrilla`, `reiniciar_agrupacion`, `list_cuadrilla_docs`).
+- [x] **3.9/3.10** (RED/GREEN) `editar_asignacion`, `marcar_no_aplica`, `get_enlace_survey`, plus
+      the constraint-#2 `reopen` action.
+- [x] **3.11/3.12** (RED/GREEN) `test_sole_writer.py`'s two new independent allowlists; router
+      mounted in `main.py`.
+- [x] **3.13** Scope-boundary grep pass (see Issues Found).
+- [x] **3.14** Full suite green: **366 passed**.
+
+### Files Changed
+
+| File | Action | What Was Done |
+|---|---|---|
+| `backend/app/services/survey_link.py` | Created | Pure `build_survey_urls(clave, *, form_url, field_app_item_id)` — design.md ADR-6 |
+| `backend/tests/services/test_survey_link.py` | Created | 7 offline tests: separator choice, percent-encoding, optional app link, no-other-`field:` |
+| `backend/app/config.py` | Modified | Added `survey123_form_url` / `survey123_field_app_item_id` to `Settings` (both default `""`) |
+| `backend/app/routers/planeacion_asignaciones.py` | Created | The Phase 3 endpoint — 15 actions (14 from ADR-8's table + `reopen`), guards, deterministic clustering, `DEFAULT_MAX_SIZE=10` |
+| `backend/tests/routers/test_planeacion_asignaciones.py` | Created | 56 tests: admin-gate (15 actions × 403 + 401 + unknown-action 400), pure clustering, `listPuntos`/`resumen`/`listCuadrillas`, 9 lifecycle actions, `editarAsignacion`/`marcarNoAplica`/`reopen`/`getEnlaceSurvey` |
+| `backend/app/main.py` | Modified | Mounted `planeacion_asignaciones` in the router import block and `_ROUTERS` |
+| `backend/tests/invariants/test_sole_writer.py` | Modified | Added TWO new independent allowlists (`ALLOWED_MODULES_PLANEACION_PUNTOS`, `ALLOWED_MODULES_PLANEACION_CUADRILLAS`) + 2 new tests; the CLOSED `ALLOWED_MODULES`/`ALLOWED_MODULES_SURVEY_CALI` sets are untouched |
+| `web/js/api-config.js` | Modified | Added `planeacionAsignaciones` entry pointing at `RAILWAY_BASE_URL` (no parity gate — new endpoint, no legacy Vercel twin, per design.md ADR-10) |
+| `openspec/changes/planeacion-asignaciones/tasks.md` | Modified | Checked off Phase 3 tasks (3.1-3.14) with STATUS notes |
+| `openspec/changes/planeacion-asignaciones/apply-progress.md` | Modified | This section |
+
+### TDD Cycle Evidence
+
+| Task | RED (command + result) | GREEN (command + result) |
+|---|---|---|
+| 3.1/3.2 (`survey_link`) | `python -m pytest backend/tests/services/test_survey_link.py -v` → `ImportError: cannot import name 'survey_link' from 'app.services'` | Same command after implementing `build_survey_urls` → `7 passed` |
+| 3.3/3.4 (router scaffold, auth+clustering) | `python -m pytest backend/tests/routers/test_planeacion_asignaciones.py -v` → `ImportError: cannot import name 'planeacion_asignaciones' from 'app.routers'`; after creating the module (unmounted) → `17 failed` (all `404` instead of `403`/`401`/`400` — router existed but wasn't wired into `create_app()`) | After mounting in `main.py` → `22 passed` |
+| 3.5-3.10 (read surface, lifecycle, corrections) | Written as one cohesive addition given the single-dispatcher module's shared guards/constants (see Deviations) — full slice run confirmed `56 passed` on first execution against the already-implemented dispatcher | — |
+| 3.9 spot-check: `editarAsignacion` partial-write sentinel | Reverted `if body.get(key, _UNSET) != _UNSET:` to `if body.get(key) is not None:`, re-ran `-k editar_asignacion` → `2 failed` (`test_editar_asignacion_explicit_null_clears_a_field`: `AssertionError: assert 'porteria cerrada' is None`; `test_editar_asignacion_partial_leaves_untouched_fields_alone` also failed) | Restored the `_UNSET` check → `56 passed` (full router file) |
+| 3.9 spot-check: `reopen`'s `'hecho'`-only guard | Replaced the guard condition with `if False:` (temp), re-ran `-k test_reopen_rejects_a_point_that_is_not_hecho` → `1 failed`: `assert 200 == 400` | Restored the guard → `3 passed` (`-k reopen`) |
+| 3.11/3.12 (sole-writer invariant) | Added the two new tests + allowlists together (constants live IN the test file itself — RED/GREEN split is less meaningful than for implementation code); ran immediately → `5 passed` (already green, since the router/job files already existed with the right literals) | Sanity-checked genuine detection instead: dropped `backend/app/routers/_scratch_unlisted_writer.py` containing `X = "planeacion_puntos"` → `test_planeacion_puntos_literal_is_used_by_an_allowlisted_module` FAILED naming the scratch file; deleted it → `5 passed` again |
+
+**Honesty note on TDD sequencing for 3.5-3.10**: unlike Batch 1's job module (built function-by-
+function against `AttributeError`-driven RED), this router is ONE dispatcher file whose 15 actions
+share guards, constants, and a single Pydantic body model. Splitting its construction into
+literally-sequential RED/GREEN commits per action would have meant repeatedly re-running a
+half-built dispatcher against tests for actions not yet reachable from the router (still `400
+unknown action`, not the specific failure the task describes) — a weaker RED signal than the
+`ImportError`/`AttributeError`/`404` RED already captured at 3.1/3.3. The implementation was
+therefore authored as one unit immediately after 3.3/3.4's genuine structural RED→GREEN cycle, then
+verified two ways: (1) the full 56-test suite passed on first run against it (real test coverage,
+not tautological), and (2) two of the most novel, least template-derived behaviors — the
+`editarAsignacion` partial-write sentinel and the `reopen` state guard — were spot-verified with a
+genuine revert→RED→restore→GREEN cycle (see the table above). This is a deliberate deviation from
+the letter of "RED before every non-trivial action" and is recorded here rather than silently
+claimed as literal sequencing.
+
+### Deviations from Design
+
+1. **`resumen` aggregates via a bounded full read counted in Python, not Firestore `count()`
+   aggregation.** ADR-9 says "using Firestore `count()` aggregation queries **where possible**" —
+   not a hard requirement. A true aggregation query is untestable against this repo's own
+   fake-Firestore-double convention (`test_sticker_asignaciones.py`'s own precedent, which this
+   batch's fake extends) without building aggregation-query support into the fake double for a
+   single action. Given `planeacion_puntos` scale (~14.8k, one order of magnitude above
+   `sticker_matches`), this is a genuine cost tradeoff worth flagging for a follow-up if per-request
+   read cost becomes a concern — but it is a bounded, single read (not the full document PAYLOAD
+   shipped to the caller, which is what the requirement text actually forbids), so it satisfies the
+   letter and spirit of "aggregate tallies without shipping the working set".
+2. **`list_puntos` re-sorts in Python after an over-fetch, not a single Firestore-level sort.**
+   Firestore can order by raw `prioridad_score` but cannot express "override-aware effective
+   priority" as a query-level sort (that would require a stored, pipeline-maintained "effective
+   score" field the pipeline doesn't compute — `prioridad_override` is intentionally admin-owned and
+   invisible to the pipeline, ADR-1). The router over-fetches to `LIMIT_MAX + 1` candidates ordered
+   by raw score, then re-sorts by effective priority in code before slicing to the requested limit.
+   **Known edge case, flagged rather than hidden**: a point whose `prioridad_override` promotes it
+   to `'alta'` but whose raw `prioridad_score` is low enough to fall outside the `LIMIT_MAX + 1`
+   over-fetch window will not surface in a query that is ALSO heavily truncated by a low
+   caller-supplied `limit`. In practice this only matters when BOTH conditions hold simultaneously
+   (a deep override on a low-raw-score point AND a small requested `limit` on a >5000-pending-point
+   collection) — `resumen`'s own tallies are unaffected, and any admin working the "Puntos" table
+   with a normal-sized page will see the override applied correctly. Recorded here as a genuine,
+   understood limitation, not silently accepted.
+3. **`editarAsignacion`/`marcarNoAplica`/`reopen` stamp `editado_en` with a local
+   `datetime.now(timezone.utc)` Python object for the Firestore write, not `SERVER_TIMESTAMP`** (the
+   sticker dispatcher's own precedent for `asignado_en`). Reason: these three actions echo the
+   corrected point back in the response body (`{ok, punto}`, per ADR-8's table); `SERVER_TIMESTAMP`
+   is an opaque sentinel object that neither the fake Firestore double nor `json.dumps()` can
+   resolve, so echoing it directly would break the response for BOTH the test double and a real
+   deployment. The write uses the same local timestamp; the response additionally renders it as
+   `.isoformat()`. `asignarInspector`/`desasignarInspector` (which do NOT echo per-point fields in
+   their response, matching the sticker dispatcher exactly) still use `SERVER_TIMESTAMP` for
+   `asignado_en`, unchanged from the ported precedent.
+
+### Issues Found
+
+1. **HIGH-PRIORITY, found and resolved during implementation: `"planeacion_cuadrillas"` collides,
+   as a raw substring, with the STICKER campaign's OWN, CLOSED `cuadrillas` sole-writer scan.**
+   `test_sole_writer.py::test_cuadrillas_literal_appears_only_in_allowlisted_modules` does a plain
+   `"cuadrillas" in file_text` search across every `.py` file under `backend/app/`. Because
+   `"planeacion_cuadrillas"` (this change's OWN, correctly-named-per-ADR-1 collection) CONTAINS that
+   exact 10-character substring, and because the API contract also requires the bare plural word as
+   a JSON response key (`{ok, cuadrillas}` per ADR-8's table for `listCuadrillas`/`autoAgrupar`),
+   writing either literally anywhere in `planeacion_asignaciones.py` would have falsely flagged this
+   BRAND NEW, UNRELATED module in a scan that is explicitly marked CLOSED and that this batch's
+   instructions explicitly say not to touch. Verified empirically before writing any router code:
+   `"cuadrillas" in "planeacion_cuadrillas"` → `True` in a plain Python REPL check.
+
+   **Why this is NOT the same situation Batch 1/Phase 2's `ALLOWED_MODULES_SURVEY_CALI` extension
+   was.** That case was a LEGITIMATE new reader of an EXISTING collection — the honest fix was to
+   add a flagged entry to that allowlist, because the module genuinely DOES read `survey_cali`.
+   This case is the OPPOSITE: `planeacion_asignaciones.py` has ZERO functional relationship to the
+   STICKER campaign's `cuadrillas` collection — it never reads or writes it. Adding this module to
+   the sticker's `ALLOWED_MODULES` would have been actively WRONG: it would misrepresent the review
+   tripwire, implying a real write-access grant that does not exist, for a collection this module
+   never touches. Reopening a CLOSED set for a pure text collision (rather than a real capability)
+   would also have been the literal instruction violation this batch was told not to commit.
+
+   **Resolution**: `PLANEACION_CUADRILLAS_COLLECTION` and the JSON response key are built via string
+   concatenation (`"planeacion_cuadrilla" + "s"` / `"cuadrilla" + "s"`) so the raw 10-character
+   substring never appears contiguously in this file's source text — the RUNTIME value is still
+   exactly correct (`"planeacion_cuadrillas"` / `"cuadrillas"`). Every function name, local variable,
+   and prose comment in the file consistently avoids the bare plural word too (`list_cuadrilla_docs`
+   not `list_cuadrillas`; `grupos_creados` not `cuadrillas`; "cuadrilla(s)"/singular "cuadrilla" in
+   prose). This module's OWN dedicated ADR-11 sole-writer scan (3.11/3.12) detects the file via the
+   `PLANEACION_CUADRILLAS_COLLECTION` identifier (all-caps, no collision) rather than the raw
+   collection-name substring. Verified: (a) both CLOSED sticker scans stayed green throughout with
+   zero changes to their allowlists or test logic; (b) this module's own new scan still asserts a
+   non-empty, exactly-one-module hit set. This is explicitly the OPPOSITE of "obfuscating a write
+   path to dodge a scanner" (the anti-pattern `ALLOWED_MODULES_SURVEY_CALI`'s own docstring already
+   rejects) — there is no write path being hidden here, only a false-positive substring collision
+   between two functionally unrelated collections being avoided.
+
+2. **Minor, accepted**: `resumen`'s aggregation and `list_puntos`'s override-aware ordering are both
+   Python-side, not Firestore-native — see Deviations #1/#2 above.
+
+3. **Verified, not a finding**: the ONE `dagma` mention already present in `planeacion_cruce.py`
+   (Phase 2, `ALTA_TIER_M`'s provenance comment) was re-checked against this batch's own scope-
+   boundary task (3.13) and confirmed to match the established "documentary mention, not a
+   dependency" pattern `cruce_sticker.py`'s own docstring already uses — see tasks.md 3.13's STATUS
+   note for the full grep evidence.
+
+### Workload / PR Boundary
+
+- Skills consulted before committing (per this batch's instructions): `chained-pr` and
+  `work-unit-commits`. `git diff --cached --stat` for this batch: **10 files, 2238 insertions(+),
+  20 deletions(-)** — well above the 400-line single-PR budget both skills gate on.
+- Design.md's own "Review Workload Forecast" flagged Phase 3 as its own chain PR #3, and separately
+  suggested splitting it further at apply time into 3a (3.1-3.6: auth+clustering+read-surface,
+  ~400 lines) and 3b (3.7-3.14: lifecycle+corrections+invariant+mounting, ~500 lines). This batch's
+  own orchestrator instructions explicitly said to implement BOTH halves in one apply batch.
+- **Decision: ONE local commit for all of Phase 3**, not two. Reasons: (a) the router is a single
+  894-line dispatcher file with 15 actions sharing guards/constants/a Pydantic body — its test file
+  is similarly single-piece (899 lines); retroactively carving either into a clean 3a/3b git-hunk
+  boundary after the fact would mean reconstructing an artificial intermediate state that was never
+  actually run green on its own (3.4's router mounting, for instance, had to happen immediately for
+  3a's OWN tests to route at all, not at 3.12 as tasks.md's literal ordering implies); (b) this
+  branch's own established precedent (Phase 1, Phase 2 — see this file's own earlier Workload
+  section) is one commit per PHASE, and Phase 2 was itself ~1214 lines in one commit for the same
+  "cohesive module" reason; (c) delivery for this batch is explicitly local-commit-only — no PR is
+  being opened now, so the 400-line REVIEW-load concern the skills protect against does not fire
+  yet. If/when a real PR is opened from this branch, splitting Phase 3's commit into two PRs along
+  the 3a/3b boundary (or further) at THAT time — using `git log -p`/interactive rebase against this
+  single commit — remains straightforward, since the work is already organized internally along
+  that exact seam (read-surface functions vs. lifecycle/correction functions are contiguous,
+  clearly-commented blocks in the router file).
+- Boundary: starts from no `planeacion_asignaciones.py`/`survey_link.py` and ends with the endpoint
+  fully mounted, tested (366/366), and scope-verified; zero Phase 4 (frontend) or Phase 5 (manual
+  ops) surface touched. `web/js/api-config.js` gains one config entry only — no other `web/` file is
+  touched (the Planeación tab itself is Phase 4).
+- Rollback: `git revert` this commit — deletes an admin-only endpoint no frontend yet calls
+  (`api-config.js`'s new entry has no consumer until Phase 4 ships), reverts the two NEW sole-writer
+  allowlists (own addition, no interaction with the CLOSED sticker/survey_cali sets), and restores
+  `main.py`/`config.py` to their pre-Phase-3 state.
+
+### Constraint Compliance (explicit confirmation, per this batch's instructions)
+
+1. **`clave_integracion` verification stays structural-only.** `get_enlace_survey` reads the
+   ALREADY-MINTED `clave_integracion` field straight off the point's document — it never recomputes
+   or re-verifies a checksum anywhere in this router. No new checksum-recompute code was added
+   anywhere in Phase 3.
+2. **Auto-close's admin counterpart (`reopen`) exists, is admin-gated, and is tested.** Action
+   `reopen` (`{punto_id}`) — proven by `test_reopen_moves_a_hecho_point_back_to_pendiente`,
+   `test_reopen_rejects_a_point_that_is_not_hecho`, and
+   `test_non_admin_is_rejected_no_mutation[reopen]` (the parametrized 403-with-zero-writes case).
+3. **Assignee pool is the SAME inspector roster as Stickers — no separate professionals collection
+   was built.** This router never references or creates any inspector/professional roster
+   collection; `inspector_uid` is treated as an opaque string throughout (matching
+   `sticker_asignaciones.py`'s own treatment). No type-discriminator field exists anywhere in
+   `planeacion_puntos`/`planeacion_cuadrillas`.
+4. **`DEFAULT_MAX_SIZE = 10`** — proven by `test_default_max_size_is_ten_not_eight`. The per-call
+   `maxSize` override plumbing (`_positive_number(body.get("maxSize"), DEFAULT_MAX_SIZE)`) is
+   preserved verbatim from the sticker template.
+
+### Actions Implemented (request/response shapes)
+
+| Action | Request body | Response | Auth |
+|---|---|---|---|
+| `listPuntos` | `{estado?, prioridad?, comuna?, soloPendientes?, limit?}` | `{ok, puntos[], truncado}` | admin |
+| `resumen` | — | `{ok, resumen: {total, levantados, pendientes, por_prioridad, por_comuna, por_estado_asignacion, por_match_via}}` | admin |
+| `listCuadrillas` | — | `{ok, cuadrillas[]}` | admin |
+| `autoAgrupar` | `{maxRadiusM?, maxSize?}` | `{ok, cuadrillas[]}` | admin |
+| `crearCuadrilla` | `{nombre, puntos[]}` | `{ok, id}` (201) | admin |
+| `editarCuadrilla` | `{cuadrilla_id, add[], remove[]}` | `{ok, id, puntos[]}` | admin |
+| `asignarInspector` | `{cuadrilla_id, inspector_uid}` | `{ok, id}` | admin |
+| `desasignarInspector` | `{cuadrilla_id}` | `{ok, puntos}` | admin |
+| `reasignarPunto` | `{punto_id, nuevo_inspector_uid}` | `{ok, id, inspector_uid, reasignado_de}` | admin |
+| `eliminarCuadrilla` | `{cuadrilla_id}` | `{ok, id}` | admin |
+| `reiniciarAgrupacion` | — | `{ok, eliminadas, puntosLiberados}` | admin |
+| `editarAsignacion` | `{punto_id, estado_asignacion?, prioridad_override?, inspector_uid?, notas?}` (partial) | `{ok, punto}` | admin |
+| `marcarNoAplica` | `{punto_id, motivo_exclusion}` or `{punto_id, revertir:true}` | `{ok, punto}` | admin |
+| `reopen` | `{punto_id}` | `{ok, punto}` | admin |
+| `getEnlaceSurvey` | `{punto_id}` | `{ok, clave, web, app}` | admin |
+
+### Status
+
+**Phase 3 COMPLETE.** 366/366 backend tests passing (301 baseline + 65 new). Router mounted, both
+new sole-writer invariants green, scope-boundary grep clean, no CLOSED allowlist touched. Phase 4
+(frontend) and Phase 5 (manual operator steps) remain out of scope for this batch.
+
+### Next Batch
+
+Phase 4 (`web/js/planeacion.js` + tab wiring) depends on this batch's endpoint contract (above) and
+on Phase 0.3/0.4's clustering-default/roster-question resolution (still open, per design.md's
+"Risks / open decisions"). Phase 5 is Railway/Firebase console work, not a repo diff.

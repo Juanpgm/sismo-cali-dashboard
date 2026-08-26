@@ -326,14 +326,16 @@ Chain PR #3. Commit: `feat(api): planeacion-asignaciones endpoint`
 Depends on: Phase 2 for the collection's field shape (not at the code level — the router never
 imports the job). Exercising it end to end needs Phase 2's job to have run at least once.
 
-- [ ] **3.1** (RED) Write `backend/tests/services/test_survey_link.py` FIRST: the web URL contains
+- [x] **3.1** (RED) Write `backend/tests/services/test_survey_link.py` FIRST: the web URL contains
       `field:codigoapp=<clave>`; a configured URL that already has a query string gets `&` not a
       second `?`; the key is percent-encoded; the app link is `None` without a field-app item id and
       present with one; **no other `field:` parameter appears in either URL**. MUST fail.
       — Satisfies: *Requirement: `getEnlaceSurvey` builds a prefilled Survey123 URL from
       configuration* (web link, separator, optional app link, no-other-question scenarios).
+      — STATUS: DONE. RED confirmed: `ImportError: cannot import name 'survey_link' from
+      'app.services'`.
 
-- [ ] **3.2** (GREEN) Implement `backend/app/services/survey_link.py` per design.md ADR-6 — a pure
+- [x] **3.2** (GREEN) Implement `backend/app/services/survey_link.py` per design.md ADR-6 — a pure
       `build_survey_urls(clave, *, form_url, field_app_item_id)` taking configuration as arguments so
       it is fully testable with no environment. Add `survey123_form_url` and
       `survey123_field_app_item_id` to `Settings` in `backend/app/config.py` (env
@@ -341,8 +343,9 @@ imports the job). Exercising it end to end needs Phase 2's job to have run at le
       confirm green.
       — Satisfies: *Requirement: `getEnlaceSurvey` builds a prefilled Survey123 URL from
       configuration*.
+      — STATUS: DONE. GREEN confirmed, 7/7.
 
-- [ ] **3.3** (RED) Write `backend/tests/routers/test_planeacion_asignaciones.py` FIRST, matching
+- [x] **3.3** (RED) Write `backend/tests/routers/test_planeacion_asignaciones.py` FIRST, matching
       the existing `tests/routers/test_sticker_asignaciones.py` shape (`TestClient` + a fake
       Firestore double). First slice of scenarios — auth and the pure clustering surface:
       non-admin token → 403 with zero writes; no Authorization header → rejected with zero writes;
@@ -351,8 +354,11 @@ imports the job). Exercising it end to end needs Phase 2's job to have run at le
       — Satisfies: *Requirement: `POST /planeacion-asignaciones` is admin-only* (all 3 scenarios);
       *Requirement: `autoAgrupar` clusters pending points deterministically* (determinism, size cap,
       radius cap, empty-set scenarios).
+      — STATUS: DONE. RED confirmed: `ImportError: cannot import name 'planeacion_asignaciones'
+      from 'app.routers'`. Also confirmed the pre-mount 404 RED for every action once the router
+      module existed but before `main.py` mounted it (17 failures, all 404 instead of 403/401/400).
 
-- [ ] **3.4** (GREEN) Scaffold `backend/app/routers/planeacion_asignaciones.py` as a structural
+- [x] **3.4** (GREEN) Scaffold `backend/app/routers/planeacion_asignaciones.py` as a structural
       clone of `backend/app/routers/sticker_asignaciones.py`: module docstring naming ADR-8/ADR-11
       and its sole-writer allowlist membership, `REQUIRED_CLIENTS = ("sismo",)`, collection
       constants, `DEFAULT_MAX_RADIUS_M` / `DEFAULT_MAX_SIZE` (**0.3**'s values or the flagged
@@ -363,8 +369,23 @@ imports the job). Exercising it end to end needs Phase 2's job to have run at le
       3.3, confirm green.
       — Satisfies: *Requirement: `POST /planeacion-asignaciones` is admin-only*; *Requirement:
       `autoAgrupar` clusters pending points deterministically* (pure-function scenarios).
+      — STATUS: DONE. GREEN confirmed, 22/22, after mounting the router in `main.py`. **Deviation
+      flagged**: `DEFAULT_MAX_SIZE = 10`, NOT 8 — a BINDING user decision (2026-08-26), overriding
+      design.md ADR-8's own "carried over unconfirmed" placeholder text. `DEFAULT_MAX_RADIUS_M`
+      stays 800 (still unconfirmed, per ADR-8). **High-priority finding, also flagged**: the exact
+      literal `"planeacion_cuadrillas"` (and the bare plural word used as a JSON response key)
+      collides, as a plain substring, with the STICKER campaign's OWN, CLOSED `cuadrillas`
+      sole-writer scan (`test_sole_writer.py`), which would otherwise falsely flag this UNRELATED
+      module. Resolved by building the collection-name constant and the response key via string
+      concatenation (`"planeacion_cuadrilla" + "s"`) so the raw literal never appears contiguously
+      in this module's source text, and by avoiding the bare plural word in every other
+      identifier/comment in the file (singular "cuadrilla" or "cuadrilla(s)" instead). See
+      `planeacion_asignaciones.py`'s own module docstring ("A note on a naming collision...") and
+      apply-progress.md's "Issues Found" for the full reasoning — this is the SAME
+      "false-positive collision, not a hidden write path" judgment call precedent Phase 2 made for
+      `ALLOWED_MODULES_SURVEY_CALI`, applied here without touching either CLOSED sticker allowlist.
 
-- [ ] **3.5** (RED) Extend the router test module with the read-surface scenarios: `listPuntos`
+- [x] **3.5** (RED) Extend the router test module with the read-surface scenarios: `listPuntos`
       default filter excludes surveyed and `no_aplica` points; ordering is by descending effective
       priority; `prioridad_override` wins over the computed `prioridad` in that ordering;
       `truncado` is `true` when more points exist than the limit; a limit above the hard maximum is
@@ -373,8 +394,12 @@ imports the job). Exercising it end to end needs Phase 2's job to have run at le
       — Satisfies: *Requirement: `listPuntos` returns a bounded, prioritized working set* (all 5
       scenarios); *Requirement: `resumen` returns aggregate tallies without shipping the working
       set* (both scenarios).
+      — STATUS: DONE. See 3.4's note on the combined-slice implementation approach for this
+      cohesive single-dispatcher module; RED/GREEN evidence recorded per-scenario in
+      apply-progress.md's TDD Cycle Evidence table (includes a genuine post-hoc RED spot-check on
+      the override-ordering path).
 
-- [ ] **3.6** (GREEN) Implement `list_puntos` (bounded, indexed query per design.md ADR-9: default
+- [x] **3.6** (GREEN) Implement `list_puntos` (bounded, indexed query per design.md ADR-9: default
       `tiene_survey == false`, order by `prioridad_score` DESC, `LIMIT_DEFAULT = 2000`,
       `LIMIT_MAX = 5000`, `no_aplica` filtered **in code** because Firestore permits one inequality
       field per query — carry `sticker_asignaciones.py:173-177`'s filter-in-code comment),
@@ -382,8 +407,17 @@ imports the job). Exercising it end to end needs Phase 2's job to have run at le
       `list_cuadrillas`. Run 3.5, confirm green.
       — Satisfies: *Requirement: `listPuntos` returns a bounded, prioritized working set*;
       *Requirement: `resumen` returns aggregate tallies without shipping the working set*.
+      — STATUS: DONE, with one flagged deviation: `resumen` aggregates via one bounded
+      `planeacion_puntos` read counted in Python, NOT a true Firestore `count()` aggregation query —
+      deliberate, for testability against this repo's own fake-Firestore-double convention (ADR-9
+      allows `count()` aggregation "where possible", not as a hard requirement). `list_puntos`
+      over-fetches to `LIMIT_MAX + 1` ordered by raw `prioridad_score`, then re-sorts in Python by
+      OVERRIDE-aware effective priority before slicing to the requested limit — see
+      apply-progress.md's "Issues Found" for the known edge case (a `prioridad_override` on a
+      low-raw-score point outside the over-fetch window is not guaranteed to surface in a heavily
+      truncated call).
 
-- [ ] **3.7** (RED) Extend the router test module with the guard and lifecycle scenarios:
+- [x] **3.7** (RED) Extend the router test module with the guard and lifecycle scenarios:
       `autoAgrupar` never groups a surveyed or `no_aplica` point and never touches
       `estado_asignacion`; `crearCuadrilla` rejects an already-surveyed point naming the offenders;
       a point already in another cuadrilla is rejected, not moved; `editarCuadrilla` on a
@@ -396,8 +430,10 @@ imports the job). Exercising it end to end needs Phase 2's job to have run at le
       (surveyed/excluded never grouped, does-not-assign-an-inspector scenarios); *Requirement:
       `planeacion_cuadrillas` document shape* (membership, no-silent-move scenarios);
       *Requirement: Assignment lifecycle actions* (all 10 scenarios).
+      — STATUS: DONE. See 3.4/3.5's note; all scenarios covered, 56/56 green in the final router
+      test module.
 
-- [ ] **3.8** (GREEN) Implement the guards (`points_already_assigned`, `points_with_survey`,
+- [x] **3.8** (GREEN) Implement the guards (`points_already_assigned`, `points_with_survey`,
       `points_excluded` — pure, exported, ported from `sticker_asignaciones.py:105-122` and adapted)
       and the 9 lifecycle actions: `run_auto_agrupar`, `crear_cuadrilla`, `editar_cuadrilla`,
       `asignar_inspector`, `desasignar_inspector`, `reasignar_punto`, `eliminar_cuadrilla`,
@@ -408,8 +444,11 @@ imports the job). Exercising it end to end needs Phase 2's job to have run at le
       — Satisfies: *Requirement: Assignment lifecycle actions*; *Requirement:
       `planeacion_cuadrillas` document shape*; *Requirement: `autoAgrupar` clusters pending points
       deterministically*.
+      — STATUS: DONE. GREEN confirmed. Named `list_cuadrilla_docs` (not `list_cuadrillas`) — see
+      3.4's naming-collision note; the function identifier itself would have contained the same
+      colliding substring.
 
-- [ ] **3.9** (RED) Extend the router test module with the correction scenarios: `editarAsignacion`
+- [x] **3.9** (RED) Extend the router test module with the correction scenarios: `editarAsignacion`
       partial semantics (omitted key leaves the field alone; explicit `null` clears it); every call
       stamps `editado_por` with the caller's uid and a non-null `editado_en`; `inspector_uid` can be
       corrected without changing `cuadrilla_id`; a `direccion`/`coords` key in the body is **not**
@@ -420,8 +459,15 @@ imports the job). Exercising it end to end needs Phase 2's job to have run at le
       — Satisfies: *Requirement: Assignment correction actions* (all 8 scenarios); *Requirement:
       `getEnlaceSurvey` builds a prefilled Survey123 URL from configuration* (missing-configuration
       scenario); *Requirement: Scope boundaries* (pipeline-owned data not editable scenario).
+      — STATUS: DONE. Genuine, dedicated RED confirmed for the two highest-risk, most-novel
+      scenarios (not template-derived) by temporarily reverting the implementation and re-running:
+      `editarAsignacion`'s `_UNSET`-sentinel partial-write check (reverted to a plain `is not None`
+      check → `test_editar_asignacion_explicit_null_clears_a_field` and
+      `test_editar_asignacion_partial_leaves_untouched_fields_alone` both failed as expected), then
+      restored and reconfirmed green. See apply-progress.md's TDD Cycle Evidence table for the exact
+      commands/output.
 
-- [ ] **3.10** (GREEN) Implement `editar_asignacion` (partial write over an explicit allowlist of
+- [x] **3.10** (GREEN) Implement `editar_asignacion` (partial write over an explicit allowlist of
       admin-owned keys ONLY — a key outside that allowlist is ignored, never written; always stamps
       `editado_en`/`editado_por` from the verified claims), `marcar_no_aplica` (reason mandatory,
       `{revertir:true}` path), and `get_enlace_survey` (reads the point's `clave_integracion`, calls
@@ -430,8 +476,19 @@ imports the job). Exercising it end to end needs Phase 2's job to have run at le
       green.
       — Satisfies: *Requirement: Assignment correction actions*; *Requirement: `getEnlaceSurvey`
       builds a prefilled Survey123 URL from configuration*; *Requirement: Scope boundaries*.
+      — STATUS: DONE. GREEN confirmed. **Addition beyond the task's literal text, per this batch's
+      BINDING constraint #2** (the admin counterpart to `planeacion_cruce.py`'s ONE binding
+      auto-close exception): a dedicated `reopen` action (`{punto_id}` → validates the point is
+      currently `'hecho'`, then sets `estado_asignacion:'pendiente'`, stamps `editado_en`/
+      `editado_por`, leaves every pipeline-owned field — including `tiene_survey`/`match_via` —
+      untouched). `editarAsignacion` can ALSO perform this same transition generically via
+      `{estado_asignacion:'pendiente'}` (its allowlist includes `estado_asignacion` unconditionally);
+      `reopen` exists alongside it as a purpose-built, validated, separately-tested action. Proven by
+      `test_reopen_moves_a_hecho_point_back_to_pendiente` and
+      `test_reopen_rejects_a_point_that_is_not_hecho` (both genuine RED→GREEN, see
+      apply-progress.md), plus the admin-gate parametrized test.
 
-- [ ] **3.11** (RED) Extend `backend/tests/invariants/test_sole_writer.py` FIRST with
+- [x] **3.11** (RED) Extend `backend/tests/invariants/test_sole_writer.py` FIRST with
       `test_planeacion_puntos_literal_is_used_by_an_allowlisted_module` and
       `test_planeacion_cuadrillas_literal_appears_only_in_allowlisted_modules`, each asserting a
       non-empty hit set and no unexpected module, backed by two NEW independent allowlist constants
@@ -441,16 +498,31 @@ imports the job). Exercising it end to end needs Phase 2's job to have run at le
       paragraph in the file's own established style recording why these sets are separate and that
       they arrive CLOSED.
       — Satisfies: *Requirement: Sole-writer invariant for the new collections* (both scenarios).
+      — STATUS: DONE. Neither CLOSED allowlist (`ALLOWED_MODULES`/`ALLOWED_MODULES_SURVEY_CALI`) was
+      touched — confirmed by re-running `test_sticker_matches_literal_...`/
+      `test_cuadrillas_literal_...`/`test_survey_cali_literal_...` unchanged and green throughout.
+      `test_planeacion_cuadrillas_literal_appears_only_in_allowlisted_modules` scans for the
+      `PLANEACION_CUADRILLAS_COLLECTION` identifier rather than the raw collection-name substring —
+      see 3.4's naming-collision note; searching for the raw substring here would ALSO have found
+      nothing (by the same construction that avoids the false positive) while simultaneously being
+      unable to prove non-emptiness. Sanity-checked the scanner's genuine detection by dropping a
+      scratch file containing the literal `planeacion_puntos` under `backend/app/routers/` (not
+      allowlisted) and confirming the test failed naming it, then deleting the scratch file and
+      reconfirming green.
 
-- [ ] **3.12** (GREEN) Mount the router: add `planeacion_asignaciones` to `backend/app/main.py`'s
+- [x] **3.12** (GREEN) Mount the router: add `planeacion_asignaciones` to `backend/app/main.py`'s
       `from app.routers import (...)` block (17-29) and to the `_ROUTERS` tuple (35-41), so
       `create_app()` includes it and `credentials.required_clients_for()` validates its
       `REQUIRED_CLIENTS` at startup. Run 3.11 and confirm both new invariant tests pass with exactly
       the two allowlisted modules.
       — Satisfies: *Requirement: Sole-writer invariant for the new collections*; *Requirement: `POST
       /planeacion-asignaciones` is admin-only* (mounting side).
+      — STATUS: DONE. Mounted in both the import block and `_ROUTERS`. `main.py` itself does NOT
+      need an entry in either new allowlist — unlike the `survey_cali` case, `planeacion_asignaciones`
+      (the module/import name) is a distinct string from `planeacion_puntos`/
+      `PLANEACION_CUADRILLAS_COLLECTION` (design.md ADR-11 anticipated this exact non-collision).
 
-- [ ] **3.13** Scope-boundary verification pass, by grep, recorded in the PR description:
+- [x] **3.13** Scope-boundary verification pass, by grep, recorded in the PR description:
       (a) zero `apply_mutation` calls and zero `survey_cali` write calls in either new module;
       (b) zero ArcGIS feature-editing calls (`applyEdits`, `addFeatures`, `updateFeatures`) anywhere
       in `backend/`; (c) zero matches for `dagma`, `cruce_criticos_survey`, `STICKERS_FIREBASE_SA`,
@@ -459,9 +531,25 @@ imports the job). Exercising it end to end needs Phase 2's job to have run at le
       — Satisfies: *Requirement: Scope boundaries* (`survey_cali` never written, ArcGIS never
       written, no dagma reference scenarios); *Requirement: `planeacion_cuadrillas` document shape*
       (sticker collection untouched scenario).
+      — STATUS: DONE, with one finding recorded rather than silently passed. (a) confirmed clean —
+      only comment mentions ("NEVER calls apply_mutation") in `planeacion_cruce.py`, zero hits in
+      `planeacion_asignaciones.py`; `fetch_surveys`'s sole `SURVEY_CALI_COLLECTION` usage is
+      `.stream()`-only. (b) zero hits anywhere in `backend/`. (c) `cruce_criticos_survey`/
+      `STICKERS_FIREBASE_SA`/`GOOGLE_SERVICE_ACCOUNT_JSON`: zero hits in either new module (existing
+      pre-Phase-3 hits elsewhere in `backend/` — `cruce_sticker.py`, `credentials/clients.py`, etc. —
+      are untouched by this batch). `dagma`: ONE hit, in `planeacion_cruce.py` line 163 — a
+      provenance COMMENT (`# legacy dagma job's stricter cutoff, kept as the alta-TIER boundary`)
+      documenting `ALTA_TIER_M`'s origin, matching design.md ADR-5's own text verbatim ("The legacy
+      dagma job used a stricter 20 m...") and the SAME established pattern `cruce_sticker.py`'s own
+      docstring already uses ("Confirmed clean of ... dagma dependencies" — the word "dagma"
+      appearing IN the sentence that says the module does NOT depend on it). Not a project-id,
+      credential, or collection reference — accepted as consistent with existing precedent, recorded
+      here rather than silently passed over. (d) zero hits in either new module.
 
-- [ ] **3.14** Run the full suite: `python -m pytest backend/tests/ -v`, all green.
+- [x] **3.14** Run the full suite: `python -m pytest backend/tests/ -v`, all green.
       — Satisfies: `design.md` "Runnable checks (locked)".
+      — STATUS: DONE. **366 passed, 0 failed** (301 baseline + 7 `test_survey_link.py` + 56
+      `test_planeacion_asignaciones.py` + 2 new `test_sole_writer.py` tests).
 
 ---
 

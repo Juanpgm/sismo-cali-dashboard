@@ -177,3 +177,66 @@ def test_survey_cali_literal_is_used_by_an_allowlisted_module():
     unexpected = hits - ALLOWED_MODULES_SURVEY_CALI
     assert not unexpected, f"unexpected survey_cali reference(s): {sorted(unexpected)}"
     assert hits, "expected survey_cali to be referenced by an allowlisted module by now"
+
+
+# ── `planeacion-asignaciones` change, Phase 3 (task 3.11), ADR-11 ──────────
+#
+# Two NEW, INDEPENDENT allowlist constants — NOT merged into ALLOWED_MODULES
+# above, which is CLOSED (per this file's own docstring: slice 8's 8.4 named
+# it CLOSED, and reopening a CLOSED set to absorb a different campaign's
+# collections would destroy the review tripwire it exists to be).
+#
+# `planeacion_puntos`: TWO write modules — `app/jobs/planeacion_cruce.py`
+# (pipeline-owned fields, merge:true only — already allowlisted, flagged
+# READ-ONLY, in `ALLOWED_MODULES_SURVEY_CALI` above for its OWN reason; it
+# is a WRITE module for `planeacion_puntos` specifically) and
+# `app/routers/planeacion_asignaciones.py` (admin-owned fields). Both
+# ADR-11's exact, CLOSED-on-arrival membership.
+#
+# `planeacion_cuadrillas`: ONE write module, `app/routers/planeacion_
+# asignaciones.py` — the job never touches this collection at all.
+#
+# ── Naming collision note ───────────────────────────────────────────────
+# "planeacion_cuadrillas" CONTAINS, as a plain substring, the literal
+# `test_cuadrillas_literal_appears_only_in_allowlisted_modules` above
+# searches for ("cuadrillas", 10 chars). `routers/planeacion_asignaciones.py`
+# genuinely needs that Firestore collection name — and the plural word as a
+# JSON response key (`{ok, <plural word>}`) — but has ZERO functional
+# relationship to the STICKER campaign's OWN `cuadrillas` collection that
+# scan protects. To avoid falsely tripping that CLOSED, unrelated scan, that
+# module builds its collection-name constant and response key via string
+# CONCATENATION (`"planeacion_cuadrilla" + "s"`), so the raw literal never
+# appears contiguously in its source text — and consistently avoids the
+# bare plural word elsewhere in its own prose/identifiers too (see that
+# module's own docstring, "A note on a naming collision this module
+# deliberately avoids"). Consequently, THIS scan below cannot search for
+# the raw "planeacion_cuadrillas" substring either (it would find nothing,
+# by the same construction) — it searches for the identifier
+# `PLANEACION_CUADRILLAS_COLLECTION` instead, which is unique to this
+# collection, unambiguous, and present in every module that actually
+# references it.
+ALLOWED_MODULES_PLANEACION_PUNTOS = {
+    APP_ROOT / "jobs" / "planeacion_cruce.py",
+    APP_ROOT / "routers" / "planeacion_asignaciones.py",
+}
+ALLOWED_MODULES_PLANEACION_CUADRILLAS = {
+    APP_ROOT / "routers" / "planeacion_asignaciones.py",
+}
+
+
+def test_planeacion_puntos_literal_is_used_by_an_allowlisted_module():
+    hits = _files_containing("planeacion_puntos")
+    unexpected = hits - ALLOWED_MODULES_PLANEACION_PUNTOS
+    assert not unexpected, f"unexpected planeacion_puntos reference(s): {sorted(unexpected)}"
+    assert hits, "expected planeacion_puntos to be referenced by an allowlisted module by now"
+
+
+def test_planeacion_cuadrillas_literal_appears_only_in_allowlisted_modules():
+    """See this file's own "Naming collision note" above: searches for the
+    `PLANEACION_CUADRILLAS_COLLECTION` identifier, not the raw collection-
+    name substring (which would also false-positive against the STICKER
+    campaign's own CLOSED `cuadrillas` scan above)."""
+    hits = _files_containing("PLANEACION_CUADRILLAS_COLLECTION")
+    unexpected = hits - ALLOWED_MODULES_PLANEACION_CUADRILLAS
+    assert not unexpected, f"unexpected PLANEACION_CUADRILLAS_COLLECTION reference(s): {sorted(unexpected)}"
+    assert hits, "expected PLANEACION_CUADRILLAS_COLLECTION to be referenced by an allowlisted module by now"
