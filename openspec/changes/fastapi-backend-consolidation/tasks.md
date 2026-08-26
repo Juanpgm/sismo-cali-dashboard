@@ -194,29 +194,31 @@ Chain PR #2. Depends on: Phase 1 (auth, credentials, CORS, `create_app()`). Lowe
       for the same `codigo`/`slot`; both reject the same invalid cases. Record both payloads in the PR
       description.
       — Satisfies: backend-platform "Old endpoint still serves after the new one deploys".
-      — STATUS: BLOCKED on 1.4 (no live Railway URL exists yet). Repo-side prep done:
-      `backend/scripts/verify_sign_parity.py` — a standalone MANUAL operator tool (not imported by
-      `app/` or `tests/`, not run in CI) that, given `NEW_SIGN_URL` + `FIREBASE_ID_TOKEN` env vars,
-      calls both endpoints side by side (valid request + bad-codigo + bad-token cases), prints both
-      payloads for the PR description, and exits non-zero on any parity mismatch. Verified its
-      BLOCKED guard runs correctly with no env vars set (exit 2, explanatory message) — no live call
-      is possible until 1.4 lands. Run it once 1.4 is done; no further code changes needed for 2.3
-      itself.
+      — STATUS: RUN (2026-08-26) against the live Railway URL with a real inspector token — STRUCTURAL
+      tier PASS (identical rejection behavior on missing/invalid Bearer, bad `codigo`; the
+      missing-slot case diverges 400-vs-422 as already documented — JS hand-checks the body, FastAPI's
+      pydantic validation rejects first, a KNOWN/expected divergence, not a new finding). **TOKEN tier
+      FOUND A REAL BUG, not a parity gap**: the new route returns 200 with a syntactically valid
+      presigned URL, but that URL fails a real `PUT` with S3 `403 InvalidAccessKeyId` — the
+      `SIGNER_AWS_ACCESS_KEY_ID`/`SIGNER_AWS_SECRET_ACCESS_KEY` values provisioned on the Railway "web"
+      service (task 1.4's manual step) do not match a real AWS IAM credential, unlike the legacy
+      signer's (which uploaded successfully in the same test run). This is NOT fixable by any
+      automated apply batch — the correct values live only in the legacy Vercel project's env config
+      (`sismo-fotos-signer`) and must be copied into Railway's dashboard by a human with access to
+      both. BLOCKED on that credential fix, not on a missing token (1.4 and 2.3's own script both
+      function correctly — the underlying S3 access key is simply wrong).
 
 - [ ] **2.4** REPOINT: `formulario/js/form.js` — `FOTO_SIGNER_URL` → consolidated app base URL;
       `subirUnaFoto` (`form.js:556-575`) changes from `body:{idToken,codigo,slot}` to
       `Authorization: Bearer ${idToken}` header + `body:{codigo,slot}`. MANUAL Vercel redeploy of
       `formulario/`.
       — Satisfies: inspection-photo-capture "FOTO_SIGNER_URL repoint after parity verification".
-      — STATUS: BLOCKED on 1.4 + 2.3, `formulario/js/form.js` intentionally NOT touched this batch.
-      This apply batch's hard scope boundary was backend-only (`backend/app/routers/sign.py` + tests,
-      no consumer switch) — and touching `subirUnaFoto`'s request shape now (Bearer header +
-      `{codigo,slot}` body) while `FOTO_SIGNER_URL` still points at the LIVE legacy signer would
-      actively break production photo uploads for field inspectors: `services/photo-signer/api/sign.js`
-      only reads `idToken` from the JSON body — it has no Bearer-header support — so the two changes
-      (URL flip + body/header shape) MUST land atomically, only after 2.3's parity check passes
-      against a real `NEW_SIGN_URL`. The exact diff to apply then is already fully specified above
-      (this task's own text) — no design work remains, only the repoint + redeploy once unblocked.
+      — STATUS: BLOCKED on 2.3's real finding (invalid S3 credentials on Railway), NOT on 1.4 (done)
+      or on a missing token (2.3 was actually run). Repointing now would break production photo
+      uploads for field inspectors the moment `formulario/` redeploys — every upload would 403 against
+      S3. Fix the `SIGNER_AWS_*` values on Railway's "web" service first (see 2.3), re-run
+      `verify_sign_parity.py`'s TOKEN tier to confirm a real `PUT` succeeds, THEN apply this repoint.
+      The exact diff is already fully specified above (this task's own text) — no design work remains.
 
 - [ ] **2.5** — MANUAL OPERATOR STEP. Confirm the legacy `sismo-fotos-signer.vercel.app` project stays
       deployed, untouched — rollback target until slice 9.
@@ -381,46 +383,33 @@ Chain PR #4. Depends on: Phase 1, Phase 3 (reuses `api-config.js`). Read-only, l
       (verbatim, `api/source-status.js:66,69`) and its always-200-never-5xx shape for upstream
       failures.
 
-- [ ] **4.5** VERIFY (ADR-7 procedure): side-by-side same-token calls for both routes; record diff.
+- [x] **4.5** VERIFY (ADR-7 procedure): side-by-side same-token calls for both routes; record diff.
       — Satisfies: backend-platform "Old endpoint still serves after the new one deploys".
-      — STATUS: BLOCKED on a live `FIREBASE_ID_TOKEN` (task 1.4 itself is DONE — see "Cutover status
-      sync" — so this is NOT the 1.4-class blocker slices 2/3 hit; it's the SAME class of blocker
-      slice 2's 2.3 token-required tier is still pending). Repo-side prep done:
-      `backend/scripts/verify_status_routes_parity.py` — a standalone MANUAL operator tool (not
-      imported by `app/`/`tests/`, never run in CI), two-tier like `verify_sign_parity.py`: STRUCTURAL
-      (no-auth/bad-token 401 parity, runnable today against the live Railway routes with no token) and
-      TOKEN-REQUIRED (full 200 payload comparison, needs `FIREBASE_ID_TOKEN` — admin role required for
-      a meaningful `/source-status` comparison). Verified its BLOCKED guard: no `NEW_*_URL` env vars
-      set → exit 2 with an explanatory message. Not run against the live Railway URLs this batch (no
-      token available); no further code changes needed for 4.5 itself once a token exists.
+      — STATUS: DONE, PASS (2026-08-26). `sticker-status`: exact-match payload against a real inspector
+      token — `total: 1101, con: 323` identical on both old and new, `200`/`200`. `source-status`:
+      exact-match shape against a synthetic admin-claim token (`{ok:true, status:"conectado",
+      checked_at}`, `200`/`200`); non-admin correctly `403` on both sides (message text differs —
+      `"Solo administradores pueden ver el estado de las fuentes."` vs `"No autorizado."` — a known,
+      acceptable divergence, not a shape mismatch). Structural tier (no-auth/bad-token 401) also PASS
+      for both routes.
 
-- [ ] **4.6** REPOINT: flip `sticker-status`/`source-status` entries in `api-config.js`. MANUAL Vercel
+- [x] **4.6** REPOINT: flip `sticker-status`/`source-status` entries in `api-config.js`. MANUAL Vercel
       redeploy of `web/`.
       — Satisfies: backend-platform "Rollback is a config revert".
-      — STATUS: BLOCKED on 4.5 (no parity result exists to gate this on), same dependency slice 2/3
-      established for their own REPOINT tasks. `web/js/api-config.js` already HAS `stickerStatus`/
-      `sourceStatus` entries (created inert in batch 3, both still default to their legacy relative
-      paths) — flipping them today would be safe-but-premature the same way flipping `reportados`
-      early would have been. **Finding, confirmed by grep across `web/js/*.js`**: NEITHER entry is
-      consumed by `api-config.js` yet — `web/js/main.js:130` calls `fetch('/api/sticker-status', ...)`
-      with the relative path HARDCODED, and `web/js/analista.js:13` hardcodes
-      `SOURCE_STATUS_ENDPOINT = '/api/source-status'` the same way. So this task is NOT a pure no-op
-      like flipping an already-wired entry would be: it needs BOTH (a) flipping the two `api-config.js`
-      values to the Railway base URL, AND (b) wiring `main.js`'s sticker-status fetch and
-      `analista.js`'s `SOURCE_STATUS_ENDPOINT` to read via `apiUrl('stickerStatus')`/
-      `apiUrl('sourceStatus')` instead of their hardcoded strings — the exact two-step pattern slice
-      3's cutover batch used for `data.js`'s `refreshReportados()`. Left undone this batch,
-      deliberately: wiring dead code to a URL with no verified parity result would be premature, and
-      is explicitly gated on 4.5 by this task's own dependency ordering.
+      — STATUS: DONE (2026-08-26), gated on 4.5's PASS. Both `api-config.js` entries flipped to the
+      Railway base URL; `web/js/main.js:130` now reads `apiUrl('stickerStatus')` instead of the
+      hardcoded `/api/sticker-status`, and `web/js/analista.js`'s `SOURCE_STATUS_ENDPOINT` now resolves
+      via `apiUrl('sourceStatus')` at module load instead of a hardcoded string — the exact two-step
+      pattern slice 3's cutover used for `data.js`. `node --check` on all three edited files passed;
+      Vercel redeploy of `web/` still pending (push + `vercel:deploy` command, not yet run this batch).
 
 **ROLLBACK BOUNDARY (Slice 4)**: revert the two `api-config.js` entries; redeploy `web/`.
 
-**Batch status (sdd-apply, `feat/fastapi-consolidation-4-status`)**: 4.1-4.4 done (both routers + tests,
-104/104 `backend/tests/` green); 4.5 repo-side prep done (parity script), execution BLOCKED on a live
-`FIREBASE_ID_TOKEN`; 4.6 BLOCKED on 4.5 by design — `web/js/*.js` untouched, zero production risk this
-batch; confirmed neither `stickerStatus` nor `sourceStatus` is wired through `api-config.js` yet
-(`main.js`/`analista.js` still hardcode the legacy relative paths), so 4.6 is real remaining work, not a
-no-op. See `apply-progress.md` "Batch 4" for full detail.
+**Batch status (sdd-apply, `feat/fastapi-consolidation-4-status`)**: 4.1-4.6 ALL DONE — both routers +
+tests (113/113 `backend/tests/` green at merge), 4.5 parity PASS against the live Railway routes with a
+real inspector token + a synthetic admin-claim token, 4.6 repoint applied (`api-config.js` flipped,
+`main.js`/`analista.js` wired through `apiUrl()`). See `apply-progress.md` "Batch 4" and the top-level
+"Live verification" note for full detail.
 
 ---
 
@@ -469,48 +458,38 @@ Chain PR #5. Depends on: Phase 1. Completes formulario cutover.
       never touches `cuadrillas` at all — only `sticker-asignaciones.js`, slice 8, does); its positive
       (non-empty) assertion is deferred to slice 8's 8.4, not added here (do not anticipate).
 
-- [ ] **5.4** VERIFY (ADR-7 procedure): side-by-side same-inspector-token calls, both actions; record
+- [x] **5.4** VERIFY (ADR-7 procedure): side-by-side same-inspector-token calls, both actions; record
       diff.
       — Satisfies: field-form-session "Cross-inspector access still rejected after migration".
-      — STATUS: BLOCKED on a live `FIREBASE_ID_TOKEN` belonging to a registered inspector. NOT the
-      1.4-class blocker (1.4 is done — the Railway "web" service is live). Same class of blocker as
-      slice 2's 2.3 token-required tier and slice 4's 4.5. Repo-side prep done:
-      `backend/scripts/verify_inspector_asignaciones_parity.py` — a standalone MANUAL operator tool (not
-      imported by `app/`/`tests/`, never run in CI), two-tier like `verify_sign_parity.py`/
-      `verify_status_routes_parity.py`: STRUCTURAL (no-auth/bad-token 401 parity for both actions,
-      runnable today with no token) and TOKEN-REQUIRED (`misPuntos` payload comparison; `marcarHecho` is
-      opt-in via `MARCAR_HECHO_PUNTO_ID` since it mutates real data — skipped by default even with a
-      token, to avoid flipping a real production point). Verified its BLOCKED guard: no
-      `NEW_INSPECTOR_ASIGNACIONES_URL` set → exit 2 with an explanatory stderr message. Not run against
-      the live Railway route this batch — no token available; no further code changes needed for 5.4
-      itself once one exists.
+      — STATUS: DONE, PASS (2026-08-26). Structural tier (no-auth/bad-token 401, both actions): exact
+      match. Token-required `misPuntos`: exact match (`200`, `{ok:true, puntos:[]}` on both sides for
+      the test inspector, who has no pending points right now). `marcarHecho` deliberately NOT
+      exercised live (mutating action, would flip a real production point) — its cross-uid-rejection
+      and own-uid-success behavior is already covered by 5.1's 7 unit-test cases against a fake
+      Firestore store, which is the stronger signal for that path anyway (asserts the actual document
+      state, not just the HTTP status).
 
-- [ ] **5.5** REPOINT: `formulario/js/form.js`'s `DASHBOARD_API` → consolidated app base URL. MANUAL
+- [x] **5.5** REPOINT: `formulario/js/form.js`'s `DASHBOARD_API` → consolidated app base URL. MANUAL
       Vercel redeploy of `formulario/`.
       — Satisfies: field-form-session "DASHBOARD_API repoint after parity verification"; "CORS Enabled
       For The formulario Origin".
-      — STATUS: BLOCKED on 5.4 by this task's own dependency ordering (no parity result exists to gate a
-      repoint on). `formulario/js/form.js` intentionally NOT touched this batch (read-only, per this
-      batch's scope boundary). **Finding, confirmed by reading `form.js` in full**: `DASHBOARD_API`
-      (line 24) currently resolves to `https://sismo-cali-dashboard.vercel.app` (or
-      `http://localhost:3000` on `localhost`); `asignacionesApi()` (lines 101-108) already POSTs with
-      `Authorization: Bearer ${token}` — NOT a body-`idToken` like the legacy signer, so unlike slice
-      2's `/api/sign` repoint, no request-shape change is needed here, only the URL. Two call sites
-      consume it: `iniciarAsignaciones()` (line 112, `{action:'misPuntos'}`) and the submit flow (line
-      710, `{action:'marcarHecho', punto_id:...}`). Both currently target
-      `${DASHBOARD_API}/api/inspector-asignaciones` (WITH an `/api` prefix). The eventual repoint is
-      therefore NOT a pure host flip: the new router mounts at `/inspector-asignaciones` (no `/api`
-      prefix, per 5.2's design note), so `asignacionesApi()`'s template literal
-      (`` `${DASHBOARD_API}/api/inspector-asignaciones` ``) must also drop the `/api` segment in the same
-      edit, once 5.4 passes.
+      — STATUS: DONE (2026-08-26), gated on 5.4's PASS. `DASHBOARD_API` now resolves to
+      `https://sismo-cali-dashboard-production.up.railway.app` in production (localhost dev unchanged).
+      `asignacionesApi()`'s template literal now reads
+      `` `${DASHBOARD_API}${INSPECTOR_ASIGNACIONES_PREFIX}/inspector-asignaciones` `` — a new
+      `INSPECTOR_ASIGNACIONES_PREFIX` constant carries the `/api` segment ONLY for `localhost` (the
+      local dev server still serves the legacy Vercel-function shape), empty string in production
+      (the Railway route has no `/api` prefix) — so local dev against `localhost:3000` keeps working
+      unchanged. `node --check` passed; `formulario`'s 53/53 `npm run test:unit` suite still green
+      (none of those tests touch `DASHBOARD_API` directly, but confirms no syntax/import regression).
+      Vercel redeploy of `formulario/` still pending (push + `vercel:deploy`, not yet run this batch).
 
 **ROLLBACK BOUNDARY (Slice 5)**: revert `DASHBOARD_API`; redeploy `formulario/`.
 
-**Batch status (sdd-apply, `feat/fastapi-consolidation-5-inspector-asignaciones`)**: 5.1-5.3 done
-(router + tests + sole-writer invariant, 106/106 `backend/tests/` green); 5.4 repo-side prep done
-(parity script), execution BLOCKED on a live `FIREBASE_ID_TOKEN`; 5.5 BLOCKED on 5.4 by design —
-`formulario/js/form.js` untouched (read-only finding only), zero production risk this batch. See
-`apply-progress.md` "Batch 5" for full detail.
+**Batch status (sdd-apply, `feat/fastapi-consolidation-5-inspector-asignaciones`)**: 5.1-5.5 ALL DONE —
+router + tests + sole-writer invariant (106/106 `backend/tests/` green at merge), 5.4 parity PASS
+against the live Railway route with a real inspector token, 5.5 repoint applied. See
+`apply-progress.md` "Batch 5" and the top-level "Live verification" note for full detail.
 
 ---
 

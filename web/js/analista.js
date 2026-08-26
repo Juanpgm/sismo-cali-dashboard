@@ -9,8 +9,9 @@ import { isAdmin } from './auth.js';
 import { fetchData } from './data.js';
 import { fetchIsraelRecords } from './israel-source.js';
 import { COLORS, formatTs, escapeHtml } from './utils.js';
+import { apiUrl } from './api-config.js';
 
-const SOURCE_STATUS_ENDPOINT = '/api/source-status';
+const SOURCE_STATUS_ENDPOINT = apiUrl('sourceStatus');
 
 // A snapshot is 'desactualizado' (amarillo) past this age. Derived from the
 // Railway cron cadence (*/15 min) — three missed publishes is a real stall,

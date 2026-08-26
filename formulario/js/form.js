@@ -21,7 +21,14 @@ const FOTO_SIGNER_URL = 'https://sismo-fotos-signer.vercel.app/api/sign';
 // Dashboard admin endpoint for assigned points: reads/writes sticker_matches
 // server-side (Firebase Admin), so the form needs NO Firestore rules for it.
 // Auth is the inspector's Firebase ID token.
-const DASHBOARD_API = location.hostname === 'localhost' ? 'http://localhost:3000' : 'https://sismo-cali-dashboard.vercel.app';
+// Repointed to the consolidated FastAPI backend on Railway (tasks.md 5.5,
+// gated on 5.4's parity PASS: misPuntos shape-identical, both actions'
+// structural rejection identical). The Railway route mounts WITHOUT an
+// `/api` prefix (unlike the legacy Vercel function `localhost:3000` still
+// serves in local dev) — INSPECTOR_ASIGNACIONES_PREFIX carries that one
+// difference so asignacionesApi() below doesn't hardcode either shape.
+const DASHBOARD_API = location.hostname === 'localhost' ? 'http://localhost:3000' : 'https://sismo-cali-dashboard-production.up.railway.app';
+const INSPECTOR_ASIGNACIONES_PREFIX = location.hostname === 'localhost' ? '/api' : '';
 
 // Signal the inline CDN-failure watchdog in index.html that modules loaded.
 window.__atc20Booted = true;
@@ -100,7 +107,7 @@ function boot(inspector) {
 // token pattern as subirFotos (getAuth(getApp()).currentUser).
 async function asignacionesApi(body) {
   const token = await getAuth(getApp()).currentUser.getIdToken();
-  return fetch(`${DASHBOARD_API}/api/inspector-asignaciones`, {
+  return fetch(`${DASHBOARD_API}${INSPECTOR_ASIGNACIONES_PREFIX}/inspector-asignaciones`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),

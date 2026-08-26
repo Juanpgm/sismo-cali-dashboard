@@ -11,25 +11,26 @@
 // (ADR-7's "Parity procedure per endpoint"); rollback is reverting that
 // one line and redeploying `web/`.
 //
-// `reportados` is now WIRED into `data.js`'s `refreshReportados()`
-// (tasks.md 3.7, cutover batch) — task 1.4's Railway "web" service is live
-// and 3.6's parity check passed (shape-identical, totals within tolerance,
-// <2s response), so this entry flips to the consolidated backend's public
-// `/reportados` route. Every OTHER entry below stays on its legacy relative
-// path — `main.js`, `stickers.js`, `usuarios.js`, `analista.js`, `auth.js`,
+// `reportados` (tasks.md 3.7) and `stickerStatus`/`sourceStatus` (tasks.md
+// 4.6) are now WIRED into their consumers — task 1.4's Railway "web"
+// service is live and each entry's own parity check passed (3.6: shape-
+// identical, totals within tolerance, <2s response; 4.5: exact-match
+// totals/con for sticker-status, identical `ok`/`status` shape for
+// source-status with an admin token). Every OTHER entry below stays on its
+// legacy relative path — `stickers.js`, `usuarios.js`, `auth.js`,
 // `evaluaciones.js`, `stickers-asignacion.js`, `coverage-gauge.js` are
-// untouched; their own consolidation slices (4-8) flip their entries only
+// untouched; their own consolidation slices (6-8) flip their entries only
 // after each one's own parity check passes.
 const RAILWAY_BASE_URL = 'https://sismo-cali-dashboard-production.up.railway.app';
 
 export const API_CONFIG = {
   reportados: `${RAILWAY_BASE_URL}/reportados`,
-  stickerStatus: '/api/sticker-status',
+  stickerStatus: `${RAILWAY_BASE_URL}/sticker-status`,
   refresh: '/api/refresh',
   stickers: '/api/stickers',
   stickerAsignaciones: '/api/sticker-asignaciones',
   usuarios: '/api/usuarios',
-  sourceStatus: '/api/source-status',
+  sourceStatus: `${RAILWAY_BASE_URL}/source-status`,
 };
 
 // Small accessor so future consumers don't hand-index the map (typo-safety

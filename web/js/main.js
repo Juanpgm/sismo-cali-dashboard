@@ -17,6 +17,7 @@ import { initAnalista } from './analista.js';
 import { initTheme } from './theme.js';
 import { initAuth, getIdToken, isAdmin } from './auth.js';
 import { debounce, setSourceLabels, sourceLabel, habBinary, labelForCode } from './utils.js';
+import { apiUrl } from './api-config.js';
 
 const el = (sel) => document.querySelector(sel);
 
@@ -127,7 +128,7 @@ async function refreshStickerStatus() {
   try {
     const token = await getIdToken();
     if (!token) { setStickerStatus([]); store.setStickerCoverage(null); store.setStickerIds([]); return; }
-    const res = await fetch('/api/sticker-status', { headers: { Authorization: `Bearer ${token}` } });
+    const res = await fetch(apiUrl('stickerStatus'), { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = await res.json();
     const conSticker = Array.isArray(body.con_sticker) ? body.con_sticker : [];

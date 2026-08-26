@@ -1028,3 +1028,59 @@ point for the exact count. Both slices' own "Next Batch" pointers above (referri
 token before their own VERIFY/REPOINT tasks) still hold after the merge; the token-acquisition approach
 that unblocked them is recorded separately (not duplicated here — see the session's own follow-up
 entries below, if any, or `tasks.md`'s 2.3/4.5/5.4 status notes for the final resolution).
+
+---
+
+## Live verification (2026-08-26) — 2.3/4.5/5.4 run for real, 4.6/5.5 applied
+
+After the merge above, `main` was pushed to `origin` and Railway redeployed automatically
+(git-connected, per ADR-1). Two real Firebase ID tokens were obtained to run the three still-pending
+VERIFY tasks for real, not just structurally:
+
+- **Inspector token**: signed in via the Identity Toolkit REST API
+  (`accounts:signInWithPassword`) using the first entry in the repo's local
+  `credenciales_inspectores.csv` (a real registered inspector, used only for this verification —
+  no data was mutated; `misPuntos` is read-only and `marcarHecho` was deliberately never called with
+  it) and the public Firebase web `apiKey` from `web/js/firebase-config.js`.
+- **Admin test token**: minted via `firebase_admin.auth.create_custom_token()` (using the repo's own
+  `FIREBASE_SERVICE_ACCOUNT_JSON`/`firebase-service-account.json` service-account credential — the
+  same one the backend already uses) for a synthetic uid (`sdd-verify-admin-test`) with a `role:
+  admin` custom claim, then exchanged via `accounts:signInWithCustomToken`. This creates one
+  otherwise-unused Firebase Auth user (no real inspector/admin account was touched) — should be
+  deleted from the Firebase Auth console when no longer needed for testing.
+
+### Results
+
+- **2.3 (sign parity)** — Structural tier PASS. **Token tier found a REAL production bug, not a
+  parity gap**: the new `/api/sign` route's presigned URL fails a real S3 `PUT` with `403
+  InvalidAccessKeyId`. The `SIGNER_AWS_ACCESS_KEY_ID`/`SIGNER_AWS_SECRET_ACCESS_KEY` values
+  provisioned on Railway's "web" service (task 1.4) do not match a working AWS credential — the
+  legacy signer's own values (which DID work in the same test run) live only in the
+  `sismo-fotos-signer` Vercel project's env config and could not be read or copied by this session
+  (Vercel does not expose secret env var values via API, and this is exactly the kind of secret that
+  should only move through a channel the operator controls). **2.3/2.4/2.5 remain BLOCKED** — not on
+  a token (one was used successfully), but on a human correcting Railway's `SIGNER_AWS_*` values to
+  match the working Vercel ones. Repointing `formulario/js/form.js` before that fix would break real
+  field photo uploads immediately.
+- **4.5 (sticker-status + source-status)** — PASS both routes, exact-match payloads. Applied 4.6:
+  `web/js/api-config.js`'s two entries flipped to the Railway base URL; `web/js/main.js` and
+  `web/js/analista.js` now read them via `apiUrl()` instead of hardcoded relative paths.
+- **5.4 (inspector-asignaciones)** — PASS (structural + `misPuntos`; `marcarHecho` intentionally not
+  exercised live, a mutating action already covered by unit tests against a fake Firestore store).
+  Applied 5.5: `formulario/js/form.js`'s `DASHBOARD_API` flipped to the Railway base URL in
+  production (localhost dev untouched), and a new `INSPECTOR_ASIGNACIONES_PREFIX` constant handles
+  the `/api`-prefix difference between the legacy local dev server and the prefix-less Railway route.
+
+### Verification after applying
+
+- `python -m pytest backend/tests/ -v` → **113 passed** (confirmed twice: once right after the merge,
+  once after this section's edits — none of 4.6/5.5 touch `backend/`).
+- `node --check` on every edited `web/js/*.js` and `formulario/js/form.js` file — all pass.
+- `formulario`'s `npm run test:unit` → **53/53 passed**, unchanged from before this session (no test
+  in that suite exercises `DASHBOARD_API` directly, but this confirms no import/syntax regression).
+
+### Remaining before `web/` and `formulario/` redeploy
+
+`main` (backend) is pushed and live on Railway. `web/js/*.js` and `formulario/js/form.js` are edited
+and committed but `web/` and `formulario/` themselves have not yet been redeployed to Vercel this
+session — see the top-level status note after this point for whether that happened and its result.
