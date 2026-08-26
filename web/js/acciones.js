@@ -1,7 +1,7 @@
 // Acciones view: demolition triage over partial-collapse records.
 // Rule: colapso_parcial = si, then count point-4 external risks (4.1a–4.4a).
 // All 4 = "Demoler"; 2–3 ("varios") = "Verificar"; fewer are excluded.
-import { escapeHtml, sourceLabel } from './utils.js';
+import { escapeHtml, sourceLabel, barrioVeredaDisplay } from './utils.js';
 
 const P4_FIELDS = ['41_a', '42_a', '43_a', '44_a'];
 const P4_LABELS = ['4.1', '4.2', '4.3', '4.4'];
@@ -41,7 +41,7 @@ export function renderAcciones(root, records, { onRowClick } = {}) {
       <div class="table-scroll">
         <table id="acciones-table">
           <thead><tr>
-            <th>Acción</th><th>Dirección</th><th>Barrio</th><th>Comuna</th>
+            <th>Acción</th><th>Dirección</th><th>Barrio / vereda</th><th>Comuna / corregimiento</th>
             <th>${escapeHtml(sourceLabel('criterio_habitabilidad', 'Habitabilidad'))}</th>
             ${P4_LABELS.map((l) => `<th>${l}</th>`).join('')}
           </tr></thead>
@@ -50,7 +50,7 @@ export function renderAcciones(root, records, { onRowClick } = {}) {
               <tr data-row="${i}">
                 <td><span class="accion-badge accion-badge-${accion.toLowerCase()}">${accion}</span></td>
                 <td>${escapeHtml(r.direccion ?? '—')}</td>
-                <td>${escapeHtml(r.barrio_vereda ?? r.barrio_geo ?? '—')}</td>
+                <td>${escapeHtml(barrioVeredaDisplay(r))}</td>
                 <td>${escapeHtml(r.comuna ?? '—')}</td>
                 <td>${escapeHtml((r.criterio_habitabilidad ?? '—').toUpperCase())}</td>
                 ${P4_FIELDS.map((f) => `<td>${isSi(r[f]) ? 'Si' : 'No'}</td>`).join('')}

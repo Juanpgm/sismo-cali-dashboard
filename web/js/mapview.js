@@ -3,6 +3,7 @@ import {
   COLORS, habitabilityColor, damageColor, severidadColor, buildCategoricalScale,
   interpolateRamp, labelForCode, labelForField, formatValue, escapeHtml, normalize,
   isNoHabitableBinary, basemapTileUrl, afectacionColor, afectacionLevel, AFECTACION_ORDER,
+  barrioVeredaDisplay,
 } from './utils.js';
 
 const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
@@ -200,7 +201,7 @@ function popupHtml(r) {
     <div class="map-popup">
       <h4>${title}</h4>
       <dl>
-        <dt>Barrio</dt><dd>${escapeHtml(r.barrio_vereda || r.barrio_geo || 'Sin dato')}</dd>
+        <dt>Barrio / vereda</dt><dd>${escapeHtml(barrioVeredaDisplay(r))}</dd>
         <dt>Fecha</dt><dd>${escapeHtml(formatValue('fecha_inspeccion', r.fecha_inspeccion))}</dd>
         <dt>Habitabilidad</dt><dd>${escapeHtml(labelForCode(hab))}</dd>
         <dt>Nivel de daño</dt><dd>${escapeHtml(labelForCode(r.nivel_dano))}</dd>

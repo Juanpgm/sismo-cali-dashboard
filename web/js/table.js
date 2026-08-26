@@ -1,12 +1,14 @@
 // Results table: sortable columns, column visibility control, detail modal.
 import {
   labelForField, labelForCode, formatValue, escapeHtml, DETAIL_GROUPS, BADGE_FIELDS, normalize,
+  barrioVeredaDisplay,
 } from './utils.js';
 import { buildMiniMap, highlightRecord } from './mapview.js';
 
 const CANONICAL_ORDER = [
   'ObjectID', 'GlobalID', 'fecha_inspeccion', 'hora', 'fecha_hora', 'nombre_evaluador', 'id_grupo',
-  'entidad', 'tipo_evento', 'nombre_edificacion', 'municipio', 'barrio_vereda', 'direccion',
+  'entidad', 'tipo_evento', 'nombre_edificacion', 'municipio', 'barrio_vereda_resuelto', 'barrio_vereda',
+  'direccion',
   'tipo_propiedad', 'relacion_edificacion', 'otro', 'epoca_construccion', 'n_pisos', 'n_sotanos',
   'n_ocupantes', 'frente', 'fondo', 'n_residenciales', 'n_comerciales', 'n_no_habitadas',
   'n_muertos', 'n_heridos', 'acceso_edificacion', 'uso_edificacion', 'uso_cual', 'sistema_estructural',
@@ -24,11 +26,11 @@ const CANONICAL_ORDER = [
   'requiere_evaluacion_adicional', 'eval_estructural', 'eval_geotecnica', 'eval_otra',
   'recomendaciones', 'aislamiento', 'intervencion_entades', 'observaciones_generales',
   'evento_id', 'gps_precision_m', 'CreationDate', 'Creator', 'EditDate', 'Editor', 'x', 'y',
-  'comuna', 'barrio_geo',
+  'comuna', 'barrio_geo', 'barrio_vereda_fuente',
 ];
 
 const DEFAULT_VISIBLE = [
-  'fecha_inspeccion', 'nombre_edificacion', 'barrio_vereda', 'direccion', 'uso_edificacion',
+  'fecha_inspeccion', 'nombre_edificacion', 'barrio_vereda_resuelto', 'direccion', 'uso_edificacion',
   'nivel_dano', 'criterio_habitabilidad', 'suspension_servicios', 'sticker',
   'justificacion_criterio', 'observaciones_generales', 'recomendaciones',
 ];
@@ -173,6 +175,7 @@ function renderBadge(field, value) {
 
 function renderCell(record, field) {
   const value = record[field];
+  if (field === 'barrio_vereda_resuelto') return escapeHtml(barrioVeredaDisplay(record));
   if (BADGE_FIELDS.has(field) && value) return renderBadge(field, value);
   const text = escapeHtml(formatValue(field, value));
   if (LONG_TEXT_FIELDS.has(field)) {
@@ -436,7 +439,8 @@ export function openDetailModal(record) {
           ${groups[group].map((f) => `
             <div class="detail-field">
               <dt>${escapeHtml(labelForField(f))}</dt>
-              <dd>${BADGE_FIELDS.has(f) ? renderBadge(f, record[f]) : escapeHtml(formatValue(f, record[f]))}</dd>
+              <dd>${f === 'barrio_vereda_resuelto' ? escapeHtml(barrioVeredaDisplay(record))
+                  : BADGE_FIELDS.has(f) ? renderBadge(f, record[f]) : escapeHtml(formatValue(f, record[f]))}</dd>
             </div>
           `).join('')}
         </dl>

@@ -864,6 +864,63 @@ def spatial_join(df: pd.DataFrame, mask: pd.Series | None = None) -> pd.DataFram
     return df
 
 
+def _clean_barrio_value(v):
+    """None/NaN/blank -> None; anything else -> its stripped string. Guards
+    on pd.isna() FIRST (not truthiness/str()) because str(float('nan')) ==
+    'nan', a truthy non-empty string -- this pipeline has been bitten by
+    exactly that before."""
+    if v is None:
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass  # v isn't NaN-able (e.g. already a plain str) -- fall through
+    s = str(v).strip()
+    return s or None
+
+
+def resolve_barrio_vereda(df: pd.DataFrame) -> pd.DataFrame:
+    """Derive `barrio_vereda_resuelto` / `barrio_vereda_fuente`: the
+    geographic intersection against the basemaps (`barrio_geo`, from
+    `spatial_join`) wins over the inspector's free-typed value
+    (`barrio_vereda`) whenever both exist -- measured on inspections.json,
+    the polygon is more precise in ~44.5% of the records that carry both
+    ('Napoles' -> 'Alto Napoles'; one typed value was 'Suba 1', a Bogota
+    neighbourhood, not even in Cali). Falls back to the typed value when the
+    point falls outside every polygon (~1.2% of records) so those rows never
+    go blank, tagged 'reportado' so downstream consumers know it is NOT
+    geographic. Neither present -> `None` / 'sin_dato', never a crash.
+
+    Neither `barrio_geo` nor `barrio_vereda` is mutated or removed -- both
+    stay in the output, unchanged, for provenance/inspection. Pure function
+    of those two columns: safe to call once, after every `spatial_join()`
+    (including the corrected/reverted re-joins inside `apply_photo_coords`/
+    `validate_photo_coords`) has settled."""
+    n = len(df)
+    geo_col = df["barrio_geo"] if "barrio_geo" in df.columns else pd.Series([None] * n, index=df.index)
+    tipeado_col = df["barrio_vereda"] if "barrio_vereda" in df.columns else pd.Series([None] * n, index=df.index)
+
+    resuelto = []
+    fuente = []
+    for g_raw, t_raw in zip(geo_col, tipeado_col):
+        g = _clean_barrio_value(g_raw)
+        t = _clean_barrio_value(t_raw)
+        if g is not None:
+            resuelto.append(g)
+            fuente.append("geo")
+        elif t is not None:
+            resuelto.append(t)
+            fuente.append("reportado")
+        else:
+            resuelto.append(None)
+            fuente.append("sin_dato")
+
+    df["barrio_vereda_resuelto"] = resuelto
+    df["barrio_vereda_fuente"] = fuente
+    return df
+
+
 # --- Step 5: write outputs -------------------------------------------------
 
 
@@ -1450,6 +1507,9 @@ def run_once(out_dir: Path) -> None:
     # Geocoded address as third opinion for photo centroids far from the form
     # pin — reverts to the form coordinate when the address sides with it.
     df = validate_photo_coords(df)
+    # Geo-first "Barrio / vereda" resolution, AFTER every spatial_join() call
+    # above (including the corrected/reverted re-joins) has settled barrio_geo.
+    df = resolve_barrio_vereda(df)
     # Derived triage flag consumed by the dashboard and shipped in the xlsx.
     df = add_suspension_servicios(df)
 

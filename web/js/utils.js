@@ -98,6 +98,10 @@ const KNOWN_LABELS = {
   de_10_a_40: 'Del 10% al 40%',
   de_40_a_70: 'Del 40% al 70%',
   mayor_70: 'Mayor al 70%',
+  // barrio_vereda_fuente — provenance of the resolved "Barrio / vereda" value.
+  geo: 'Geográfico (basemap)',
+  reportado: 'Reportado (inspector)',
+  sin_dato: 'Sin dato',
 };
 
 /** Strip accents + lowercase, for case/accent-insensitive matching. */
@@ -172,10 +176,16 @@ const FIELD_LABELS = {
   tipo_evento: 'Tipo de evento',
   nombre_edificacion: 'Edificación',
   municipio: 'Municipio',
-  barrio_vereda: 'Barrio / vereda',
+  // "Barrio / vereda" — geo-first per the spatial intersection with the
+  // barrios_veredas basemap (see resolve_barrio_vereda in refresh_data.py).
+  // barrio_vereda_resuelto is the resolved value shown as THE column; the
+  // two source fields keep their own (reportado)/(geo) labels for provenance.
+  barrio_vereda_resuelto: 'Barrio / vereda',
+  barrio_vereda: 'Barrio / vereda (reportado)',
+  barrio_vereda_fuente: 'Barrio / vereda (fuente)',
   direccion: 'Dirección',
-  comuna: 'Comuna',
-  barrio_geo: 'Barrio (geo)',
+  comuna: 'Comuna / corregimiento',
+  barrio_geo: 'Barrio / vereda (geo)',
   tipo_propiedad: 'Tipo de propiedad',
   relacion_edificacion: 'Relación con la edificación',
   otro: 'Otro',
@@ -273,7 +283,8 @@ export const DETAIL_GROUPS = {
   'Identificación': [
     'ObjectID', 'GlobalID', 'evento_id', 'tipo_evento', 'entidad', 'nombre_evaluador', 'id_grupo',
     'fecha_inspeccion', 'hora', 'fecha_hora', 'nombre_edificacion', 'municipio', 'comuna',
-    'barrio_vereda', 'barrio_geo', 'direccion', 'tipo_propiedad', 'relacion_edificacion', 'otro',
+    'barrio_vereda_resuelto', 'barrio_vereda', 'barrio_geo', 'barrio_vereda_fuente',
+    'direccion', 'tipo_propiedad', 'relacion_edificacion', 'otro',
     'x', 'y', 'gps_precision_m', 'CreationDate', 'Creator', 'EditDate', 'Editor',
   ],
   'Estructura': [
@@ -341,10 +352,83 @@ export function formatValue(field, value) {
   if (value === null || value === undefined || value === '') return 'Sin dato';
   if (field === 'fecha_inspeccion') return formatDate(value);
   if (field === 'fecha_hora' || field === 'CreationDate' || field === 'EditDate') return formatDateTime(value);
-  if (['criterio_habitabilidad', 'habitabilidad_calc', 'nivel_dano', 'severidad_danos', 'severidad_danos_calc', 'afectacion_planta', 'afectacion_planta_calc', 'sticker']
+  if (['criterio_habitabilidad', 'habitabilidad_calc', 'nivel_dano', 'severidad_danos', 'severidad_danos_calc', 'afectacion_planta', 'afectacion_planta_calc', 'sticker', 'barrio_vereda_fuente']
     .includes(field)) return labelForCode(value);
   if (typeof value === 'string' && /^(si|sí|no)$/i.test(value.trim())) return labelForCode(value);
   return String(value);
+}
+
+/** "Barrio / vereda" as it should read on screen: the resolved value
+ *  (geo-first product of the spatial join against barrios_veredas, falling
+ *  back to the inspector's typed value — see resolve_barrio_vereda in
+ *  refresh_data.py), with a small "(reportado)" marker whenever the value
+ *  came from the fallback so it's never mistaken for a geographic value.
+ *  Never returns blank for a record that has SOME value — 'Sin dato' only
+ *  when barrio_vereda_fuente is 'sin_dato' (or the field predates this). */
+function cleanBarrioValue(v) {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  return s === '' ? null : s;
+}
+
+/**
+ * Client-side port of `resolve_barrio_vereda()` in scripts/refresh_data.py:
+ * the geographic intersection against the barrios_veredas basemap wins over
+ * the inspector's free-typed value, falling back to it (tagged `reportado`)
+ * when the point lands outside every polygon.
+ *
+ * Applied at load time to EVERY record because data.js filters through raw
+ * `record[def.field]` access: a display-time fallback alone would leave the
+ * "Barrio / vereda" dropdown empty for every record the pipeline has not
+ * rewritten yet — i.e. all of web/data/inspections.json until the next run,
+ * plus the israel source, which never passes through the pipeline at all.
+ *
+ * Values the pipeline already resolved are returned untouched: it is the
+ * authority, this is only the catch-up path.
+ */
+export function resolveBarrioVereda(record) {
+  const yaResuelto = cleanBarrioValue(record?.barrio_vereda_resuelto);
+  if (yaResuelto !== null) {
+    return {
+      barrio_vereda_resuelto: yaResuelto,
+      barrio_vereda_fuente: record?.barrio_vereda_fuente || 'geo',
+    };
+  }
+
+  const geo = cleanBarrioValue(record?.barrio_geo);
+  if (geo !== null) {
+    return { barrio_vereda_resuelto: geo, barrio_vereda_fuente: 'geo' };
+  }
+
+  const tipeado = cleanBarrioValue(record?.barrio_vereda);
+  if (tipeado !== null) {
+    return { barrio_vereda_resuelto: tipeado, barrio_vereda_fuente: 'reportado' };
+  }
+
+  return { barrio_vereda_resuelto: null, barrio_vereda_fuente: 'sin_dato' };
+}
+
+export function barrioVeredaDisplay(record) {
+  const clean = cleanBarrioValue;
+
+  const resuelto = clean(record?.barrio_vereda_resuelto);
+  if (resuelto !== null) {
+    return record?.barrio_vereda_fuente === 'reportado' ? `${resuelto} (reportado)` : resuelto;
+  }
+
+  // No resolved column: the record never went through resolve_barrio_vereda().
+  // That is NOT an edge case — it is every record already published in
+  // web/data/inspections.json until the next pipeline run, plus the whole
+  // israel source, which never passes through the pipeline at all. Re-apply
+  // the same geo-first precedence here so shipping the UI ahead of the data
+  // cannot blank out the dashboard.
+  const geo = clean(record?.barrio_geo);
+  if (geo !== null) return geo;
+
+  const tipeado = clean(record?.barrio_vereda);
+  if (tipeado !== null) return `${tipeado} (reportado)`;
+
+  return 'Sin dato';
 }
 
 export function debounce(fn, wait = 250) {

@@ -1,7 +1,7 @@
 // Data loading + global filter state (tiny pub/sub store, no framework).
 import {
   normalizeAddressText, buildSearchIndex, splitMultiValue, labelForField,
-  bucketNpisos, suspensionServicios, bustParams, AFECTACION_ORDER,
+  bucketNpisos, suspensionServicios, bustParams, AFECTACION_ORDER, resolveBarrioVereda,
 } from './utils.js';
 import { fetchIsraelRecords } from './israel-source.js';
 import { apiUrl } from './api-config.js';
@@ -63,8 +63,11 @@ export const FILTER_FIELDS = [
   { field: 'epoca_construccion', label: 'Época de construcción', group: 'edificacion' },
   // N.º de pisos como rangos de 3 (campo derivado n_pisos_rango, ver bucketNpisos).
   { field: 'n_pisos_rango', label: 'N.º de pisos', emptyLabel: 'Sin dato', group: 'edificacion' },
-  { field: 'comuna', label: 'Comuna', group: 'ubicacion' },
-  { field: 'barrio_geo', label: 'Barrio', emptyLabel: 'Sin barrio asignado', group: 'ubicacion' },
+  { field: 'comuna', label: labelForField('comuna'), group: 'ubicacion' },
+  // Geo-first "Barrio / vereda" (see resolve_barrio_vereda in refresh_data.py):
+  // the spatial intersection wins, falling back to the inspector's typed
+  // value when the point falls outside every barrios_veredas polygon.
+  { field: 'barrio_vereda_resuelto', label: labelForField('barrio_vereda_resuelto'), emptyLabel: 'Sin barrio asignado', group: 'ubicacion' },
   { field: 'entidad', label: labelForField('entidad'), group: 'contexto' },
   // Derived field (see Store.setStickerIds): cruce con /api/sticker-status, no
   // en inspections.json. Siempre 'con'/'sin', nunca vacío — no necesita emptyLabel.
@@ -235,6 +238,10 @@ class Store {
       _search: buildSearchIndex(r),
       n_pisos_rango: bucketNpisos(r.n_pisos),
       suspension_servicios: suspensionServicios(r),
+      // Geo-first "Barrio / vereda". The pipeline resolves this too, but the
+      // published data lags a deploy and the israel source never passes
+      // through it at all — without this the barrio filter would be empty.
+      ...resolveBarrioVereda(r),
     }));
     this.applyStickerField(); // 'con'/'sin' contra this.stickerIds (vacío hasta setStickerIds)
     this.computeOptions();

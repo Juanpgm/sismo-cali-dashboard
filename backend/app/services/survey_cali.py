@@ -66,7 +66,7 @@ So the canonical form hashed by `canonical_hash()` is `inspections.json`'s
 per-record dict MINUS `DERIVED_FIELDS` (every field name confirmed, by
 reading `scripts/refresh_data.py`'s `normalize()` pipeline, to be added by
 `spatial_join`/`add_id_edan`/`add_address_norm`/`apply_photo_coords`/
-`validate_photo_coords`/`add_suspension_servicios`/`add_date_fields` —
+`validate_photo_coords`/`resolve_barrio_vereda`/`add_suspension_servicios`/`add_date_fields` —
 i.e. genuinely pipeline-computed, not passed through from the Survey123
 layer). This is the closest achievable approximation to "RAW fields only"
 within this batch's file-scope constraint: it still satisfies the
@@ -104,6 +104,7 @@ BATCH_SIZE = 500  # Firestore batch-write/get_all chunk limit, cruce_sticker.py'
 # `diff_upstream_fields()`.
 DERIVED_FIELDS = frozenset({
     "comuna", "barrio_geo",                      # spatial_join
+    "barrio_vereda_resuelto", "barrio_vereda_fuente",  # resolve_barrio_vereda (geo-first "Barrio / vereda")
     "id_edan",                                    # add_id_edan
     "direccion_norm",                              # add_address_norm
     "x", "y", "coords_fuente", "coords_validacion", # apply_photo_coords / validate_photo_coords
