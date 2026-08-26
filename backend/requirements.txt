@@ -9,6 +9,8 @@ cryptography>=43.0       # RS256 verification against Google's rotating x509 cer
 firebase-admin>=6.6      # sismo() — Firestore + Auth admin (sismo-agosto-sgred)
 google-cloud-firestore>=2.19  # sismo() — Firestore (sismo-agosto-sgred)
 boto3>=1.35               # s3() — presigned upload URLs (slice 2, app/routers/sign.py)
+requests>=2.32            # cruce_sticker job's INSPECTIONS_URL fallback (slice 7, app/jobs/cruce_sticker.py)
+numpy>=1.26                # app/integracion/normalization.py's address vector (slice 7, ported)
 
 # --- test ---
 pytest>=8.3

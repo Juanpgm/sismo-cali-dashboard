@@ -2,11 +2,22 @@
 and `cuadrillas` have NO Firestore security rules, so "the backend is sole
 writer, and only from these modules" must hold by construction, not by
 policy. Slice 5 (`routers/inspector_asignaciones.py`) introduced this
-literal under the invariant. ADR-9 names two more WRITE modules that join
-the allowlist later: `app/jobs/cruce_sticker.py` (slice 7) and
-`routers/sticker_asignaciones.py` (slice 8) — do NOT anticipate those here;
-extend `ALLOWED_MODULES` in their own slices' RED tasks (7.6/8.4 per
-tasks.md).
+literal under the invariant. Slice 7 (task 7.9) adds the THIRD WRITE module,
+`app/jobs/cruce_sticker.py` (+ its copied pipeline module,
+`app/integracion/cruce_gestor.py` — see below). ADR-9 names one more WRITE
+module joining later: `routers/sticker_asignaciones.py` (slice 8) — do NOT
+anticipate it here; extend `ALLOWED_MODULES` in its own slice's RED task
+(8.4 per tasks.md).
+
+**Slice 7 finding**: `app/integracion/cruce_gestor.py` (the copied pipeline
+module `cruce_sticker.py` imports its matching cascade from) does NOT
+itself reference the `sticker_matches`/`cuadrillas` literals anywhere — its
+own Firestore-shaped I/O is the unrelated "Gestor de Zonas" Apps Script API
+(`fetch_gestor`/`build_cruce`, dead code in this context, see its module
+docstring), not Firestore at all. So only `app/jobs/cruce_sticker.py` itself
+needs an allowlist entry, not `cruce_gestor.py` too — verified by scanning
+(this test's own `_files_containing()` over `backend/app/` would have
+caught a `cruce_gestor.py` hit and failed otherwise).
 
 **Merge-reconciliation finding (2026-08-26)**: `routers/sticker_status.py`
 (slice 4, branched independently and merged separately from slice 5 — this
@@ -48,10 +59,13 @@ APP_ROOT = Path(__file__).resolve().parents[2] / "app"
 # Slice 5: inspector_asignaciones.py (own-uid WRITE, per ADR-9's original
 # three-module list). Slice 4's sticker_status.py joined READ-ONLY at merge
 # reconciliation (see module docstring above) — it must never gain a write
-# call to this collection without a corresponding ADR-9 amendment.
+# call to this collection without a corresponding ADR-9 amendment. Slice 7
+# (task 7.9): app/jobs/cruce_sticker.py joins as the third WRITE module
+# (pipeline-owned fields, merge:true only — see its module docstring).
 ALLOWED_MODULES = {
     APP_ROOT / "routers" / "inspector_asignaciones.py",
     APP_ROOT / "routers" / "sticker_status.py",  # read-only, see docstring
+    APP_ROOT / "jobs" / "cruce_sticker.py",
 }
 
 
