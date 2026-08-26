@@ -497,30 +497,83 @@ against the live Railway route with a real inspector token, 5.5 repoint applied.
 
 Chain PR #6. Depends on: Phase 1. Re-wires the Vercel↔Railway GraphQL coupling.
 
-- [ ] **6.1** (RED) Write `backend/tests/routers/test_refresh.py` FIRST: admin token → 202 with
+- [x] **6.1** (RED) Write `backend/tests/routers/test_refresh.py` FIRST: admin token → 202 with
       `deploymentId` (mocked Railway GraphQL client, `dashboard-refresh` service only — NO
       `cruceDeploymentId`/cruce-gestion trigger, per proposal.md Scope Exclusion Addendum Extension 2
       item 5); non-admin → 403, no Railway call. MUST fail.
       — Satisfies: backend-platform "Admin-gated route rejects non-admin" (`/refresh`).
+      — STATUS: done. Confirmed RED — `ImportError: cannot import name 'refresh' from 'app.routers'`
+      (1 collection error) before 6.2 landed. 3 cases: admin → 202 + exactly ONE Railway call
+      (asserts no second `cruce-gestion` call); non-admin → 403, zero Railway calls; unauthenticated →
+      401, zero Railway calls. Mocks `app.routers.refresh._railway_graphql` (call-count fake), no real
+      network.
 
-- [ ] **6.2** (GREEN) Implement `backend/app/routers/refresh.py`: `POST /refresh`,
+- [x] **6.2** (GREEN) Implement `backend/app/routers/refresh.py`: `POST /refresh`,
       `Depends(require_role("admin"))`, port `api/refresh.js:134-181`'s dual-header Railway auth
       fallback, triggering ONLY the `dashboard-refresh` service redeploy — the legacy fail-soft
       cruce-gestion redeploy branch is NOT ported (cruce-gestion is excluded from migration). Update
       the service/environment id to the NEW consolidated `dashboard-refresh` Railway service id
       created in slice 7 — confirm exact id before hardcoding. Run 6.1, confirm green.
       — Satisfies: backend-platform "Route Parity Across Consolidated Endpoints" (`/refresh` row).
+      — STATUS: done. First GREEN pass, no rework (3/3; full suite 116/116 — 113 baseline + 3 new).
+      **Service/environment id resolution**: slice 7 (job code absorption into `backend/app/jobs/`)
+      has NOT run yet, so there is no NEW consolidated `dashboard-refresh` Railway service to point
+      at. Rather than fabricate one, this router reads `RAILWAY_SERVICE_ID`/`RAILWAY_ENVIRONMENT_ID`
+      env vars AT REQUEST TIME (mirroring `api/refresh.js`'s own env var names verbatim), each
+      defaulting to the exact literal `api/refresh.js:96,100` already hardcodes
+      (`156e97a2-596b-4861-95f4-4060dab408e2` / `4418f451-bd97-4d96-ba6e-b5ecbbd49c9b`) — the REAL,
+      currently-live `dashboard-refresh` service in the `normalizador-sismo-cali` Railway project.
+      This means the route redeploys the actual production job today, not a placeholder; slice 7 can
+      repoint it to a new consolidated service later by setting the env var, no code change required.
 
 - [ ] **6.3** VERIFY (ADR-7 procedure, mutating-action carve-out — redeploy trigger is idempotent
       enough to exercise live): admin-token POST old vs new; both 202, `deploymentId` present (old
       response's `cruceDeploymentId` field has no new-side equivalent — expected, documented
       difference, not a parity failure).
       — Satisfies: backend-platform "Old endpoint still serves after the new one deploys".
+      — STATUS: NOT RUN this batch (repo-side prep done). `backend/scripts/verify_refresh_parity.py`
+      written following the exact two-tier convention `verify_sign_parity.py`/
+      `verify_status_routes_parity.py`/`verify_inspector_asignaciones_parity.py` established
+      (STRUCTURAL tier: no-auth/bad-token, safe/non-mutating; TOKEN-REQUIRED tier: real admin POST on
+      both sides). Confirmed its BLOCKED guard: running with no `NEW_REFRESH_URL` set exits 2 with an
+      explanatory stderr message. **Extra safety guard beyond every prior parity script**: this
+      endpoint's redeploy trigger is a REAL Railway `serviceInstanceRedeploy` mutation on BOTH old and
+      new when exercised — unlike 2.3/4.5/5.4's token-required tiers (which only ever read data), so a
+      `FIREBASE_ID_TOKEN` alone does NOT unlock the token-required tier here; it also requires an
+      explicit `CONFIRM_REDEPLOY=yes` env var (verified in the script's logic — the token-required
+      branch is gated on `id_token and confirm_redeploy`, both must be true). BLOCKED on BOTH a live
+      admin `FIREBASE_ID_TOKEN` AND explicit human confirmation to fire two real production redeploys
+      — neither is something an automated apply batch may fabricate or set on its own; not run live
+      this batch.
 
 - [ ] **6.4** REPOINT: flip the `refresh` entry in `api-config.js`. MANUAL Vercel redeploy of `web/`.
       — Satisfies: backend-platform "Rollback is a config revert".
+      — STATUS: BLOCKED on 6.3 (no parity result exists yet to gate a repoint on), same dependency
+      ordering every prior slice's REPOINT task followed. `web/js/api-config.js` and `web/js/main.js`
+      were read but NOT modified this batch (out of scope: `web/js/api-config.js` is explicitly
+      read-only for this finding; `main.js` is outside `backend/`). **Finding, confirmed by reading
+      both files, not assumed**: `web/js/api-config.js`'s `refresh` entry (line 29) currently reads
+      `refresh: '/api/refresh'` (a relative path, unflipped, same as `stickers`/`sticker-asignaciones`/
+      `usuarios`). But UNLIKE the three already-flipped entries (`reportados`, `stickerStatus`,
+      `sourceStatus`), `web/js/main.js` does NOT consume this entry through `api-config.js`'s
+      `apiUrl()` accessor at all — `main.js:335` hardcodes its own separate literal,
+      `const REFRESH_ENDPOINT = '/api/refresh';`, used by `triggerRefresh()` (`main.js:421-457`, wired
+      to the admin-only "Actualizar datos" button via `refreshBtn.addEventListener('click', () =>
+      triggerRefresh())`, `main.js:592`). So flipping `api-config.js`'s `refresh` entry ALONE would do
+      nothing for this button — the eventual repoint needs a two-part edit (flip the `api-config.js`
+      entry AND change `main.js:335` to `const REFRESH_ENDPOINT = apiUrl('refresh');`, importing
+      `apiUrl` — already imported at `main.js:20` for other endpoints), the same two-part-edit pattern
+      slice 5's 5.5 finding documented for `formulario/js/form.js`. Documented here as a concrete
+      finding for whoever applies this repoint once 6.3 unblocks it.
 
 **ROLLBACK BOUNDARY (Slice 6)**: revert the `refresh` entry; redeploy `web/`.
+
+**Batch status (sdd-apply, `feat/fastapi-consolidation-6-refresh`)**: 6.1-6.2 DONE — router + tests
+(116/116 `backend/tests/` green, 113 baseline + 3 new); 6.3 repo-side prep done (two-tier parity script
+with an extra `CONFIRM_REDEPLOY=yes` guard), execution BLOCKED on a live admin token + explicit human
+confirmation (never fabricated); 6.4 BLOCKED on 6.3 by design, with a concrete finding that `main.js`
+doesn't even read `api-config.js`'s `refresh` entry yet (needs a two-part edit, not a single-line
+flip). See `apply-progress.md` "Batch 6" for full detail.
 
 ---
 
