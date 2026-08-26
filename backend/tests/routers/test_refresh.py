@@ -1,12 +1,13 @@
-"""POST /refresh (RED first) — design.md ADR-6; backend-platform spec
+"""POST /refresh — design.md ADR-6; backend-platform spec
 "Admin-gated route rejects non-admin" (`/refresh` row).
 
 Mocks the Railway GraphQL client (`app.routers.refresh._railway_graphql`) —
-no real network in tests. Asserts: admin token → 202 with `deploymentId`,
-exactly ONE Railway call (the `dashboard-refresh` redeploy — the legacy
-fail-soft `cruce-gestion` second redeploy, api/refresh.js:169-174, is NOT
-ported per proposal.md Scope Exclusion Addendum Extension 2 item 5);
-non-admin → 403, no Railway call; unauthenticated → 401, no Railway call.
+no real network in tests. Asserts: admin token → 202 redeploying ALL THREE
+15-min cron services (dashboard-refresh + cruce-sticker + cruce-gestion —
+the "Actualizar datos" button force-runs the whole 15-min fleet); a
+secondary cron failure is fail-soft (still 202, error surfaced); the
+primary (dashboard-refresh) failure → 502; non-admin → 403, no Railway
+call; unauthenticated → 401, no Railway call.
 """
 from __future__ import annotations
 
@@ -44,12 +45,12 @@ def _non_admin_client(monkeypatch) -> TestClient:
     return TestClient(app)
 
 
-def test_admin_token_gets_202_with_deployment_id(monkeypatch):
+def test_admin_token_redeploys_all_three_crons(monkeypatch):
     calls: list[tuple[str, dict]] = []
 
     async def _fake_railway_graphql(token, query, variables):
         calls.append((token, variables))
-        return {"serviceInstanceRedeploy": "deploy-123"}
+        return {"serviceInstanceRedeploy": f"deploy-{variables['s'][:8]}"}
 
     monkeypatch.setattr(refresh, "_railway_graphql", _fake_railway_graphql)
     client = _admin_client(monkeypatch)
@@ -59,10 +60,58 @@ def test_admin_token_gets_202_with_deployment_id(monkeypatch):
     assert resp.status_code == 202
     body = resp.json()
     assert body["ok"] is True
-    assert body["deploymentId"] == "deploy-123"
-    # Exactly ONE Railway call — dashboard-refresh only, no cruce-gestion.
-    assert len(calls) == 1
-    assert calls[0][0] == "fake-railway-token"
+    # Primary deploymentId kept for frontend backward-compat.
+    assert body["deploymentId"] == f"deploy-{refresh.DEFAULT_SERVICE_ID[:8]}"
+    # All three 15-min crons redeployed, once each.
+    assert len(calls) == 3
+    assert all(token == "fake-railway-token" for token, _ in calls)
+    service_ids = {variables["s"] for _, variables in calls}
+    assert service_ids == {
+        refresh.DEFAULT_SERVICE_ID,
+        refresh.DEFAULT_STICKER_SERVICE_ID,
+        refresh.DEFAULT_CRUCE_SERVICE_ID,
+    }
+    assert set(body["deployments"]) == {
+        "dashboard-refresh",
+        "cruce-sticker",
+        "cruce-gestion",
+    }
+    assert body["errors"] == {}
+
+
+def test_secondary_cron_failure_is_fail_soft(monkeypatch):
+    async def _fake_railway_graphql(token, query, variables):
+        if variables["s"] == refresh.DEFAULT_STICKER_SERVICE_ID:
+            raise RuntimeError("Railway API 500: sticker boom")
+        return {"serviceInstanceRedeploy": f"deploy-{variables['s'][:8]}"}
+
+    monkeypatch.setattr(refresh, "_railway_graphql", _fake_railway_graphql)
+    client = _admin_client(monkeypatch)
+
+    resp = client.post("/refresh")
+
+    # Primary (dashboard-refresh) succeeded → still 202, cross failure surfaced.
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["deploymentId"] == f"deploy-{refresh.DEFAULT_SERVICE_ID[:8]}"
+    assert body["deployments"]["dashboard-refresh"] == f"deploy-{refresh.DEFAULT_SERVICE_ID[:8]}"
+    assert body["deployments"]["cruce-sticker"] is None
+    assert "cruce-sticker" in body["errors"]
+
+
+def test_primary_cron_failure_returns_502(monkeypatch):
+    async def _fake_railway_graphql(token, query, variables):
+        if variables["s"] == refresh.DEFAULT_SERVICE_ID:
+            raise RuntimeError("Railway API 500: primary boom")
+        return {"serviceInstanceRedeploy": "deploy-secondary"}
+
+    monkeypatch.setattr(refresh, "_railway_graphql", _fake_railway_graphql)
+    client = _admin_client(monkeypatch)
+
+    resp = client.post("/refresh")
+
+    assert resp.status_code == 502
 
 
 def test_non_admin_is_rejected_with_no_railway_call(monkeypatch):

@@ -10,16 +10,19 @@ calls to kick off `scripts/refresh_data.py` on Railway. Absorbing
 `dashboard-refresh`'s job code into `backend/app/jobs/` is a SEPARATE
 concern (slice 7, not started) — this router only triggers the redeploy.
 
-ONE deliberate scope cut from the legacy handler (proposal.md Scope
-Exclusion Addendum Extension 2 item 5): the legacy endpoint ALSO
-fail-softly redeploys a second `cruce-gestion` service
-(`CRUCE_SERVICE_ID`/`cruceDeploymentId`, `api/refresh.js:99,166-174`) after
-the primary redeploy. `cruce-gestion` is excluded from migration entirely
-(its sole purpose is writing Firestore `dagma-85aad`/`cruce_criticos_survey`,
-and nothing dagma-related enters this backend — see
-`app/credentials/clients.py`'s module docstring). That second branch is NOT
-ported; this route triggers ONLY the `dashboard-refresh` redeploy and
-returns `{ok: true, deploymentId}` with no `cruceDeploymentId` field.
+The "Actualizar datos" button force-runs the WHOLE 15-min cron fleet, not
+just `dashboard-refresh`: this route redeploys all three 15-minute crons —
+`dashboard-refresh` (primary), `cruce-sticker`, and `cruce-gestion`. The
+primary redeploy IS the data refresh; a primary failure is fatal (502). The
+two cross jobs are best-effort adjuncts, redeployed after the primary with a
+per-service fail-soft branch (a `cruce-sticker`/`cruce-gestion` hiccup is
+surfaced in `errors` but never blocks the response). This revives the legacy
+handler's fail-soft `cruce-gestion` second redeploy (`api/refresh.js:166-174`,
+previously cut per proposal.md Scope Exclusion Addendum Extension 2 item 5)
+and adds `cruce-sticker` alongside it. The response keeps `{ok, deploymentId}`
+(deploymentId = the primary's, for frontend backward-compat) and adds a
+`deployments` (name → deployment id | null) and `errors` (name → message)
+map.
 
 Railway service/environment id (tasks.md 6.2: "confirm exact id before
 hardcoding"): `dashboard-refresh`'s job code has NOT been absorbed into
@@ -56,9 +59,12 @@ REQUIRED_CLIENTS: tuple[str, ...] = ()
 
 RAILWAY_API = "https://backboard.railway.com/graphql/v2"
 
-# Verbatim defaults from api/refresh.js:96,100 — the REAL, currently-live
-# `dashboard-refresh` service/environment (see module docstring).
-DEFAULT_SERVICE_ID = "156e97a2-596b-4861-95f4-4060dab408e2"
+# The three 15-min cron services in the `normalizador-sismo-cali` Railway
+# project (confirmed live 2026-08-26). `dashboard-refresh` verbatim from
+# api/refresh.js:96; the other two resolved from the Railway project.
+DEFAULT_SERVICE_ID = "156e97a2-596b-4861-95f4-4060dab408e2"          # dashboard-refresh
+DEFAULT_STICKER_SERVICE_ID = "b18c74c8-0b7a-459c-ada5-5e5df6db8050"  # cruce-sticker
+DEFAULT_CRUCE_SERVICE_ID = "b4c8fd15-aa3b-4157-b787-2034c89a108b"    # cruce-gestion
 DEFAULT_ENVIRONMENT_ID = "4418f451-bd97-4d96-ba6e-b5ecbbd49c9b"
 
 # serviceInstanceRedeploy redeploys the service's latest deployment (i.e.
@@ -109,24 +115,74 @@ async def _railway_graphql(token: str, query: str, variables: dict[str, Any]) ->
     raise RuntimeError(last_error or "Railway API request failed")
 
 
-async def _redeploy_dashboard_refresh() -> str:
-    """Trigger ONLY the `dashboard-refresh` service redeploy (see module
-    docstring for why `cruce-gestion`'s fail-soft second redeploy is not
-    ported). Env vars read at REQUEST time, mirroring api/refresh.js's own
-    RAILWAY_API_TOKEN/RAILWAY_SERVICE_ID/RAILWAY_ENVIRONMENT_ID names."""
+def _cron_services() -> list[tuple[str, str]]:
+    """(name, service_id) for the three 15-min crons the "Actualizar datos"
+    button force-runs. Order matters: `dashboard-refresh` is the PRIMARY (its
+    redeploy is the data refresh itself); the two cross jobs are best-effort
+    adjuncts. Each id is env-overridable, same fallback pattern as the legacy
+    RAILWAY_SERVICE_ID."""
+    return [
+        (
+            "dashboard-refresh",
+            os.environ.get("RAILWAY_SERVICE_ID", "").strip() or DEFAULT_SERVICE_ID,
+        ),
+        (
+            "cruce-sticker",
+            os.environ.get("RAILWAY_STICKER_SERVICE_ID", "").strip()
+            or DEFAULT_STICKER_SERVICE_ID,
+        ),
+        (
+            "cruce-gestion",
+            os.environ.get("RAILWAY_CRUCE_SERVICE_ID", "").strip()
+            or DEFAULT_CRUCE_SERVICE_ID,
+        ),
+    ]
+
+
+async def _redeploy_one(token: str, service_id: str, environment_id: str) -> str:
+    data = await _railway_graphql(
+        token, REDEPLOY_MUTATION, {"s": service_id, "e": environment_id}
+    )
+    return data["serviceInstanceRedeploy"]
+
+
+async def _redeploy_all() -> dict[str, Any]:
+    """Force-run all three 15-min crons. The primary (`dashboard-refresh`)
+    failure propagates (→ 502); secondary failures are caught and reported in
+    ``errors`` (fail-soft). Env vars read at REQUEST time, mirroring
+    api/refresh.js's RAILWAY_API_TOKEN/RAILWAY_SERVICE_ID/RAILWAY_ENVIRONMENT_ID
+    names."""
     token = os.environ.get("RAILWAY_API_TOKEN", "").strip()
     if not token:
         raise HTTPException(
             status_code=500, detail="RAILWAY_API_TOKEN no está configurado."
         )
-    service_id = os.environ.get("RAILWAY_SERVICE_ID", "").strip() or DEFAULT_SERVICE_ID
     environment_id = (
         os.environ.get("RAILWAY_ENVIRONMENT_ID", "").strip() or DEFAULT_ENVIRONMENT_ID
     )
-    data = await _railway_graphql(
-        token, REDEPLOY_MUTATION, {"s": service_id, "e": environment_id}
-    )
-    return data["serviceInstanceRedeploy"]
+    services = _cron_services()
+    deployments: dict[str, str | None] = {}
+    errors: dict[str, str] = {}
+
+    # Primary: its failure is fatal (the data refresh itself) — let it
+    # propagate to trigger_refresh's 502, matching the legacy catch branch.
+    primary_name, primary_id = services[0]
+    deployments[primary_name] = await _redeploy_one(token, primary_id, environment_id)
+
+    # Secondary crosses: best-effort. A stickers/gestion hiccup is surfaced in
+    # `errors` but must not tumble the primary data refresh's response.
+    for name, service_id in services[1:]:
+        try:
+            deployments[name] = await _redeploy_one(token, service_id, environment_id)
+        except Exception as exc:  # noqa: BLE001 — fail-soft adjunct
+            deployments[name] = None
+            errors[name] = str(exc)
+
+    return {
+        "deploymentId": deployments[primary_name],
+        "deployments": deployments,
+        "errors": errors,
+    }
 
 
 @router.post("/refresh", status_code=202)
@@ -134,10 +190,10 @@ async def trigger_refresh(
     claims: dict[str, Any] = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     try:
-        deployment_id = await _redeploy_dashboard_refresh()
+        result = await _redeploy_all()
     except HTTPException:
         raise
     except RuntimeError as exc:
         # Verbatim status from api/refresh.js:178-179's catch branch.
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"ok": True, "deploymentId": deployment_id}
+    return {"ok": True, **result}
