@@ -1023,10 +1023,26 @@ check, not a literal port of `usuarios.js`'s stale-commented executable shortcut
       `listCuadrillas`, `usuarios` list) live side-by-side; mutating actions verified by
       8.1/8.3/8.5's pytest suites + one manual production smoke test per repoint.
       — Satisfies: backend-platform "Old endpoint still serves after the new one deploys".
+      — STATUS: PARTIAL (2026-08-26). `stickers` `list` and `sticker-asignaciones` `listCuadrillas`
+      run live against Railway with a synthetic admin-claim token — exact-match payloads vs the legacy
+      Vercel endpoints (`{"ok":true,"cuadrillas":[]}` identical; `stickers` inspector list
+      byte-identical). `usuarios` `list` could NOT be verified this way: its extra provider/domain gate
+      (batch 8b, correctly) rejected the synthetic token — `sign_in_provider` on a
+      `signInWithCustomToken` exchange is `"custom"`, not `"password"`, so the gate did exactly what
+      it's designed to do. This needs a REAL admin account's password-provider login, which no
+      automated batch has credentials for. Every MUTATING action across all three routers
+      (`create`/`setEnabled`/`crearCuadrilla`/`asignarInspector`/`eliminarCuadrilla`/`setPassword`/
+      `delete`/etc.) was deliberately NOT exercised live — per this task's own text, those rely on the
+      8.1/8.3/8.5 pytest suites plus a manual production smoke test only a human should run (creating,
+      reassigning, or deleting real production records/users is not something to automate here).
 
 - [ ] **8.8** REPOINT: flip `stickers`, `sticker-asignaciones`, `usuarios` entries in `api-config.js`.
       MANUAL Vercel redeploy of `web/`.
       — Satisfies: backend-platform "Rollback is a config revert".
+      — STATUS: BLOCKED on 8.7's remaining gap (usuarios `list` unverified, no mutating action manually
+      smoke-tested) — repointing now would send real admin actions (creating/deleting real users,
+      cuadrillas, stickers) through an unverified path. Needs a human with a real admin login to finish
+      8.7, then this repoint (three `api-config.js` entries) can follow the same pattern as 3.7/4.6/5.5.
 
 - [x] **8.9** (RED) Write `backend/tests/routers/test_survey_cali.py` FIRST: non-admin → 403, no state
       change (all 7 routes); `PATCH` merge-only (`{a:1,b:2}`+`{b:3}` → `{a:1,b:3}`); no-op `PATCH` →
