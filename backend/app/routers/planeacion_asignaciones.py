@@ -231,6 +231,34 @@ def _clamp_limit(raw: Any) -> int:
     return min(n, LIMIT_MAX)
 
 
+def _jsonable(value: Any) -> Any:
+    """Make a Firestore document value JSON-encodable.
+
+    Timestamp fields (`matched_at`, `asignado_en`, ...) come back from REAL
+    Firestore as `DatetimeWithNanoseconds`, which `JSONResponse` cannot
+    encode — the request dies with a 502 before any payload is written. The
+    in-memory fake every router test uses returns plain Python values, so
+    nothing in the suite exercises this; it surfaced only on the first live
+    call against the 14,804 populated documents. Anything with `isoformat`
+    is normalised to an ISO-8601 string (which is what the frontend parses
+    anyway); lists/dicts are walked so a nested timestamp cannot slip past.
+    """
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    return value
+
+
+def _doc_to_dict(doc: Any, *, with_id: bool = True) -> dict[str, Any]:
+    """Firestore snapshot -> JSON-safe dict. Single funnel so a new read
+    site cannot forget `_jsonable` and reintroduce the 502 above."""
+    data = _jsonable(doc.to_dict() or {})
+    return {"id": doc.id, **data} if with_id else data
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -271,7 +299,7 @@ def list_puntos(db: Any, params: dict[str, Any]) -> dict[str, Any]:
         query.order_by("prioridad_score", direction=_fs.Query.DESCENDING)
         .limit(LIMIT_MAX + 1)
     )
-    puntos = [{"id": d.id, **(d.to_dict() or {})} for d in query.get()]
+    puntos = [_doc_to_dict(d) for d in query.get()]
 
     if estado:
         puntos = [p for p in puntos if p.get("estado_asignacion") == estado]
@@ -294,7 +322,7 @@ def resumen(db: Any) -> dict[str, Any]:
     module docstring for why this is a bounded, aggregated-in-code read
     rather than a true Firestore `count()` aggregation query."""
     docs = db.collection(PLANEACION_PUNTOS_COLLECTION).get()
-    puntos = [d.to_dict() or {} for d in docs]
+    puntos = [_doc_to_dict(d, with_id=False) for d in docs]
 
     total = len(puntos)
     levantados = sum(1 for p in puntos if p.get("tiene_survey"))
@@ -334,7 +362,7 @@ def resumen(db: Any) -> dict[str, Any]:
 
 def list_cuadrilla_docs(db: Any) -> list[dict[str, Any]]:
     docs = db.collection(PLANEACION_CUADRILLAS_COLLECTION).get()
-    return [{"id": d.id, **(d.to_dict() or {})} for d in docs]
+    return [_doc_to_dict(d) for d in docs]
 
 
 def _positive_number(value: Any, default: float) -> float:
@@ -361,7 +389,7 @@ def run_auto_agrupar(db: Any, body: dict[str, Any]) -> list[dict[str, Any]]:
         .where("cuadrilla_id", "==", None)
         .get()
     )
-    all_puntos = [{"id": d.id, **(d.to_dict() or {})} for d in docs]
+    all_puntos = [_doc_to_dict(d) for d in docs]
     excluded_ids = set(points_with_survey(all_puntos)) | set(points_excluded(all_puntos))
     puntos = [p for p in all_puntos if p["id"] not in excluded_ids]
     if not puntos:

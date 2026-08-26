@@ -936,3 +936,48 @@ def test_list_puntos_omitting_the_flag_still_excludes_surveyed(monkeypatch):
                     {"action": "listPuntos", "incluirLevantados": False}):
         resp = client.post("/planeacion-asignaciones", json=payload)
         assert {p["id"] for p in resp.json()["puntos"]} == {"a"}, payload
+
+
+# Firestore timestamp serialization ------------------------------------------
+# Real Firestore returns DatetimeWithNanoseconds for timestamp fields; the
+# in-memory fake used by every other test returns plain Python values, so a
+# non-serializable type slips through the whole suite and only explodes on a
+# live call. Found exactly that way (502 "Object of type
+# DatetimeWithNanoseconds is not JSON serializable") against 14,804 real docs.
+
+
+def test_list_puntos_serializes_datetime_fields(monkeypatch):
+    from datetime import datetime, timezone
+
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {**_punto(),
+               "matched_at": datetime(2026, 8, 26, 9, 4, 37, tzinfo=timezone.utc)},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "listPuntos"})
+
+    assert resp.status_code == 200, resp.text
+    punto = resp.json()["puntos"][0]
+    assert isinstance(punto["matched_at"], str), (
+        "a datetime must be serialized to a string, not handed to the JSON "
+        "encoder raw -- real Firestore returns DatetimeWithNanoseconds here"
+    )
+    assert punto["matched_at"].startswith("2026-08-26T09:04:37")
+
+
+def test_list_cuadrillas_serializes_datetime_fields(monkeypatch):
+    from datetime import datetime, timezone
+
+    stores = _stores()
+    stores[PLANEACION_CUADRILLAS] = {
+        "c1": {"puntos": [], "inspector_uid": None, "origen": "manual",
+               "asignado_en": datetime(2026, 8, 26, 9, 0, 0, tzinfo=timezone.utc)},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "listCuadrillas"})
+
+    assert resp.status_code == 200, resp.text
+    assert isinstance(resp.json()["cuadrillas"][0]["asignado_en"], str)

@@ -152,17 +152,29 @@ when they are needed.
    cannot overwrite or blank the key by accident.
 3. **Republish the form** if step 2 required a change, then confirm `codigoapp` is still present in
    the FeatureServer layer schema and still accepts values from a test submission.
-4. **Provision env vars on the Railway `web` service**: `SURVEY123_FORM_URL` (required — the
-   endpoint fails loud with a clear message if unset, rather than emitting a broken link),
-   `SURVEY123_FIELD_APP_ITEM_ID` (optional — enables the mobile `arcgis-survey123:///` deep link).
+4. ~~**Provision env vars on the Railway `web` service**~~ — **DONE 2026-08-26, no operator action
+   needed.** Both are already set on the Railway `web` service via the platform API, with the values
+   resolved in step 1:
+   `SURVEY123_FORM_URL = https://survey123.arcgis.com/share/082c0446a4334038b3f8e677bcc27074`,
+   `SURVEY123_FIELD_APP_ITEM_ID = 082c0446a4334038b3f8e677bcc27074`.
 5. **Create the Railway cron service `planeacion-cruce`**: same repo/Dockerfile as the other backend
    services, `startCommand: python -m app.jobs.planeacion_cruce`, hourly `cronSchedule`. Provision
    `FIREBASE_SERVICE_ACCOUNT_JSON` and `REPORTES_URL` (the Vercel Blob URL for `data/reportes.json`,
    since the container image has no `web/`).
-6. **Create two Firestore composite indexes** in the `sismo-agosto-sgred` console (or follow the
-   error link the first failing query emits):
-   `planeacion_puntos`: (`tiene_survey` ASC, `estado_asignacion` ASC, `prioridad_score` DESC) and
-   (`estado_asignacion` ASC, `cuadrilla_id` ASC). `clave_integracion` is single-field, auto-indexed.
+6. ~~**Create two Firestore composite indexes**~~ — **DONE 2026-08-26, no operator action needed.**
+   Created via `gcloud firestore indexes composite create --project=sismo-agosto-sgred`. Note the
+   FIRST one differs from what this proposal originally predicted: a live `listPuntos` call returned
+   `400 The query requires an index` naming **(`tiene_survey` ASC, `prioridad_score` DESC)** — the
+   `estado_asignacion` leg was never part of the query, because `list_puntos()` deliberately filters
+   `estado_asignacion` in code rather than in Firestore (only one inequality field per query is
+   permitted, and it would conflict with ordering by `prioridad_score`). The index actually built is
+   the one the real query asked for; the other two are as originally listed:
+   - `planeacion_puntos` (`tiene_survey` ASC, `prioridad_score` DESC) — **READY**, unblocks `listPuntos`
+   - `planeacion_puntos` (`estado_asignacion` ASC, `cuadrilla_id` ASC)
+   - `planeacion_cuadrillas` (`inspector_uid` ASC, `origen` ASC)
+
+   Worth recording: this gap was invisible to 370 unit tests (which use an in-memory fake Firestore
+   with no index concept) and surfaced only on the first real HTTP call against live Firestore.
 7. **Add Firestore security rules** in the `sismo-agosto-sgred` console denying ALL client reads and
    writes for `planeacion_puntos` and `planeacion_cuadrillas` (server/admin-SDK only), mirroring the
    existing posture for `sticker_matches` / `cuadrillas` / `evaluaciones`. There is no repo file that
