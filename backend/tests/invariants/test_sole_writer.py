@@ -100,6 +100,19 @@ ALLOWED_MODULES_SURVEY_CALI = {
     APP_ROOT / "services" / "survey_cali.py",
     APP_ROOT / "jobs" / "dashboard_refresh.py",
     APP_ROOT / "routers" / "survey_cali.py",
+    # `planeacion-asignaciones` change, Phase 2 (2026-08-26): READ-ONLY —
+    # `app/jobs/planeacion_cruce.py` imports `SURVEY_CALI_COLLECTION` (never
+    # a re-literaled string) to `.stream()` the collection for its matching
+    # cascade (design.md ADR-2/ADR-5 of that change); it never calls
+    # `apply_mutation`/`.set()`/`.update()` on it. This is the SAME
+    # "legitimate new reader, flagged rather than hidden" precedent
+    # `routers/sticker_status.py` already established for the
+    # `sticker_matches`/`cuadrillas` allowlist above — a minimal, honest
+    # addition was judged better than obfuscating the collection-name
+    # reference to dodge this scanner, which would defeat its own review
+    # tripwire. See that change's apply-progress.md "Issues Found" for the
+    # full reasoning. This set remains closed to any WRITE path.
+    APP_ROOT / "jobs" / "planeacion_cruce.py",
     # Plain docstring mention ("... survey_cali.py -- land in their own
     # migration slices") in the package's module docstring -- no Firestore
     # access, verified by reading the file in full. Allowlisted rather than
