@@ -10,6 +10,15 @@ WORKDIR /app
 COPY backend/ backend/
 COPY scripts/ scripts/
 COPY deploy/ deploy/
+# scripts/refresh_data.py reads the PREPARED basemaps (comunas.geojson,
+# barrios.geojson — see its PREPARED_BASEMAPS_DIR) for the spatial join, and
+# writes its own outputs (meta.json, inspections.json, ...) back into this
+# same directory before publish_blob() ships them to Vercel Blob. Found
+# missing live (2026-08-26): the dashboard-refresh job crashed with
+# FileNotFoundError on comunas.geojson on its first real Railway run — no
+# backend/tests/ case builds the actual Docker image or runs refresh_data.py
+# for real, so this gap was invisible to the test suite.
+COPY web/data/ web/data/
 
 WORKDIR /app/backend
 
