@@ -39,6 +39,7 @@ STICKER_MATCHES = "sticker_matches"  # `grupos-inspectores` change: eliminarGrup
 GRUPOS_INSPECTORES = "grupos_inspectores"  # `grupos-inspectores` change
 VEHICULOS = "vehiculos"  # `grupos-inspectores` follow-up (2026-08-26): vehicles
 CONDUCTORES = "conductores"  # feature H (2026-08-26): drivers
+PLANEACION_AUDITORIA = "planeacion_auditoria"  # `planeacion-auditoria` change (2026-08-26)
 
 
 # ── Fake Firestore: path-keyed by (collection, id); supports .where()
@@ -188,7 +189,7 @@ class _FakeSismoClients:
 
 
 def _stores() -> dict[str, dict[str, dict[str, Any]]]:
-    return {PLANEACION_PUNTOS: {}, PLANEACION_CUADRILLAS: {}}
+    return {PLANEACION_PUNTOS: {}, PLANEACION_CUADRILLAS: {}, PLANEACION_AUDITORIA: {}}
 
 
 def _app(monkeypatch, stores: dict[str, dict[str, dict[str, Any]]]) -> FastAPI:
@@ -1864,3 +1865,48 @@ def test_editar_vehiculo_can_clear_conductor(monkeypatch):
         "action": "editarVehiculo", "vehiculo_id": "v1", "conductor_id": ""})
     assert resp.status_code == 200
     assert stores[VEHICULOS]["v1"]["conductor_id"] is None
+
+
+# ── `planeacion-auditoria` change, Phase 2 (2026-08-26): the dispatch-site
+# hook. design.md ADR-1/ADR-2; spec `Append-only write on successful
+# mutation`, `A logging failure never alters a completed mutation`. ────────
+
+
+def test_mutating_action_leaves_one_auditoria_doc_with_actor(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={
+        "action": "crearGrupo", "nombre": "Norte", "miembros": ["u1"]})
+    assert resp.status_code == 201
+    docs = list(stores[PLANEACION_AUDITORIA].values())
+    assert len(docs) == 1
+    assert docs[0]["actor_uid"] == UID_ADMIN
+    assert docs[0]["actor_email"] == FAKE_CLAIMS_ADMIN["email"]
+    assert docs[0]["accion"] == "crearGrupo"
+
+
+def test_read_only_action_leaves_zero_auditoria_docs(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={"action": "listGrupos"})
+    assert resp.status_code == 200
+    assert stores[PLANEACION_AUDITORIA] == {}
+
+
+def test_audit_write_failure_does_not_alter_the_mutation_response(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("firestore is down")
+
+    from app.services import planeacion_audit
+    monkeypatch.setattr(planeacion_audit, "registrar", _boom)
+
+    resp = client.post("/planeacion-asignaciones", json={
+        "action": "crearGrupo", "nombre": "Norte", "miembros": ["u1"]})
+    assert resp.status_code == 201
+    assert resp.json()["ok"] is True
+    assert "id" in resp.json()
+    # no exception surfaced; the audit write is best-effort and swallowed
+    assert stores[PLANEACION_AUDITORIA] == {}

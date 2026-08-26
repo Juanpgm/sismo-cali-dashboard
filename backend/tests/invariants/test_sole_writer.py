@@ -109,6 +109,15 @@ ALLOWED_MODULES = {
     # entry — the same precedent `sticker_status.py` (read-only) and
     # `main.py` (import/mount) already set above.
     APP_ROOT / "routers" / "planeacion_asignaciones.py",  # JSON key only, see note
+    # `planeacion-auditoria` change (2026-08-26): same JSON-key-only reason as
+    # the entry directly above — `planeacion_audit.py`'s `MUTATING_ACTIONS`
+    # table reads the `cuadrillas` key off `autoAgrupar`'s own resultado dict
+    # (to render a bulk-count `resumen` like "Agrupar automáticamente 12
+    # cuadrillas") and uses the plain Spanish word in that human-readable
+    # string. It never names the sticker `cuadrillas` COLLECTION, and its own
+    # only Firestore access is `planeacion_auditoria`, guarded by its own
+    # independent allowlist further down.
+    APP_ROOT / "services" / "planeacion_audit.py",  # JSON key + prose word only, see note
 }
 
 # Slice 7b (task 7.6) opened `survey_cali`'s OWN allowlist — INDEPENDENT of
@@ -378,6 +387,28 @@ def test_conductores_literal_is_used_by_an_allowlisted_module():
     unexpected = hits - ALLOWED_MODULES_CONDUCTORES
     assert not unexpected, f"unexpected conductores reference(s): {sorted(unexpected)}"
     assert hits, "expected conductores to be referenced by an allowlisted module by now"
+
+
+# ── `planeacion-auditoria` change (2026-08-26): `planeacion_auditoria` ──────
+#
+# A FIFTH, INDEPENDENT collection under Planeación. ONE allowlisted module:
+# `services/planeacion_audit.py` is the SOLE writer AND sole reader (both
+# `registrar`/`registrar_best_effort` and `list_auditoria` live there —
+# `routers/planeacion_asignaciones.py` calls into it, never queries the
+# collection directly). Confirmed by running this test once with the raw
+# literal before writing this note: no known substring collision with an
+# existing scan (unlike `cuadrillas`'s own collision above), so no
+# `_COLLECTION`-identifier workaround is needed.
+ALLOWED_MODULES_PLANEACION_AUDITORIA = {
+    APP_ROOT / "services" / "planeacion_audit.py",
+}
+
+
+def test_planeacion_auditoria_literal_is_used_by_an_allowlisted_module():
+    hits = _files_containing("planeacion_auditoria")
+    unexpected = hits - ALLOWED_MODULES_PLANEACION_AUDITORIA
+    assert not unexpected, f"unexpected planeacion_auditoria reference(s): {sorted(unexpected)}"
+    assert hits, "expected planeacion_auditoria to be referenced by an allowlisted module by now"
 
 
 # Scanner precision ----------------------------------------------------------

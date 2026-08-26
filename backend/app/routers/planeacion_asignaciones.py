@@ -202,6 +202,7 @@ duplicated roster fetch on the backend.
 """
 from __future__ import annotations
 
+import json
 import math
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -213,6 +214,7 @@ from pydantic import BaseModel
 from app.auth.deps import require_role
 from app.config import Settings
 from app.credentials import clients as credentials
+from app.services import planeacion_audit
 from app.services.survey_link import build_survey_urls
 
 REQUIRED_CLIENTS: tuple[str, ...] = ("sismo",)
@@ -1567,14 +1569,16 @@ class PlaneacionAsignacionesRequest(BaseModel):
     nombre_completo: str | None = None
 
 
-@router.post("/planeacion-asignaciones")
-def planeacion_asignaciones(
+def _dispatch(
     body: PlaneacionAsignacionesRequest,
-    claims: dict[str, Any] = Depends(require_role("admin")),
+    payload: dict[str, Any],
+    claims: dict[str, Any],
+    db: Any,
 ) -> JSONResponse:
-    db = credentials.sismo().firestore
-    payload = body.model_dump()
-
+    """The dispatcher's own `if body.action == ...` chain — extracted
+    verbatim (mechanical move, no branch body changes) so
+    `planeacion_asignaciones()` can capture its `JSONResponse` and run the
+    post-mutation audit hook at ONE call site (design.md ADR-2)."""
     try:
         if body.action == "listPuntos":
             return JSONResponse({"ok": True, **list_puntos(db, payload)})
@@ -1645,3 +1649,28 @@ def planeacion_asignaciones(
         raise
     except Exception as exc:  # pragma: no cover - legacy fail-open surface
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/planeacion-asignaciones")
+def planeacion_asignaciones(
+    body: PlaneacionAsignacionesRequest,
+    claims: dict[str, Any] = Depends(require_role("admin")),
+) -> JSONResponse:
+    db = credentials.sismo().firestore
+    payload = body.model_dump()
+
+    resp = _dispatch(body, payload, claims, db)
+
+    if body.action in planeacion_audit.MUTATING_ACTIONS:
+        # ADR-1: best-effort, strictly AFTER the mutation already committed
+        # and built its own response — a logging failure never alters it.
+        resultado = json.loads(resp.body)
+        planeacion_audit.registrar_best_effort(
+            db,
+            actor_uid=claims.get("sub"),
+            actor_email=claims.get("email"),
+            accion=body.action,
+            params=payload,
+            resultado=resultado,
+        )
+    return resp
