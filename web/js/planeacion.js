@@ -243,11 +243,24 @@ function shellHtml() {
               <span>Incluir levantados</span>
             </label>
           </div>
+          <div class="card-toolbar asignacion-actions-bar" id="planeacion-grupo-toolbar" title="Un grupo de inspectores: cualquier miembro puede completar (stickers o survey) los puntos asignados al grupo.">
+            <label class="sticker-field asignacion-inline-field">
+              <span>Grupo de inspectores</span>
+              <select id="planeacion-grupo-select"><option value="">— Elegir grupo —</option></select>
+            </label>
+            <button type="button" class="sticker-action" id="planeacion-asignar-grupo" disabled>Asignar grupo a selección</button>
+            <button type="button" class="sticker-action sticker-action-off" id="planeacion-quitar-grupo" disabled>Quitar grupo de selección</button>
+          </div>
         </div>
 
         <div class="card">
           ${cardHead('Paso 2 · Cuadrillas e inspectores', 'Asignar un inspector a cada cuadrilla. «Reiniciar agrupación» borra solo las automáticas.', '<button type="button" class="sticker-action sticker-action-off" id="planeacion-reiniciar">Reiniciar agrupación</button>')}
           <div class="asignacion-cuadrillas-scroll" id="planeacion-cuadrillas"></div>
+        </div>
+
+        <div class="card">
+          ${cardHead('Grupos de inspectores', 'Un grupo de inspectores: cualquier miembro puede completar los puntos asignados al grupo, ya sea de stickers o de survey.', '<button type="button" class="btn-primary" id="planeacion-grupo-crear">Crear grupo</button>')}
+          <div class="asignacion-cuadrillas-scroll" id="planeacion-grupos"></div>
         </div>
 
         <div class="card">
@@ -339,6 +352,33 @@ function shellHtml() {
         </div>
         <div class="modal-body" id="planeacion-survey-body">
           <p class="sticker-loading">Generando enlace…</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal" id="planeacion-grupo-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="planeacion-grupo-title">
+      <div class="modal-backdrop" data-grupo-close></div>
+      <div class="modal-panel sticker-modal-panel">
+        <div class="modal-header">
+          <h2 id="planeacion-grupo-title">Grupo de inspectores</h2>
+          <button type="button" class="btn-icon" data-grupo-close aria-label="Cerrar">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="planeacion-grupo-id">
+          <label class="sticker-field"><span>Nombre</span>
+            <input type="text" id="planeacion-grupo-nombre" placeholder="Grupo Norte">
+          </label>
+          <fieldset class="asignacion-grupo-miembros">
+            <legend>Miembros (cualquiera podrá completar los puntos del grupo)</legend>
+            <div id="planeacion-grupo-miembros-list" class="asignacion-grupo-miembros-list"></div>
+          </fieldset>
+          <p class="sticker-error" id="planeacion-grupo-error" role="alert" hidden></p>
+          <div class="sticker-form-actions">
+            <button type="button" class="btn-secondary" data-grupo-close>Cancelar</button>
+            <button type="button" class="btn-primary" id="planeacion-grupo-save">Guardar</button>
+          </div>
         </div>
       </div>
     </div>`;
@@ -435,6 +475,36 @@ function cuadrillasHtml(cuadrillas, inspectorById) {
         <div class="asignacion-cuadrilla-actions">
           ${insp ? `<button type="button" class="sticker-action asignacion-desasignar" data-desasignar="${escapeHtml(c.id)}">Quitar asignación</button>` : ''}
           <button type="button" class="sticker-action sticker-action-off asignacion-eliminar" data-eliminar="${escapeHtml(c.id)}">Eliminar</button>
+        </div>
+      </li>`;
+    }).join('')}
+  </ul>`;
+}
+
+/** Groups of INSPECTORS (people) — NOT to be confused with `cuadrillasHtml`
+ *  above, which renders groups of POINTS under one inspector. Member uids
+ *  are resolved to display names via the SAME cached roster `inspectorById`
+ *  already uses for `inspectorLabel`/cuadrillas, not a backend-side
+ *  resolution — no separate roster fetch for this section. */
+function gruposHtml(grupos, inspectorById) {
+  if (!grupos.length) {
+    return '<p class="sticker-empty">Todavía no hay grupos. Usar «Crear grupo».</p>';
+  }
+  return `<ul class="sticker-list">
+    ${grupos.map((g) => {
+      const nombres = (g.miembros || []).map((uid) => {
+        const insp = inspectorById.get(uid);
+        return insp ? (insp.nombre_completo || insp.codigo || uid) : uid;
+      });
+      const metaMiembros = nombres.length ? `${nombres.length} miembro${nombres.length === 1 ? '' : 's'}: ${escapeHtml(nombres.join(', '))}` : 'Sin miembros';
+      return `<li class="sticker-row" data-grupo-row="${escapeHtml(g.id)}">
+        <div class="sticker-identity">
+          <span class="sticker-name" title="ID: ${escapeHtml(g.id)}">${escapeHtml(g.nombre || g.id)}${g.activo === false ? ' (inactivo)' : ''}</span>
+          <span class="sticker-meta">${metaMiembros}</span>
+        </div>
+        <div class="asignacion-cuadrilla-actions">
+          <button type="button" class="sticker-action" data-editar-grupo="${escapeHtml(g.id)}">Editar</button>
+          <button type="button" class="sticker-action sticker-action-off" data-eliminar-grupo="${escapeHtml(g.id)}">Eliminar</button>
         </div>
       </li>`;
     }).join('')}
@@ -607,6 +677,7 @@ function renderMap(rows, inspectores, onReasignar) {
 export function initPlaneacion(root, { getToken }) {
   let rows = [];
   let cuadrillas = [];
+  let grupos = []; // grupos de INSPECTORES — `grupos-inspectores` change
   let resumenData = null;
   let inspectoresCache = [];
   let inspectoresLoaded = false;
@@ -628,6 +699,11 @@ export function initPlaneacion(root, { getToken }) {
   const sizeInput = root.querySelector('#planeacion-max-size');
   const crearBtn = root.querySelector('#planeacion-crear');
   const reiniciarBtn = root.querySelector('#planeacion-reiniciar');
+  const gruposWrap = root.querySelector('#planeacion-grupos');
+  const grupoSelect = root.querySelector('#planeacion-grupo-select');
+  const asignarGrupoBtn = root.querySelector('#planeacion-asignar-grupo');
+  const quitarGrupoBtn = root.querySelector('#planeacion-quitar-grupo');
+  const grupoCrearBtn = root.querySelector('#planeacion-grupo-crear');
 
   const showOk = (msg) => { okBox.textContent = msg; okBox.hidden = !msg; };
   const showErr = (msg) => { errBox.textContent = msg; errBox.hidden = !msg; };
@@ -677,6 +753,8 @@ export function initPlaneacion(root, { getToken }) {
         const id = cb.dataset.puntoCheck;
         if (cb.checked) selected.add(id); else selected.delete(id);
         crearBtn.disabled = selected.size === 0;
+        quitarGrupoBtn.disabled = selected.size === 0;
+        asignarGrupoBtn.disabled = !(selected.size && grupoSelect.value);
       });
     });
     tableWrap.querySelectorAll('[data-editar-asignacion]').forEach((btn) => {
@@ -706,6 +784,7 @@ export function initPlaneacion(root, { getToken }) {
     renderKpis();
     renderTable();
     renderCuadrillasSection();
+    renderGruposSection();
     renderMapSection();
   }
 
@@ -934,6 +1013,141 @@ export function initPlaneacion(root, { getToken }) {
     });
   }
 
+  // ---- grupos de inspectores section (`grupos-inspectores` change) --------
+  // NOT the cuadrillas section above (groups of POINTS under one inspector)
+  // — this is groups of PEOPLE, shared by both campaigns. Same "full reload
+  // after a toolbar/per-item mutation" convention `runCuadrillaAction` uses.
+  async function runGrupoAction(body, okMsg) {
+    if (busy) return;
+    busy = true;
+    try {
+      await callApi(getToken, body);
+      showOk(okMsg);
+      await reload();
+    } catch (err) {
+      showErr(err.message);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function renderGruposSection() {
+    const inspectores = getInspectores();
+    const inspectorById = new Map(inspectores.map((i) => [i.uid, i]));
+    gruposWrap.innerHTML = gruposHtml(grupos, inspectorById);
+
+    gruposWrap.querySelectorAll('[data-editar-grupo]').forEach((btn) => {
+      btn.addEventListener('click', () => openGrupoModal(btn.dataset.editarGrupo));
+    });
+    gruposWrap.querySelectorAll('[data-eliminar-grupo]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (!window.confirm('Eliminar este grupo. Si todavía tiene puntos asignados, la eliminación será rechazada.')) return;
+        runGrupoAction({ action: 'eliminarGrupo', grupo_id: btn.dataset.eliminarGrupo }, 'Grupo eliminado.');
+      });
+    });
+
+    const activos = grupos.filter((g) => g.activo !== false);
+    const previoSeleccionado = grupoSelect.value;
+    grupoSelect.innerHTML = '<option value="">— Elegir grupo —</option>'
+      + activos.map((g) => `<option value="${escapeHtml(g.id)}">${escapeHtml(g.nombre || g.id)}</option>`).join('');
+    if (activos.some((g) => g.id === previoSeleccionado)) grupoSelect.value = previoSeleccionado;
+    asignarGrupoBtn.disabled = !(selected.size && grupoSelect.value);
+    quitarGrupoBtn.disabled = selected.size === 0;
+  }
+
+  // ---- Grupo (create/edit) modal — a checkbox list over the SAME cached
+  // roster the cuadrillas combobox already uses (design constraint: reuse
+  // the existing inspector roster, no separate member picker data source).
+  const grupoModal = root.querySelector('#planeacion-grupo-modal');
+  const grupoErr = root.querySelector('#planeacion-grupo-error');
+  const grupoMiembrosList = root.querySelector('#planeacion-grupo-miembros-list');
+  let grupoOriginalMiembros = [];
+
+  function openGrupoModal(grupoId) {
+    grupoErr.hidden = true;
+    const grupo = grupoId ? grupos.find((g) => g.id === grupoId) : null;
+    grupoOriginalMiembros = grupo ? [...(grupo.miembros || [])] : [];
+    root.querySelector('#planeacion-grupo-id').value = grupoId || '';
+    root.querySelector('#planeacion-grupo-nombre').value = grupo ? (grupo.nombre || '') : '';
+    const miembrosSet = new Set(grupoOriginalMiembros);
+    const inspectores = getInspectores().filter(isHabilitado);
+    grupoMiembrosList.innerHTML = inspectores.length
+      ? inspectores.map((i) => `
+        <label class="asignacion-grupo-miembro">
+          <input type="checkbox" value="${escapeHtml(i.uid)}" ${miembrosSet.has(i.uid) ? 'checked' : ''}>
+          <span>${escapeHtml(i.nombre_completo || i.codigo || i.uid)}</span>
+        </label>`).join('')
+      : '<p class="sticker-empty">Sin inspectores habilitados.</p>';
+    grupoModal.classList.add('is-open');
+    grupoModal.setAttribute('aria-hidden', 'false');
+  }
+  function closeGrupoModal() {
+    grupoModal.classList.remove('is-open');
+    grupoModal.setAttribute('aria-hidden', 'true');
+  }
+  grupoModal.querySelectorAll('[data-grupo-close]').forEach((el) => el.addEventListener('click', closeGrupoModal));
+  grupoCrearBtn.addEventListener('click', () => openGrupoModal(null));
+
+  root.querySelector('#planeacion-grupo-save').addEventListener('click', async () => {
+    if (busy) return;
+    const grupoId = root.querySelector('#planeacion-grupo-id').value;
+    const nombre = root.querySelector('#planeacion-grupo-nombre').value.trim();
+    const checked = [...grupoMiembrosList.querySelectorAll('input[type="checkbox"]:checked')].map((cb) => cb.value);
+    if (!nombre) {
+      grupoErr.textContent = 'El nombre es obligatorio.';
+      grupoErr.hidden = false;
+      return;
+    }
+    if (!checked.length) {
+      grupoErr.textContent = 'Elegir al menos un miembro.';
+      grupoErr.hidden = false;
+      return;
+    }
+    busy = true;
+    try {
+      if (grupoId) {
+        const original = new Set(grupoOriginalMiembros);
+        const next = new Set(checked);
+        const add = checked.filter((uid) => !original.has(uid));
+        const remove = grupoOriginalMiembros.filter((uid) => !next.has(uid));
+        await callApi(getToken, { action: 'editarGrupo', grupo_id: grupoId, nombre, add, remove });
+        showOk('Grupo actualizado.');
+      } else {
+        await callApi(getToken, { action: 'crearGrupo', nombre, miembros: checked });
+        showOk('Grupo creado.');
+      }
+      closeGrupoModal();
+      await reload();
+    } catch (err) {
+      grupoErr.textContent = err.message;
+      grupoErr.hidden = false;
+    } finally {
+      busy = false;
+    }
+  });
+
+  // ---- assign/unassign the selected group to/from the currently checked
+  // table rows (Paso 1's own selection, shared with «Crear cuadrilla») ------
+  grupoSelect.addEventListener('change', () => {
+    asignarGrupoBtn.disabled = !(selected.size && grupoSelect.value);
+  });
+  asignarGrupoBtn.addEventListener('click', async () => {
+    if (busy || !selected.size || !grupoSelect.value) return;
+    const puntos = [...selected];
+    await runGrupoAction(
+      { action: 'asignarGrupoAPuntos', grupo_id: grupoSelect.value, puntos },
+      `Grupo asignado a ${puntos.length} punto${puntos.length === 1 ? '' : 's'}.`,
+    );
+  });
+  quitarGrupoBtn.addEventListener('click', async () => {
+    if (busy || !selected.size) return;
+    const puntos = [...selected];
+    await runGrupoAction(
+      { action: 'desasignarGrupo', puntos },
+      `Grupo quitado de ${puntos.length} punto${puntos.length === 1 ? '' : 's'}.`,
+    );
+  });
+
   async function reasignar(puntoId, nuevoInspectorUid) {
     try {
       await callApi(getToken, { action: 'reasignarPunto', punto_id: puntoId, nuevo_inspector_uid: nuevoInspectorUid });
@@ -981,20 +1195,25 @@ export function initPlaneacion(root, { getToken }) {
     try {
       await ensureInspectores();
       const incluirLevantados = !!root.querySelector('#planeacion-incluir-levantados')?.checked;
-      const [listResp, cuadrillasResp, resumenResp] = await Promise.all([
+      const [listResp, cuadrillasResp, resumenResp, gruposResp] = await Promise.all([
         callApi(getToken, { action: 'listPuntos', incluirLevantados }),
         callApi(getToken, { action: 'listCuadrillas' }),
         callApi(getToken, { action: 'resumen' }),
+        callApi(getToken, { action: 'listGrupos' }),
       ]);
       cuadrillas = cuadrillasResp.cuadrillas || [];
+      grupos = gruposResp.grupos || [];
       resumenData = resumenResp.resumen || null;
       rows = buildRows(listResp.puntos, cuadrillas, getInspectores());
       selected.clear();
       crearBtn.disabled = true;
+      asignarGrupoBtn.disabled = true;
+      quitarGrupoBtn.disabled = true;
       renderTruncacion(!!listResp.truncado, (listResp.puntos || []).length, resumenData ? resumenData.pendientes : (listResp.puntos || []).length);
       renderKpis();
       renderTable();
       renderCuadrillasSection();
+      renderGruposSection();
       renderMapSection();
     } catch (err) {
       teardownMap();

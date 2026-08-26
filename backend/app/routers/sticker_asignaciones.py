@@ -32,6 +32,26 @@ in `api/sticker-asignaciones.js` but are not named in that list. Since
 dispatch branch, both extra actions are ported here too rather than
 silently dropped — omitting them would leave a real production capability
 unported and would not actually be "verbatim".
+
+## `grupos-inspectores` change (2026-08-26) — `asignarGrupoAPuntos`/`desasignarGrupo`
+
+Two new actions, the sticker-campaign counterpart of
+`routers/planeacion_asignaciones.py`'s own actions of the same name: write/
+clear an optional `grupo_id` on `sticker_matches` docs, COEXISTING with
+`inspector_uid` (never touched by these two actions — the two assignment
+mechanisms are independent, binding decision 2 of that change). This
+module does NOT own `grupos_inspectores` CRUD (creating/editing/deleting a
+group of inspectors) — that stays exclusively in
+`planeacion_asignaciones.py`, the one canonical, campaign-agnostic owner of
+group-of-PEOPLE membership. `asignarGrupoAPuntos` here only READS
+`grupos_inspectores` to validate the `grupo_id` exists before writing it
+(same read-before-write discipline `crear_cuadrilla` already uses for
+`cuadrilla_id`), which is why this module joins
+`ALLOWED_MODULES_GRUPOS_INSPECTORES` in
+`tests/invariants/test_sole_writer.py` as a READER, not a writer, of that
+collection. This module is ALREADY the closed FOURTH/FINAL writer of
+`sticker_matches` itself (see above), so writing the new `grupo_id` field
+onto that collection needs no allowlist change at all.
 """
 from __future__ import annotations
 
@@ -49,6 +69,10 @@ REQUIRED_CLIENTS: tuple[str, ...] = ("sismo",)
 
 STICKER_MATCHES_COLLECTION = "sticker_matches"
 CUADRILLAS_COLLECTION = "cuadrillas"
+# `grupos-inspectores` change. READ-ONLY here (existence validation before
+# asignarGrupoAPuntos writes grupo_id) — CRUD is exclusively owned by
+# routers/planeacion_asignaciones.py. See module docstring.
+GRUPOS_INSPECTORES_COLLECTION = "grupos_inspectores"
 
 # task 0.2 placeholders, verbatim from api/sticker-asignaciones.js:32-33 —
 # not yet confirmed with the operator. Named constants so a later tune is a
@@ -434,6 +458,53 @@ def reiniciar_agrupacion(db: Any) -> dict[str, Any]:
     return {"eliminadas": len(docs), "puntosLiberados": len(punto_ids)}
 
 
+def asignar_grupo_a_puntos(db: Any, body: dict[str, Any]) -> dict[str, Any]:
+    """Sets `grupo_id` on the given `sticker_matches` docs — COEXISTS with
+    any existing `inspector_uid` (never touched here). Read-before-write
+    existence guards on BOTH the grupo and every point, same discipline
+    `crear_cuadrilla` above already uses; batched via `commit_in_chunks`.
+    Sticker-campaign counterpart of `planeacion_asignaciones.py`'s own
+    action of the same name (see module docstring)."""
+    grupo_id = str(body.get("grupo_id") or "").strip()
+    raw_puntos = body.get("puntos")
+    puntos = [str(p) for p in raw_puntos] if isinstance(raw_puntos, list) else []
+    if not grupo_id:
+        raise bad_request("Falta grupo_id.")
+    if not puntos:
+        raise bad_request("asignarGrupoAPuntos necesita al menos un punto.")
+
+    grupo_snap = db.collection(GRUPOS_INSPECTORES_COLLECTION).document(grupo_id).get()
+    if not grupo_snap.exists:
+        raise bad_request(f"No existe el grupo {grupo_id}.")
+
+    punto_refs = [db.collection(STICKER_MATCHES_COLLECTION).document(pid) for pid in puntos]
+    punto_snaps = db.get_all(punto_refs)
+    missing = [s.id for s in punto_snaps if not s.exists]
+    if missing:
+        raise bad_request(f"{len(missing)} punto(s) no existen en sticker_matches: {sorted(missing)}.")
+
+    def _apply(batch: Any, punto_id: str) -> None:
+        batch.set(db.collection(STICKER_MATCHES_COLLECTION).document(punto_id), {"grupo_id": grupo_id}, merge=True)
+
+    commit_in_chunks(db, puntos, _apply)
+    return {"grupo_id": grupo_id, "puntos": puntos}
+
+
+def desasignar_grupo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
+    """Clears `grupo_id` (back to unassigned) on the given `sticker_matches`
+    docs. Does not touch `inspector_uid`."""
+    raw_puntos = body.get("puntos")
+    puntos = [str(p) for p in raw_puntos] if isinstance(raw_puntos, list) else []
+    if not puntos:
+        raise bad_request("desasignarGrupo necesita al menos un punto.")
+
+    def _apply(batch: Any, punto_id: str) -> None:
+        batch.set(db.collection(STICKER_MATCHES_COLLECTION).document(punto_id), {"grupo_id": None}, merge=True)
+
+    commit_in_chunks(db, puntos, _apply)
+    return {"puntos": puntos}
+
+
 class StickerAsignacionesRequest(BaseModel):
     action: str
     maxRadiusM: Any = None
@@ -446,6 +517,7 @@ class StickerAsignacionesRequest(BaseModel):
     inspector_uid: str | None = None
     punto_id: str | None = None
     nuevo_inspector_uid: str | None = None
+    grupo_id: str | None = None  # grupos-inspectores: asignarGrupoAPuntos
 
 
 @router.post("/sticker-asignaciones")
@@ -477,6 +549,10 @@ def sticker_asignaciones(
             return JSONResponse({"ok": True, **eliminar_cuadrilla(db, payload)})
         if body.action == "reiniciarAgrupacion":
             return JSONResponse({"ok": True, **reiniciar_agrupacion(db)})
+        if body.action == "asignarGrupoAPuntos":
+            return JSONResponse({"ok": True, **asignar_grupo_a_puntos(db, payload)})
+        if body.action == "desasignarGrupo":
+            return JSONResponse({"ok": True, **desasignar_grupo(db, payload)})
         raise bad_request(f"Acción desconocida: {body.action}")
     except HTTPException:
         raise

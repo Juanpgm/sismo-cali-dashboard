@@ -35,6 +35,8 @@ FAKE_CLAIMS_VIEWER = {"sub": "uid-viewer", "email": "someone@gmail.com"}
 
 PLANEACION_PUNTOS = "planeacion_puntos"
 PLANEACION_CUADRILLAS = "planeacion_cuadrilla" + "s"  # see planeacion_asignaciones.py's own note
+STICKER_MATCHES = "sticker_matches"  # `grupos-inspectores` change: eliminarGrupo's cross-campaign orphan check
+GRUPOS_INSPECTORES = "grupos_inspectores"  # `grupos-inspectores` change
 
 
 # ── Fake Firestore: path-keyed by (collection, id); supports .where()
@@ -287,6 +289,12 @@ def test_limit_default_is_a_few_hundred_not_two_thousand():
         "marcarNoAplica",
         "reopen",
         "getEnlaceSurvey",
+        "listGrupos",
+        "crearGrupo",
+        "editarGrupo",
+        "eliminarGrupo",
+        "asignarGrupoAPuntos",
+        "desasignarGrupo",
     ],
 )
 def test_non_admin_is_rejected_no_mutation(monkeypatch, action):
@@ -296,12 +304,21 @@ def test_non_admin_is_rejected_no_mutation(monkeypatch, action):
 
     resp = client.post(
         "/planeacion-asignaciones",
-        json={"action": action, "cuadrilla_id": "c1", "punto_id": "p1", "puntos": ["p1"]},
+        json={
+            "action": action,
+            "cuadrilla_id": "c1",
+            "punto_id": "p1",
+            "puntos": ["p1"],
+            "grupo_id": "g1",
+            "nombre": "Grupo Norte",
+            "miembros": ["uid-1"],
+        },
     )
 
     assert resp.status_code == 403
     assert stores[PLANEACION_PUNTOS]["p1"] == {"estado_asignacion": "pendiente", "cuadrilla_id": None}
     assert stores[PLANEACION_CUADRILLAS] == {}
+    assert stores.get(GRUPOS_INSPECTORES, {}) == {}
 
 
 def test_unauthenticated_is_rejected(monkeypatch):
@@ -991,3 +1008,217 @@ def test_list_cuadrillas_serializes_datetime_fields(monkeypatch):
 
     assert resp.status_code == 200, resp.text
     assert isinstance(resp.json()["cuadrillas"][0]["asignado_en"], str)
+
+
+# ── `grupos-inspectores` change (2026-08-26): admin group-of-INSPECTORS CRUD
+# — NOT to be confused with `planeacion_cuadrillas` (groups of POINTS under
+# ONE inspector, tested above). `grupos_inspectores` is campaign-agnostic
+# (shared by BOTH stickers and survey); CRUD is exclusively owned here. ────
+
+
+def test_crear_grupo_succeeds_and_defaults_activo_true(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "crearGrupo", "nombre": "Grupo Norte", "miembros": ["uid-1", "uid-2"]},
+    )
+
+    assert resp.status_code == 201
+    body = resp.json()
+    grupo_id = body["id"]
+    doc = stores[GRUPOS_INSPECTORES][grupo_id]
+    assert doc["nombre"] == "Grupo Norte"
+    assert doc["miembros"] == ["uid-1", "uid-2"]
+    assert doc["activo"] is True
+    assert doc["creado_por"] == UID_ADMIN
+    assert "creado_en" in doc
+
+
+def test_crear_grupo_requires_nombre(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "crearGrupo", "nombre": "", "miembros": ["uid-1"]},
+    )
+
+    assert resp.status_code == 400
+    assert stores.get(GRUPOS_INSPECTORES, {}) == {}
+
+
+def test_crear_grupo_requires_at_least_one_miembro(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "crearGrupo", "nombre": "Grupo Norte", "miembros": []},
+    )
+
+    assert resp.status_code == 400
+    assert stores.get(GRUPOS_INSPECTORES, {}) == {}
+
+
+def test_list_grupos_returns_every_grupo(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {
+        "g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True},
+        "g2": {"nombre": "Sur", "miembros": ["u2"], "activo": False},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "listGrupos"})
+
+    assert resp.status_code == 200
+    ids = {g["id"] for g in resp.json()["grupos"]}
+    assert ids == {"g1", "g2"}
+
+
+def test_editar_grupo_adds_removes_members_and_renames(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Viejo", "miembros": ["u1"], "activo": True}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "editarGrupo", "grupo_id": "g1", "nombre": "Nuevo", "add": ["u2"], "remove": ["u1"]},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body["miembros"]) == {"u2"}
+    assert stores[GRUPOS_INSPECTORES]["g1"]["nombre"] == "Nuevo"
+    assert set(stores[GRUPOS_INSPECTORES]["g1"]["miembros"]) == {"u2"}
+
+
+def test_editar_grupo_nonexistent_fails(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "editarGrupo", "grupo_id": "missing", "add": ["u1"], "remove": []},
+    )
+
+    assert resp.status_code == 400
+
+
+def test_eliminar_grupo_succeeds_when_no_points_assigned(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "eliminarGrupo", "grupo_id": "g1"})
+
+    assert resp.status_code == 200
+    assert "g1" not in stores[GRUPOS_INSPECTORES]
+
+
+def test_eliminar_grupo_refuses_when_planeacion_points_still_assigned(monkeypatch):
+    """Orphan-prevention decision: REFUSE deletion while points still
+    reference the group, naming the count — never a silent grupo_id clear.
+    See planeacion_asignaciones.py's own module docstring for why."""
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {"p1": {"grupo_id": "g1"}, "p2": {"grupo_id": "g1"}, "p3": {"grupo_id": None}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "eliminarGrupo", "grupo_id": "g1"})
+
+    assert resp.status_code == 400
+    assert "2" in resp.json()["detail"]
+    assert "g1" in stores[GRUPOS_INSPECTORES]
+
+
+def test_eliminar_grupo_refuses_when_sticker_points_still_assigned(monkeypatch):
+    """Cross-campaign: the SAME shared group can also be orphaning
+    `sticker_matches` points — the check spans both collections."""
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[STICKER_MATCHES] = {"s1": {"grupo_id": "g1"}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "eliminarGrupo", "grupo_id": "g1"})
+
+    assert resp.status_code == 400
+    assert "1" in resp.json()["detail"]
+    assert "g1" in stores[GRUPOS_INSPECTORES]
+
+
+def test_eliminar_grupo_nonexistent_fails(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "eliminarGrupo", "grupo_id": "missing"})
+
+    assert resp.status_code == 400
+
+
+def test_asignar_grupo_a_puntos_sets_grupo_id_default_planeacion(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {"p1": {}, "p2": {}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["p1", "p2"]},
+    )
+
+    assert resp.status_code == 200
+    assert stores[PLANEACION_PUNTOS]["p1"]["grupo_id"] == "g1"
+    assert stores[PLANEACION_PUNTOS]["p2"]["grupo_id"] == "g1"
+    # Individual assignment (inspector_uid) untouched — coexistence, not replacement.
+    assert "inspector_uid" not in stores[PLANEACION_PUNTOS]["p1"]
+
+
+def test_asignar_grupo_a_puntos_rejects_nonexistent_grupo(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {"p1": {}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "missing", "puntos": ["p1"]},
+    )
+
+    assert resp.status_code == 400
+    assert "grupo_id" not in stores[PLANEACION_PUNTOS]["p1"]
+
+
+def test_desasignar_grupo_clears_field(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {"p1": {"grupo_id": "g1"}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "desasignarGrupo", "puntos": ["p1"]})
+
+    assert resp.status_code == 200
+    assert stores[PLANEACION_PUNTOS]["p1"]["grupo_id"] is None
+
+
+def test_asignar_grupo_a_puntos_coleccion_and_desasignar_are_planeacion_only(monkeypatch):
+    """This router's own asignarGrupoAPuntos/desasignarGrupo touch ONLY
+    `planeacion_puntos` — never `sticker_matches`. The sticker-campaign
+    counterpart of these two actions lives in `sticker_asignaciones.py`
+    (own collection, own router), keeping the existing per-campaign
+    collection ownership discipline intact instead of granting this
+    router write access to a collection it does not own."""
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[STICKER_MATCHES] = {"s1": {}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["s1"]},
+    )
+
+    # s1 only exists in sticker_matches, not planeacion_puntos -- this
+    # router must refuse it (400, unknown point) rather than silently
+    # writing into a collection it does not own.
+    assert resp.status_code == 400
+    assert stores[STICKER_MATCHES]["s1"] == {}

@@ -302,6 +302,45 @@ def test_planeacion_cuadrillas_literal_appears_only_in_allowlisted_modules():
     assert hits, "expected PLANEACION_CUADRILLAS_COLLECTION to be referenced by an allowlisted module by now"
 
 
+# ── `grupos-inspectores` change (2026-08-26) ────────────────────────────────
+#
+# A NEW, INDEPENDENT collection — groups of INSPECTORS (people), not to be
+# confused with `planeacion_cuadrillas` (groups of POINTS under one
+# inspector, above) or the sticker campaign's own `cuadrillas`. Shared by
+# BOTH campaigns per that change's binding decision 1: a point in either
+# `sticker_matches` or `planeacion_puntos` can carry an optional `grupo_id`
+# naming a doc here.
+#
+# THREE allowlisted modules, split by responsibility:
+#   - `app/routers/planeacion_asignaciones.py` — the ONLY writer (group
+#     CRUD: crearGrupo/editarGrupo/eliminarGrupo). It also READS this
+#     collection to validate a `grupo_id` before `asignarGrupoAPuntos`
+#     writes it onto a `planeacion_puntos` doc.
+#   - `app/routers/inspector_asignaciones.py` — READ-ONLY. Resolves "which
+#     active groups is the caller a member of" for the widened misPuntos/
+#     misPuntosPlaneacion UNION and the widened own-uid-OR-group-member
+#     write guard. Never writes this collection.
+#   - `app/routers/sticker_asignaciones.py` — READ-ONLY. Validates a
+#     `grupo_id` before its own `asignarGrupoAPuntos` writes it onto a
+#     `sticker_matches` doc (the sticker-campaign counterpart to
+#     `planeacion_asignaciones.py`'s own action of the same name). Never
+#     writes `grupos_inspectores` itself — group CRUD stays exclusively in
+#     `planeacion_asignaciones.py`, the one canonical home for group-of-
+#     people membership, campaign-agnostic by design.
+ALLOWED_MODULES_GRUPOS_INSPECTORES = {
+    APP_ROOT / "routers" / "planeacion_asignaciones.py",
+    APP_ROOT / "routers" / "inspector_asignaciones.py",
+    APP_ROOT / "routers" / "sticker_asignaciones.py",
+}
+
+
+def test_grupos_inspectores_literal_is_used_by_an_allowlisted_module():
+    hits = _files_containing("grupos_inspectores")
+    unexpected = hits - ALLOWED_MODULES_GRUPOS_INSPECTORES
+    assert not unexpected, f"unexpected grupos_inspectores reference(s): {sorted(unexpected)}"
+    assert hits, "expected grupos_inspectores to be referenced by an allowlisted module by now"
+
+
 # Scanner precision ----------------------------------------------------------
 # The scan must match a collection name as a WHOLE identifier. A naive
 # substring match makes any longer collection whose name merely CONTAINS a

@@ -230,6 +230,8 @@ def test_auto_agrupar_empty_input_returns_empty_list():
         "reasignarPunto",
         "eliminarCuadrilla",
         "reiniciarAgrupacion",
+        "asignarGrupoAPuntos",
+        "desasignarGrupo",
     ],
 )
 def test_non_admin_is_rejected_no_mutation(monkeypatch, action):
@@ -239,7 +241,7 @@ def test_non_admin_is_rejected_no_mutation(monkeypatch, action):
 
     resp = client.post(
         "/sticker-asignaciones",
-        json={"action": action, "cuadrilla_id": "c1", "punto_id": "p1", "puntos": ["p1"]},
+        json={"action": action, "cuadrilla_id": "c1", "punto_id": "p1", "puntos": ["p1"], "grupo_id": "g1"},
     )
 
     assert resp.status_code == 403
@@ -574,3 +576,59 @@ def test_unrecognized_action_is_rejected(monkeypatch):
     resp = client.post("/sticker-asignaciones", json={"action": "bogus"})
 
     assert resp.status_code == 400
+
+
+# ── `grupos-inspectores` change (2026-08-26): sticker-campaign counterpart of
+# planeacion_asignaciones.py's own asignarGrupoAPuntos/desasignarGrupo —
+# writes/clears `grupo_id` on `sticker_matches` docs ONLY. Group CRUD itself
+# (creating/editing/deleting a `grupos_inspectores` doc) is NOT here — it is
+# exclusively owned by `routers/planeacion_asignaciones.py` (campaign-
+# agnostic single owner); this router only VALIDATES a `grupo_id` exists
+# before writing it, same read-before-write discipline `crear_cuadrilla`
+# already uses. ──────────────────────────────────────────────────────────
+
+
+GRUPOS_INSPECTORES = "grupos_inspectores"
+
+
+def test_asignar_grupo_a_puntos_sets_grupo_id_on_sticker_points(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[STICKER_MATCHES] = {"s1": {}, "s2": {}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/sticker-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["s1", "s2"]},
+    )
+
+    assert resp.status_code == 200
+    assert stores[STICKER_MATCHES]["s1"]["grupo_id"] == "g1"
+    assert stores[STICKER_MATCHES]["s2"]["grupo_id"] == "g1"
+    # Individual assignment (inspector_uid) untouched — coexistence.
+    assert "inspector_uid" not in stores[STICKER_MATCHES]["s1"]
+
+
+def test_asignar_grupo_a_puntos_rejects_nonexistent_grupo(monkeypatch):
+    stores = _stores()
+    stores[STICKER_MATCHES] = {"s1": {}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/sticker-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "missing", "puntos": ["s1"]},
+    )
+
+    assert resp.status_code == 400
+    assert "grupo_id" not in stores[STICKER_MATCHES]["s1"]
+
+
+def test_desasignar_grupo_clears_field_on_sticker_points(monkeypatch):
+    stores = _stores()
+    stores[STICKER_MATCHES] = {"s1": {"grupo_id": "g1"}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/sticker-asignaciones", json={"action": "desasignarGrupo", "puntos": ["s1"]})
+
+    assert resp.status_code == 200
+    assert stores[STICKER_MATCHES]["s1"]["grupo_id"] is None

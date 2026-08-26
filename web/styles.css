@@ -1927,6 +1927,15 @@ body:not([data-role="admin"]) .view-tab[data-view="analista"] { display: none !i
 .asignacion-cuadrilla-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
 .asignacion-cuadrilla-row .sticker-identity { flex: 1 1 150px; }
 .asignacion-cuadrilla-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+
+/* Grupos de inspectores (`grupos-inspectores` change) — member checkbox
+   picker in the create/edit modal, reusing the same roster the cuadrillas
+   combobox already caches. */
+.asignacion-grupo-miembros { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin: 0; }
+.asignacion-grupo-miembros legend { font-size: .82rem; color: var(--text-secondary); padding: 0 4px; }
+.asignacion-grupo-miembros-list { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
+.asignacion-grupo-miembro { display: flex; align-items: center; gap: 8px; font-size: .88rem; color: var(--text-primary); cursor: pointer; }
+.asignacion-grupo-miembro input { accent-color: var(--accent); width: 16px; height: 16px; }
 .asignacion-cuadrilla-actions .sticker-action { padding: 6px 10px; font-size: .78rem; }
 
 .asignacion-combo { position: relative; min-width: 0; flex: 1 1 200px; }

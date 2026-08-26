@@ -85,6 +85,52 @@ next author that an inconvenient tripwire is something to slip past.
 Reverted 2026-08-26 along with a real fix to the scan itself, which now
 matches whole identifiers — so `planeacion_cuadrillas` no longer
 false-positives against the sticker campaign's closed list at all.
+
+## `grupos-inspectores` change (2026-08-26) — groups of INSPECTORS
+
+A NEW concept, distinct from `planeacion_cuadrillas` above: a group of
+PEOPLE (`grupos_inspectores/{id}`, `{nombre, miembros: [uid,...], activo,
+creado_en, creado_por}`), not a group of points. Shared by BOTH campaigns
+(binding decision 1) — CRUD lives exclusively here (`listGrupos`/
+`crearGrupo`/`editarGrupo`/`eliminarGrupo`) because group-of-people
+membership is campaign-agnostic, and one canonical owner avoids a split
+CRUD surface. `routers/inspector_asignaciones.py` READS this collection
+(own-uid group-membership lookup, never writes it); `routers/
+sticker_asignaciones.py` also READS it (validates a `grupo_id` before its
+OWN `asignarGrupoAPuntos` writes it onto a `sticker_matches` doc). All
+three modules are allowlisted under `tests/invariants/test_sole_writer.py`'s
+`ALLOWED_MODULES_GRUPOS_INSPECTORES`.
+
+`asignarGrupoAPuntos`/`desasignarGrupo` HERE write `grupo_id` ONLY onto
+`planeacion_puntos` docs — this router's own, already-owned collection.
+They deliberately do NOT also reach into `sticker_matches`: that would
+mean writing a field this router doesn't otherwise own into a DIFFERENT
+campaign's core collection, undermining the same per-campaign collection
+ownership discipline this file's own "A note on a name this module shares"
+section above describes ("ZERO functional relationship" to the sticker
+campaign's own collections). Instead, `sticker_asignaciones.py` — already
+the FOURTH and FINAL allowlisted WRITER of `sticker_matches` — gets its
+OWN mirrored `asignarGrupoAPuntos`/`desasignarGrupo` pair for that
+collection. Group ASSIGNMENT is therefore per-campaign (two small, focused
+actions, one per router, each writing only the collection it already
+owns), while group MEMBERSHIP (people) stays single-owned here. Net
+effect for the end user is identical to a single cross-campaign action:
+"assign this group to these points" always resolves to the right
+collection, because the ADMIN UI (Planeación tab, `web/js/planeacion.js`)
+always calls the same-router action for the points it is already looking
+at.
+
+`eliminarGrupo`'s orphan-prevention guard (decision: REFUSE deletion while
+ANY point still references the group, rather than silently clearing
+`grupo_id` — see the function's own docstring for why) must check BOTH
+collections, since the group itself is shared. Reading (never writing)
+`sticker_matches` for that count is why this module is ALSO already listed
+in the sticker campaign's own `ALLOWED_MODULES` set above (originally for
+the unrelated `cuadrillas` JSON-key false positive) — a second, genuinely
+different, honestly-flagged reason to be there, same "legitimate new
+reader, flagged rather than hidden" precedent `routers/sticker_status.py`
+and `app/jobs/planeacion_cruce.py` already established for their own
+collections.
 """
 from __future__ import annotations
 
@@ -106,6 +152,15 @@ REQUIRED_CLIENTS: tuple[str, ...] = ("sismo",)
 PLANEACION_PUNTOS_COLLECTION = "planeacion_puntos"
 PLANEACION_CUADRILLAS_COLLECTION = "planeacion_cuadrillas"
 _CUADRILLAS_KEY = "cuadrillas"
+
+# `grupos-inspectores` change. Shared, campaign-agnostic — CRUD lives here;
+# `routers/inspector_asignaciones.py` and `routers/sticker_asignaciones.py`
+# READ it (see module docstring). Read-only cross-campaign reference to
+# STICKER_MATCHES_COLLECTION below is for eliminarGrupo's orphan check ONLY
+# (never a write) — this router owns `planeacion_puntos`/
+# `planeacion_cuadrillas`/`grupos_inspectores`, not `sticker_matches`.
+GRUPOS_INSPECTORES_COLLECTION = "grupos_inspectores"
+STICKER_MATCHES_COLLECTION = "sticker_matches"
 
 # Binding user decision (2026-08-26): DEFAULT_MAX_SIZE = 10 for Planeación,
 # NOT the sticker template's 8 — an EDAN survey is a far longer visit than
@@ -793,6 +848,158 @@ def get_enlace_survey(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     return {"clave": clave, "web": urls["web"], "app": urls["app"]}
 
 
+# ---- grupos_inspectores actions (`grupos-inspectores` change) --------------
+
+
+def list_grupos(db: Any) -> list[dict[str, Any]]:
+    """Every `grupos_inspectores` doc, raw (`miembros` as uids). The admin
+    UI resolves uid -> display name via the SAME inspector roster it
+    already caches for cuadrillas' own `inspectorLabel` (`/api/stickers`
+    `{action:'list'}`) — no duplicated roster fetch here."""
+    docs = db.collection(GRUPOS_INSPECTORES_COLLECTION).get()
+    return [_doc_to_dict(d) for d in docs]
+
+
+def crear_grupo(db: Any, body: dict[str, Any], claims: dict[str, Any]) -> dict[str, Any]:
+    nombre = str(body.get("nombre") or "").strip()
+    raw_miembros = body.get("miembros")
+    miembros = [str(m) for m in raw_miembros] if isinstance(raw_miembros, list) else []
+    if not nombre:
+        raise bad_request("crearGrupo necesita un nombre.")
+    if not miembros:
+        raise bad_request("crearGrupo necesita al menos un miembro.")
+
+    ref = db.collection(GRUPOS_INSPECTORES_COLLECTION).document()
+    data = {
+        "nombre": nombre,
+        "miembros": miembros,
+        "activo": True,
+        "creado_en": _now(),
+        "creado_por": claims.get("sub"),
+    }
+    ref.set(data)
+    return {"id": ref.id}
+
+
+def editar_grupo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
+    """Rename and/or add/remove members, keeping `miembros` de-duplicated.
+    Adapted from `editar_cuadrilla`'s own add/remove shape."""
+    grupo_id = str(body.get("grupo_id") or "").strip()
+    add = [str(u) for u in body.get("add") or []] if isinstance(body.get("add"), list) else []
+    remove = [str(u) for u in body.get("remove") or []] if isinstance(body.get("remove"), list) else []
+    if not grupo_id:
+        raise bad_request("Falta grupo_id.")
+
+    ref = db.collection(GRUPOS_INSPECTORES_COLLECTION).document(grupo_id)
+    snap = ref.get()
+    if not snap.exists:
+        raise bad_request(f"No existe el grupo {grupo_id}.")
+
+    current_data = snap.to_dict() or {}
+    current = {str(u) for u in current_data.get("miembros") or []}
+    for uid in remove:
+        current.discard(uid)
+    for uid in add:
+        current.add(uid)
+    next_miembros = list(current)
+
+    fields: dict[str, Any] = {"miembros": next_miembros}
+    nombre = body.get("nombre")
+    if nombre:
+        fields["nombre"] = str(nombre).strip()
+
+    ref.set(fields, merge=True)
+    return {"id": grupo_id, "nombre": fields.get("nombre", current_data.get("nombre")), "miembros": next_miembros}
+
+
+def eliminar_grupo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
+    """Orphan-prevention decision: REFUSE deletion while ANY point (in
+    EITHER campaign — the group is shared) still references this
+    `grupo_id`, naming the count(s), rather than silently clearing
+    `grupo_id` back to unassigned on every affected point. Chosen over the
+    silent-clear alternative for the same reason `crear_cuadrilla`'s own
+    guards are read-before-write and actionable rather than silent: an
+    admin deleting a group that still has active field-work assigned
+    through it should see exactly what would be orphaned and act
+    deliberately (reassign or `desasignarGrupo` first), not discover it
+    later as points with a dangling `grupo_id` nobody remembers creating."""
+    grupo_id = str(body.get("grupo_id") or "").strip()
+    if not grupo_id:
+        raise bad_request("Falta grupo_id.")
+
+    ref = db.collection(GRUPOS_INSPECTORES_COLLECTION).document(grupo_id)
+    snap = ref.get()
+    if not snap.exists:
+        raise bad_request(f"No existe el grupo {grupo_id}.")
+
+    planeacion_n = len(
+        list(db.collection(PLANEACION_PUNTOS_COLLECTION).where("grupo_id", "==", grupo_id).get())
+    )
+    sticker_n = len(
+        list(db.collection(STICKER_MATCHES_COLLECTION).where("grupo_id", "==", grupo_id).get())
+    )
+    if planeacion_n or sticker_n:
+        partes = []
+        if planeacion_n:
+            partes.append(f"{planeacion_n} punto(s) de planeación")
+        if sticker_n:
+            partes.append(f"{sticker_n} punto(s) de stickers")
+        raise bad_request(
+            f"No se puede eliminar el grupo {grupo_id}: todavía tiene {' y '.join(partes)} "
+            "asignado(s). Reasignar o desasignar esos puntos primero."
+        )
+
+    ref.delete()
+    return {"id": grupo_id}
+
+
+def asignar_grupo_a_puntos(db: Any, body: dict[str, Any]) -> dict[str, Any]:
+    """Sets `grupo_id` on the given `planeacion_puntos` docs — COEXISTS with
+    any existing `inspector_uid` (never touched here, binding decision 2).
+    Read-before-write existence guards on BOTH the grupo and every point,
+    same discipline `crear_cuadrilla` already uses; batched at 500 ops via
+    `commit_in_chunks`."""
+    grupo_id = str(body.get("grupo_id") or "").strip()
+    raw_puntos = body.get("puntos")
+    puntos = [str(p) for p in raw_puntos] if isinstance(raw_puntos, list) else []
+    if not grupo_id:
+        raise bad_request("Falta grupo_id.")
+    if not puntos:
+        raise bad_request("asignarGrupoAPuntos necesita al menos un punto.")
+
+    grupo_snap = db.collection(GRUPOS_INSPECTORES_COLLECTION).document(grupo_id).get()
+    if not grupo_snap.exists:
+        raise bad_request(f"No existe el grupo {grupo_id}.")
+
+    punto_refs = [db.collection(PLANEACION_PUNTOS_COLLECTION).document(pid) for pid in puntos]
+    punto_snaps = db.get_all(punto_refs)
+    missing = [s.id for s in punto_snaps if not s.exists]
+    if missing:
+        raise bad_request(f"{len(missing)} punto(s) no existen en planeacion_puntos: {sorted(missing)}.")
+
+    def _apply(batch: Any, punto_id: str) -> None:
+        batch.set(db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id), {"grupo_id": grupo_id}, merge=True)
+
+    commit_in_chunks(db, puntos, _apply)
+    return {"grupo_id": grupo_id, "puntos": puntos}
+
+
+def desasignar_grupo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
+    """Clears `grupo_id` (back to unassigned) on the given `planeacion_puntos`
+    docs. Does not touch `inspector_uid` — the two assignment mechanisms
+    are independent (binding decision 2)."""
+    raw_puntos = body.get("puntos")
+    puntos = [str(p) for p in raw_puntos] if isinstance(raw_puntos, list) else []
+    if not puntos:
+        raise bad_request("desasignarGrupo necesita al menos un punto.")
+
+    def _apply(batch: Any, punto_id: str) -> None:
+        batch.set(db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id), {"grupo_id": None}, merge=True)
+
+    commit_in_chunks(db, puntos, _apply)
+    return {"puntos": puntos}
+
+
 class PlaneacionAsignacionesRequest(BaseModel):
     action: str
     # listPuntos / resumen
@@ -825,6 +1032,10 @@ class PlaneacionAsignacionesRequest(BaseModel):
     # marcarNoAplica
     motivo_exclusion: str | None = None
     revertir: bool | None = None
+    # grupos-inspectores: crearGrupo/editarGrupo/eliminarGrupo/
+    # asignarGrupoAPuntos/desasignarGrupo
+    grupo_id: str | None = None
+    miembros: list[str] | None = None
 
 
 @router.post("/planeacion-asignaciones")
@@ -866,6 +1077,18 @@ def planeacion_asignaciones(
             return JSONResponse({"ok": True, "punto": reopen_punto(db, payload, claims)})
         if body.action == "getEnlaceSurvey":
             return JSONResponse({"ok": True, **get_enlace_survey(db, payload)})
+        if body.action == "listGrupos":
+            return JSONResponse({"ok": True, "grupos": list_grupos(db)})
+        if body.action == "crearGrupo":
+            return JSONResponse({"ok": True, **crear_grupo(db, payload, claims)}, status_code=201)
+        if body.action == "editarGrupo":
+            return JSONResponse({"ok": True, **editar_grupo(db, payload)})
+        if body.action == "eliminarGrupo":
+            return JSONResponse({"ok": True, **eliminar_grupo(db, payload)})
+        if body.action == "asignarGrupoAPuntos":
+            return JSONResponse({"ok": True, **asignar_grupo_a_puntos(db, payload)})
+        if body.action == "desasignarGrupo":
+            return JSONResponse({"ok": True, **desasignar_grupo(db, payload)})
         raise bad_request(f"Acción desconocida: {body.action}")
     except HTTPException:
         raise
