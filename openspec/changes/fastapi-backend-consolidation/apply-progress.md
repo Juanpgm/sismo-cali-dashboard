@@ -1243,3 +1243,253 @@ live admin `FIREBASE_ID_TOKEN` AND explicit `CONFIRM_REDEPLOY=yes` human confirm
 BLOCKED on 6.3** (and, once unblocked, needs a two-part edit — `api-config.js` flip AND `main.js`'s
 `REFRESH_ENDPOINT` wired through `apiUrl()` — not a single-line repoint, per the Blocked Tasks section
 above). Full `backend/tests/` suite: **116 passed, 0 failed**.
+
+---
+
+## Batch 7a — dashboard-refresh + cruce-sticker job absorption
+
+Branch: `feat/fastapi-consolidation-7a-jobs` (off `main`, not pushed). Confirmed `python -m pytest
+backend/tests/ -q` on `main` before branching → **116 passed** (slices 1-6 merged, matching Batch 6's
+final count above). Scope: EXACTLY tasks 7.1, 7.2, 7.8, 7.9, 7.12 — the JOB-ABSORPTION portion of slice
+7 (7a `dashboard-refresh` + 7c `cruce-sticker`+`railway_services.py` per the Review Workload Forecast's
+suggested split, combined per this batch's own instructions). Tasks 7.3-7.6 (`survey_cali` ingestion,
+slice 7b) and 7.13-7.15 (manual operator steps) are OUT OF SCOPE — untouched, left `[ ]`. 7.7/7.10/7.11
+(already RESOLVED-EXCLUDED) were read but not re-litigated.
+
+### Completed Tasks
+
+- [x] **7.1** (RED) `backend/tests/jobs/test_dashboard_refresh.py` — 15 cases: `_raw_record_mapper`
+      (PII/heavy-field stripping, `strip_report()`-parity coord parsing incl. zero/zero and
+      unparseable), `_dedupe_sorted` (first-seen-wins dedup + sorted output — the file-level
+      idempotency guarantee `fetch_reportes_api.py` had), `_meta_guard` (missing file / `row_count<=0`
+      both raise; valid meta returns the count), `_publish_all` (missing files skipped with zero Blob
+      calls; existing files uploaded), and an offline `--check` entrypoint smoke test. Confirmed
+      RED — `ImportError: cannot import name 'dashboard_refresh' from 'app.jobs'` (1 collection error)
+      before 7.2 landed.
+- [x] **7.2** (GREEN) `backend/app/jobs/dashboard_refresh.py` — cron entrypoint (`python -m
+      app.jobs.dashboard_refresh`), preserving `deploy/refresh.sh`'s STEP-tracked
+      seed_geocode→refresh_data→fetch_reportes→meta_guard→publish_blob pipeline and its
+      trap-equivalent best-effort `_status.json` Blob write on exit, WITHOUT the clone-at-start
+      `entrypoint.sh`/`DASHBOARD_REPO_TOKEN` machinery (the code is already in the image, design.md
+      ADR-1). `scripts/refresh_data.py` invoked via `subprocess.run` (`timeout=300`, `cwd=scripts/`) —
+      unchanged, heavy pandas/shapely dependency kept out-of-process. The `fetch_reportes_api.py` half
+      is REPLACED, not subprocessed: its own day-walk logic is now a call into
+      `app.services.atencionsismo.day_walk()` instead of duplicating the split/retry mechanics (task
+      7.2's own instruction, design.md ADR-5) — `atencionsismo.py` gained `day_walk()` (extracted from
+      `count_reportes()`) and a pluggable `mapper: Callable[[dict], dict]` on `fetch_window()`/`day_walk()`
+      (default `_map_summary_record` preserves every existing call site's behavior byte-for-byte — the
+      pre-existing 34/34 `test_atencionsismo.py` cases stayed green with zero changes). The job passes
+      its own `_raw_record_mapper` (ported verbatim from `fetch_reportes_api.py`'s `strip_report()`) so
+      `reportes.json` keeps the FULL analytic field set the dashboard's map needs, unlike the
+      snapshot's AGG-only default. `reportes_agg.json` now built from `atencionsismo.summarize()`
+      instead of a second aggregation implementation — same "single implementation" precedent 3.4's
+      Blob-seed path already established. `deploy/blob_sync.py` imported directly (`sys.path.insert`,
+      not re-implemented — same "call it, don't duplicate it" principle applied to a second file) for
+      the seed/publish/status-write Blob calls. First GREEN pass, no rework —
+      `python -m pytest backend/tests/jobs/test_dashboard_refresh.py -v` → 15 passed. Full suite:
+      `python -m pytest backend/tests/ -q` → **131 passed** (116 baseline + 15 new).
+- [x] **7.8** (RED) `backend/tests/jobs/test_cruce_sticker.py` — 9 cases: `doc_id` stability, matching-
+      cascade reuse (geo hit / address-fallback hit / clean miss, exercising
+      `app.integracion.cruce_gestor`'s `nearest`/`match_by_direccion`), `build_write_ops` (pipeline-
+      fields-only on an existing doc — no admin field ever appears; admin defaults seeded ONLY on first
+      write), `select_candidates` (a point already `tiene_sticker=true` is dropped, never re-scanned),
+      the offline `--check` entrypoint, and `REQUIRED_CLIENTS == ("sismo",)`. Confirmed RED —
+      `ImportError: cannot import name 'cruce_sticker' from 'app.jobs'` (1 collection error) — verified
+      by temporarily hiding the already-written `app/jobs/cruce_sticker.py` (moved to a temp path,
+      re-ran, confirmed the import failure, restored it) rather than writing the test before any code
+      existed, since the job's dependency chain (`cruce_gestor.py`/`coords.py`/`normalization.py`) was
+      drafted alongside it for the import-fix verification — the RED confirmation itself is genuine
+      (0 passed, 1 collection error) even though the sequencing differs slightly from a from-scratch
+      RED-before-any-code batch, flagged here for verify per the pattern 3.5/5.3 established for
+      honesty about sequencing.
+- [x] **7.9** (GREEN) `backend/app/integracion/{coords,normalization,cruce_gestor}.py` +
+      `backend/app/jobs/cruce_sticker.py` — absorbed `integracion_F1/cruce_sticker.py` (pipeline:
+      matching cascade, incremental candidate selection via a one-time `tiene_sticker` pre-read,
+      watermarked Firestore read via `_meta/cruce_sticker_state`) merged with `job_sticker.py`'s
+      runlog-wrapped entrypoint into ONE file, same single-file pattern 7.2 established for
+      `dashboard_refresh.py`. Confirmed clean of gspread AND dagma by reading the source in full: no
+      gspread import anywhere; its one dependency (`cruce_gestor.py`) is a DIFFERENT "Gestor de Zonas"
+      PMU Apps Script API (not Firestore/dagma) but its own `from .config import CALI_BBOX` transitively
+      pulled in `integracion/config.py`'s dagma constants (`FIRESTORE_PROJECT`, `FIRESTORE_COLLECTION =
+      "cruce_criticos_survey"`, EDAN/VISITAS Sheets ids) — so `config.py` was NOT copied verbatim like
+      ADR-2's literal text says; a NEW trimmed `app/integracion/config.py` (drafted this batch, see
+      Deviations) keeps ONLY `BOGOTA_TZ`/`CALI_BBOX`. `cruce_gestor.py`/`coords.py`/`normalization.py`
+      copied otherwise verbatim with `# Ported from Juanpgm/normalizador_data_sismo_cali@<sha> <path>
+      (2026-08-26)` headers (SHAs read from `integracion_F1`'s own git log, a separate repo — see Files
+      Changed); `cruce_gestor.py`'s two absolute `integracion.*` imports fixed to `app.integracion.*`
+      (mechanical path fix for the new package location, zero behavior change). Firestore access
+      switched from the legacy module's 3-tier SA resolution (`STICKERS_FIREBASE_SA` path /
+      `FIREBASE_SERVICE_ACCOUNT_JSON` / ADC) to `credentials.sismo().firestore`, per ADR-4/ADR-9.
+      `test_sole_writer.py`'s `ALLOWED_MODULES` extended with `app/jobs/cruce_sticker.py` (WRITE) —
+      confirmed `cruce_gestor.py` itself has ZERO `sticker_matches`/`cuadrillas` references (its own
+      Firestore-shaped code is the Apps Script API, not this project's Firestore), so only the job
+      module needed the allowlist entry, not its dependency. `requirements.txt` gained `numpy`
+      (`normalization.py`'s address vector) and `requests` (the job's `INSPECTIONS_URL` fallback +
+      `cruce_gestor.py`'s unused-but-imported `fetch_gestor`). First GREEN pass, no rework —
+      `python -m pytest backend/tests/jobs/test_cruce_sticker.py
+      backend/tests/invariants/test_sole_writer.py -v` → 11 passed. Full suite:
+      `python -m pytest backend/tests/ -q` → **140 passed** (131 baseline + 9 new).
+- [x] **7.12** `backend/scripts/railway_services.py` — ports `integracion_F1/scripts/railway_setup.py`'s
+      exact drift-only `gql()`/`_token()`/`LIST_SERVICES`/`INSTANCE`/`CREATE`/`UPDATE`/`desired()`/
+      `apply_service()` structure, scoped to 2 `SERVICES` rows: `dashboard-refresh` (`startCommand:
+      python -m app.jobs.dashboard_refresh`, reuses its already-provisioned `service_id`
+      `156e97a2-596b-4861-95f4-4060dab408e2` — Batch 6's `/refresh` route already defaults to this
+      exact id per its own "env-var-with-fallback" design, so zero re-provisioning needed) and
+      `cruce-sticker` (`startCommand: python -m app.jobs.cruce_sticker`, `service_id: None` pending
+      task 7.13's MANUAL creation — the legacy shell never deployed successfully and stays deleted in
+      `railway_setup.py`, not reused). Schedules copied verbatim from `railway_setup.py`'s own
+      `EVERY_15`/`STICKER_EVERY_15` constants, cross-checked against job-scheduling spec's table
+      (`*/15 13-23,0 * * *` / `7,22,37,52 13-23,0 * * *`) — identical, no discrepancy to resolve. Reuses
+      the SAME `PROJECT_ID`/`ENVIRONMENT_ID` as the legacy script (`normalizador-sismo-cali` project),
+      matching Batch 6's precedent rather than fabricating a new project. Every service is
+      git-connected (design.md ADR-1) — no `railway up --path-as-root .` step, unlike the legacy
+      CLI-upload fleet. Syntax-checked (`python -c "import ast; ast.parse(...)"` → OK) and smoke-run
+      (`--show` with no `RAILWAY_API_TOKEN` → clean `SystemExit` guard message, confirmed no crash) —
+      no dedicated pytest file, matching the precedent every `verify_*_parity.py` operator script in
+      `backend/scripts/` already set (manual-tool convention). Deleted the `dashboard-refresh`/
+      `cruce-sticker` rows AND the now-orphaned `STICKER_EVERY_15` constant from
+      `integracion_F1/scripts/railway_setup.py` in this same batch — that directory is a SEPARATE git
+      remote (`Juanpgm/normalizador_data_sismo_cali`; `integracion_F1/` is gitignored from THIS repo,
+      confirmed via `git check-ignore -v`), so the deletion is its own local commit in that repo's own
+      history (`c54d6db`, not pushed), not part of this repo's branch. `normalizador`/`integracion-f3`/
+      `asignaciones`/`cruce-gestion` rows there are untouched — verified by re-reading the file after
+      the edit and confirming `EVERY_15`/`EVERY_15_OFFSET`/`HOURLY_DAY` are all still referenced.
+
+### Design Interpretation (flag for verify)
+
+**`app/integracion/config.py` is NOT a verbatim ADR-2 copy — deliberately trimmed.** ADR-2's literal
+text says the migrating job's PR "copies exactly the modules it imports... keeping module names so
+imports port mechanically." `cruce_gestor.py` imports `from .config import CALI_BBOX` (and
+`runlog.py` imports `from .config import BOGOTA_TZ`), so a byte-verbatim copy of
+`integracion_F1/integracion/config.py` would also drag in `FIRESTORE_PROJECT = os.environ.get
+("FIREBASE_PROJECT", "dagma-85aad")`, `FIRESTORE_COLLECTION = "cruce_criticos_survey"`,
+`EDAN_SPREADSHEET_ID`/`VISITAS_SPREADSHEET_ID`/`WRITE_SCOPES` (Sheets), and `.env`-file auto-loading —
+directly violating proposal.md Extension 2's binding directive ("no dagma credential, project id,
+collection name, or API constant anywhere in `backend/`"). This batch's read of `config.py` in full
+(source file, 133 lines) is what surfaced this — task 7.9's own text only flagged `cruce_gestor.py`
+itself as "confirmed clean" of gspread, not its transitive `config.py` dependency. Resolution: a NEW
+`app/integracion/config.py` (25 lines) keeps ONLY the two constants actually used
+(`BOGOTA_TZ`/`CALI_BBOX`), with a module docstring explaining the cut. This is a NECESSARY deviation
+from ADR-2's literal mechanism to satisfy a HIGHER-PRIORITY binding constraint (Extension 2), not a
+shortcut — flagged explicitly for verify to confirm the interpretation is sound.
+
+**`cruce_gestor.py`'s own dead code is copied along, not trimmed.** Unlike `config.py`, `cruce_gestor.py`
+itself carries no dagma/Sheets content — its "Gestor de Zonas" Apps Script cross-reference
+(`fetch_gestor`/`build_cruce`/`main()`) is unrelated to the migration's exclusions, just unused in this
+new context (`app/jobs/cruce_sticker.py` only imports 5 of its ~15 functions). Copied as a whole file
+per ADR-2's own "copy exactly the modules it imports, keeping module names so imports port
+mechanically" — trimming it to only the 5 used functions would be editorializing a "faithful port"
+into a "hand-picked extraction," a bigger behavioral-drift risk for zero benefit (the file compiles,
+tests pass, and PROVENANCE.md records the full-file copy honestly). Contributes ~477 of this batch's
+~2500 changed lines — see Workload / PR Boundary below for the resulting review-budget flag.
+
+### Deviations from Design
+
+1. `app/integracion/config.py` trimmed instead of verbatim-copied — see Design Interpretation above.
+2. `atencionsismo.py`'s `fetch_window()`/`count_reportes()` refactored (not just called as-is) to add
+   `day_walk()` + a pluggable `mapper` parameter — task 7.2's text says "now calling... instead of
+   duplicating it," which literally requires SOME extension point on the callee side; the alternative
+   (the job re-implementing its own day-walk against `atencionsismo`'s lower-level `fetch_window`
+   primitive with a hand-rolled mapper baked in) would have duplicated the concurrency-batching/retry
+   loop `count_reportes()` already has — judged a larger deviation from "single implementation" than
+   this refactor. Confirmed zero behavior change for every pre-existing caller (34/34 `test_atencionsismo.py`
+   cases green, unmodified).
+3. `cruce_gestor.py`'s `HERE.parents[2]`/`ASIGNACIONES_JSON`/`OUT_JSON` (its own dead-code `main()`
+   path) were recomputed for the new file depth (`backend/app/integracion/` is 3 levels under repo
+   root, vs. the source's 1 level) rather than left as literal 1-level-up path arithmetic that would
+   silently resolve to the wrong directory if `main()` were ever invoked by accident. Inert either way
+   (never called), fixed for correctness-if-ever-touched, not a functional requirement.
+
+### Issues Found
+
+None.
+
+### Files Changed (Batch 7a)
+
+| File | Action | What Was Done |
+|---|---|---|
+| `backend/tests/jobs/__init__.py` | Created | Empty package marker |
+| `backend/tests/jobs/test_dashboard_refresh.py` | Created | 15 cases: raw mapper, dedupe/sort, meta_guard, publish skip-if-missing, `--check` |
+| `backend/app/services/atencionsismo.py` | Modified | `day_walk()` extracted from `count_reportes()`; `fetch_window()`/`day_walk()` gain a `mapper` param (default preserves existing behavior) |
+| `backend/app/integracion/config.py` | Created | NEW, trimmed (`BOGOTA_TZ`/`CALI_BBOX` only) — not a verbatim ADR-2 copy, see Deviations |
+| `backend/app/integracion/runlog.py` | Created | Ported verbatim, provenance header (`48a807c`) |
+| `backend/app/jobs/dashboard_refresh.py` | Created | Cron entrypoint absorbing `deploy/refresh.sh` + `fetch_reportes_api.py` (now via `atencionsismo.day_walk`) |
+| `backend/tests/jobs/test_cruce_sticker.py` | Created | 9 cases: doc_id, matching cascade, write-ops field ownership, incremental candidates, `--check`, `REQUIRED_CLIENTS` |
+| `backend/app/integracion/coords.py` | Created | Ported verbatim, provenance header (`4999bfc`) |
+| `backend/app/integracion/normalization.py` | Created | Ported verbatim, provenance header (`4999bfc`) |
+| `backend/app/integracion/cruce_gestor.py` | Created | Ported with provenance header (`ce51838`); 2 absolute imports fixed to `app.integracion.*`; `HERE.parents[2]` path depth fixed |
+| `backend/app/jobs/cruce_sticker.py` | Created | Merges `cruce_sticker.py` (`b013360`) + `job_sticker.py` (`551a73a`) into one cron entrypoint; Firestore via `credentials.sismo()` |
+| `backend/app/integracion/PROVENANCE.md` | Modified | 6 new rows for every file copied this batch |
+| `backend/tests/invariants/test_sole_writer.py` | Modified | `ALLOWED_MODULES` gains `app/jobs/cruce_sticker.py` (WRITE) |
+| `backend/requirements.txt` | Modified | Adds `numpy`, `requests` |
+| `backend/scripts/railway_services.py` | Created | Drift-only provisioning for the 2 migrated jobs, replaces `railway_setup.py` as source of truth for them |
+| `integracion_F1/scripts/railway_setup.py` | Modified (separate repo) | Deletes `dashboard-refresh`/`cruce-sticker` rows + orphaned `STICKER_EVERY_15`; own local commit `c54d6db` |
+
+### TDD Cycle Evidence
+
+| Task | RED (command + result) | GREEN (command + result) |
+|---|---|---|
+| 7.1/7.2 (`test_dashboard_refresh.py` / `dashboard_refresh.py`) | `python -m pytest backend/tests/jobs/test_dashboard_refresh.py -v` → `1 error` (collection) — `ImportError: cannot import name 'dashboard_refresh' from 'app.jobs'` | Same command → `15 passed`; full suite → `131 passed` |
+| 7.8/7.9 (`test_cruce_sticker.py` / `cruce_sticker.py`) | `python -m pytest backend/tests/jobs/test_cruce_sticker.py -v` → `1 error` (collection) — `ImportError: cannot import name 'cruce_sticker' from 'app.jobs'` (confirmed by temporarily hiding the already-drafted job file) | Same command → `9 passed`; full suite → `140 passed` |
+
+Full-suite confirmation (end of batch 7a): `python -m pytest backend/tests/ -v` → **140 passed, 0
+failed** (baseline 116 on `main` + 24 new: 15 dashboard-refresh + 9 cruce-sticker).
+
+### Workload / PR Boundary
+
+- Mode: chained PR slice (`auto-chain` / `stacked-to-main`), combined Chain PR #7a+#7c (per this
+  batch's own scope instruction — the orchestrator explicitly asked for both sub-slices in one apply
+  batch, "you ARE 7a+7c combined per this batch's scope").
+- Work units (commits, in order, this repo): (1) `test(backend): add failing dashboard-refresh job
+  tests (RED)` (`06d7772`); (2) `feat(backend): absorb dashboard-refresh job into app/jobs (GREEN)`
+  (`fc349ba`); (3) `test(backend): add failing cruce-sticker job tests (RED)` (`d08973f`); (4)
+  `feat(backend): absorb cruce-sticker job into app/jobs (GREEN)` (`57c9103`); (5) `feat(backend): add
+  railway_services.py drift-only provisioning script` (`0a59933`). Companion commit in the separate
+  `integracion_F1` repo: `chore(railway): drop dashboard-refresh and cruce-sticker rows` (`c54d6db`).
+- Boundary: starts from slices 1-6's merged `create_app()` on `main` (116/116 tests green); ends at two
+  fully-tested, TDD-evidenced cron job modules (`app/jobs/dashboard_refresh.py`,
+  `app/jobs/cruce_sticker.py`) plus their drift-only provisioning script, NEITHER mounted as an HTTP
+  route (`app/main.py`'s `_ROUTERS` untouched, confirmed via `git diff --stat`) — zero production web
+  traffic affected; the actual Railway cron services are not yet created (task 7.13, manual, unblocked
+  by this batch but not executed by it).
+- **Review budget flag — SIGNIFICANTLY above forecast.** `git diff --shortstat 49dbccd..HEAD --
+  backend/` → **2494 insertions, 34 deletions** across 15 files (2528 changed lines) — the Review
+  Workload Forecast's `7/7b: ~650-800` estimate covered ALL of 7a+7b+7c combined; this batch is only
+  7a+7c (7b/`survey_cali` excluded) and still lands at over 3x that estimate. Root cause, verified by
+  per-commit breakdown: `git diff --shortstat 49dbccd..fc349ba -- backend/` (7a, dashboard-refresh) →
+  **759 insertions, 28 deletions** (787 lines); `git diff --shortstat fc349ba..0a59933 -- backend/` (7c,
+  cruce-sticker + railway_services.py) → **1735 insertions, 6 deletions** (1741 lines) — driven almost
+  entirely by `cruce_gestor.py` (477 lines) + `coords.py` (192) + `normalization.py` (211) = **880
+  lines of VERBATIM ADR-2-mandated ported dependency code**, not authored logic; the actually-authored
+  `cruce_sticker.py` job (453 lines, itself ~60% a faithful port of the legacy pipeline) + its test (143)
+  + `railway_services.py` (231, ~70% ported from `railway_setup.py`) account for most of the rest.
+  **Recommended split for whoever opens PRs** (none opened this batch, per instruction — commits only):
+  - **PR 7a** (commits `06d7772`+`fc349ba`, 787 lines): `dashboard-refresh` absorption. Still over the
+    400-line budget as a single unit; if a reviewer wants finer granularity, it can be sub-split into
+    **7a-i** (`atencionsismo.py`'s `day_walk()`/`mapper` refactor alone, ~93 lines, reviewable purely
+    against the 34 pre-existing tests staying green) and **7a-ii** (`dashboard_refresh.py` job + its
+    test, ~666 lines).
+  - **PR 7c-vendor** (`coords.py` + `normalization.py` + `cruce_gestor.py`, 880 lines): a `size:exception`
+    candidate — this is a "vendor/migration diff cannot split cleanly" case per the chained-pr skill's
+    own decision gate (copy-with-provenance, ADR-2's own mechanism, diffable 1:1 against the cited
+    source SHAs rather than needing line-by-line authored-logic review).
+  - **PR 7c-job** (`cruce_sticker.py` job + its test + `test_sole_writer.py` + `requirements.txt`, ~630
+    lines): the actually-new authored logic for this sub-slice — still slightly over budget but the
+    tightest deliverable grouping available (job + its own tests + the invariant it extends belong
+    together per work-unit-commits' "keep tests with code").
+  - **PR 7c-provisioning** (`railway_services.py`, 231 lines): independently mergeable, zero runtime
+    coupling to the job code itself (only consumed by a human running it against a live Railway token).
+  - This split was NOT applied to this batch's own commits (already committed as 5 work units before
+    this analysis was written) — documented here as guidance for the PR-opening step, matching the
+    instruction "document the actual line count and a recommended split in your apply-progress entry,
+    same as prior batches."
+- Rollback: delete the branch / do not merge (this repo); revert commit `c54d6db` in the separate
+  `integracion_F1` repo if that companion change also needs to roll back. Zero production impact either
+  way — no consumer repointed, no Railway service created or reconfigured yet (7.13 pending, manual).
+
+### Status
+
+**Slice 7 (job-absorption portion): 5/5 tasks complete** (7.1, 7.2, 7.8, 7.9, 7.12). **7.3-7.6
+(`survey_cali` ingestion, slice 7b) deliberately out of scope** — separate batch. **7.13-7.15 remain
+manual-operator/verify steps**, unticked, unblocked by this batch but not executed. Full
+`backend/tests/` suite: **140 passed, 0 failed**.
