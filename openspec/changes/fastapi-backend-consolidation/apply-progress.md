@@ -633,7 +633,7 @@ the smoke env), clean shutdown, no stray-task warning.
 1.4, deliberately not touching `web/js/data.js` yet). Full `backend/tests/` suite: **95 passed, 0
 failed**.
 
-### Next Batch
+### Next Batch (superseded — see "Cutover status sync" below)
 
 Slice 3 cannot fully close without task 1.4 (manual Railway "web" service creation) — the same blocker
 batches 1b and 2 already flagged; it now also blocks slice 3's 3.6/3.7 the same way it blocks slice 2's
@@ -644,3 +644,211 @@ that one entry to the Railway base URL for 3.7, + manual Vercel redeploy of `web
 is complete and Slice 4 (`sticker-status` + `source-status`, tasks 4.1-4.6, `~180-230` lines, low
 400-line risk, single PR) can start — it depends on Phase 1 (merged) and Phase 3 (reuses
 `api-config.js`, now scaffolded).
+
+---
+
+## Cutover status sync (2026-08-25, recorded post-hoc from git history)
+
+Task 1.4 (manual Railway "web" service creation) and slice 3's 3.6/3.7 were completed by the operator
+and a follow-up apply pass, but neither this file nor `tasks.md` was updated at the time — both were
+found stale (checkboxes still unticked) at the start of the session that added this section. Corrected
+here and in `tasks.md` from git log, not from a fresh apply run:
+
+- **1.4 DONE**: Railway "web" service live at `sismo-cali-dashboard-production.up.railway.app`.
+- **3.6 DONE, PASS** (commit `c2fb564`): shape-identical parity, `Reportado`/`inmuebles` deltas within
+  the 50-record tolerance, 0.346s response (<2s budget).
+- **3.7 DONE** (commit `c2fb564`): `web/js/api-config.js`'s `reportados` entry repointed to the Railway
+  URL; `web/js/data.js` reads it via `apiUrl('reportados')`. Merged to `main` via `7dacbde` ("cutover
+  batch 1 — reportados live on Railway + full metrics").
+- **Scope extension landed alongside** (commit `acbde37`, user directive, not a slice-3 task):
+  `/reportados`'s `summarize()` now aggregates every analytic field
+  (`por_afectacion`/`comuna`/`habitabilidad`/`tipoInmueble` + coordinate coverage + `sin_id`), legacy
+  consumer fields unchanged. 97/97 backend tests green after this change.
+- **Slice 2 still NOT closed**: 2.3's structural parity tier is runnable (`51be382`), but its
+  token-required tier is explicitly PENDING a live `FIREBASE_ID_TOKEN` — never fabricated. 2.4
+  (`formulario/` repoint) and 2.5 (manual signer-stays-live confirmation) remain undone, blocked on
+  that token, not on 1.4 anymore.
+
+**Slice 3 is fully COMPLETE and merged to `main`.** Slice 4 (`sticker-status` + `source-status`) is
+unblocked (depends only on Phase 1 + Phase 3, both done) and is the next batch.
+
+---
+
+## Batch 4 — `sticker-status` + `source-status` (4.1-4.4 COMPLETE; 4.5 prep done, BLOCKED; 4.6 BLOCKED on 4.5)
+
+Branch: `feat/fastapi-consolidation-4-status` (off `main`, not pushed). Before branching, `main` carried
+two uncommitted doc edits (the "Cutover status sync" section above + its matching `tasks.md`
+checkbox/status corrections) — these were prepared by a prior session but never committed. Committed
+them as this batch's first commit (`docs(sdd): sync tasks/apply-progress with cutover batch 1 git
+history`) so `main` itself stays untouched and every doc edit lives on this branch, then confirmed
+`python -m pytest backend/tests/ -q` on the pre-batch baseline → **97 passed** before starting 4.1.
+
+### Completed Tasks
+
+- [x] **4.1** (RED) `backend/tests/routers/test_sticker_status.py` — 3 cases: any authenticated role
+      (viewer, admin) → 200 with the expected `con_sticker`/`con`/`total` shape; unauthenticated → 401;
+      a repeat request within the 5-min TTL is served from cache without a second Firestore read
+      (call-count-instrumented fake `credentials.sismo()` override — no real service-account JSON, no
+      network). Confirmed failing: all 3 cases `404 Not Found` (route did not exist yet).
+- [x] **4.2** (GREEN) `backend/app/routers/sticker_status.py` — ports `api/sticker-status.js`'s
+      Firestore read (`sticker_matches` collection tally) with ONE deliberate fix: the legacy cache was
+      a bare module-level variable that only behaved as a shared cache when Vercel reused a warm Lambda
+      instance between invocations — a cold start (or two concurrent cold invocations) got no caching
+      guarantee at all. This backend is one always-on process, so `StickerStatusCache` is attached to
+      `app.state` (one instance per `create_app()` call, same synchronous-attach convention 3.5
+      established for `reportados_snapshot`) and its 5-minute TTL actually holds for the process's
+      whole lifetime. First GREEN pass, no rework — 3/3, full suite 100/100.
+      **Deviation flagged for verify** (not a rework, a documented finding): task 4.2's text says
+      "preserve `Cache-Control`", but `api/sticker-status.js` (read in full) sets NO `Cache-Control`
+      header on this route at all, and `vercel.json`'s `headers` block only covers static
+      `/data/*.json` files, not any `/api/*` function — confirmed there is nothing to preserve here.
+      The spec's own "Cache-Control headers preserved" scenario (`spec.md:145-149`) is explicitly
+      scoped to `reportados`'s `s-maxage=900` header (already satisfied by task 3.5), not this route —
+      so implementing `sticker-status` with no `Cache-Control` header is the correct verbatim-parity
+      behavior, not a gap. `source-status` (4.4) is the route that actually has a `Cache-Control` value
+      to preserve (`private, no-store`); the task text likely conflated the two.
+- [x] **4.3** (RED) `backend/tests/routers/test_source_status.py` — 4 cases: admin token + reachable
+      source → 200 `{ok:true, status:'conectado', ...}`; admin token + unreachable source → 200
+      `{ok:false, status:'con errores', ...}` (never a 5xx, matching the legacy handler's shape);
+      non-admin token → 403 with a call-count-instrumented fake probe proving zero probe calls
+      happened; unauthenticated → 401. Confirmed failing: all 4 cases `404 Not Found`.
+- [x] **4.4** (GREEN) `backend/app/routers/source_status.py` — ports `api/source-status.js` verbatim:
+      re-runs `app/services/atencionsismo.py`'s `probe_api()` (the same cheap one-minute probe the
+      day-walk already runs before its full range fetch, extracted in slice 3) to answer "is the source
+      reachable right now", distinct from a snapshot merely proving the pipeline ran at some point.
+      Never a 5xx for an upstream failure — `ok:false` is a successfully-determined fact, exactly like
+      the legacy handler's `res.status(200).json({ok:false, ...})` on both branches. Ports the legacy
+      `Cache-Control: private, no-store` header verbatim (`api/source-status.js:66,69`) — the header
+      task 4.2's text actually describes. `checked_at` is hand-formatted to match
+      `new Date().toISOString()`'s millisecond-precision/`Z`-suffix shape exactly, since Python's
+      default `isoformat()` uses microseconds and a `+00:00` offset instead.
+      **Rework note (fixture bug, not implementation rework)**: first run hit 2/4 failures — the test
+      fixture's fake admin claims used a nested `customClaims: {role: 'admin'}` shape, but
+      `role_from_claims` (design.md ADR-3, `api/refresh.js` port) reads a top-level `role` key (Firebase
+      custom claims are flattened onto the token, not nested). 4.1's fixture had the identical typo but
+      it never surfaced there because `require_auth` doesn't resolve role at all — only 4.3/4.4's
+      admin-vs-non-admin split actually exercises `role_from_claims`, which is why it caught the bug
+      here. Fixed both fixtures (`test_sticker_status.py` in its own tiny follow-up commit, since it
+      was 2 commits behind HEAD by the time this was found — not squashed into 4.1's RED commit, to
+      avoid rewriting already-landed history). Second run: 4/4, full suite 104/104, zero implementation
+      changes needed.
+
+### Design Interpretation (flag for verify)
+
+**`sticker-status` has no `Cache-Control` header; `source-status` has `private, no-store`.** See 4.2's
+entry above — this is a factual finding from reading both legacy source files plus `vercel.json`, not a
+judgment call, but flagging it explicitly since task 4.2's own text pointed at the wrong route's header
+behavior.
+
+### Deviations from Design
+
+None. The `role_from_claims` fixture-shape bug (4.3/4.4 rework note above) was a test-authoring mistake
+caught and fixed within this batch, not a deviation from design.md or the specs.
+
+### Issues Found
+
+None beyond the fixture typo above (self-caught, self-fixed, documented for transparency per Strict TDD
+Mode's evidence requirements — not silently absorbed).
+
+### Blocked Tasks (4.5, 4.6)
+
+- **4.5** VERIFY (ADR-7 procedure) — BLOCKED on a live `FIREBASE_ID_TOKEN`. NOT the 1.4-class blocker
+  slices 2/3 hit originally (task 1.4 is DONE — the Railway "web" service is live per the "Cutover
+  status sync" section above) — this is the SAME class of blocker slice 2's 2.3 token-required tier
+  still carries: no automated apply batch can fabricate a real Firebase ID token. Repo-side prep done:
+  `backend/scripts/verify_status_routes_parity.py`, a standalone MANUAL operator tool (not imported by
+  `app/`/`tests/`, never run in CI), following `verify_sign_parity.py`'s two-tier convention: STRUCTURAL
+  (no-auth + bad-token 401 parity for both routes — runnable today against the live Railway URLs with
+  no token at all) and TOKEN-REQUIRED (full 200 payload comparison for both routes — needs
+  `FIREBASE_ID_TOKEN`; admin role required for a meaningful `/source-status` comparison, since it's
+  admin-gated). Verified its BLOCKED guard: running it with no `NEW_STICKER_STATUS_URL`/
+  `NEW_SOURCE_STATUS_URL` set exits 2 with an explanatory stderr message. Not run against the live
+  Railway routes this batch — no token available; no further code changes needed for 4.5 itself once
+  one exists.
+- **4.6** REPOINT — BLOCKED on 4.5 by this task's own dependency ordering (no parity result exists to
+  gate a repoint on). **Finding, NOT assumed — confirmed by grep across every file in `web/js/`**:
+  unlike `reportados` before slice 3.7, neither `stickerStatus` nor `sourceStatus` is a true inert
+  no-op in `api-config.js` today. Both entries exist (created in batch 3, both still default to their
+  legacy relative paths), but NEITHER is actually read by any consumer yet:
+  `web/js/main.js:130` calls `fetch('/api/sticker-status', { headers: {...} })` with the relative path
+  HARDCODED inline (not via `apiUrl('stickerStatus')`), and `web/js/analista.js:13` hardcodes
+  `const SOURCE_STATUS_ENDPOINT = '/api/source-status'` the same way. So closing 4.6 once 4.5 passes
+  will need TWO edits, not one: (a) flip both `api-config.js` values to the Railway base URL, AND (b)
+  wire `main.js`'s sticker-status fetch and `analista.js`'s `SOURCE_STATUS_ENDPOINT` to call
+  `apiUrl('stickerStatus')`/`apiUrl('sourceStatus')` instead of their hardcoded strings — the identical
+  two-step pattern the slice-3 cutover batch used for `data.js`'s `refreshReportados()`. Neither
+  `web/js/main.js` nor `web/js/analista.js` nor `web/js/api-config.js` was touched this batch —
+  deliberate, per this batch's explicit scope boundary and 4.6's own gate on 4.5.
+
+### Files Changed (Batch 4)
+
+| File | Action | What Was Done |
+|---|---|---|
+| `backend/tests/routers/test_sticker_status.py` | Created | 3 cases: any-role 200, unauthenticated 401, cache-hit-skips-Firestore |
+| `backend/app/routers/sticker_status.py` | Created | `GET /sticker-status` — process-lifetime `StickerStatusCache` on `app.state`, 5-min TTL |
+| `backend/tests/routers/test_source_status.py` | Created | 4 cases: admin+reachable 200/ok:true, admin+unreachable 200/ok:false, non-admin 403 no-probe-call, unauthenticated 401 |
+| `backend/app/routers/source_status.py` | Created | `GET /source-status` — admin-gated, reruns `atencionsismo.probe_api()`, `Cache-Control: private, no-store` |
+| `backend/app/main.py` | Modified | Mounts `sticker_status` + `source_status` in `_ROUTERS`; attaches `app.state.sticker_status_cache` synchronously in `create_app()` |
+| `backend/scripts/verify_status_routes_parity.py` | Created | MANUAL operator tool for task 4.5, not imported anywhere, not run in CI |
+
+### TDD Cycle Evidence
+
+| Task | RED (command + result) | GREEN (command + result) |
+|---|---|---|
+| 4.1/4.2 (`test_sticker_status.py` / `sticker_status.py`) | `python -m pytest tests/routers/test_sticker_status.py -v` → `3 failed` (all `404 Not Found`) | `python -m pytest tests/routers/test_sticker_status.py -v` → `3 passed`; full suite `python -m pytest tests/ -q` → `100 passed` |
+| 4.3/4.4 (`test_source_status.py` / `source_status.py`) | `python -m pytest tests/routers/test_source_status.py -v` → `4 failed` (all `404 Not Found`) | First attempt: `python -m pytest tests/routers/test_source_status.py -v` → `2 failed, 2 passed` (fixture-shape bug, not implementation); after fixing the fixture: `python -m pytest tests/routers/test_source_status.py -v` → `4 passed`; full suite `python -m pytest tests/ -q` → `104 passed` |
+
+Full-suite confirmation (end of batch 4): `python -m pytest backend/tests/ -v` → **104 passed, 0
+failed**.
+
+### Workload / PR Boundary
+
+- Mode: chained PR slice (`auto-chain` / `stacked-to-main`), Chain PR #4.
+- Work units (commits, in order): (1) `docs(sdd): sync tasks/apply-progress with cutover batch 1 git
+  history` (`00b6786`, pre-existing uncommitted doc corrections, not slice-4 scope — committed first so
+  `main` stays untouched); (2) `test(backend): add failing GET /sticker-status router tests (RED)`
+  (`9980941`); (3) `feat(backend): implement GET /sticker-status with process-lifetime TTL cache
+  (GREEN)` (`d0684c7`); (4) `test(backend): add failing GET /source-status router tests (RED)`
+  (`7396020`); (5) `fix(backend): correct fake admin claims shape in sticker-status test fixture`
+  (`a44fcba`, fixture-only, zero behavior change); (6) `feat(backend): implement GET /source-status
+  admin-gated probe route (GREEN)` (`5bc753b`); (7) `chore(backend): add manual sticker-status/
+  source-status parity script (4.5, BLOCKED)` (`2113e12`).
+- Boundary: starts from slice 1+2+3's merged `create_app()` (health, sign, reportados routes, 97/97
+  tests green on `main`); ends at tested `GET /sticker-status` and `GET /source-status` routes mounted
+  alongside the existing three, still zero consumer repointed (`web/js/main.js`/`analista.js`/
+  `api-config.js` all untouched) — no production Panel/Analista behavior changed.
+- **Review budget flag**: `git diff --stat 00b6786..HEAD -- backend/` (excludes the pre-existing docs
+  commit) → **606 insertions, 2 deletions** across 6 files — ABOVE the Review Workload Forecast's
+  ~180-230 estimate for slice 4, same overrun pattern batches 2 and 3 hit (Strict TDD Mode's coverage
+  expectations for two independently-testable routers plus a two-tier parity tool add up past a single
+  ~200-line budget even for "low logic" routes). Breakdown: `sticker_status.py` (87) +
+  `test_sticker_status.py` (133) = 220; `source_status.py` (87) + `test_source_status.py` (114) = 201;
+  `verify_status_routes_parity.py` (176, standalone, zero coupling to either router's GREEN commits);
+  `main.py` (+11/-2 wiring). **Recommend splitting along the same seam batch 2 used for
+  `verify_sign_parity.py`**: **4a** = commits `9980941`..`5bc753b` (both routers + tests + the fixture
+  fix, 430 lines) as one PR targeting `main`; **4b** = commit `2113e12`
+  (`verify_status_routes_parity.py`, 176 lines) as a second, independently-mergeable PR — it has no
+  runtime dependency on either router's implementation and can land before or after them. The docs-sync
+  commit (`00b6786`) is pre-existing housekeeping, not new slice-4 work — recommend landing it as its
+  own tiny PR first (or folding into whichever of 4a/4b merges first), separate from the review-budget
+  count above. Left as one branch here per this batch's explicit instruction not to push/PR; flagging
+  for whoever opens the actual PR(s).
+- Rollback: delete the branch / do not merge. `web/js/*` and every other consumer untouched — zero
+  production impact regardless of how this branch is split into PRs.
+
+### Status
+
+**Slice 4: 4/6 tasks complete** (4.1-4.4). **4.5 has repo-side prep complete but execution BLOCKED on a
+live `FIREBASE_ID_TOKEN`.** **4.6 is BLOCKED on 4.5** (and, once unblocked, needs two edits — the
+`api-config.js` flip AND wiring `main.js`/`analista.js` off their hardcoded paths — not a single-line
+repoint). Full `backend/tests/` suite: **104 passed, 0 failed**.
+
+### Next Batch
+
+Slice 4 cannot fully close without a live `FIREBASE_ID_TOKEN` — the same class of blocker slice 2's 2.3
+token-required tier still carries (NOT the 1.4 blocker; 1.4 itself is done). Once a token is available:
+(1) run `backend/scripts/verify_status_routes_parity.py` against the real Railway URLs for 4.5; (2) if
+parity holds, apply 4.6's two-part repoint (flip both `api-config.js` entries + wire `main.js`/
+`analista.js` off their hardcoded relative paths) in one commit + manual Vercel redeploy of `web/`.
+After that, Slice 4 is complete and Slice 5 (`inspector-asignaciones`, tasks 5.1-5.5, `~150-200` lines,
+low 400-line risk, single PR) can start — it depends only on Phase 1, already merged.

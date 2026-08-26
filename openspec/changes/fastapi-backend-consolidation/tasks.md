@@ -68,15 +68,18 @@ Chain PR #1 (may need 1a/1b split — see forecast). Depends on: none.
       directory = repo root (per ADR-1's rejection of `backend/`-as-root).
       — Satisfies: backend-platform "Deploy triggers from a git push" scenario.
 
-- [ ] **1.4** — MANUAL OPERATOR STEP, not a repo diff. Create the Railway "web" service, git-connected
+- [x] **1.4** — MANUAL OPERATOR STEP, not a repo diff. Create the Railway "web" service, git-connected
       to this GitHub repo, root = repo root, `dockerfilePath = backend/Dockerfile`, always-on (proposal
       answer 8). Provision env vars: `FIREBASE_SERVICE_ACCOUNT_JSON`, `SIGNER_AWS_ACCESS_KEY_ID/SECRET`,
       `SIGNER_S3_BUCKET/REGION`, `SUPERADMIN_EMAIL` — NOT `GOOGLE_SERVICE_ACCOUNT_JSON` (dagma is
       unused anywhere in this backend, per proposal.md Scope Exclusion Addendum Extension 2). Confirm
       no CLI upload is ever used.
       — Satisfies: backend-platform "No CLI-upload path exists for the web service".
-      — STATUS: not started (manual operator step, out of scope for the automated 1a/1b apply
-      batches; requires human action in the Railway dashboard).
+      — STATUS: DONE (operator step completed outside the automated apply batches). Live at
+      `sismo-cali-dashboard-production.up.railway.app`, confirmed serving `/reportados` in production
+      as of commit `c2fb564` / merge `7dacbde` (2026-08-25). This checkbox was left unticked by the
+      1a/1b apply batches (correctly, since it was out of their automated scope) but was never synced
+      back after the operator finished it — corrected here from git history, not from a new apply run.
 
 - [x] **1.5** (RED) Write `backend/tests/auth/test_roles_parity.py` FIRST: table-driven port of the
       exact fixture matrix from `api/usuarios.test.js:8-22` (the actual JS parity source — NOT a
@@ -299,39 +302,33 @@ Chain PR #3 (may need 3a/3b split — see forecast). Depends on: Phase 1. Public
       (lifespan startup → `GET /reportados` → 503+Retry-After when misconfigured → clean shutdown) —
       confirmed no hang/crash. Full suite: 95/95 passed.
 
-- [ ] **3.6** VERIFY (ADR-5 parity-diff plan): within the same 15-min window, fetch live
+- [x] **3.6** VERIFY (ADR-5 parity-diff plan): within the same 15-min window, fetch live
       `sismo-cali-dashboard.vercel.app/api/reportados` and the Railway route; compare JSON shape and
       consumed fields (`reportados` total, `inmuebles`) with tolerance for in-flight drift; confirm
       <2s response; record both payloads in the PR description.
       — Satisfies: backend-platform "reportados responds fast from snapshot".
-      — STATUS: BLOCKED on 1.4 (no live Railway URL exists yet), same blocker as 2.3/2.4/2.5.
-      Repo-side prep done: `backend/scripts/verify_reportados_parity.py` — a standalone MANUAL
-      operator tool (not imported by `app/`/`tests/`, never run in CI) that, given
-      `NEW_REPORTADOS_URL` (+ optional `OLD_REPORTADOS_URL`/`DRIFT_TOLERANCE`), calls both endpoints
-      (no auth — `/reportados` is public), prints both payloads for the PR description, checks the
-      new route's response time against the <2s budget, and compares
-      `por_estadoVerificacion.Reportado`/`inmuebles` within a configurable drift tolerance. Verified
-      its BLOCKED guard runs correctly with no env vars set (exit 2, explanatory message). Run it once
-      1.4 lands AND the background refresh has completed at least once; no further code changes
-      needed for 3.6 itself.
+      — STATUS: DONE, PASS (commit `c2fb564`, 2026-08-25). Shape-identical payload (`ok`, `generado`,
+      `fuente`, `total`, `inmuebles`, `por_estadoVerificacion`); `Reportado` delta 5, `inmuebles` delta
+      6, both within the 50-record drift tolerance; new route measured 0.346s (<2s budget). Ticked here
+      after the fact from git history — the 1a/1b/batch-3 apply-progress record never got a follow-up
+      entry for the cutover batch that actually ran this.
 
-- [ ] **3.7** REPOINT: introduce `web/js/api-config.js` (per-endpoint URL map, default = current
+- [x] **3.7** REPOINT: introduce `web/js/api-config.js` (per-endpoint URL map, default = current
       relative path, per ADR-7) and flip the `reportados` entry to the Railway base URL in
       `web/js/data.js`. MANUAL Vercel redeploy of `web/`.
       — Satisfies: backend-platform "Rollback is a config revert" (establishes the mechanism reused by
       every later repoint).
-      — STATUS: repo-side prep done, PARTIAL. `web/js/api-config.js` created — a per-endpoint URL map
-      covering every `web/`-side `/api/*` call found by grep (`reportados`, `sticker-status`,
-      `refresh`, `stickers`, `sticker-asignaciones`, `usuarios`, `source-status`), each defaulting to
-      today's relative path (zero behavior change; verified with a standalone `node --check` +
-      dynamic-import smoke test, no build step exists for `web/js`). The actual "flip the `reportados`
-      entry" half is BLOCKED on 1.4: `web/js/data.js` intentionally NOT touched this batch — wiring
-      `refreshReportados()` to read from `api-config.js` only makes sense once that one entry actually
-      points at a live Railway URL; wiring it now while every entry still resolves to the same
-      relative path would be a no-op edit that still needs re-touching (and re-reviewing) once 1.4
-      lands. `formulario/`'s own `DASHBOARD_API`/`FOTO_SIGNER_URL` constants are OUT of this file's
-      scope (ADR-7: those slices flip their existing constants directly, not through
-      `web/js/api-config.js`).
+      — STATUS: DONE (commit `c2fb564`, 2026-08-25). `web/js/api-config.js`'s `reportados` entry now
+      points at `https://sismo-cali-dashboard-production.up.railway.app/reportados`;
+      `web/js/data.js`'s `refreshReportados()` reads it via `apiUrl('reportados')`. Every other
+      `api-config.js` entry stays on its legacy relative path, per ADR-7's per-endpoint repoint
+      mechanism — unaffected by this slice. As a scope extension beyond this task's original text,
+      commit `acbde37` also widened `/reportados`' `summarize()` to aggregate every analytic field
+      (`por_afectacion`/`comuna`/`habitabilidad`/`tipoInmueble` + coordinate coverage + `sin_id`) per a
+      user directive, with the legacy consumer fields (`total`, `inmuebles`,
+      `por_estadoVerificacion`) left unchanged so `web/js/data.js` needed no further edit for that
+      extension. `formulario/`'s own `DASHBOARD_API`/`FOTO_SIGNER_URL` constants remain OUT of
+      `api-config.js`'s scope (ADR-7: those slices flip their existing constants directly).
 
 **ROLLBACK BOUNDARY (Slice 3)**: revert the single `reportados` entry in `api-config.js`; redeploy
 `web/`. Old `api/reportados.js` untouched.
@@ -342,35 +339,88 @@ Chain PR #3 (may need 3a/3b split — see forecast). Depends on: Phase 1. Public
 
 Chain PR #4. Depends on: Phase 1, Phase 3 (reuses `api-config.js`). Read-only, low logic.
 
-- [ ] **4.1** (RED) Write `backend/tests/routers/test_sticker_status.py` FIRST: any authenticated role
+- [x] **4.1** (RED) Write `backend/tests/routers/test_sticker_status.py` FIRST: any authenticated role
       → 200; cached response within 5-min TTL served without a new Firestore read (call-count fake on
       `sismo()`); unauthenticated → 401. MUST fail.
       — Satisfies: backend-platform "Any-authenticated role-wide route accepts every valid role",
       "sticker-status cache hit within TTL".
+      — STATUS: done. Confirmed RED — 3 failed, all `404 Not Found` (route did not exist yet) — before
+      4.2 landed.
 
-- [ ] **4.2** (GREEN) Implement `backend/app/routers/sticker_status.py`: `GET /sticker-status`,
+- [x] **4.2** (GREEN) Implement `backend/app/routers/sticker_status.py`: `GET /sticker-status`,
       `Depends(require_auth)`, working 5-min TTL cache (fixes legacy warm-lambda-only caching),
       preserve `Cache-Control`. Run 4.1, confirm green.
       — Satisfies: backend-platform "sticker-status cache hit within TTL", "Cache-Control headers
       preserved".
+      — STATUS: done. First GREEN pass, no rework (3/3, full suite 100/100). Cache is attached to
+      `app.state` (one instance per `create_app()` call, same convention as `reportados_snapshot`)
+      instead of a module-level variable — this is the actual fix for the legacy warm-lambda-only
+      guarantee, not a cosmetic port. **Deviation flagged for verify**: confirmed by reading
+      `api/sticker-status.js` in full (and `vercel.json`, whose `headers` block only covers static
+      `/data/*.json` files) that the legacy handler sets NO `Cache-Control` header at all — this
+      task's "preserve `Cache-Control`" text does not match the legacy source for THIS route (it
+      matches `source-status`'s `private, no-store`, ported in 4.4 instead). Implemented with no
+      `Cache-Control` header, which IS the verbatim-parity behavior; the spec's own "Cache-Control
+      headers preserved" scenario (`spec.md:145-149`) is scoped to `reportados`'s
+      `s-maxage=900`, not this route, confirming no header is the correct target.
 
-- [ ] **4.3** (RED) Write `backend/tests/routers/test_source_status.py` FIRST: admin token → 200;
+- [x] **4.3** (RED) Write `backend/tests/routers/test_source_status.py` FIRST: admin token → 200;
       non-admin → 403, no mutation. MUST fail.
       — Satisfies: backend-platform "Admin-gated route rejects non-admin" (`/source-status`).
+      — STATUS: done. Confirmed RED — 4 failed, all `404 Not Found` — before 4.4 landed.
 
-- [ ] **4.4** (GREEN) Implement `backend/app/routers/source_status.py`: `GET /source-status`,
+- [x] **4.4** (GREEN) Implement `backend/app/routers/source_status.py`: `GET /source-status`,
       `Depends(require_role("admin"))`, port `api/source-status.js` verbatim. Run 4.3, confirm green.
       — Satisfies: backend-platform "Route Parity Across Consolidated Endpoints" (`/source-status`
       row).
+      — STATUS: done. First GREEN pass after fixing a test-fixture typo (fake admin claims used a
+      nested `customClaims.role` shape; `role_from_claims` reads a top-level `role` key — caught here
+      because this route's non-admin/admin split actually exercises role resolution, unlike 4.1's
+      `require_auth`, which doesn't care about role). 4/4, full suite 104/104. Ports the legacy
+      handler's `private, no-store` `Cache-Control` on both `ok:true` and `ok:false` branches
+      (verbatim, `api/source-status.js:66,69`) and its always-200-never-5xx shape for upstream
+      failures.
 
 - [ ] **4.5** VERIFY (ADR-7 procedure): side-by-side same-token calls for both routes; record diff.
       — Satisfies: backend-platform "Old endpoint still serves after the new one deploys".
+      — STATUS: BLOCKED on a live `FIREBASE_ID_TOKEN` (task 1.4 itself is DONE — see "Cutover status
+      sync" — so this is NOT the 1.4-class blocker slices 2/3 hit; it's the SAME class of blocker
+      slice 2's 2.3 token-required tier is still pending). Repo-side prep done:
+      `backend/scripts/verify_status_routes_parity.py` — a standalone MANUAL operator tool (not
+      imported by `app/`/`tests/`, never run in CI), two-tier like `verify_sign_parity.py`: STRUCTURAL
+      (no-auth/bad-token 401 parity, runnable today against the live Railway routes with no token) and
+      TOKEN-REQUIRED (full 200 payload comparison, needs `FIREBASE_ID_TOKEN` — admin role required for
+      a meaningful `/source-status` comparison). Verified its BLOCKED guard: no `NEW_*_URL` env vars
+      set → exit 2 with an explanatory message. Not run against the live Railway URLs this batch (no
+      token available); no further code changes needed for 4.5 itself once a token exists.
 
 - [ ] **4.6** REPOINT: flip `sticker-status`/`source-status` entries in `api-config.js`. MANUAL Vercel
       redeploy of `web/`.
       — Satisfies: backend-platform "Rollback is a config revert".
+      — STATUS: BLOCKED on 4.5 (no parity result exists to gate this on), same dependency slice 2/3
+      established for their own REPOINT tasks. `web/js/api-config.js` already HAS `stickerStatus`/
+      `sourceStatus` entries (created inert in batch 3, both still default to their legacy relative
+      paths) — flipping them today would be safe-but-premature the same way flipping `reportados`
+      early would have been. **Finding, confirmed by grep across `web/js/*.js`**: NEITHER entry is
+      consumed by `api-config.js` yet — `web/js/main.js:130` calls `fetch('/api/sticker-status', ...)`
+      with the relative path HARDCODED, and `web/js/analista.js:13` hardcodes
+      `SOURCE_STATUS_ENDPOINT = '/api/source-status'` the same way. So this task is NOT a pure no-op
+      like flipping an already-wired entry would be: it needs BOTH (a) flipping the two `api-config.js`
+      values to the Railway base URL, AND (b) wiring `main.js`'s sticker-status fetch and
+      `analista.js`'s `SOURCE_STATUS_ENDPOINT` to read via `apiUrl('stickerStatus')`/
+      `apiUrl('sourceStatus')` instead of their hardcoded strings — the exact two-step pattern slice
+      3's cutover batch used for `data.js`'s `refreshReportados()`. Left undone this batch,
+      deliberately: wiring dead code to a URL with no verified parity result would be premature, and
+      is explicitly gated on 4.5 by this task's own dependency ordering.
 
 **ROLLBACK BOUNDARY (Slice 4)**: revert the two `api-config.js` entries; redeploy `web/`.
+
+**Batch status (sdd-apply, `feat/fastapi-consolidation-4-status`)**: 4.1-4.4 done (both routers + tests,
+104/104 `backend/tests/` green); 4.5 repo-side prep done (parity script), execution BLOCKED on a live
+`FIREBASE_ID_TOKEN`; 4.6 BLOCKED on 4.5 by design — `web/js/*.js` untouched, zero production risk this
+batch; confirmed neither `stickerStatus` nor `sourceStatus` is wired through `api-config.js` yet
+(`main.js`/`analista.js` still hardcode the legacy relative paths), so 4.6 is real remaining work, not a
+no-op. See `apply-progress.md` "Batch 4" for full detail.
 
 ---
 
