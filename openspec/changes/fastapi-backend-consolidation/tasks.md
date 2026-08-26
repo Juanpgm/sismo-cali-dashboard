@@ -378,39 +378,89 @@ Chain PR #4. Depends on: Phase 1, Phase 3 (reuses `api-config.js`). Read-only, l
 
 Chain PR #5. Depends on: Phase 1. Completes formulario cutover.
 
-- [ ] **5.1** (RED) Write `backend/tests/routers/test_inspector_asignaciones.py` FIRST: inspector A
+- [x] **5.1** (RED) Write `backend/tests/routers/test_inspector_asignaciones.py` FIRST: inspector A
       (`sub==uidA`) targeting a point with `inspector_uid==uidB` → rejected, no write; A targeting own
       point → write succeeds; unauthenticated → 401. MUST fail.
       — Satisfies: field-form-session "Cross-inspector access still rejected after migration", "Own-uid
       access still succeeds after migration"; backend-platform "Own-uid-scoped route rejects cross-uid
       access".
+      — STATUS: done. Confirmed RED — 7 of 9 failed (all router cases `404 Not Found`, route did not
+      exist yet); 2 passed coincidentally (nonexistent-point case expects 404 and got it for the wrong
+      reason — the whole route was 404; the cuadrillas invariant test legitimately passed on an empty
+      hit set) before 5.2 landed. 7 test cases total, incl. two beyond the task's literal 3 (missing
+      punto_id, unrecognized action) for full dispatch coverage.
 
-- [ ] **5.2** (GREEN) Implement `backend/app/routers/inspector_asignaciones.py`: `POST
+- [x] **5.2** (GREEN) Implement `backend/app/routers/inspector_asignaciones.py`: `POST
       /inspector-asignaciones`, `Depends(require_auth)`, every `sticker_matches` query/write scoped to
       `inspector_uid == token.sub`, port `api/inspector-asignaciones.js`'s `misPuntos`/`marcarHecho`
       dispatch verbatim. First of three modules allowlisted for the `sticker_matches`/`cuadrillas`
       literal (ADR-9). Run 5.1, confirm green.
       — Satisfies: backend-platform "Own-uid-scoped route rejects cross-uid access", "sticker_matches
       And cuadrillas Sole-Writer Invariant".
+      — STATUS: done. First GREEN pass, no rework — `python -m pytest backend/tests/routers/
+      test_inspector_asignaciones.py backend/tests/invariants/test_sole_writer.py -v` → 9 passed. Route
+      has NO `/api` prefix (matches the field-form-session/backend-platform spec deltas' own scenario
+      text and the `reportados`/`sticker-status`/`source-status` precedent, unlike `/api/sign`) — see
+      5.5's BLOCKED finding for what that means for the eventual repoint. Full suite:
+      `python -m pytest backend/tests/ -v` → 106 passed (97 baseline on `main` + 9 new).
 
-- [ ] **5.3** (RED) Write `backend/tests/invariants/test_sole_writer.py` FIRST (new file — first
+- [x] **5.3** (RED) Write `backend/tests/invariants/test_sole_writer.py` FIRST (new file — first
       literal introduced): assert `sticker_matches`/`cuadrillas` appear ONLY in
       `routers/inspector_asignaciones.py`. MUST fail until 5.2 lands (or pass immediately after if
       written post-5.2 — keep RED-before-GREEN by drafting the assertion before confirming the
       allowlist).
       — Satisfies: backend-platform "No write path exists outside the designated two" (partial; closes
       in slices 7/8).
+      — STATUS: done, GENUINE RED-before-GREEN (not the no-gap-left situation 1.13/3.5 hit). Written and
+      run immediately after 5.1, BEFORE 5.2's router existed: confirmed failing —
+      `AssertionError: expected sticker_matches to be referenced by an allowlisted module by now` (0
+      hits under `backend/app/` at that point) — then 5.2 landed and the same command passed (2/2). The
+      `cuadrillas` half legitimately stays an empty-set pass this slice (`inspector-asignaciones.js`
+      never touches `cuadrillas` at all — only `sticker-asignaciones.js`, slice 8, does); its positive
+      (non-empty) assertion is deferred to slice 8's 8.4, not added here (do not anticipate).
 
 - [ ] **5.4** VERIFY (ADR-7 procedure): side-by-side same-inspector-token calls, both actions; record
       diff.
       — Satisfies: field-form-session "Cross-inspector access still rejected after migration".
+      — STATUS: BLOCKED on a live `FIREBASE_ID_TOKEN` belonging to a registered inspector. NOT the
+      1.4-class blocker (1.4 is done — the Railway "web" service is live). Same class of blocker as
+      slice 2's 2.3 token-required tier and slice 4's 4.5. Repo-side prep done:
+      `backend/scripts/verify_inspector_asignaciones_parity.py` — a standalone MANUAL operator tool (not
+      imported by `app/`/`tests/`, never run in CI), two-tier like `verify_sign_parity.py`/
+      `verify_status_routes_parity.py`: STRUCTURAL (no-auth/bad-token 401 parity for both actions,
+      runnable today with no token) and TOKEN-REQUIRED (`misPuntos` payload comparison; `marcarHecho` is
+      opt-in via `MARCAR_HECHO_PUNTO_ID` since it mutates real data — skipped by default even with a
+      token, to avoid flipping a real production point). Verified its BLOCKED guard: no
+      `NEW_INSPECTOR_ASIGNACIONES_URL` set → exit 2 with an explanatory stderr message. Not run against
+      the live Railway route this batch — no token available; no further code changes needed for 5.4
+      itself once one exists.
 
 - [ ] **5.5** REPOINT: `formulario/js/form.js`'s `DASHBOARD_API` → consolidated app base URL. MANUAL
       Vercel redeploy of `formulario/`.
       — Satisfies: field-form-session "DASHBOARD_API repoint after parity verification"; "CORS Enabled
       For The formulario Origin".
+      — STATUS: BLOCKED on 5.4 by this task's own dependency ordering (no parity result exists to gate a
+      repoint on). `formulario/js/form.js` intentionally NOT touched this batch (read-only, per this
+      batch's scope boundary). **Finding, confirmed by reading `form.js` in full**: `DASHBOARD_API`
+      (line 24) currently resolves to `https://sismo-cali-dashboard.vercel.app` (or
+      `http://localhost:3000` on `localhost`); `asignacionesApi()` (lines 101-108) already POSTs with
+      `Authorization: Bearer ${token}` — NOT a body-`idToken` like the legacy signer, so unlike slice
+      2's `/api/sign` repoint, no request-shape change is needed here, only the URL. Two call sites
+      consume it: `iniciarAsignaciones()` (line 112, `{action:'misPuntos'}`) and the submit flow (line
+      710, `{action:'marcarHecho', punto_id:...}`). Both currently target
+      `${DASHBOARD_API}/api/inspector-asignaciones` (WITH an `/api` prefix). The eventual repoint is
+      therefore NOT a pure host flip: the new router mounts at `/inspector-asignaciones` (no `/api`
+      prefix, per 5.2's design note), so `asignacionesApi()`'s template literal
+      (`` `${DASHBOARD_API}/api/inspector-asignaciones` ``) must also drop the `/api` segment in the same
+      edit, once 5.4 passes.
 
 **ROLLBACK BOUNDARY (Slice 5)**: revert `DASHBOARD_API`; redeploy `formulario/`.
+
+**Batch status (sdd-apply, `feat/fastapi-consolidation-5-inspector-asignaciones`)**: 5.1-5.3 done
+(router + tests + sole-writer invariant, 106/106 `backend/tests/` green); 5.4 repo-side prep done
+(parity script), execution BLOCKED on a live `FIREBASE_ID_TOKEN`; 5.5 BLOCKED on 5.4 by design —
+`formulario/js/form.js` untouched (read-only finding only), zero production risk this batch. See
+`apply-progress.md` "Batch 5" for full detail.
 
 ---
 
