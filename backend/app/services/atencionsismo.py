@@ -129,23 +129,40 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# Analytic fields aggregated per record (user directive 2026-08-25: metrics
+# over ALL records, not just the estadoVerificacion tally the legacy JS kept).
+# Same field set scripts/fetch_reportes_api.py's build_aggregations() uses for
+# the static reportes_agg.json, so both readings agree on category names.
+AGG_FIELDS = ("estadoVerificacion", "afectacion", "comuna", "habitabilidad", "tipoInmueble")
+
+
+def _sorted_counts(counter: Mapping[str, int]) -> dict:
+    """Count-desc then name, matching build_aggregations()'s presentation."""
+    return dict(sorted(counter.items(), key=lambda kv: (-kv[1], str(kv[0]))))
+
+
 def summarize(records: Iterable[Mapping[str, object]]) -> dict:
-    """Dedupe `records` by `id`, tally `por_estadoVerificacion`, and count
-    unique "inmuebles" by coordinate pair. Accepts BOTH the live day-walk's
-    normalized shape (`id`/`estado`/`lat`/`lng`) and the Blob-published
-    `reportes.json` shape (`id`/`estadoVerificacion`/`lat`/`lng`) so
-    `app/services/snapshot.py`'s cold-start Blob seed can reuse this exact
-    counting logic instead of a second parallel implementation."""
-    seen: dict[object, str] = {}
+    """Dedupe `records` by `id` and aggregate over ALL of them: the legacy
+    fields (`total`, `inmuebles`, `por_estadoVerificacion` — consumer parity
+    with api/reportados.js) PLUS the full metric set the atencionsismo API
+    carries per record (`por_afectacion`, `por_comuna`, `por_habitabilidad`,
+    `por_tipoInmueble`, coordinate coverage, and `sin_id` for records the
+    dedupe had to drop for lacking an id — nothing is silently ignored).
+    Accepts BOTH the live day-walk's normalized shape and the Blob-published
+    `reportes.json` shape so `app/services/snapshot.py`'s cold-start Blob
+    seed reuses this exact logic."""
+    seen: dict[object, Mapping[str, object]] = {}
     coords: set[str] = set()
+    sin_id = 0
+    con_coordenadas = 0
     for rec in records:
         rid = rec.get("id")
-        if not rid or rid in seen:
+        if not rid:
+            sin_id += 1
             continue
-        estado = rec.get("estado")
-        if not estado:
-            estado = rec.get("estadoVerificacion") or "—"
-        seen[rid] = estado
+        if rid in seen:
+            continue
+        seen[rid] = rec
         lat = rec.get("lat")
         if lat is None:
             lat = rec.get("latitud")
@@ -155,12 +172,31 @@ def summarize(records: Iterable[Mapping[str, object]]) -> dict:
         key = coord_key(lat, lng)
         if key:
             coords.add(key)
+            con_coordenadas += 1
 
-    por_estado: dict[str, int] = {}
-    for estado in seen.values():
-        por_estado[estado] = por_estado.get(estado, 0) + 1
+    tallies: dict[str, dict[str, int]] = {f: {} for f in AGG_FIELDS}
+    for rec in seen.values():
+        for field in AGG_FIELDS:
+            value = rec.get(field)
+            # Live day-walk normalizes estadoVerificacion into `estado`.
+            if value in (None, "") and field == "estadoVerificacion":
+                value = rec.get("estado")
+            value = value if value not in (None, "") else "—"
+            bucket = tallies[field]
+            bucket[str(value)] = bucket.get(str(value), 0) + 1
 
-    return {"total": len(seen), "inmuebles": len(coords), "por_estadoVerificacion": por_estado}
+    return {
+        "total": len(seen),
+        "inmuebles": len(coords),
+        "con_coordenadas": con_coordenadas,
+        "sin_coordenadas": len(seen) - con_coordenadas,
+        "sin_id": sin_id,
+        "por_estadoVerificacion": _sorted_counts(tallies["estadoVerificacion"]),
+        "por_afectacion": _sorted_counts(tallies["afectacion"]),
+        "por_comuna": _sorted_counts(tallies["comuna"]),
+        "por_habitabilidad": _sorted_counts(tallies["habitabilidad"]),
+        "por_tipoInmueble": _sorted_counts(tallies["tipoInmueble"]),
+    }
 
 
 async def probe_api(client: httpx.AsyncClient, user: str, password: str) -> None:
@@ -220,12 +256,20 @@ async def fetch_window(
                     f"HTTP {resp.status_code}", request=resp.request, response=resp
                 )
             data = resp.json()
+            # Keep the ANALYTIC fields per record (user directive: metrics
+            # over all records) — id/coords for dedupe/inmuebles plus every
+            # AGG_FIELDS category. Deliberately nothing else: no PII, no
+            # heavy nested lists, ever.
             return [
                 {
                     "id": r.get("id"),
                     "estado": r.get("estadoVerificacion") or "—",
                     "lat": r.get("latitud"),
                     "lng": r.get("longitud"),
+                    "afectacion": r.get("afectacion"),
+                    "comuna": r.get("comuna"),
+                    "habitabilidad": r.get("habitabilidad"),
+                    "tipoInmueble": r.get("tipoInmueble"),
                 }
                 for r in data.get("reportes", [])
             ]
