@@ -131,6 +131,54 @@ different, honestly-flagged reason to be there, same "legitimate new
 reader, flagged rather than hidden" precedent `routers/sticker_status.py`
 and `app/jobs/planeacion_cruce.py` already established for their own
 collections.
+
+## `grupos-inspectores` change, follow-up batch (2026-08-26) — member cap
+## + vehicles
+
+Two ADDITIONAL binding requirements folded into the SAME collection this
+change already owns, not a separate slice:
+
+1. **`MAX_MIEMBROS_GRUPO = 4`** — a group has AT MOST 4 members. Enforced
+   SERVER-SIDE ONLY, in both `crear_grupo` and `editar_grupo` — a
+   client-side check is not a boundary. `editar_grupo` checks the
+   RESULTING membership (current − remove + add, de-duplicated) BEFORE
+   writing anything, so a rejection leaves the group completely
+   unchanged — no partial `add`. De-duplication also means re-adding an
+   already-current member never counts twice toward the cap.
+
+2. **`vehiculos/{id}`** (`{placa, tipo, activo, creado_en, creado_por}`,
+   `placa` unique) — "cada grupo sale en un vehículo". CRUD
+   (`listVehiculos`/`crearVehiculo`/`editarVehiculo`/`eliminarVehiculo`)
+   plus `asignarVehiculoAGrupo`/`desasignarVehiculo` live HERE, same
+   single-owner reasoning as `grupos_inspectores` itself (campaign-
+   agnostic, one canonical CRUD surface). `eliminarVehiculo` follows the
+   SAME orphan-prevention discipline already chosen for `eliminarGrupo`:
+   REFUSE deletion while any `grupos_inspectores` doc still references the
+   vehicle, naming the group(s), rather than silently clearing it —
+   consistency with the decision already made for the sibling collection,
+   not a new one.
+
+   **Double-booking decision**: "one vehicle -> at most one group at a
+   time" is enforced by `asignar_vehiculo_a_grupo` REJECTING (400, naming
+   the OTHER group that already holds it) rather than silently moving the
+   vehicle. Chosen for the same reason `eliminarGrupo`/`crear_cuadrilla`
+   already reject instead of silently mutating state elsewhere in this
+   file: an admin should see exactly what is already using a resource and
+   act deliberately (`desasignarVehiculo` first), not have it silently
+   unbooked from a group nobody told them about. Re-assigning a vehicle to
+   the SAME group it is already on is idempotent (no conflict with
+   itself).
+
+   `list_grupos` embeds each group's resolved `vehiculo` (`{id, placa,
+   tipo}` or `null`) directly in its response — a `get_all` batch read
+   over the distinct `vehiculo_id`s already present in the page, not a
+   second round trip the admin UI has to make.
+
+`vehiculos` is a THIRD, INDEPENDENT collection under this router (own
+sole-writer allowlist, `ALLOWED_MODULES_VEHICULOS` in
+`tests/invariants/test_sole_writer.py`) — `routers/inspector_asignaciones.py`
+and `routers/sticker_asignaciones.py` have no reason to read or write it;
+only the admin dispatcher here ever touches it.
 """
 from __future__ import annotations
 
@@ -161,6 +209,16 @@ _CUADRILLAS_KEY = "cuadrillas"
 # `planeacion_cuadrillas`/`grupos_inspectores`, not `sticker_matches`.
 GRUPOS_INSPECTORES_COLLECTION = "grupos_inspectores"
 STICKER_MATCHES_COLLECTION = "sticker_matches"
+
+# Binding requirement (2026-08-26, folded into this change): a group has AT
+# MOST this many members. Named constant, not a magic number, so it can be
+# retuned in one place. Enforced server-side in crear_grupo/editar_grupo.
+MAX_MIEMBROS_GRUPO = 4
+
+# `grupos-inspectores` follow-up: vehicles, one per group at a time ("cada
+# grupo sale en un vehículo"). Own, independent collection/allowlist — see
+# module docstring's own "member cap + vehicles" section.
+VEHICULOS_COLLECTION = "vehiculos"
 
 # Binding user decision (2026-08-26): DEFAULT_MAX_SIZE = 10 for Planeación,
 # NOT the sticker template's 8 — an EDAN survey is a far longer visit than
@@ -852,22 +910,45 @@ def get_enlace_survey(db: Any, body: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_grupos(db: Any) -> list[dict[str, Any]]:
-    """Every `grupos_inspectores` doc, raw (`miembros` as uids). The admin
+    """Every `grupos_inspectores` doc, raw (`miembros` as uids — the admin
     UI resolves uid -> display name via the SAME inspector roster it
-    already caches for cuadrillas' own `inspectorLabel` (`/api/stickers`
-    `{action:'list'}`) — no duplicated roster fetch here."""
+    already caches for cuadrillas' own `inspectorLabel`, `/api/stickers`
+    `{action:'list'}`, no duplicated roster fetch here), PLUS each group's
+    resolved `vehiculo` (`{id, placa, tipo}` or `null`) embedded directly —
+    one `get_all` batch read over the distinct `vehiculo_id`s already
+    present in this page, not a second round trip the admin UI has to make
+    (2026-08-26 follow-up requirement)."""
     docs = db.collection(GRUPOS_INSPECTORES_COLLECTION).get()
-    return [_doc_to_dict(d) for d in docs]
+    grupos = [_doc_to_dict(d) for d in docs]
+
+    vehiculo_ids = sorted({g["vehiculo_id"] for g in grupos if g.get("vehiculo_id")})
+    vehiculo_by_id: dict[str, dict[str, Any]] = {}
+    if vehiculo_ids:
+        refs = [db.collection(VEHICULOS_COLLECTION).document(vid) for vid in vehiculo_ids]
+        for snap in db.get_all(refs):
+            if snap.exists:
+                vehiculo_by_id[snap.id] = _doc_to_dict(snap)
+
+    for g in grupos:
+        vid = g.get("vehiculo_id")
+        g["vehiculo"] = vehiculo_by_id.get(vid) if vid else None
+    return grupos
 
 
 def crear_grupo(db: Any, body: dict[str, Any], claims: dict[str, Any]) -> dict[str, Any]:
     nombre = str(body.get("nombre") or "").strip()
     raw_miembros = body.get("miembros")
-    miembros = [str(m) for m in raw_miembros] if isinstance(raw_miembros, list) else []
+    # De-duplicate BEFORE measuring against the cap — a repeated uid in the
+    # raw request must not count twice (2026-08-26 follow-up requirement).
+    miembros = list(dict.fromkeys(str(m) for m in raw_miembros)) if isinstance(raw_miembros, list) else []
     if not nombre:
         raise bad_request("crearGrupo necesita un nombre.")
     if not miembros:
         raise bad_request("crearGrupo necesita al menos un miembro.")
+    if len(miembros) > MAX_MIEMBROS_GRUPO:
+        raise bad_request(
+            f"Un grupo admite máximo {MAX_MIEMBROS_GRUPO} miembros; se enviaron {len(miembros)}."
+        )
 
     ref = db.collection(GRUPOS_INSPECTORES_COLLECTION).document()
     data = {
@@ -883,7 +964,11 @@ def crear_grupo(db: Any, body: dict[str, Any], claims: dict[str, Any]) -> dict[s
 
 def editar_grupo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     """Rename and/or add/remove members, keeping `miembros` de-duplicated.
-    Adapted from `editar_cuadrilla`'s own add/remove shape."""
+    Adapted from `editar_cuadrilla`'s own add/remove shape. The
+    `MAX_MIEMBROS_GRUPO` cap is checked against the RESULTING membership
+    (current − remove + add, de-duplicated) BEFORE any write happens — a
+    rejection leaves the group completely unchanged, no partial add
+    (2026-08-26 follow-up requirement)."""
     grupo_id = str(body.get("grupo_id") or "").strip()
     add = [str(u) for u in body.get("add") or []] if isinstance(body.get("add"), list) else []
     remove = [str(u) for u in body.get("remove") or []] if isinstance(body.get("remove"), list) else []
@@ -897,11 +982,17 @@ def editar_grupo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
 
     current_data = snap.to_dict() or {}
     current = {str(u) for u in current_data.get("miembros") or []}
+    next_set = set(current)
     for uid in remove:
-        current.discard(uid)
+        next_set.discard(uid)
     for uid in add:
-        current.add(uid)
-    next_miembros = list(current)
+        next_set.add(uid)
+    next_miembros = list(next_set)
+
+    if len(next_miembros) > MAX_MIEMBROS_GRUPO:
+        raise bad_request(
+            f"Un grupo admite máximo {MAX_MIEMBROS_GRUPO} miembros; la edición resultaría en {len(next_miembros)}."
+        )
 
     fields: dict[str, Any] = {"miembros": next_miembros}
     nombre = body.get("nombre")
@@ -1000,6 +1091,150 @@ def desasignar_grupo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     return {"puntos": puntos}
 
 
+# ---- vehiculos actions (`grupos-inspectores` follow-up, 2026-08-26) --------
+# "cada grupo sale en un vehículo" — CRUD + grupo assignment for the
+# `vehiculos` collection. Own, independent collection (see module
+# docstring's own "member cap + vehicles" section).
+
+
+def _placa_conflict(db: Any, placa: str, exclude_id: str | None = None) -> bool:
+    existentes = db.collection(VEHICULOS_COLLECTION).where("placa", "==", placa).get()
+    return any(s.id != exclude_id for s in existentes)
+
+
+def list_vehiculos(db: Any) -> list[dict[str, Any]]:
+    docs = db.collection(VEHICULOS_COLLECTION).get()
+    return [_doc_to_dict(d) for d in docs]
+
+
+def crear_vehiculo(db: Any, body: dict[str, Any], claims: dict[str, Any]) -> dict[str, Any]:
+    placa = str(body.get("placa") or "").strip().upper()
+    tipo = body.get("tipo")
+    if not placa:
+        raise bad_request("crearVehiculo necesita una placa.")
+    if _placa_conflict(db, placa):
+        raise bad_request(f"Ya existe un vehículo con la placa {placa}.")
+
+    ref = db.collection(VEHICULOS_COLLECTION).document()
+    data = {
+        "placa": placa,
+        "tipo": str(tipo).strip() if tipo else None,
+        "activo": True,
+        "creado_en": _now(),
+        "creado_por": claims.get("sub"),
+    }
+    ref.set(data)
+    return {"id": ref.id}
+
+
+def editar_vehiculo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
+    vehiculo_id = str(body.get("vehiculo_id") or "").strip()
+    if not vehiculo_id:
+        raise bad_request("Falta vehiculo_id.")
+
+    ref = db.collection(VEHICULOS_COLLECTION).document(vehiculo_id)
+    snap = ref.get()
+    if not snap.exists:
+        raise bad_request(f"No existe el vehículo {vehiculo_id}.")
+
+    fields: dict[str, Any] = {}
+    raw_placa = body.get("placa")
+    if raw_placa:
+        nueva_placa = str(raw_placa).strip().upper()
+        if _placa_conflict(db, nueva_placa, exclude_id=vehiculo_id):
+            raise bad_request(f"Ya existe un vehículo con la placa {nueva_placa}.")
+        fields["placa"] = nueva_placa
+    raw_tipo = body.get("tipo")
+    if raw_tipo is not None:
+        fields["tipo"] = str(raw_tipo).strip()
+    raw_activo = body.get("activo")
+    if raw_activo is not None:
+        fields["activo"] = bool(raw_activo)
+
+    ref.set(fields, merge=True)
+    return {"id": vehiculo_id, **fields}
+
+
+def eliminar_vehiculo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
+    """Orphan-prevention decision: SAME discipline already chosen for
+    `eliminar_grupo` — REFUSE deletion while any `grupos_inspectores` doc
+    still references this vehicle, naming the group(s), rather than
+    silently clearing it. Consistency with the earlier decision on the
+    sibling collection, not a new one."""
+    vehiculo_id = str(body.get("vehiculo_id") or "").strip()
+    if not vehiculo_id:
+        raise bad_request("Falta vehiculo_id.")
+
+    ref = db.collection(VEHICULOS_COLLECTION).document(vehiculo_id)
+    snap = ref.get()
+    if not snap.exists:
+        raise bad_request(f"No existe el vehículo {vehiculo_id}.")
+
+    asignados = list(
+        db.collection(GRUPOS_INSPECTORES_COLLECTION).where("vehiculo_id", "==", vehiculo_id).get()
+    )
+    if asignados:
+        nombres = [(d.to_dict() or {}).get("nombre") or d.id for d in asignados]
+        raise bad_request(
+            f"No se puede eliminar el vehículo {vehiculo_id}: todavía está asignado al grupo "
+            f"«{'», «'.join(nombres)}». Desasignarlo primero (desasignarVehiculo)."
+        )
+
+    ref.delete()
+    return {"id": vehiculo_id}
+
+
+def asignar_vehiculo_a_grupo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
+    """Sets `vehiculo_id` on a `grupos_inspectores` doc. Double-booking
+    decision: "one vehicle -> at most one group at a time" is enforced by
+    REJECTING (400, naming the OTHER group that already holds it) rather
+    than silently moving the vehicle — same "guard-then-reject with an
+    actionable message" discipline `eliminar_grupo`/`crear_cuadrilla`
+    already use elsewhere in this file. Re-assigning to the SAME group it
+    is already on is idempotent (no conflict with itself)."""
+    grupo_id = str(body.get("grupo_id") or "").strip()
+    vehiculo_id = str(body.get("vehiculo_id") or "").strip()
+    if not grupo_id:
+        raise bad_request("Falta grupo_id.")
+    if not vehiculo_id:
+        raise bad_request("Falta vehiculo_id.")
+
+    grupo_ref = db.collection(GRUPOS_INSPECTORES_COLLECTION).document(grupo_id)
+    grupo_snap = grupo_ref.get()
+    if not grupo_snap.exists:
+        raise bad_request(f"No existe el grupo {grupo_id}.")
+
+    vehiculo_snap = db.collection(VEHICULOS_COLLECTION).document(vehiculo_id).get()
+    if not vehiculo_snap.exists:
+        raise bad_request(f"No existe el vehículo {vehiculo_id}.")
+
+    otros = db.collection(GRUPOS_INSPECTORES_COLLECTION).where("vehiculo_id", "==", vehiculo_id).get()
+    conflicto = [d for d in otros if d.id != grupo_id]
+    if conflicto:
+        otro = conflicto[0]
+        otro_nombre = (otro.to_dict() or {}).get("nombre") or otro.id
+        raise bad_request(
+            f"El vehículo {vehiculo_id} ya está asignado al grupo «{otro_nombre}». Desasignarlo primero."
+        )
+
+    grupo_ref.set({"vehiculo_id": vehiculo_id}, merge=True)
+    return {"grupo_id": grupo_id, "vehiculo_id": vehiculo_id}
+
+
+def desasignar_vehiculo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
+    grupo_id = str(body.get("grupo_id") or "").strip()
+    if not grupo_id:
+        raise bad_request("Falta grupo_id.")
+
+    ref = db.collection(GRUPOS_INSPECTORES_COLLECTION).document(grupo_id)
+    snap = ref.get()
+    if not snap.exists:
+        raise bad_request(f"No existe el grupo {grupo_id}.")
+
+    ref.set({"vehiculo_id": None}, merge=True)
+    return {"grupo_id": grupo_id}
+
+
 class PlaneacionAsignacionesRequest(BaseModel):
     action: str
     # listPuntos / resumen
@@ -1036,6 +1271,13 @@ class PlaneacionAsignacionesRequest(BaseModel):
     # asignarGrupoAPuntos/desasignarGrupo
     grupo_id: str | None = None
     miembros: list[str] | None = None
+    # grupos-inspectores follow-up: vehiculos CRUD + asignarVehiculoAGrupo/
+    # desasignarVehiculo. `activo` here is bool-only (editarVehiculo), no
+    # _UNSET needed — unlike editarAsignacion's nullable string fields.
+    vehiculo_id: str | None = None
+    placa: str | None = None
+    tipo: str | None = None
+    activo: bool | None = None
 
 
 @router.post("/planeacion-asignaciones")
@@ -1089,6 +1331,18 @@ def planeacion_asignaciones(
             return JSONResponse({"ok": True, **asignar_grupo_a_puntos(db, payload)})
         if body.action == "desasignarGrupo":
             return JSONResponse({"ok": True, **desasignar_grupo(db, payload)})
+        if body.action == "listVehiculos":
+            return JSONResponse({"ok": True, "vehiculos": list_vehiculos(db)})
+        if body.action == "crearVehiculo":
+            return JSONResponse({"ok": True, **crear_vehiculo(db, payload, claims)}, status_code=201)
+        if body.action == "editarVehiculo":
+            return JSONResponse({"ok": True, **editar_vehiculo(db, payload)})
+        if body.action == "eliminarVehiculo":
+            return JSONResponse({"ok": True, **eliminar_vehiculo(db, payload)})
+        if body.action == "asignarVehiculoAGrupo":
+            return JSONResponse({"ok": True, **asignar_vehiculo_a_grupo(db, payload)})
+        if body.action == "desasignarVehiculo":
+            return JSONResponse({"ok": True, **desasignar_vehiculo(db, payload)})
         raise bad_request(f"Acción desconocida: {body.action}")
     except HTTPException:
         raise

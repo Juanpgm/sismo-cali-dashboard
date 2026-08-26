@@ -341,6 +341,27 @@ def test_grupos_inspectores_literal_is_used_by_an_allowlisted_module():
     assert hits, "expected grupos_inspectores to be referenced by an allowlisted module by now"
 
 
+# ── `grupos-inspectores` follow-up batch (2026-08-26): `vehiculos` ─────────
+#
+# A THIRD, INDEPENDENT collection — "cada grupo sale en un vehículo". ONE
+# allowlisted module: `app/routers/planeacion_asignaciones.py` owns ALL of
+# it (CRUD + asignarVehiculoAGrupo/desasignarVehiculo, which merely writes
+# `vehiculo_id` onto a `grupos_inspectores` doc it already owns). Neither
+# `inspector_asignaciones.py` nor `sticker_asignaciones.py` has any reason
+# to read or write vehicles — unlike `grupos_inspectores` above, this one
+# is single-module by design, not just by current usage.
+ALLOWED_MODULES_VEHICULOS = {
+    APP_ROOT / "routers" / "planeacion_asignaciones.py",
+}
+
+
+def test_vehiculos_literal_is_used_by_an_allowlisted_module():
+    hits = _files_containing("vehiculos")
+    unexpected = hits - ALLOWED_MODULES_VEHICULOS
+    assert not unexpected, f"unexpected vehiculos reference(s): {sorted(unexpected)}"
+    assert hits, "expected vehiculos to be referenced by an allowlisted module by now"
+
+
 # Scanner precision ----------------------------------------------------------
 # The scan must match a collection name as a WHOLE identifier. A naive
 # substring match makes any longer collection whose name merely CONTAINS a

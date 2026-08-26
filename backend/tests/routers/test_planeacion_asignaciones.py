@@ -37,6 +37,7 @@ PLANEACION_PUNTOS = "planeacion_puntos"
 PLANEACION_CUADRILLAS = "planeacion_cuadrilla" + "s"  # see planeacion_asignaciones.py's own note
 STICKER_MATCHES = "sticker_matches"  # `grupos-inspectores` change: eliminarGrupo's cross-campaign orphan check
 GRUPOS_INSPECTORES = "grupos_inspectores"  # `grupos-inspectores` change
+VEHICULOS = "vehiculos"  # `grupos-inspectores` follow-up (2026-08-26): vehicles
 
 
 # ── Fake Firestore: path-keyed by (collection, id); supports .where()
@@ -295,6 +296,12 @@ def test_limit_default_is_a_few_hundred_not_two_thousand():
         "eliminarGrupo",
         "asignarGrupoAPuntos",
         "desasignarGrupo",
+        "listVehiculos",
+        "crearVehiculo",
+        "editarVehiculo",
+        "eliminarVehiculo",
+        "asignarVehiculoAGrupo",
+        "desasignarVehiculo",
     ],
 )
 def test_non_admin_is_rejected_no_mutation(monkeypatch, action):
@@ -312,6 +319,8 @@ def test_non_admin_is_rejected_no_mutation(monkeypatch, action):
             "grupo_id": "g1",
             "nombre": "Grupo Norte",
             "miembros": ["uid-1"],
+            "vehiculo_id": "v1",
+            "placa": "ABC123",
         },
     )
 
@@ -319,6 +328,7 @@ def test_non_admin_is_rejected_no_mutation(monkeypatch, action):
     assert stores[PLANEACION_PUNTOS]["p1"] == {"estado_asignacion": "pendiente", "cuadrilla_id": None}
     assert stores[PLANEACION_CUADRILLAS] == {}
     assert stores.get(GRUPOS_INSPECTORES, {}) == {}
+    assert stores.get(VEHICULOS, {}) == {}
 
 
 def test_unauthenticated_is_rejected(monkeypatch):
@@ -1062,6 +1072,52 @@ def test_crear_grupo_requires_at_least_one_miembro(monkeypatch):
     assert stores.get(GRUPOS_INSPECTORES, {}) == {}
 
 
+# ── member cap (2026-08-26 follow-up): a group has AT MOST
+# MAX_MIEMBROS_GRUPO (4) members, enforced server-side. ─────────────────────
+
+
+def test_crear_grupo_rejects_more_than_max_miembros(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "crearGrupo", "nombre": "Grupo Grande", "miembros": ["u1", "u2", "u3", "u4", "u5"]},
+    )
+
+    assert resp.status_code == 400
+    assert "4" in resp.json()["detail"]
+    assert stores.get(GRUPOS_INSPECTORES, {}) == {}
+
+
+def test_crear_grupo_allows_exactly_max_miembros(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "crearGrupo", "nombre": "Grupo Completo", "miembros": ["u1", "u2", "u3", "u4"]},
+    )
+
+    assert resp.status_code == 201
+
+
+def test_crear_grupo_dedupes_miembros_before_counting_cap(monkeypatch):
+    """A duplicate uid in the raw request must not count twice toward the
+    cap — 6 raw entries, only 4 DISTINCT uids, must succeed."""
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "crearGrupo", "nombre": "Grupo Dedup", "miembros": ["u1", "u1", "u2", "u3", "u4", "u4"]},
+    )
+
+    assert resp.status_code == 201
+    grupo_id = resp.json()["id"]
+    assert sorted(stores[GRUPOS_INSPECTORES][grupo_id]["miembros"]) == ["u1", "u2", "u3", "u4"]
+
+
 def test_list_grupos_returns_every_grupo(monkeypatch):
     stores = _stores()
     stores[GRUPOS_INSPECTORES] = {
@@ -1075,6 +1131,33 @@ def test_list_grupos_returns_every_grupo(monkeypatch):
     assert resp.status_code == 200
     ids = {g["id"] for g in resp.json()["grupos"]}
     assert ids == {"g1", "g2"}
+
+
+def test_list_grupos_vehiculo_is_null_when_unassigned(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "listGrupos"})
+
+    grupo = resp.json()["grupos"][0]
+    assert grupo["vehiculo"] is None
+
+
+def test_list_grupos_includes_assigned_vehiculo_without_second_round_trip(monkeypatch):
+    """The group's resolved vehicle (placa/tipo) comes back embedded in
+    listGrupos itself — the admin UI must not need a second round trip."""
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True, "vehiculo_id": "v1"}}
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "tipo": "camioneta", "activo": True}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "listGrupos"})
+
+    grupo = resp.json()["grupos"][0]
+    assert grupo["vehiculo"]["id"] == "v1"
+    assert grupo["vehiculo"]["placa"] == "ABC123"
+    assert grupo["vehiculo"]["tipo"] == "camioneta"
 
 
 def test_editar_grupo_adds_removes_members_and_renames(monkeypatch):
@@ -1092,6 +1175,55 @@ def test_editar_grupo_adds_removes_members_and_renames(monkeypatch):
     assert set(body["miembros"]) == {"u2"}
     assert stores[GRUPOS_INSPECTORES]["g1"]["nombre"] == "Nuevo"
     assert set(stores[GRUPOS_INSPECTORES]["g1"]["miembros"]) == {"u2"}
+
+
+def test_editar_grupo_rejects_add_that_would_exceed_cap_leaves_unchanged(monkeypatch):
+    """The check runs against the RESULTING membership (current - remove +
+    add), not just len(add). Rejecting must leave the group completely
+    unchanged — no partial add."""
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1", "u2", "u3"], "activo": True}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "editarGrupo", "grupo_id": "g1", "add": ["u4", "u5"], "remove": []},
+    )
+
+    assert resp.status_code == 400
+    assert "4" in resp.json()["detail"]
+    assert sorted(stores[GRUPOS_INSPECTORES]["g1"]["miembros"]) == ["u1", "u2", "u3"]
+    assert stores[GRUPOS_INSPECTORES]["g1"]["nombre"] == "Norte"
+
+
+def test_editar_grupo_add_already_member_does_not_double_count_toward_cap(monkeypatch):
+    """A group already AT the cap (4) re-adding one of its own current
+    members must succeed — de-duplication before measuring."""
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1", "u2", "u3", "u4"], "activo": True}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "editarGrupo", "grupo_id": "g1", "add": ["u1"], "remove": []},
+    )
+
+    assert resp.status_code == 200
+    assert sorted(stores[GRUPOS_INSPECTORES]["g1"]["miembros"]) == ["u1", "u2", "u3", "u4"]
+
+
+def test_editar_grupo_allows_add_when_remove_offsets_to_stay_within_cap(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1", "u2", "u3", "u4"], "activo": True}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "editarGrupo", "grupo_id": "g1", "add": ["u5"], "remove": ["u1"]},
+    )
+
+    assert resp.status_code == 200
+    assert sorted(resp.json()["miembros"]) == ["u2", "u3", "u4", "u5"]
 
 
 def test_editar_grupo_nonexistent_fails(monkeypatch):
@@ -1222,3 +1354,210 @@ def test_asignar_grupo_a_puntos_coleccion_and_desasignar_are_planeacion_only(mon
     # writing into a collection it does not own.
     assert resp.status_code == 400
     assert stores[STICKER_MATCHES]["s1"] == {}
+
+
+# ── `grupos-inspectores` follow-up (2026-08-26): vehículos — "cada grupo
+# sale en un vehículo". CRUD lives here (same single-owner reasoning as
+# `grupos_inspectores` itself); the load-bearing invariant is "one vehicle
+# -> at most one group at a time". ──────────────────────────────────────────
+
+
+def test_crear_vehiculo_succeeds(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "crearVehiculo", "placa": "abc123", "tipo": "camioneta"})
+
+    assert resp.status_code == 201
+    vehiculo_id = resp.json()["id"]
+    doc = stores[VEHICULOS][vehiculo_id]
+    assert doc["placa"] == "ABC123"  # normalized uppercase
+    assert doc["tipo"] == "camioneta"
+    assert doc["activo"] is True
+    assert doc["creado_por"] == UID_ADMIN
+    assert "creado_en" in doc
+
+
+def test_crear_vehiculo_requires_placa(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "crearVehiculo", "placa": ""})
+
+    assert resp.status_code == 400
+    assert stores.get(VEHICULOS, {}) == {}
+
+
+def test_crear_vehiculo_rejects_duplicate_placa(monkeypatch):
+    stores = _stores()
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "tipo": "camioneta", "activo": True}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "crearVehiculo", "placa": "abc123"})
+
+    assert resp.status_code == 400
+    assert "ABC123" in resp.json()["detail"]
+    assert len(stores[VEHICULOS]) == 1
+
+
+def test_list_vehiculos_returns_every_vehiculo(monkeypatch):
+    stores = _stores()
+    stores[VEHICULOS] = {
+        "v1": {"placa": "ABC123", "tipo": "camioneta", "activo": True},
+        "v2": {"placa": "XYZ789", "tipo": "moto", "activo": True},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "listVehiculos"})
+
+    assert resp.status_code == 200
+    ids = {v["id"] for v in resp.json()["vehiculos"]}
+    assert ids == {"v1", "v2"}
+
+
+def test_editar_vehiculo_updates_fields(monkeypatch):
+    stores = _stores()
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "tipo": "camioneta", "activo": True}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "editarVehiculo", "vehiculo_id": "v1", "tipo": "moto", "activo": False},
+    )
+
+    assert resp.status_code == 200
+    assert stores[VEHICULOS]["v1"]["tipo"] == "moto"
+    assert stores[VEHICULOS]["v1"]["activo"] is False
+    assert stores[VEHICULOS]["v1"]["placa"] == "ABC123"  # untouched
+
+
+def test_editar_vehiculo_rejects_duplicate_placa(monkeypatch):
+    stores = _stores()
+    stores[VEHICULOS] = {
+        "v1": {"placa": "ABC123", "tipo": "camioneta", "activo": True},
+        "v2": {"placa": "XYZ789", "tipo": "moto", "activo": True},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "editarVehiculo", "vehiculo_id": "v2", "placa": "abc123"},
+    )
+
+    assert resp.status_code == 400
+    assert stores[VEHICULOS]["v2"]["placa"] == "XYZ789"  # unchanged
+
+
+def test_editar_vehiculo_nonexistent_fails(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "editarVehiculo", "vehiculo_id": "missing", "tipo": "moto"})
+
+    assert resp.status_code == 400
+
+
+def test_eliminar_vehiculo_succeeds_when_not_assigned(monkeypatch):
+    stores = _stores()
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "tipo": "camioneta", "activo": True}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "eliminarVehiculo", "vehiculo_id": "v1"})
+
+    assert resp.status_code == 200
+    assert "v1" not in stores[VEHICULOS]
+
+
+def test_eliminar_vehiculo_refuses_when_assigned_to_a_grupo(monkeypatch):
+    """Same orphan-prevention discipline already chosen for eliminarGrupo:
+    refuse, naming the group, rather than silently clearing the vehicle."""
+    stores = _stores()
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "tipo": "camioneta", "activo": True}}
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True, "vehiculo_id": "v1"}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "eliminarVehiculo", "vehiculo_id": "v1"})
+
+    assert resp.status_code == 400
+    assert "Norte" in resp.json()["detail"]
+    assert "v1" in stores[VEHICULOS]
+
+
+def test_asignar_vehiculo_a_grupo_succeeds_and_sets_field(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "tipo": "camioneta", "activo": True}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarVehiculoAGrupo", "grupo_id": "g1", "vehiculo_id": "v1"},
+    )
+
+    assert resp.status_code == 200
+    assert stores[GRUPOS_INSPECTORES]["g1"]["vehiculo_id"] == "v1"
+
+
+def test_asignar_vehiculo_a_grupo_rejects_nonexistent_grupo_or_vehiculo(monkeypatch):
+    stores = _stores()
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "tipo": "camioneta", "activo": True}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarVehiculoAGrupo", "grupo_id": "missing", "vehiculo_id": "v1"},
+    )
+
+    assert resp.status_code == 400
+
+
+def test_asignar_vehiculo_a_grupo_rejects_double_booking_names_other_grupo(monkeypatch):
+    """THE load-bearing invariant: one vehicle -> at most one group at a
+    time. Decision: REJECT (400, naming the other group), never silently
+    move the vehicle."""
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {
+        "g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True, "vehiculo_id": "v1"},
+        "g2": {"nombre": "Sur", "miembros": ["u2"], "activo": True},
+    }
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "tipo": "camioneta", "activo": True}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarVehiculoAGrupo", "grupo_id": "g2", "vehiculo_id": "v1"},
+    )
+
+    assert resp.status_code == 400
+    assert "Norte" in resp.json()["detail"]
+    # NOT silently moved -- g1 still holds it, g2 still unassigned.
+    assert stores[GRUPOS_INSPECTORES]["g1"]["vehiculo_id"] == "v1"
+    assert stores[GRUPOS_INSPECTORES]["g2"].get("vehiculo_id") is None
+
+
+def test_asignar_vehiculo_a_grupo_reassigning_same_grupo_is_idempotent(monkeypatch):
+    """Assigning a vehicle to the group that ALREADY holds it must not
+    conflict with itself."""
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True, "vehiculo_id": "v1"}}
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "tipo": "camioneta", "activo": True}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarVehiculoAGrupo", "grupo_id": "g1", "vehiculo_id": "v1"},
+    )
+
+    assert resp.status_code == 200
+    assert stores[GRUPOS_INSPECTORES]["g1"]["vehiculo_id"] == "v1"
+
+
+def test_desasignar_vehiculo_clears_field(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True, "vehiculo_id": "v1"}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "desasignarVehiculo", "grupo_id": "g1"})
+
+    assert resp.status_code == 200
+    assert stores[GRUPOS_INSPECTORES]["g1"]["vehiculo_id"] is None

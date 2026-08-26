@@ -36,6 +36,12 @@ const CALI_BBOX = { latMin: 3.30, latMax: 3.55, lngMin: -76.60, lngMax: -76.40 }
 const DEFAULT_MAX_RADIUS_M = 800;
 const DEFAULT_MAX_SIZE = 10;
 
+// `grupos-inspectores` follow-up (2026-08-26): mirrors the backend's own
+// named MAX_MIEMBROS_GRUPO constant — a UI-side hint/label ONLY. The
+// endpoint (planeacion_asignaciones.py's crearGrupo/editarGrupo) is the
+// real boundary that enforces this; a client-side check is not enough.
+const MAX_MIEMBROS_GRUPO = 4;
+
 const PRIORIDADES = ['alta', 'media', 'baja'];
 const PRIORIDAD_LABELS = { alta: 'Alta', media: 'Media', baja: 'Baja' };
 const PRIORIDAD_RANK = { alta: 3, media: 2, baja: 1 };
@@ -259,8 +265,13 @@ function shellHtml() {
         </div>
 
         <div class="card">
-          ${cardHead('Grupos de inspectores', 'Un grupo de inspectores: cualquier miembro puede completar los puntos asignados al grupo, ya sea de stickers o de survey.', '<button type="button" class="btn-primary" id="planeacion-grupo-crear">Crear grupo</button>')}
+          ${cardHead('Grupos de inspectores', `Un grupo de inspectores (máximo ${MAX_MIEMBROS_GRUPO} personas): cualquier miembro puede completar los puntos asignados al grupo, ya sea de stickers o de survey. Cada grupo sale en un vehículo.`, '<button type="button" class="btn-primary" id="planeacion-grupo-crear">Crear grupo</button>')}
           <div class="asignacion-cuadrillas-scroll" id="planeacion-grupos"></div>
+        </div>
+
+        <div class="card">
+          ${cardHead('Vehículos', 'Vehículos disponibles para asignar a un grupo — un vehículo solo puede estar en un grupo a la vez.', '<button type="button" class="btn-primary" id="planeacion-vehiculo-crear">Crear vehículo</button>')}
+          <div class="asignacion-cuadrillas-scroll" id="planeacion-vehiculos"></div>
         </div>
 
         <div class="card">
@@ -371,13 +382,43 @@ function shellHtml() {
             <input type="text" id="planeacion-grupo-nombre" placeholder="Grupo Norte">
           </label>
           <fieldset class="asignacion-grupo-miembros">
-            <legend>Miembros (cualquiera podrá completar los puntos del grupo)</legend>
+            <legend>Miembros — máximo ${MAX_MIEMBROS_GRUPO} (cualquiera podrá completar los puntos del grupo)</legend>
             <div id="planeacion-grupo-miembros-list" class="asignacion-grupo-miembros-list"></div>
           </fieldset>
           <p class="sticker-error" id="planeacion-grupo-error" role="alert" hidden></p>
           <div class="sticker-form-actions">
             <button type="button" class="btn-secondary" data-grupo-close>Cancelar</button>
             <button type="button" class="btn-primary" id="planeacion-grupo-save">Guardar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal" id="planeacion-vehiculo-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="planeacion-vehiculo-title">
+      <div class="modal-backdrop" data-vehiculo-close></div>
+      <div class="modal-panel sticker-modal-panel">
+        <div class="modal-header">
+          <h2 id="planeacion-vehiculo-title">Vehículo</h2>
+          <button type="button" class="btn-icon" data-vehiculo-close aria-label="Cerrar">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="planeacion-vehiculo-id">
+          <label class="sticker-field"><span>Placa</span>
+            <input type="text" id="planeacion-vehiculo-placa" placeholder="ABC123">
+          </label>
+          <label class="sticker-field"><span>Tipo</span>
+            <input type="text" id="planeacion-vehiculo-tipo" placeholder="Camioneta">
+          </label>
+          <label class="sticker-field asignacion-inline-field" id="planeacion-vehiculo-activo-field" hidden>
+            <input type="checkbox" id="planeacion-vehiculo-activo">
+            <span>Activo</span>
+          </label>
+          <p class="sticker-error" id="planeacion-vehiculo-error" role="alert" hidden></p>
+          <div class="sticker-form-actions">
+            <button type="button" class="btn-secondary" data-vehiculo-close>Cancelar</button>
+            <button type="button" class="btn-primary" id="planeacion-vehiculo-save">Guardar</button>
           </div>
         </div>
       </div>
@@ -485,8 +526,11 @@ function cuadrillasHtml(cuadrillas, inspectorById) {
  *  above, which renders groups of POINTS under one inspector. Member uids
  *  are resolved to display names via the SAME cached roster `inspectorById`
  *  already uses for `inspectorLabel`/cuadrillas, not a backend-side
- *  resolution — no separate roster fetch for this section. */
-function gruposHtml(grupos, inspectorById) {
+ *  resolution — no separate roster fetch for this section. Each group's
+ *  assigned vehicle comes back embedded on `g.vehiculo` (listGrupos'
+ *  own no-second-round-trip contract) — a `<select>` here lets the admin
+ *  assign/change/clear it without leaving this list. */
+function gruposHtml(grupos, inspectorById, vehiculosDisponibles) {
   if (!grupos.length) {
     return '<p class="sticker-empty">Todavía no hay grupos. Usar «Crear grupo».</p>';
   }
@@ -496,18 +540,53 @@ function gruposHtml(grupos, inspectorById) {
         const insp = inspectorById.get(uid);
         return insp ? (insp.nombre_completo || insp.codigo || uid) : uid;
       });
-      const metaMiembros = nombres.length ? `${nombres.length} miembro${nombres.length === 1 ? '' : 's'}: ${escapeHtml(nombres.join(', '))}` : 'Sin miembros';
+      const metaMiembros = nombres.length ? `${nombres.length}/${MAX_MIEMBROS_GRUPO} miembro${nombres.length === 1 ? '' : 's'}: ${escapeHtml(nombres.join(', '))}` : 'Sin miembros';
+      const vehiculo = g.vehiculo;
+      // Options: the group's OWN current vehicle (even if inactive/not in
+      // the "disponibles" list, so it always shows correctly) + every
+      // active, currently-unassigned vehicle.
+      const opciones = [vehiculo, ...vehiculosDisponibles.filter((v) => !vehiculo || v.id !== vehiculo.id)]
+        .filter(Boolean);
+      const vehiculoSelect = `<select class="asignacion-vehiculo-select" data-vehiculo-select-grupo="${escapeHtml(g.id)}">
+        <option value="">— Sin vehículo —</option>
+        ${opciones.map((v) => `<option value="${escapeHtml(v.id)}" ${vehiculo && vehiculo.id === v.id ? 'selected' : ''}>${escapeHtml(v.placa)}${v.tipo ? ` (${escapeHtml(v.tipo)})` : ''}</option>`).join('')}
+      </select>`;
       return `<li class="sticker-row" data-grupo-row="${escapeHtml(g.id)}">
         <div class="sticker-identity">
           <span class="sticker-name" title="ID: ${escapeHtml(g.id)}">${escapeHtml(g.nombre || g.id)}${g.activo === false ? ' (inactivo)' : ''}</span>
           <span class="sticker-meta">${metaMiembros}</span>
         </div>
+        <label class="sticker-field asignacion-inline-field" title="Vehículo asignado — un vehículo solo puede estar en un grupo a la vez.">
+          <span>Vehículo</span>
+          ${vehiculoSelect}
+        </label>
         <div class="asignacion-cuadrilla-actions">
           <button type="button" class="sticker-action" data-editar-grupo="${escapeHtml(g.id)}">Editar</button>
           <button type="button" class="sticker-action sticker-action-off" data-eliminar-grupo="${escapeHtml(g.id)}">Eliminar</button>
         </div>
       </li>`;
     }).join('')}
+  </ul>`;
+}
+
+/** Vehículos (`grupos-inspectores` follow-up, 2026-08-26) — "cada grupo
+ *  sale en un vehículo". Independent CRUD list; assignment to a grupo
+ *  happens from the grupo row above (`vehiculoSelect`), not here. */
+function vehiculosHtml(vehiculos) {
+  if (!vehiculos.length) {
+    return '<p class="sticker-empty">Todavía no hay vehículos. Usar «Crear vehículo».</p>';
+  }
+  return `<ul class="sticker-list">
+    ${vehiculos.map((v) => `<li class="sticker-row" data-vehiculo-row="${escapeHtml(v.id)}">
+        <div class="sticker-identity">
+          <span class="sticker-name" title="ID: ${escapeHtml(v.id)}">${escapeHtml(v.placa)}${v.activo === false ? ' (inactivo)' : ''}</span>
+          <span class="sticker-meta">${escapeHtml(v.tipo || 'Sin tipo')}</span>
+        </div>
+        <div class="asignacion-cuadrilla-actions">
+          <button type="button" class="sticker-action" data-editar-vehiculo="${escapeHtml(v.id)}">Editar</button>
+          <button type="button" class="sticker-action sticker-action-off" data-eliminar-vehiculo="${escapeHtml(v.id)}">Eliminar</button>
+        </div>
+      </li>`).join('')}
   </ul>`;
 }
 
@@ -678,6 +757,7 @@ export function initPlaneacion(root, { getToken }) {
   let rows = [];
   let cuadrillas = [];
   let grupos = []; // grupos de INSPECTORES — `grupos-inspectores` change
+  let vehiculos = []; // `grupos-inspectores` follow-up (2026-08-26)
   let resumenData = null;
   let inspectoresCache = [];
   let inspectoresLoaded = false;
@@ -704,6 +784,8 @@ export function initPlaneacion(root, { getToken }) {
   const asignarGrupoBtn = root.querySelector('#planeacion-asignar-grupo');
   const quitarGrupoBtn = root.querySelector('#planeacion-quitar-grupo');
   const grupoCrearBtn = root.querySelector('#planeacion-grupo-crear');
+  const vehiculosWrap = root.querySelector('#planeacion-vehiculos');
+  const vehiculoCrearBtn = root.querySelector('#planeacion-vehiculo-crear');
 
   const showOk = (msg) => { okBox.textContent = msg; okBox.hidden = !msg; };
   const showErr = (msg) => { errBox.textContent = msg; errBox.hidden = !msg; };
@@ -785,6 +867,7 @@ export function initPlaneacion(root, { getToken }) {
     renderTable();
     renderCuadrillasSection();
     renderGruposSection();
+    renderVehiculosSection();
     renderMapSection();
   }
 
@@ -1034,7 +1117,14 @@ export function initPlaneacion(root, { getToken }) {
   function renderGruposSection() {
     const inspectores = getInspectores();
     const inspectorById = new Map(inspectores.map((i) => [i.uid, i]));
-    gruposWrap.innerHTML = gruposHtml(grupos, inspectorById);
+    // Options for the per-row vehicle picker: active vehicles not already
+    // holding a DIFFERENT group (the row's own gruposHtml logic also
+    // always includes the row's own current vehicle regardless).
+    const asignadosAOtroGrupo = new Set(
+      grupos.filter((g) => g.vehiculo).map((g) => g.vehiculo.id),
+    );
+    const vehiculosDisponibles = vehiculos.filter((v) => v.activo !== false && !asignadosAOtroGrupo.has(v.id));
+    gruposWrap.innerHTML = gruposHtml(grupos, inspectorById, vehiculosDisponibles);
 
     gruposWrap.querySelectorAll('[data-editar-grupo]').forEach((btn) => {
       btn.addEventListener('click', () => openGrupoModal(btn.dataset.editarGrupo));
@@ -1043,6 +1133,16 @@ export function initPlaneacion(root, { getToken }) {
       btn.addEventListener('click', () => {
         if (!window.confirm('Eliminar este grupo. Si todavía tiene puntos asignados, la eliminación será rechazada.')) return;
         runGrupoAction({ action: 'eliminarGrupo', grupo_id: btn.dataset.eliminarGrupo }, 'Grupo eliminado.');
+      });
+    });
+    gruposWrap.querySelectorAll('[data-vehiculo-select-grupo]').forEach((sel) => {
+      sel.addEventListener('change', () => {
+        const grupoId = sel.dataset.vehiculoSelectGrupo;
+        if (sel.value) {
+          runGrupoAction({ action: 'asignarVehiculoAGrupo', grupo_id: grupoId, vehiculo_id: sel.value }, 'Vehículo asignado al grupo.');
+        } else {
+          runGrupoAction({ action: 'desasignarVehiculo', grupo_id: grupoId }, 'Vehículo desasignado del grupo.');
+        }
       });
     });
 
@@ -1054,6 +1154,85 @@ export function initPlaneacion(root, { getToken }) {
     asignarGrupoBtn.disabled = !(selected.size && grupoSelect.value);
     quitarGrupoBtn.disabled = selected.size === 0;
   }
+
+  // ---- vehículos section (`grupos-inspectores` follow-up, 2026-08-26) -----
+  async function runVehiculoAction(body, okMsg) {
+    if (busy) return;
+    busy = true;
+    try {
+      await callApi(getToken, body);
+      showOk(okMsg);
+      await reload();
+    } catch (err) {
+      showErr(err.message);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function renderVehiculosSection() {
+    vehiculosWrap.innerHTML = vehiculosHtml(vehiculos);
+    vehiculosWrap.querySelectorAll('[data-editar-vehiculo]').forEach((btn) => {
+      btn.addEventListener('click', () => openVehiculoModal(btn.dataset.editarVehiculo));
+    });
+    vehiculosWrap.querySelectorAll('[data-eliminar-vehiculo]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (!window.confirm('Eliminar este vehículo. Si todavía está asignado a un grupo, la eliminación será rechazada.')) return;
+        runVehiculoAction({ action: 'eliminarVehiculo', vehiculo_id: btn.dataset.eliminarVehiculo }, 'Vehículo eliminado.');
+      });
+    });
+  }
+
+  const vehiculoModal = root.querySelector('#planeacion-vehiculo-modal');
+  const vehiculoErr = root.querySelector('#planeacion-vehiculo-error');
+  const vehiculoActivoField = root.querySelector('#planeacion-vehiculo-activo-field');
+  function openVehiculoModal(vehiculoId) {
+    vehiculoErr.hidden = true;
+    const vehiculo = vehiculoId ? vehiculos.find((v) => v.id === vehiculoId) : null;
+    root.querySelector('#planeacion-vehiculo-id').value = vehiculoId || '';
+    root.querySelector('#planeacion-vehiculo-placa').value = vehiculo ? (vehiculo.placa || '') : '';
+    root.querySelector('#planeacion-vehiculo-tipo').value = vehiculo ? (vehiculo.tipo || '') : '';
+    root.querySelector('#planeacion-vehiculo-activo').checked = vehiculo ? vehiculo.activo !== false : true;
+    vehiculoActivoField.hidden = !vehiculoId; // "activo" only makes sense once a vehículo exists
+    vehiculoModal.classList.add('is-open');
+    vehiculoModal.setAttribute('aria-hidden', 'false');
+  }
+  function closeVehiculoModal() {
+    vehiculoModal.classList.remove('is-open');
+    vehiculoModal.setAttribute('aria-hidden', 'true');
+  }
+  vehiculoModal.querySelectorAll('[data-vehiculo-close]').forEach((el) => el.addEventListener('click', closeVehiculoModal));
+  vehiculoCrearBtn.addEventListener('click', () => openVehiculoModal(null));
+
+  root.querySelector('#planeacion-vehiculo-save').addEventListener('click', async () => {
+    if (busy) return;
+    const vehiculoId = root.querySelector('#planeacion-vehiculo-id').value;
+    const placa = root.querySelector('#planeacion-vehiculo-placa').value.trim();
+    const tipo = root.querySelector('#planeacion-vehiculo-tipo').value.trim();
+    if (!placa) {
+      vehiculoErr.textContent = 'La placa es obligatoria.';
+      vehiculoErr.hidden = false;
+      return;
+    }
+    busy = true;
+    try {
+      if (vehiculoId) {
+        const activo = root.querySelector('#planeacion-vehiculo-activo').checked;
+        await callApi(getToken, { action: 'editarVehiculo', vehiculo_id: vehiculoId, placa, tipo, activo });
+        showOk('Vehículo actualizado.');
+      } else {
+        await callApi(getToken, { action: 'crearVehiculo', placa, tipo });
+        showOk('Vehículo creado.');
+      }
+      closeVehiculoModal();
+      await reload();
+    } catch (err) {
+      vehiculoErr.textContent = err.message;
+      vehiculoErr.hidden = false;
+    } finally {
+      busy = false;
+    }
+  });
 
   // ---- Grupo (create/edit) modal — a checkbox list over the SAME cached
   // roster the cuadrillas combobox already uses (design constraint: reuse
@@ -1087,6 +1266,20 @@ export function initPlaneacion(root, { getToken }) {
   }
   grupoModal.querySelectorAll('[data-grupo-close]').forEach((el) => el.addEventListener('click', closeGrupoModal));
   grupoCrearBtn.addEventListener('click', () => openGrupoModal(null));
+
+  // UI-side hint ONLY, mirroring the backend's own MAX_MIEMBROS_GRUPO — the
+  // endpoint is the real boundary (see that constant's own comment). Once
+  // the cap is reached, further UNCHECKED boxes are disabled so the admin
+  // gets immediate feedback instead of a round trip that always fails.
+  grupoMiembrosList.addEventListener('change', () => {
+    const boxes = [...grupoMiembrosList.querySelectorAll('input[type="checkbox"]')];
+    const checkedCount = boxes.filter((cb) => cb.checked).length;
+    boxes.forEach((cb) => { cb.disabled = !cb.checked && checkedCount >= MAX_MIEMBROS_GRUPO; });
+    grupoErr.hidden = checkedCount <= MAX_MIEMBROS_GRUPO;
+    if (checkedCount > MAX_MIEMBROS_GRUPO) {
+      grupoErr.textContent = `Un grupo admite máximo ${MAX_MIEMBROS_GRUPO} miembros.`;
+    }
+  });
 
   root.querySelector('#planeacion-grupo-save').addEventListener('click', async () => {
     if (busy) return;
@@ -1195,14 +1388,16 @@ export function initPlaneacion(root, { getToken }) {
     try {
       await ensureInspectores();
       const incluirLevantados = !!root.querySelector('#planeacion-incluir-levantados')?.checked;
-      const [listResp, cuadrillasResp, resumenResp, gruposResp] = await Promise.all([
+      const [listResp, cuadrillasResp, resumenResp, gruposResp, vehiculosResp] = await Promise.all([
         callApi(getToken, { action: 'listPuntos', incluirLevantados }),
         callApi(getToken, { action: 'listCuadrillas' }),
         callApi(getToken, { action: 'resumen' }),
         callApi(getToken, { action: 'listGrupos' }),
+        callApi(getToken, { action: 'listVehiculos' }),
       ]);
       cuadrillas = cuadrillasResp.cuadrillas || [];
       grupos = gruposResp.grupos || [];
+      vehiculos = vehiculosResp.vehiculos || [];
       resumenData = resumenResp.resumen || null;
       rows = buildRows(listResp.puntos, cuadrillas, getInspectores());
       selected.clear();
@@ -1214,6 +1409,7 @@ export function initPlaneacion(root, { getToken }) {
       renderTable();
       renderCuadrillasSection();
       renderGruposSection();
+      renderVehiculosSection();
       renderMapSection();
     } catch (err) {
       teardownMap();
