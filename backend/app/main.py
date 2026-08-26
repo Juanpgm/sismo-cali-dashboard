@@ -24,6 +24,7 @@ from app.routers import (
     sticker_asignaciones,
     stickers,
     sticker_status,
+    survey_cali,
     usuarios,
 )
 from app.routers.sticker_status import StickerStatusCache
@@ -41,6 +42,7 @@ _ROUTERS = (
     refresh,
     stickers,
     sticker_asignaciones,
+    survey_cali,
     usuarios,
 )
 
