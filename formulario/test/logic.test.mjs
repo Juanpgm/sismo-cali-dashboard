@@ -8,6 +8,7 @@ import {
   plegarConsecutivoGuardado, siguienteDesdeMax, consecutivosExistentes,
   filtrarPendientes, habitabilidadColor, colapsoLabel, mapsDirUrl,
   elegirEnlaceEncuesta, prioridadColor,
+  distanciaM, ordenarPorCercania, formatDistancia,
 } from '../js/logic.js';
 
 const base = {
@@ -326,4 +327,88 @@ test('elegirEnlaceEncuesta cae al enlace web en movil si no hay deep link de app
 test('elegirEnlaceEncuesta devuelve cadena vacia sin ningun enlace configurado', () => {
   assert.equal(elegirEnlaceEncuesta({ survey_web: null, survey_app: null }, true), '');
   assert.equal(elegirEnlaceEncuesta(null, false), '');
+});
+
+// ---- distanciaM ---------------------------------------------------------------
+
+test('distanciaM calcula la distancia haversine entre dos puntos {lat, lng}', () => {
+  const a = { lat: 3.4516, lng: -76.532 };
+  const b = { lat: 3.4606, lng: -76.532 }; // ~0.009 grados al norte ~= 1000 m
+  const d = distanciaM(a, b);
+  assert.ok(d > 950 && d < 1050, `esperaba ~1000 m, obtuve ${d}`);
+});
+
+test('distanciaM es tolerante a coords {lat, lon} del backend', () => {
+  const a = { lat: 3.4516, lng: -76.532 };
+  const b = { lat: 3.4516, lon: -76.532 };
+  assert.equal(distanciaM(a, b), 0);
+});
+
+test('distanciaM es tolerante a coords {latitude, longitude} del navegador', () => {
+  const a = { latitude: 3.4516, longitude: -76.532 };
+  const b = { lat: 3.4516, lng: -76.532 };
+  assert.equal(distanciaM(a, b), 0);
+});
+
+test('distanciaM devuelve cero para el mismo punto', () => {
+  const p = { lat: 3.4516, lng: -76.532 };
+  assert.equal(distanciaM(p, p), 0);
+});
+
+test('distanciaM devuelve null si falta un punto completo', () => {
+  assert.equal(distanciaM(null, { lat: 1, lng: 1 }), null);
+  assert.equal(distanciaM({ lat: 1, lng: 1 }, null), null);
+  assert.equal(distanciaM(null, null), null);
+});
+
+test('distanciaM devuelve null (nunca NaN ni 0) si faltan coordenadas usables', () => {
+  assert.equal(distanciaM({ lat: 1 }, { lat: 1, lng: 1 }), null);
+  assert.equal(distanciaM({}, { lat: 1, lng: 1 }), null);
+});
+
+// ---- ordenarPorCercania --------------------------------------------------------
+
+test('ordenarPorCercania ordena los puntos de mas cercano a mas lejano', () => {
+  const origen = { lat: 3.45, lng: -76.53 };
+  const lejos = { id: 'lejos', coords: { lat: 3.55, lon: -76.53 } };
+  const cerca = { id: 'cerca', coords: { lat: 3.451, lon: -76.53 } };
+  const medio = { id: 'medio', coords: { lat: 3.48, lon: -76.53 } };
+  const out = ordenarPorCercania([lejos, cerca, medio], origen);
+  assert.deepEqual(out.map((p) => p.id), ['cerca', 'medio', 'lejos']);
+});
+
+test('ordenarPorCercania manda al final, en orden estable, los puntos sin coordenadas usables', () => {
+  const origen = { lat: 3.45, lng: -76.53 };
+  const sinCoords1 = { id: 'sin1' };
+  const cerca = { id: 'cerca', coords: { lat: 3.451, lon: -76.53 } };
+  const sinCoords2 = { id: 'sin2', coords: {} };
+  const out = ordenarPorCercania([sinCoords1, cerca, sinCoords2], origen);
+  assert.deepEqual(out.map((p) => p.id), ['cerca', 'sin1', 'sin2']);
+});
+
+test('ordenarPorCercania sin origen (GPS denegado) devuelve la lista sin reordenar', () => {
+  const a = { id: 'a', coords: { lat: 3.55, lon: -76.53 } };
+  const b = { id: 'b', coords: { lat: 3.451, lon: -76.53 } };
+  const out = ordenarPorCercania([a, b], null);
+  assert.deepEqual(out.map((p) => p.id), ['a', 'b']);
+});
+
+test('ordenarPorCercania con lista nula devuelve lista vacia', () => {
+  assert.deepEqual(ordenarPorCercania(null, { lat: 1, lng: 1 }), []);
+});
+
+// ---- formatDistancia ------------------------------------------------------------
+
+test('formatDistancia con null devuelve el guion largo', () => {
+  assert.equal(formatDistancia(null), '—');
+});
+
+test('formatDistancia por debajo de 1000 m se redondea a metros enteros', () => {
+  assert.equal(formatDistancia(340), '340 m');
+  assert.equal(formatDistancia(340.6), '341 m');
+});
+
+test('formatDistancia de 1000 m en adelante usa kilometros con coma decimal', () => {
+  assert.equal(formatDistancia(1200), '1,2 km');
+  assert.equal(formatDistancia(1000), '1,0 km');
 });

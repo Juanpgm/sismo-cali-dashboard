@@ -13,6 +13,7 @@ import {
   siguienteDesdeMax, plegarConsecutivoGuardado, consecutivosExistentes,
   habitabilidadColor, colapsoLabel, mapsDirUrl,
   prioridadColor, elegirEnlaceEncuesta,
+  ordenarPorCercania, distanciaM, formatDistancia,
 } from './logic.js';
 
 // Serverless signer that validates the Firebase idToken and presigns the
@@ -75,6 +76,18 @@ const state = {
   // not this ATC-20 form — so it is tracked and rendered separately, never
   // merged into `asignaciones` above. Empty array = none assigned.
   puntosPlaneacion: [],
+  // Which assignments tab is showing ('survey' | 'stickers'). null before
+  // the first render — renderAsignaciones() picks a default then. Kept
+  // across GPS-driven re-sorts so a better fix never yanks the inspector
+  // off the tab they are looking at.
+  tabAsigActiva: null,
+  // Best GPS fix for sorting the assignment lists by proximity ({ lat, lng,
+  // accuracy }), separate from the ATC-20 form's own `coords` above — this
+  // one is requested BEFORE a point (or the blank form) is even chosen.
+  // null = no usable fix yet (unsorted lists, distance shows as "—").
+  origenAsignaciones: null,
+  geoAsigWatchId: null,
+  geoAsigWatchTimer: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -98,6 +111,9 @@ function boot(inspector) {
 
   $('#eval-form').addEventListener('submit', onSubmit);
   $('#btn-nuevo').addEventListener('click', nuevoRegistro);
+
+  $('#asig-tab-survey').addEventListener('click', () => activarTabAsignaciones('survey'));
+  $('#asig-tab-stickers').addEventListener('click', () => activarTabAsignaciones('stickers'));
 
   iniciarAsignaciones();
 }
@@ -148,6 +164,10 @@ async function iniciarAsignaciones() {
     mostrarFormulario();
     return;
   }
+  // Start the proximity GPS fix in the background (see "Geolocation for
+  // proximity sort" below) — it re-renders on its own once/if a fix lands,
+  // it never blocks showing the list.
+  requestLocationAsignaciones();
   // Fail open on a render fault too: a bug building the cards must never leave
   // the inspector on a blank screen — fall through to the usable blank form.
   try {
@@ -159,36 +179,84 @@ async function iniciarAsignaciones() {
 }
 
 // Shows the form screen and starts GPS. Single entry point for "reveal #app".
+// Also the single point where the assignments-screen proximity watch stops —
+// every path off that screen goes through here, so a stray late GPS fix can
+// never silently flip #asignaciones back to visible after the inspector has
+// moved on to the form.
 function mostrarFormulario() {
+  stopGeoAsigWatch();
   $('#asignaciones').hidden = true;
   $('#confirm').hidden = true;
   $('#app').hidden = false;
   requestLocation();
 }
 
+// Rebuilds both tab panels from current state, nearest-first via
+// ordenarPorCercania (unsorted, in original order, while no GPS fix is
+// available yet — never a wrong or arbitrary order). Keeps whichever tab is
+// already active (state.tabAsigActiva) so a GPS re-sort never yanks the
+// inspector off the tab/scroll position they are looking at; only picks a
+// default the first time (state.tabAsigActiva starts null).
 function renderAsignaciones() {
+  const stickersOrdenados = ordenarPorCercania(state.asignaciones, state.origenAsignaciones);
+  const planeacionOrdenados = ordenarPorCercania(state.puntosPlaneacion, state.origenAsignaciones);
+
   const cont = $('#asignaciones-lista');
   cont.innerHTML = '';
-  state.asignaciones.forEach((a) => cont.append(buildAsignacionCard(a)));
-  // Each section is its own clearly-labelled block (see index.html) and is
-  // hidden entirely when this inspector has nothing of that kind pending —
-  // never an empty heading with nothing under it.
-  $('#asignaciones-stickers-section').hidden = state.asignaciones.length === 0;
+  stickersOrdenados.forEach((a) => cont.append(buildAsignacionCard(a, state.origenAsignaciones)));
+  $('#asignaciones-vacio').hidden = stickersOrdenados.length > 0;
 
   const contPlaneacion = $('#planeacion-asignaciones-lista');
   contPlaneacion.innerHTML = '';
-  state.puntosPlaneacion.forEach((p) => contPlaneacion.append(buildPlaneacionCard(p)));
-  $('#planeacion-asignaciones-section').hidden = state.puntosPlaneacion.length === 0;
+  planeacionOrdenados.forEach((p) => contPlaneacion.append(buildPlaneacionCard(p, state.origenAsignaciones)));
+  $('#planeacion-asignaciones-vacio').hidden = planeacionOrdenados.length > 0;
+
+  $('#asig-tab-survey-count').textContent = String(planeacionOrdenados.length);
+  $('#asig-tab-stickers-count').textContent = String(stickersOrdenados.length);
+
+  // Open on whichever tab actually has work; if both have work, default to
+  // Survey; if neither (unreachable here — iniciarAsignaciones already
+  // falls through to the blank form when both are empty), Survey is a safe
+  // default too.
+  if (!state.tabAsigActiva) {
+    state.tabAsigActiva = (planeacionOrdenados.length === 0 && stickersOrdenados.length > 0) ? 'stickers' : 'survey';
+  }
+  activarTabAsignaciones(state.tabAsigActiva);
 
   $('#app').hidden = true;
   $('#confirm').hidden = true;
   $('#asignaciones').hidden = false;
 }
 
-function buildAsignacionCard(a) {
+// Switches the visible tab panel; does NOT touch scroll position or re-fetch
+// anything, so it is safe to call on every re-sort re-render too.
+function activarTabAsignaciones(tab) {
+  state.tabAsigActiva = tab;
+  const esSurvey = tab === 'survey';
+  $('#asig-tab-survey').classList.toggle('is-active', esSurvey);
+  $('#asig-tab-survey').setAttribute('aria-selected', String(esSurvey));
+  $('#asig-tab-stickers').classList.toggle('is-active', !esSurvey);
+  $('#asig-tab-stickers').setAttribute('aria-selected', String(!esSurvey));
+  $('#planeacion-asignaciones-section').hidden = !esSurvey;
+  $('#asignaciones-stickers-section').hidden = esSurvey;
+}
+
+// Prominent distance line shared by both card kinds — distance is the
+// primary sort key (proximity) and must read at a glance, not be buried
+// among the other pills.
+function buildDistanciaLinea(coords, origen) {
+  const p = document.createElement('p');
+  p.className = 'asignacion-distancia';
+  p.textContent = formatDistancia(distanciaM(origen, coords));
+  return p;
+}
+
+function buildAsignacionCard(a, origen) {
   const card = document.createElement('article');
   card.className = 'card asignacion-card';
   card.style.borderLeftColor = habitabilidadColor(a.criterio_habitabilidad);
+
+  card.append(buildDistanciaLinea(a.coords, origen));
 
   const dir = document.createElement('h3');
   dir.className = 'asignacion-dir';
@@ -250,10 +318,12 @@ function registrarSticker(a) {
 // FROM Survey123's own submit, the same "the survey closes itself" flow
 // `app/jobs/planeacion_cruce.py`'s exact-key auto-close already relies on
 // (its own module docstring, "the ONE binding auto-close exception").
-function buildPlaneacionCard(p) {
+function buildPlaneacionCard(p, origen) {
   const card = document.createElement('article');
   card.className = 'card asignacion-card';
   card.style.borderLeftColor = prioridadColor(p.prioridad);
+
+  card.append(buildDistanciaLinea(p.coords, origen));
 
   const dir = document.createElement('h3');
   dir.className = 'asignacion-dir';
@@ -317,6 +387,86 @@ function buildPlaneacionCard(p) {
 // this still guards the desktop-dev-server case sanely.
 function esDispositivoMovil() {
   return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+}
+
+// ---- Geolocation for the assignments proximity sort --------------------------
+// Same watchPosition/best-fix/battery-guard shape as requestLocation() below
+// (reused on purpose — one geolocation strategy, not two), but scoped to the
+// assignments picker: it starts as soon as that screen opens (before any
+// point, or the blank form, is chosen) and re-sorts the lists as better
+// fixes arrive. Fails OPEN, loudly but harmlessly: a denial or timeout never
+// blocks the list, it only shows an inline note (#asig-geo-note) explaining
+// why distances read as "—".
+
+function requestLocationAsignaciones() {
+  stopGeoAsigWatch();
+  state.origenAsignaciones = null;
+  ocultarNotaGeoAsignaciones();
+
+  if (!('geolocation' in navigator)) {
+    mostrarNotaGeoAsignaciones('Este dispositivo no soporta geolocalización; los puntos se muestran sin ordenar por cercanía.');
+    return;
+  }
+
+  state.geoAsigWatchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      if (!state.origenAsignaciones || pos.coords.accuracy < state.origenAsignaciones.accuracy) {
+        state.origenAsignaciones = {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+        };
+        ocultarNotaGeoAsignaciones();
+        // Re-sort with the better fix. renderAsignaciones() keeps
+        // state.tabAsigActiva as-is (already set after the first render),
+        // so this never yanks the inspector off the tab they are viewing.
+        renderAsignaciones();
+      }
+      if (state.origenAsignaciones.accuracy <= GEO_ACCURACY_TARGET) {
+        stopGeoAsigWatch();
+      }
+    },
+    (err) => {
+      // A fix already in hand is not undone by a later timeout/error.
+      if (state.origenAsignaciones) return;
+      mostrarNotaGeoAsignaciones(
+        err && err.code === 1
+          ? 'Ubicación no disponible: permiso denegado. Los puntos se muestran sin ordenar por cercanía.'
+          : 'Ubicación no disponible por ahora. Los puntos se muestran sin ordenar por cercanía.',
+      );
+    },
+    { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 },
+  );
+
+  // Battery guard, same ceiling as the form's own watch. If no fix ever
+  // landed, say so — never leave the note silently unexplained.
+  state.geoAsigWatchTimer = setTimeout(() => {
+    stopGeoAsigWatch();
+    if (!state.origenAsignaciones) {
+      mostrarNotaGeoAsignaciones('No se pudo obtener la ubicación a tiempo. Los puntos se muestran sin ordenar por cercanía.');
+    }
+  }, GEO_MAX_WATCH_MS);
+}
+
+function stopGeoAsigWatch() {
+  if (state.geoAsigWatchId != null) {
+    navigator.geolocation.clearWatch(state.geoAsigWatchId);
+    state.geoAsigWatchId = null;
+  }
+  if (state.geoAsigWatchTimer) {
+    clearTimeout(state.geoAsigWatchTimer);
+    state.geoAsigWatchTimer = null;
+  }
+}
+
+function mostrarNotaGeoAsignaciones(mensaje) {
+  const nota = $('#asig-geo-note');
+  nota.textContent = mensaje;
+  nota.hidden = false;
+}
+
+function ocultarNotaGeoAsignaciones() {
+  $('#asig-geo-note').hidden = true;
 }
 
 // ---- Geolocation ------------------------------------------------------------
@@ -886,9 +1036,17 @@ function nuevoRegistro() {
   state.asignacion = null;
   window.scrollTo(0, 0);
 
-  // If assigned points remain, go back to the picker for the next one;
-  // otherwise straight to a blank form as before.
-  if (state.asignaciones.length > 0) {
+  // If assigned points remain in EITHER tab, go back to the picker for the
+  // next one — a sticker-only check here would strand an inspector with
+  // pending Survey points on a blank form. Bug fix: the original single-tab
+  // version only checked state.asignaciones (stickers), silently skipping
+  // the picker whenever only Planeación points remained.
+  if (state.asignaciones.length > 0 || state.puntosPlaneacion.length > 0) {
+    // Fresh visit to the picker: let renderAsignaciones() re-pick whichever
+    // tab actually has work now (the just-finished sticker may have emptied
+    // its tab) instead of sticking to wherever the inspector was before.
+    state.tabAsigActiva = null;
+    requestLocationAsignaciones();
     renderAsignaciones();
     return;
   }

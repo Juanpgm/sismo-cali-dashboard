@@ -32,19 +32,40 @@
   </header>
 
   <section id="asignaciones" class="asignaciones" hidden>
-    <div id="asignaciones-stickers-section">
-      <h1 class="page-title">Tus puntos asignados</h1>
-      <p class="asignaciones-intro">Seleccionar un punto para registrar su sticker. La ubicación se toma con el GPS al abrir el formulario.</p>
-      <div id="asignaciones-lista" class="asignaciones-lista"></div>
+    <h1 class="page-title">Tus puntos asignados</h1>
+
+    <!-- Two-tab picker (field-operative redesign): Survey (Planeación/EDAN,
+         opens Survey123) and Stickers (ATC-20, opens this form) are
+         DIFFERENT tasks with different action buttons, so each gets its own
+         tab instead of two stacked sections. Both tabs stay reachable even
+         at zero pending — an empty tab reads as "nothing to do", never as a
+         broken screen. Markup shape follows the dashboard's own
+         `.view-tabs` (web/index.html) as in-repo precedent. -->
+    <nav class="asig-tabs" role="tablist" aria-label="Tipo de asignación">
+      <button type="button" id="asig-tab-survey" class="asig-tab" data-tab="survey" role="tab" aria-selected="false" aria-controls="planeacion-asignaciones-section">
+        Survey <span id="asig-tab-survey-count" class="asig-tab-count">0</span>
+      </button>
+      <button type="button" id="asig-tab-stickers" class="asig-tab" data-tab="stickers" role="tab" aria-selected="false" aria-controls="asignaciones-stickers-section">
+        Stickers <span id="asig-tab-stickers-count" class="asig-tab-count">0</span>
+      </button>
+    </nav>
+
+    <!-- Fail-open GPS note: distance sort never blocks the list. Hidden
+         until a location failure/timeout actually happens (see
+         requestLocationAsignaciones in form.js); role="status" because it is
+         informational, not a blocking error. -->
+    <p id="asig-geo-note" class="asig-geo-note" role="status" hidden></p>
+
+    <div id="planeacion-asignaciones-section" role="tabpanel" aria-labelledby="asig-tab-survey" hidden>
+      <p class="asignaciones-intro">Encuestas de Planeación asignadas a ti, ordenadas por cercanía. Tocar «Abrir encuesta» abre el formulario Survey123 con tu código de integración ya cargado.</p>
+      <div id="planeacion-asignaciones-lista" class="asignaciones-lista"></div>
+      <p id="planeacion-asignaciones-vacio" class="asignaciones-vacio" hidden>No tienes levantamientos EDAN pendientes.</p>
     </div>
 
-    <!-- Distinct from the sticker points above: a levantamiento EDAN is a
-         separate task (a Survey123 form, not this ATC-20 form), so it gets
-         its own clearly-labelled section rather than sharing the list. -->
-    <div id="planeacion-asignaciones-section">
-      <h1 class="page-title">Tus levantamientos EDAN pendientes</h1>
-      <p class="asignaciones-intro">Encuestas de Planeación asignadas a ti. Tocar «Abrir encuesta» abre el formulario Survey123 con tu código de integración ya cargado.</p>
-      <div id="planeacion-asignaciones-lista" class="asignaciones-lista"></div>
+    <div id="asignaciones-stickers-section" role="tabpanel" aria-labelledby="asig-tab-stickers" hidden>
+      <p class="asignaciones-intro">Seleccionar un punto para registrar su sticker, ordenados por cercanía. La ubicación se toma con el GPS al abrir el formulario.</p>
+      <div id="asignaciones-lista" class="asignaciones-lista"></div>
+      <p id="asignaciones-vacio" class="asignaciones-vacio" hidden>No tienes puntos de sticker pendientes.</p>
     </div>
   </section>
 

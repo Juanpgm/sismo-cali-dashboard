@@ -182,6 +182,71 @@ export function elegirEnlaceEncuesta(punto, isMobile) {
   return punto.survey_web || punto.survey_app || '';
 }
 
+// ---- Proximity sort (assigned points) ----------------------------------------
+
+// Normalizes a lat/lng-ish object into { lat, lng } finite numbers, tolerant
+// of every shape this app deals with: backend assigned points use
+// { lat, lon } (see mapsDirUrl above), the raw browser Geolocation API gives
+// { latitude, longitude }, and the form's own GPS state already normalizes
+// to { lat, lng }. Returns null when no usable pair of finite numbers is
+// found so callers never fall back to 0/0 — a false "you are here" is worse
+// than "unknown".
+function normalizarCoords(p) {
+  if (!p) return null;
+  const lat = p.lat != null ? p.lat : p.latitude;
+  const lng = p.lng != null ? p.lng : (p.lon != null ? p.lon : p.longitude);
+  if (typeof lat !== 'number' || typeof lng !== 'number' || !Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return null;
+  }
+  return { lat, lng };
+}
+
+const EARTH_RADIUS_M = 6371000;
+
+// Haversine distance in metres between two lat/lng-ish points (see
+// normalizarCoords for the tolerated shapes). Returns null — never NaN,
+// never 0 — when either point lacks usable coordinates.
+export function distanciaM(a, b) {
+  const pa = normalizarCoords(a);
+  const pb = normalizarCoords(b);
+  if (!pa || !pb) return null;
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const dLat = toRad(pb.lat - pa.lat);
+  const dLng = toRad(pb.lng - pa.lng);
+  const lat1 = toRad(pa.lat);
+  const lat2 = toRad(pb.lat);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * EARTH_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+// Sorts assigned points nearest-first from `origen` (the user's current GPS
+// fix). Points with no usable coordinates (distanciaM -> null) sort LAST,
+// are never dropped, and keep their original relative order (native sort is
+// stable). If `origen` is null (GPS denied/unavailable/not resolved yet) the
+// list is returned unchanged rather than an arbitrary reorder — never guess
+// a "nearest" without a real fix.
+export function ordenarPorCercania(puntos, origen) {
+  const lista = puntos || [];
+  if (!origen) return lista;
+  return [...lista].sort((x, y) => {
+    const dx = distanciaM(origen, x && x.coords);
+    const dy = distanciaM(origen, y && y.coords);
+    if (dx == null && dy == null) return 0;
+    if (dx == null) return 1;
+    if (dy == null) return -1;
+    return dx - dy;
+  });
+}
+
+// Field-readable distance for a point card: null -> em dash (unavailable),
+// sub-km rounds to whole metres, 1 km and above uses one decimal with a
+// Spanish decimal comma (this app is Spanish-only).
+export function formatDistancia(m) {
+  if (typeof m !== 'number' || !Number.isFinite(m)) return '—';
+  if (m < 1000) return `${Math.round(m)} m`;
+  return `${(m / 1000).toFixed(1).replace('.', ',')} km`;
+}
+
 // ---- Session resilience ------------------------------------------------------
 
 const TRANSIENT_FIRESTORE_CODES = new Set(['unavailable', 'deadline-exceeded', 'network-request-failed']);

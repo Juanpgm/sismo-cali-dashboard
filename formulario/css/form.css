@@ -406,11 +406,87 @@ button:focus-visible, summary:focus-visible, label:has(:focus-visible) {
 .asignaciones-intro { margin: -0.25rem 0 1rem; color: var(--text-secondary); font-size: 0.95rem; }
 .asignaciones-lista { display: grid; gap: 1rem; }
 
+/* Two-tab picker (Survey / Stickers): full-width, thumb-sized, equal split
+   so either tab is a clean single tap one-handed. */
+.asig-tabs {
+  display: flex;
+  gap: 0.4rem;
+  margin: 0 0 1rem;
+  padding: 0.3rem;
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+
+.asig-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  font: inherit;
+  font-weight: 700;
+  min-height: 52px;
+  padding: 0.5rem 0.6rem;
+  border: none;
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.asig-tab.is-active { background: var(--brand); color: var(--brand-ink); }
+
+/* Pending-count badge: always visible, even at zero — a "0" reads as
+   "nothing to do here", never as a broken/missing tab. */
+.asig-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5em;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  background: rgba(0, 0, 0, 0.18);
+}
+.asig-tab.is-active .asig-tab-count { background: rgba(0, 0, 0, 0.28); }
+
+/* Fail-open GPS note: informational, not an error — amber, not red. */
+.asig-geo-note {
+  margin: -0.5rem 0 1rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--ambar);
+  border-radius: var(--radius-md);
+  background: rgba(249, 115, 22, 0.12);
+  color: var(--ink);
+  font-size: 0.9rem;
+}
+
+.asignaciones-vacio {
+  margin: 0;
+  padding: 1.25rem 1rem;
+  text-align: center;
+  color: var(--muted);
+  background: var(--surface-3);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-lg);
+}
+
 /* Reuses .card; the left border carries criticality color (set inline from
    habitabilidadColor), matching the .clasif-card visual language. */
 .asignacion-card {
   border-left-width: 8px;
   margin-block-end: 0;
+}
+
+/* Distance is the primary sort key and the first thing a field worker
+   should read on a card — bold, brand-colored, and placed above the
+   address so it decides "where to walk next" at a glance. */
+.asignacion-distancia {
+  margin: 0 0 0.35rem;
+  font-size: 1.2rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--brand);
 }
 
 .asignacion-dir { font-size: 1.1rem; font-weight: 700; margin: 0 0 0.6rem; }
