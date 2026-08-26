@@ -1,5 +1,5 @@
 // Entry point: wires data store, filters, KPIs, map and table together.
-import { store, fetchData } from './data.js';
+import { store, fetchData, soloRepresentantes } from './data.js';
 import { initFilters } from './filters.js';
 import { renderKpis } from './kpi.js';
 import { renderStatistics, resetCharts } from './charts.js';
@@ -148,14 +148,20 @@ function onStoreChange() {
   if (searchInput.value !== (store.filters.searchRaw || '')) {
     searchInput.value = store.filters.searchRaw || '';
   }
-  renderKpis(kpiRow, store.filtered, store.records);
+  // Las CIFRAS cuentan edificios, no envíos: un edificio re-inspeccionado
+  // aparecía varias veces e inflaba todo ~13.7% (colapso total marcaba 33 con
+  // 30 edificios colapsados). La TABLA y el MAPA siguen mostrando cada
+  // inspección — no se borra nada, solo se deja de contar dos veces.
+  const unicos = soloRepresentantes(store.filtered);
+  const unicosTodos = soloRepresentantes(store.records);
+  renderKpis(kpiRow, unicos, unicosTodos);
   setTotalRecords(store.records.length);
   renderTable(store.filtered);
   renderMap(store.filtered).catch((err) => {
     console.error(err);
     showToast('No se pudo cargar la capa geográfica.', 'error');
   });
-  renderStatistics(store.filtered, store.records, store.reportados);
+  renderStatistics(soloRepresentantes(store.filtered), soloRepresentantes(store.records), store.reportados);
   renderStickerGauge();
   // Acciones works over ALL records: the filters sidebar only applies to Panel.
   // Solo admin, and only while that tab is actually visible — skip the full
@@ -616,7 +622,7 @@ document.addEventListener('themechange', () => {
   applyMapTheme();
   if (store.records.length) {
     resetCharts(); // force destroy+recreate so Chart.js re-bakes the new theme's CSS-var colors
-    renderStatistics(store.filtered, store.records, store.reportados);
+    renderStatistics(soloRepresentantes(store.filtered), soloRepresentantes(store.records), store.reportados);
   }
 });
 

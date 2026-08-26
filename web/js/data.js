@@ -430,4 +430,28 @@ class Store {
   }
 }
 
+// Un mismo edificio puede tener varias inspecciones (re-visitas, reenvíos por
+// error). Cada envío trae su propio GlobalID, así que ninguno es duplicado por
+// clave — pero 1091 registros describen 941 edificios, e inflan toda cifra del
+// Panel ~13.7% (colapso total marcaba 33 cuando colapsaron 30 edificios).
+//
+// El pipeline (scripts/refresh_data.py, add_dup_group) agrupa por edificio y
+// marca UN representante por grupo: el de la evaluación más crítica. Nada se
+// borra — la tabla sigue mostrando las 1091 inspecciones; solo las CIFRAS
+// cuentan edificios.
+//
+// Se descarta SOLO lo marcado explícitamente como no-representante. Un
+// registro sin el campo cuenta como su propio edificio, y eso cubre dos casos
+// reales de una sola vez:
+//   1. Datos publicados antes de que el cron incluyera el campo — si en vez de
+//      esto filtráramos por `r.es_representante`, todos los KPIs quedarían en
+//      cero hasta la siguiente corrida.
+//   2. El store MEZCLA fuentes (survey + israel-source.js). Solo los registros
+//      de survey pasan por el agrupador del pipeline; filtrar por verdadero
+//      borraría del conteo toda la otra fuente, en silencio.
+export function soloRepresentantes(records) {
+  if (!Array.isArray(records)) return [];
+  return records.filter((r) => r.es_representante !== false);
+}
+
 export const store = new Store();

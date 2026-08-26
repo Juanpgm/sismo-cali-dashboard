@@ -1125,6 +1125,92 @@ def fetch_survey_raw() -> pd.DataFrame:
     return df
 
 
+# --- Duplicate-building grouping -------------------------------------------
+# The same building gets inspected more than once (a re-visit days later, or
+# an accidental double-submit). Every submission carries its own GlobalID, so
+# none of them is a duplicate BY KEY -- yet 1091 real records describe only
+# 941 real buildings, inflating every Panel figure by ~13.7% (colapso total
+# reads 33 when 30 buildings collapsed; colapso parcial 372 vs 332).
+#
+# Nothing is deleted. Each row is tagged with the building it belongs to and
+# exactly one row per building is flagged `es_representante`, so KPIs and
+# charts can count BUILDINGS while the table still lists every inspection.
+
+# Habitability, worst first (ATC-20: i* unsafe > r* restricted > h habitable).
+_HAB_SEVERIDAD = {"i2": 5, "i1": 4, "r2": 3, "r1": 2, "h": 1}
+_DANO_SEVERIDAD = {"alto": 3, "medio": 2, "bajo": 1}
+
+
+def _es_si(value) -> bool:
+    return str(value).strip().lower() in {"si", "sí", "yes", "true", "1"}
+
+
+def _severidad(row) -> tuple:
+    """Ranking used to pick a group's representative — the user's rule is
+    "deja los valores más críticos", so the WORST assessment wins, never the
+    first or newest row.
+
+    Note where this can disagree with chronology: a later re-inspection that
+    DOWNGRADES a building keeps the earlier, more alarming record. Measured
+    on live data that affects 8 of 941 buildings and never changes colapso
+    total (30 either way), so the user's rule is applied as stated.
+    """
+    return (
+        1 if _es_si(row.get("colapso_total")) else 0,
+        1 if _es_si(row.get("colapso_parcial")) else 0,
+        _HAB_SEVERIDAD.get(str(row.get("criterio_habitabilidad")).strip().lower(), 0),
+        _DANO_SEVERIDAD.get(str(row.get("nivel_dano")).strip().lower(), 0),
+    )
+
+
+def _clave_edificio(row) -> str:
+    """Identity of the BUILDING, not of the submission.
+
+    Normalized address first (it is what the duplicates actually share),
+    exact rounded coordinates as a fallback. A row with neither signal gets
+    its own GlobalID as the key: pooling all unidentifiable rows together
+    would silently merge unrelated buildings into one, which is worse than
+    the duplication being fixed.
+    """
+    # pd.isna() first: a missing value arrives as NaN, and str(NaN) is the
+    # TRUTHY string "nan" -- without this guard every address-less record
+    # collapses into one bogus "dir:NAN" building.
+    direccion_raw = row.get("direccion_norm")
+    direccion = "" if pd.isna(direccion_raw) else str(direccion_raw).strip().upper()
+    if direccion:
+        return f"dir:{direccion}"
+    x, y = row.get("x"), row.get("y")
+    if pd.notna(x) and pd.notna(y):
+        return f"geo:{round(float(y), 5)},{round(float(x), 5)}"
+    return f"id:{row.get('GlobalID')}"
+
+
+def add_dup_group(df: pd.DataFrame) -> pd.DataFrame:
+    """Tag every row with `dup_grupo_id` / `dup_n` / `es_representante`."""
+    if df.empty:
+        for col, default in (("dup_grupo_id", ""), ("dup_n", 0), ("es_representante", True)):
+            df[col] = default
+        return df
+
+    df = df.copy()
+    df["dup_grupo_id"] = df.apply(_clave_edificio, axis=1)
+    df["dup_n"] = df.groupby("dup_grupo_id")["dup_grupo_id"].transform("size")
+
+    orden = df.apply(_severidad, axis=1)
+    df["_sev"] = orden
+    # idxmax on a tuple-valued column is not defined; rank within each group
+    # by sorting on the tuple and taking the first row per group instead.
+    ganadores = (
+        df.assign(_pos=range(len(df)))
+        .sort_values("_sev", ascending=False, kind="mergesort")  # stable: ties keep input order
+        .groupby("dup_grupo_id", sort=False)["_pos"]
+        .first()
+    )
+    df["es_representante"] = False
+    df.loc[df.index[list(ganadores.values)], "es_representante"] = True
+    return df.drop(columns=["_sev"])
+
+
 def normalize(rows_raw: pd.DataFrame) -> pd.DataFrame:
     """Apply the exact contract that used to build tabla_normalizada, straight on
     the live layer: rename columns, derive dates/comuna/barrio/id_edan/dirección."""
@@ -1138,6 +1224,12 @@ def normalize(rows_raw: pd.DataFrame) -> pd.DataFrame:
     df = spatial_join(df)
     df = add_id_edan(df)
     df = add_address_norm(df)
+    # AFTER add_address_norm: the grouping keys off `direccion_norm`.
+    df = add_dup_group(df)
+    log.info(
+        "Edificios: %d registros -> %d edificios unicos (%d duplicados agrupados).",
+        len(df), int(df["es_representante"].sum()), len(df) - int(df["es_representante"].sum()),
+    )
     return df
 
 
