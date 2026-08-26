@@ -149,12 +149,37 @@ export function colapsoLabel(colapso) {
   return '';
 }
 
+// Planeación priority → color token, same palette habitabilidadColor uses
+// (alta = red, media = amber, baja/unknown = muted) so a planeación card's
+// left border reads consistently with a sticker card's own severity color.
+export function prioridadColor(prioridad) {
+  const p = String(prioridad == null ? '' : prioridad).trim().toLowerCase();
+  if (p === 'alta') return 'var(--rojo)';
+  if (p === 'media') return 'var(--ambar)';
+  return 'var(--muted)';
+}
+
 // Google Maps directions deep link to a point's coordinates. sticker_matches
 // coords are { lat, lon } (note: lon, not lng). Returns '' when coords are
 // missing so the caller can hide the "Cómo llegar" button.
 export function mapsDirUrl(coords) {
   if (!coords || coords.lat == null || coords.lon == null) return '';
   return `https://www.google.com/maps/dir/?api=1&destination=${coords.lat},${coords.lon}`;
+}
+
+// Which prefilled Survey123 link a "planeación" (EDAN) card's "Abrir
+// encuesta" button should open. `punto` carries `survey_web`/`survey_app`
+// as returned by misPuntosPlaneacion (app is null when
+// SURVEY123_FIELD_APP_ITEM_ID is not configured). On a mobile device the
+// field-app deep link is preferred when present — it opens Survey123's own
+// installed app rather than a mobile browser tab — falling back to the web
+// URL otherwise. Returns '' when neither link is available (missing
+// SURVEY123_FORM_URL), so the caller can disable/hide the button instead of
+// wiring up a dead link.
+export function elegirEnlaceEncuesta(punto, isMobile) {
+  if (!punto) return '';
+  if (isMobile && punto.survey_app) return punto.survey_app;
+  return punto.survey_web || punto.survey_app || '';
 }
 
 // ---- Session resilience ------------------------------------------------------

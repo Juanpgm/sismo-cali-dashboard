@@ -7,6 +7,7 @@ import {
   clasificarErrorFirestore, backoffDelay,
   plegarConsecutivoGuardado, siguienteDesdeMax, consecutivosExistentes,
   filtrarPendientes, habitabilidadColor, colapsoLabel, mapsDirUrl,
+  elegirEnlaceEncuesta, prioridadColor,
 } from '../js/logic.js';
 
 const base = {
@@ -293,4 +294,36 @@ test('mapsDirUrl devuelve cadena vacia si faltan coords', () => {
   assert.equal(mapsDirUrl(null), '');
   assert.equal(mapsDirUrl({ lat: 3.4 }), '');
   assert.equal(mapsDirUrl({ lon: -76.5 }), '');
+});
+
+// ---- prioridadColor -----------------------------------------------------------
+
+test('prioridadColor mapea alta a rojo, media a ambar, baja/desconocido a muted', () => {
+  assert.equal(prioridadColor('alta'), 'var(--rojo)');
+  assert.equal(prioridadColor('MEDIA'), 'var(--ambar)');
+  assert.equal(prioridadColor('baja'), 'var(--muted)');
+  assert.equal(prioridadColor(''), 'var(--muted)');
+  assert.equal(prioridadColor(null), 'var(--muted)');
+});
+
+// ---- elegirEnlaceEncuesta ----------------------------------------------------
+
+test('elegirEnlaceEncuesta prefiere el deep link de la app en movil cuando existe', () => {
+  const punto = { survey_web: 'https://web.example/x', survey_app: 'arcgis-survey123:///x' };
+  assert.equal(elegirEnlaceEncuesta(punto, true), 'arcgis-survey123:///x');
+});
+
+test('elegirEnlaceEncuesta usa el enlace web en escritorio aunque haya app', () => {
+  const punto = { survey_web: 'https://web.example/x', survey_app: 'arcgis-survey123:///x' };
+  assert.equal(elegirEnlaceEncuesta(punto, false), 'https://web.example/x');
+});
+
+test('elegirEnlaceEncuesta cae al enlace web en movil si no hay deep link de app', () => {
+  const punto = { survey_web: 'https://web.example/x', survey_app: null };
+  assert.equal(elegirEnlaceEncuesta(punto, true), 'https://web.example/x');
+});
+
+test('elegirEnlaceEncuesta devuelve cadena vacia sin ningun enlace configurado', () => {
+  assert.equal(elegirEnlaceEncuesta({ survey_web: null, survey_app: null }, true), '');
+  assert.equal(elegirEnlaceEncuesta(null, false), '');
 });

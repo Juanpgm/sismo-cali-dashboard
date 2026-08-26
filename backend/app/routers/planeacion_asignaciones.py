@@ -117,7 +117,17 @@ DEFAULT_MAX_RADIUS_M = 800
 DEFAULT_MAX_SIZE = 10
 
 # ADR-9: bounded, indexed listPuntos — never the full ~14.8k collection.
-LIMIT_DEFAULT = 2000
+#
+# Speed follow-up (2026-08-26): LIMIT_DEFAULT was 2000, and opening the
+# Planeación tab measured 9-35s in production — the tab shipped 2000 points
+# to the client and rendered 2000 table rows, far more than an operator can
+# act on in one sitting. 300 is a "few hundred of the highest-priority
+# points" working set, matching the truncation banner's own honest
+# "showing N of M pending" message (formatTruncacion, web/js/planeacion.js)
+# — a smaller default does not hide work, it is just a smaller page of the
+# SAME prioritized queue. LIMIT_MAX is unchanged: still the ceiling for
+# anyone who explicitly passes a larger `limit`.
+LIMIT_DEFAULT = 300
 LIMIT_MAX = 5000
 
 _PRIORIDAD_RANK = {"alta": 3, "media": 2, "baja": 1}

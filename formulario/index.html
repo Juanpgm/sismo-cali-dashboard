@@ -32,9 +32,20 @@
   </header>
 
   <section id="asignaciones" class="asignaciones" hidden>
-    <h1 class="page-title">Tus puntos asignados</h1>
-    <p class="asignaciones-intro">Seleccionar un punto para registrar su sticker. La ubicación se toma con el GPS al abrir el formulario.</p>
-    <div id="asignaciones-lista" class="asignaciones-lista"></div>
+    <div id="asignaciones-stickers-section">
+      <h1 class="page-title">Tus puntos asignados</h1>
+      <p class="asignaciones-intro">Seleccionar un punto para registrar su sticker. La ubicación se toma con el GPS al abrir el formulario.</p>
+      <div id="asignaciones-lista" class="asignaciones-lista"></div>
+    </div>
+
+    <!-- Distinct from the sticker points above: a levantamiento EDAN is a
+         separate task (a Survey123 form, not this ATC-20 form), so it gets
+         its own clearly-labelled section rather than sharing the list. -->
+    <div id="planeacion-asignaciones-section">
+      <h1 class="page-title">Tus levantamientos EDAN pendientes</h1>
+      <p class="asignaciones-intro">Encuestas de Planeación asignadas a ti. Tocar «Abrir encuesta» abre el formulario Survey123 con tu código de integración ya cargado.</p>
+      <div id="planeacion-asignaciones-lista" class="asignaciones-lista"></div>
+    </div>
   </section>
 
   <main id="app" hidden>

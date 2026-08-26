@@ -12,6 +12,7 @@ import {
   MUNICIPIO, buildCodigo, parseConsecutivo, siguienteConsecutivo, validarSegmento, canAddSlot, MAX_FOTOS,
   siguienteDesdeMax, plegarConsecutivoGuardado, consecutivosExistentes,
   habitabilidadColor, colapsoLabel, mapsDirUrl,
+  prioridadColor, elegirEnlaceEncuesta,
 } from './logic.js';
 
 // Serverless signer that validates the Firebase idToken and presigns the
@@ -69,6 +70,11 @@ const state = {
   // The point currently being registered, or null for a free-form record.
   // { id, coords, direccion }. Drives the sticker_matches "hecho" flip on submit.
   asignacion: null,
+  // Assigned Planeación (EDAN survey) points for this inspector, still
+  // pending. A DIFFERENT task from applying a sticker — opens Survey123,
+  // not this ATC-20 form — so it is tracked and rendered separately, never
+  // merged into `asignaciones` above. Empty array = none assigned.
+  puntosPlaneacion: [],
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -126,7 +132,19 @@ async function iniciarAsignaciones() {
     state.asignaciones = [];
   }
 
-  if (state.asignaciones.length === 0) {
+  // Independent try/catch: a Planeación lookup failure must never take down
+  // the (unrelated) sticker picker above, and vice versa — each assignment
+  // kind fails open on its own.
+  try {
+    const res = await asignacionesApi({ action: 'misPuntosPlaneacion' });
+    if (!res.ok) throw new Error(`misPuntosPlaneacion-${res.status}`);
+    state.puntosPlaneacion = (await res.json()).puntos || [];
+  } catch (err) {
+    console.warn('No se pudieron cargar los levantamientos de Planeación:', err);
+    state.puntosPlaneacion = [];
+  }
+
+  if (state.asignaciones.length === 0 && state.puntosPlaneacion.length === 0) {
     mostrarFormulario();
     return;
   }
@@ -152,6 +170,16 @@ function renderAsignaciones() {
   const cont = $('#asignaciones-lista');
   cont.innerHTML = '';
   state.asignaciones.forEach((a) => cont.append(buildAsignacionCard(a)));
+  // Each section is its own clearly-labelled block (see index.html) and is
+  // hidden entirely when this inspector has nothing of that kind pending —
+  // never an empty heading with nothing under it.
+  $('#asignaciones-stickers-section').hidden = state.asignaciones.length === 0;
+
+  const contPlaneacion = $('#planeacion-asignaciones-lista');
+  contPlaneacion.innerHTML = '';
+  state.puntosPlaneacion.forEach((p) => contPlaneacion.append(buildPlaneacionCard(p)));
+  $('#planeacion-asignaciones-section').hidden = state.puntosPlaneacion.length === 0;
+
   $('#app').hidden = true;
   $('#confirm').hidden = true;
   $('#asignaciones').hidden = false;
@@ -214,6 +242,81 @@ function registrarSticker(a) {
   state.asignacion = { id: a.id, coords: a.coords, direccion: a.direccion };
   $('#direccion').value = a.direccion || '';
   mostrarFormulario();
+}
+
+// A Planeación point is a DIFFERENT task from a sticker point — it opens an
+// external Survey123 EDAN form, it never touches this ATC-20 form/state,
+// and it does not call marcarHechoPlaneacion here: the field crew closes it
+// FROM Survey123's own submit, the same "the survey closes itself" flow
+// `app/jobs/planeacion_cruce.py`'s exact-key auto-close already relies on
+// (its own module docstring, "the ONE binding auto-close exception").
+function buildPlaneacionCard(p) {
+  const card = document.createElement('article');
+  card.className = 'card asignacion-card';
+  card.style.borderLeftColor = prioridadColor(p.prioridad);
+
+  const dir = document.createElement('h3');
+  dir.className = 'asignacion-dir';
+  dir.textContent = p.direccion || 'Dirección no registrada';
+  card.append(dir);
+
+  const pills = document.createElement('div');
+  pills.className = 'asignacion-pills';
+  if (p.prioridad) {
+    const pr = document.createElement('span');
+    pr.className = 'pill';
+    pr.style.background = prioridadColor(p.prioridad);
+    pr.textContent = `Prioridad ${String(p.prioridad).toUpperCase()}`;
+    pills.append(pr);
+  }
+  if (p.afectacion) {
+    const af = document.createElement('span');
+    af.className = 'pill pill-colapso';
+    af.textContent = p.afectacion;
+    pills.append(af);
+  }
+  card.append(pills);
+
+  const acciones = document.createElement('div');
+  acciones.className = 'asignacion-acciones';
+
+  const mapsUrl = mapsDirUrl(p.coords);
+  if (mapsUrl) {
+    const link = document.createElement('a');
+    link.className = 'btn-secondary asignacion-maps';
+    link.href = mapsUrl;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = '📍 Cómo llegar';
+    acciones.append(link);
+  }
+
+  const encuestaUrl = elegirEnlaceEncuesta(p, esDispositivoMovil());
+  const btn = document.createElement('a');
+  btn.className = 'btn-primary';
+  btn.textContent = 'Abrir encuesta';
+  if (encuestaUrl) {
+    btn.href = encuestaUrl;
+    btn.target = '_blank';
+    btn.rel = 'noopener';
+  } else {
+    // No SURVEY123_FORM_URL configured for this point (misPuntosPlaneacion
+    // fails OPEN on that, per its own contract) — an inert-looking button
+    // with no href is safer than a dead link that silently does nothing.
+    btn.setAttribute('aria-disabled', 'true');
+    btn.title = 'Enlace de encuesta no disponible todavía.';
+  }
+  acciones.append(btn);
+
+  card.append(acciones);
+  return card;
+}
+
+// Coarse device check for elegirEnlaceEncuesta's app-vs-web preference —
+// the ATC-20 field app itself only runs on a phone/tablet in practice, but
+// this still guards the desktop-dev-server case sanely.
+function esDispositivoMovil() {
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
 }
 
 // ---- Geolocation ------------------------------------------------------------

@@ -256,6 +256,16 @@ def test_default_max_size_is_ten_not_eight():
     assert pa.DEFAULT_MAX_SIZE == 10
 
 
+def test_limit_default_is_a_few_hundred_not_two_thousand():
+    """Speed follow-up (2026-08-26): opening the Planeación tab measured
+    9-35s in production, driven in real part by `listPuntos` shipping
+    LIMIT_DEFAULT=2000 points to the client (and the tab rendering 2000
+    table rows) when an operator can only act on a few hundred at a time.
+    LIMIT_MAX stays the ceiling for an explicit, caller-supplied `limit`."""
+    assert pa.LIMIT_DEFAULT < 500
+    assert pa.LIMIT_MAX == 5000
+
+
 # ── Router: admin-gate rejection, no mutation ───────────────────────────────
 
 

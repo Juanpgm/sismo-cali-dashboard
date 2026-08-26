@@ -443,7 +443,12 @@ function cuadrillasHtml(cuadrillas, inspectorById) {
 
 // Vanilla searchable combobox — same shape as stickers-asignacion.js's own
 // mountCombobox (no cap, keyboard nav, mousedown-before-blur selection).
-function mountCombobox(comboEl, { inspectores, onSelect }) {
+//
+// Speed follow-up (2026-08-26): `autoOpen` lets the LAZY mounting below
+// (see renderCuadrillasSection) open the dropdown on the exact focus event
+// that triggered the mount, without relying on the just-attached 'focus'
+// listener re-firing for an event already in flight.
+function mountCombobox(comboEl, { inspectores, onSelect, autoOpen = false }) {
   const input = comboEl.querySelector('.asignacion-combo-input');
   const list = comboEl.querySelector('.asignacion-combo-list');
   let options = [];
@@ -490,6 +495,8 @@ function mountCombobox(comboEl, { inspectores, onSelect }) {
     choose(li.dataset.uid);
   });
   input.addEventListener('blur', () => { setTimeout(close, 120); });
+
+  if (autoOpen) { input.select(); render(''); }
 }
 
 function popupHtml(row) {
@@ -884,15 +891,29 @@ export function initPlaneacion(root, { getToken }) {
     const cuadrillaById = new Map(cuadrillas.map((c) => [c.id, c]));
     cuadrillasWrap.innerHTML = cuadrillasHtml(cuadrillas, inspectorById);
 
+    // Speed follow-up (2026-08-26): a production board can carry hundreds
+    // of cuadrilla rows, and eagerly mounting a full combobox (5 listeners
+    // + closures each) for every one of them on every render was pure
+    // wasted work for the rows an admin never touches. Mount lazily, on
+    // the row's OWN first focus — a plain input has zero combobox cost
+    // until it is actually used, and the visible behaviour is unchanged
+    // (autoOpen replays the exact "open on focus" effect the eager version
+    // already had, on the same focus event that triggered the mount).
     cuadrillasWrap.querySelectorAll('[data-combo-cuadrilla]').forEach((comboEl) => {
       const cuadrillaId = comboEl.dataset.comboCuadrilla;
-      mountCombobox(comboEl, {
-        inspectores: seleccionables,
-        onSelect: (uid) => runCuadrillaAction(
-          { action: 'asignarInspector', cuadrilla_id: cuadrillaId, inspector_uid: uid },
-          'Inspector asignado.',
-        ),
-      });
+      const input = comboEl.querySelector('.asignacion-combo-input');
+      const mount = () => {
+        input.removeEventListener('focus', mount);
+        mountCombobox(comboEl, {
+          inspectores: seleccionables,
+          onSelect: (uid) => runCuadrillaAction(
+            { action: 'asignarInspector', cuadrilla_id: cuadrillaId, inspector_uid: uid },
+            'Inspector asignado.',
+          ),
+          autoOpen: true,
+        });
+      };
+      input.addEventListener('focus', mount, { once: true });
     });
 
     cuadrillasWrap.querySelectorAll('[data-desasignar]').forEach((btn) => {

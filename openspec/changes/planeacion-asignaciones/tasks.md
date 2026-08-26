@@ -787,6 +787,94 @@ org — `integracion_F1/firestore.rules` belongs to a different project.
 
 ---
 
+## Phase 6 — Follow-up: close the assignee-visibility gap + tab speed (2026-08-26)
+
+Not chained per the four-PR split above (Phases 1-4 were already merged and live on `main` before
+this phase started). Confirmed gap, verified in code: Planeación let an ADMIN assign points, but
+`formulario/` had zero references to planeación, `routers/inspector_asignaciones.py` only knew
+`sticker_matches`, and `routers/planeacion_asignaciones.py` is admin-only (403 to an inspector). An
+assignment was written to Firestore and died there.
+
+- [x] **6.1** (RED) Extend `backend/tests/routers/test_inspector_asignaciones.py` FIRST with
+      `misPuntosPlaneacion`/`marcarHechoPlaneacion` scenarios: own-uid pending points only (excludes
+      `hecho` AND `no_aplica`); point fields + `survey_web`/`survey_app` present; survey links are
+      `None` (not a 503) when `SURVEY123_FORM_URL` is unset — a LIST action must fail open, not
+      blank-page the picker; cross-inspector `marcarHechoPlaneacion` rejected with zero write; own-uid
+      succeeds; missing/nonexistent `punto_id` rejected; the sticker_matches store is never touched.
+      Extended the fake Firestore fixture to back TWO independent collection stores. MUST fail.
+      — Satisfies: the assignee-visibility gap (own-uid scoping, survey-link reuse, fail-open list
+      semantics).
+      — STATUS: DONE. RED confirmed: 7 new tests failed (`400` unrecognized-action instead of the
+      expected 200/403/404/etc.), 8 prior tests unaffected.
+
+- [x] **6.2** (GREEN) Add `misPuntosPlaneacion`/`marcarHechoPlaneacion` to the EXISTING
+      `routers/inspector_asignaciones.py` (not the admin router — no auth surface change needed,
+      `Depends(require_auth)` + `inspector_uid == token.sub` already correct). `_mis_puntos_planeacion`
+      mirrors `_mis_puntos`'s single-equality-field query + in-code filter shape; builds each point's
+      survey links via the SAME `services/survey_link.py:build_survey_urls()` the admin router's
+      `getEnlaceSurvey` uses. `_marcar_hecho_planeacion` mirrors `_marcar_hecho`'s own-uid guard
+      verbatim in shape. Run 6.1, confirm green.
+      — Satisfies: the assignee-visibility gap.
+      — STATUS: DONE. GREEN confirmed, 15/15 in the file.
+
+- [x] **6.3** Add ONE honest, annotated entry for `routers/inspector_asignaciones.py` to
+      `tests/invariants/test_sole_writer.py`'s CLOSED `ALLOWED_MODULES_PLANEACION_PUNTOS` set —
+      explaining it is a THIRD, own-uid-scoped case, distinct from the pipeline (`planeacion_cruce.py`)
+      and the admin dashboard (`planeacion_asignaciones.py`). Do NOT obfuscate the literal to dodge the
+      scan — an earlier batch on this change did exactly that for a different literal and it was
+      reverted; the same mistake is not repeated.
+      — Satisfies: sole-writer invariant honesty.
+      — STATUS: DONE. `ALLOWED_MODULES_PLANEACION_PUNTOS` now has 3 entries; the scanner's own
+      `test_planeacion_puntos_literal_is_used_by_an_allowlisted_module` still passes.
+
+- [x] **6.4** Build the `formulario/js/form.js` UI: fetch `misPuntosPlaneacion` alongside the existing
+      `misPuntos` call (independent try/catch — a Planeación failure must never block the ATC-20
+      form, mirroring `iniciarAsignaciones`'s existing fail-open catch exactly); render planeación
+      points as their OWN clearly-labelled section (`#planeacion-asignaciones-section`), never merged
+      into the sticker `asignaciones` list; each card gets a prominent "Abrir encuesta" link
+      (`target="_blank" rel="noopener"`) that prefers the field-app deep link on a mobile device,
+      falling back to the web URL. Added `elegirEnlaceEncuesta`/`prioridadColor` as pure, tested
+      helpers in `js/logic.js` (TDD: tests written before wiring them into `form.js`).
+      — Satisfies: the assignee-visibility gap (UI side).
+      — STATUS: DONE. `formulario` unit suite: 53 → 58 passing (5 new: 1 `prioridadColor` + 4
+      `elegirEnlaceEncuesta`). `node --check` clean on `form.js`/`logic.js`.
+
+- [x] **6.5** Speed: lower `routers/planeacion_asignaciones.py`'s `LIMIT_DEFAULT` from 2000 to 300
+      (`LIMIT_MAX` stays 5000, unchanged, as the ceiling for an explicit larger `limit`); confirmed the
+      existing `formatTruncacion` banner is generic (no hardcoded default) so it still renders
+      correctly. In `web/js/planeacion.js`, made the per-cuadrilla inspector combobox mount LAZILY on
+      first focus instead of eagerly for every cuadrilla row on every render (`autoOpen` param on
+      `mountCombobox` replays the "open on focus" effect on the same event that triggered the mount).
+      The points TABLE was already a single `innerHTML` write (no per-row DOM ops) — verified, not
+      changed.
+      — Satisfies: `proposal.md`'s "make the assignment flow fast" (explicit user request).
+      — STATUS: DONE, with ONE finding reported rather than fixed (out of this task's explicit
+      scope, which was `web/js/planeacion.js`'s render path + `LIMIT_DEFAULT`): `resumen()`
+      (`routers/planeacion_asignaciones.py`) reads the FULL `planeacion_puntos` collection
+      (~14.8k docs) on every KPI-tile render, and `list_puntos()`'s truncation-safe over-fetch always
+      queries `LIMIT_MAX + 1` (5001) docs from Firestore regardless of the caller's requested
+      `limit` — so lowering `LIMIT_DEFAULT` reduces the CLIENT payload/DOM (2000 → 300 rows, the
+      measured frontend-render cost) but does NOT reduce the backend's own Firestore read cost,
+      which is very likely the larger share of the measured 9-35s. Not fixed here: both are
+      already-tested, already-flagged tradeoffs (`resumen`'s Python-side aggregation and
+      `list_puntos`'s override-aware over-fetch, Batch 2's own "Deviations" section) and changing
+      either's bound is a real behavior decision, not a mechanical win — flagged for a follow-up
+      decision rather than a speculative rewrite.
+
+- [x] **6.6** Full verification: `python -m pytest backend/tests/ -q` (391 passed, 0 failed; this
+      batch's OWN additions are 8 — 7 in `test_inspector_asignaciones.py` + 1
+      `test_limit_default_is_a_few_hundred_not_two_thousand` in `test_planeacion_asignaciones.py` —
+      the remaining delta from the 372 baseline is a CONCURRENT, unrelated batch's own
+      `backend/tests/test_refresh_data_dedup.py` (10 tests) plus `scripts/refresh_data.py` changes,
+      neither touched, staged, or claimed by this batch — see apply-progress.md's own note);
+      `cd formulario && npm run test:unit` (58 passed, 0 failed — 53 baseline + 5 new: 1
+      `prioridadColor` + 4 `elegirEnlaceEncuesta`); `node --check` on every JS file touched
+      (`inspector_asignaciones.py` has no JS counterpart; `formulario/js/form.js`,
+      `formulario/js/logic.js`, `web/js/planeacion.js` all clean).
+      — STATUS: DONE.
+
+---
+
 ## Review Workload Forecast
 
 - **Estimated changed lines (rough, per phase):**

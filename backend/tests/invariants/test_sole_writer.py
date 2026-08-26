@@ -253,9 +253,31 @@ def test_survey_cali_literal_is_used_by_an_allowlisted_module():
 # `PLANEACION_CUADRILLAS_COLLECTION` instead, which is unique to this
 # collection, unambiguous, and present in every module that actually
 # references it.
+# `planeacion-asignaciones` follow-up batch (2026-08-26): the admin router
+# could assign a planeación point, but there was no way for the ASSIGNEE to
+# ever see it — `routers/planeacion_asignaciones.py` is admin-only
+# (`Depends(require_role("admin"))`), and `routers/inspector_asignaciones.py`
+# (the ALREADY-existing own-uid-scoped, any-authenticated inspector surface,
+# `Depends(require_auth)`, same discipline `sticker_matches`'s
+# `misPuntos`/`marcarHecho` already use above) knew nothing about
+# `planeacion_puntos` at all. Adding `misPuntosPlaneacion`/
+# `marcarHechoPlaneacion` to that EXISTING router — rather than loosening
+# the admin router's role gate, or inventing a new auth path — is a THIRD,
+# genuinely different, honestly-annotated entry here: it reads/writes ONLY
+# the caller's OWN doc (`inspector_uid == token.sub`, verified per-request,
+# no cross-inspector read or write possible), and ONLY the assignee-facing
+# fields (`estado_asignacion` on write; never `clave_integracion`,
+# `tiene_survey`, `match_via`, `cuadrilla_id`, or any other pipeline-/
+# admin-owned field). This is the honest resolution, not a workaround: the
+# scanner is deliberately coarse ("if the word appears, prove it is
+# fine") — a prior batch on this change obfuscated a different literal to
+# dodge a sibling scan instead of adding an entry, and that was reverted
+# (see this file's own "Naming collision note" section below). The same
+# mistake is not repeated here.
 ALLOWED_MODULES_PLANEACION_PUNTOS = {
     APP_ROOT / "jobs" / "planeacion_cruce.py",
     APP_ROOT / "routers" / "planeacion_asignaciones.py",
+    APP_ROOT / "routers" / "inspector_asignaciones.py",  # own-uid-scoped inspector access, see note above
 }
 ALLOWED_MODULES_PLANEACION_CUADRILLAS = {
     APP_ROOT / "routers" / "planeacion_asignaciones.py",

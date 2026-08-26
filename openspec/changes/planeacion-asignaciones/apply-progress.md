@@ -795,3 +795,164 @@ Phase 5 (Railway/Firebase console + ArcGIS org steps) is not a repo diff — not
 here. If a real PR is opened from this branch, Issue 1 (the `tiene_survey` toggle gap) should be
 resolved as a small, separately-reviewed Phase 3 patch before or alongside Phase 4's PR, since the
 UI currently ships a visibly-disabled control rather than a working one.
+
+---
+
+## Batch 4 (follow-up) — inspector own-uid access + speed (2026-08-26)
+
+Branch: `main` (Phases 1-4 were already merged and live in production before this batch started —
+worked directly on `main` per this batch's own instructions, not the `feat/planeacion-1-2-cruce`
+branch prior batches used). Baseline measured at this batch's start: **372 backend tests passing**,
+`cd formulario && npm run test:unit` → **53 passing**.
+
+### The gap this batch closes
+
+Confirmed in code before writing anything: the Planeación feature let an ADMIN assign points to
+inspectors, but the inspector had no way to see them. `formulario/` had zero references to
+planeación; `backend/app/routers/inspector_asignaciones.py` (the own-uid-scoped, any-authenticated
+router an inspector actually talks to) only knew `sticker_matches`; `backend/app/routers/
+planeacion_asignaciones.py` is `Depends(require_role("admin"))` — 403 to an inspector. An assignment
+was written to Firestore and died there.
+
+### Completed Tasks
+
+See tasks.md's new "Phase 6 — Follow-up" section (6.1-6.6) for the full per-task RED/GREEN trail.
+Summary:
+
+- [x] **6.1/6.2** (RED/GREEN) `misPuntosPlaneacion`/`marcarHechoPlaneacion` added to the EXISTING
+      `inspector_asignaciones.py` — no new auth path, same `Depends(require_auth)` +
+      `inspector_uid == token.sub` scoping the two sticker actions already enforce.
+- [x] **6.3** Honest, annotated third entry for `inspector_asignaciones.py` in
+      `test_sole_writer.py`'s CLOSED `ALLOWED_MODULES_PLANEACION_PUNTOS`.
+- [x] **6.4** `formulario/js/form.js` UI: independent-fail-open fetch, its own labelled section, the
+      "Abrir encuesta" button (mobile app-deep-link-preferred), new pure helpers in `logic.js`.
+- [x] **6.5** Speed: `LIMIT_DEFAULT` 2000 → 300; lazy-mounted cuadrilla comboboxes in
+      `web/js/planeacion.js`. One finding reported, not fixed (see Issues Found).
+- [x] **6.6** Full verification run (all three commands), all green.
+
+### Files Changed
+
+| File | Action | What Was Done |
+|---|---|---|
+| `backend/app/routers/inspector_asignaciones.py` | Modified | Added `misPuntosPlaneacion` (own-uid pending `planeacion_puntos`, excludes `hecho`+`no_aplica`, builds `survey_web`/`survey_app` via `services.survey_link.build_survey_urls`, fails OPEN — never a 503 — when the form URL is unset) and `marcarHechoPlaneacion` (own-uid guard mirrored verbatim from `_marcar_hecho`). Module docstring extended to explain the follow-up. |
+| `backend/tests/routers/test_inspector_asignaciones.py` | Modified | Extended the fake Firestore to back TWO independent collection stores (`sticker_matches`, `planeacion_puntos`); 7 new tests: own-uid pending filter, field/survey-link shape, fail-open on unset form URL, cross-inspector rejection (no write), own-uid success, missing/nonexistent `punto_id`, cross-collection isolation |
+| `backend/app/routers/planeacion_asignaciones.py` | Modified | `LIMIT_DEFAULT` 2000 → 300 (`LIMIT_MAX` unchanged at 5000), with a comment explaining the production speed measurement that motivated it |
+| `backend/tests/routers/test_planeacion_asignaciones.py` | Modified | Added `test_limit_default_is_a_few_hundred_not_two_thousand` |
+| `backend/tests/invariants/test_sole_writer.py` | Modified | Added ONE honest, annotated entry (`routers/inspector_asignaciones.py`) to the CLOSED `ALLOWED_MODULES_PLANEACION_PUNTOS` set — explained as a THIRD, own-uid-scoped case, distinct from the pipeline and admin-dashboard entries already there. Not obfuscated. |
+| `formulario/js/logic.js` | Modified | Added `prioridadColor` (alta/media/baja → red/amber/muted, mirrors `habitabilidadColor`'s shape) and `elegirEnlaceEncuesta` (pure: prefers `survey_app` on a mobile device, falls back to `survey_web`, `''` when neither exists) |
+| `formulario/test/logic.test.mjs` | Modified | 5 new tests for the two new pure helpers |
+| `formulario/js/form.js` | Modified | `iniciarAsignaciones` now also fetches `misPuntosPlaneacion` in its OWN independent try/catch (a Planeación failure never blocks the sticker flow or the blank form, mirroring the existing fail-open pattern exactly); new `state.puntosPlaneacion`; `renderAsignaciones` renders both sections independently, hiding whichever is empty; new `buildPlaneacionCard` (own section, "Abrir encuesta" `<a target="_blank" rel="noopener">`, disabled+titled when no link is available) and `esDispositivoMovil` |
+| `formulario/index.html` | Modified | Split `#asignaciones` into two clearly-labelled sub-sections: the existing sticker picker (`#asignaciones-stickers-section`) and the new `#planeacion-asignaciones-section` (`#planeacion-asignaciones-lista`) |
+| `web/js/planeacion.js` | Modified | `mountCombobox` gained an `autoOpen` param; `renderCuadrillasSection` now mounts each cuadrilla's inspector combobox LAZILY on first focus (a single lightweight listener until used) instead of eagerly for every row on every render |
+| `openspec/changes/planeacion-asignaciones/tasks.md` | Modified | New "Phase 6 — Follow-up" section (6.1-6.6), checked off |
+| `openspec/changes/planeacion-asignaciones/apply-progress.md` | Modified | This section |
+
+**NOT touched, staged, or claimed by this batch** (pre-existing, concurrent, unrelated modifications
+found in the working tree at start — a different in-flight batch, by their own filenames/content):
+`scripts/refresh_data.py`, `web/js/data.js`, `web/js/main.js`, and an untracked
+`backend/tests/test_refresh_data_dedup.py` (10 tests, part of why the FULL suite total below is
+higher than this batch's own +8). Verified by reading their diffs before committing — none relate to
+Planeación, inspector assignments, or the Planeación tab. Excluded from this batch's commit entirely
+(`git add` scoped to only the files table above).
+
+### TDD Cycle Evidence
+
+| Task | RED (command + result) | GREEN (command + result) |
+|---|---|---|
+| 6.1/6.2 (`misPuntosPlaneacion`/`marcarHechoPlaneacion`) | `python -m pytest backend/tests/routers/test_inspector_asignaciones.py -v` → `7 failed` (all `400` — "Acción no reconocida", the actions didn't exist yet), `8 passed` (prior tests untouched) | Same command after implementing both actions in `inspector_asignaciones.py` → `15 passed` |
+| 6.5 (`LIMIT_DEFAULT`) | `python -m pytest backend/tests/routers/test_planeacion_asignaciones.py -k limit_default -v` → `1 failed`: `assert 2000 < 500` | Same command after changing `LIMIT_DEFAULT = 2000` → `300` → `1 passed` |
+| 6.4 (`prioridadColor`/`elegirEnlaceEncuesta`) | Written and confirmed passing on first run against the already-added `logic.js` implementation (see Deviations #1 below for the honest sequencing note) | `npm run test:unit` → `58 passed` |
+
+### Deviations from Design
+
+1. **6.4's pure helpers were authored test-and-implementation together, not strictly test-first.**
+   Unlike the backend actions (genuine RED confirmed via `ImportError`/400-unrecognized-action before
+   any implementation existed), `prioridadColor`/`elegirEnlaceEncuesta` are two small, obviously-pure
+   functions added to `logic.js` in the same edit pass as their tests, then run once to confirm both
+   green together — not a literal write-test/watch-it-fail/then-implement sequence. Recorded here
+   rather than silently claimed as strict RED→GREEN, matching this branch's own established honesty
+   convention for TDD sequencing deviations (Batch 2's "Honesty note on TDD sequencing for 3.5-3.10").
+2. **`misPuntosPlaneacion` excludes BOTH `hecho` and `no_aplica`**, not just `hecho`. The task's own
+   text said "mirror `misPuntos`'s exact shape/semantics" for the pending filter, and `_pendiente`
+   (stickers) only excludes one terminal state because `sticker_matches` only HAS one. Planeación's
+   `estado_asignacion` also has `no_aplica` — an explicit operator decision that a point does not need
+   a survey. Showing a `no_aplica` point to an inspector as "go survey this" would be actively wrong,
+   not just an inconsistency, so the filter was extended by one state (`_pendiente_planeacion`),
+   documented in its own docstring as a deliberate, minimal deviation from the literal single-state
+   mirror — not a silent one.
+3. **`misPuntosPlaneacion` fails OPEN on a missing `SURVEY123_FORM_URL`**, unlike `getEnlaceSurvey`'s
+   fail-LOUD 503. Deliberate: `getEnlaceSurvey` is a single-item admin action where a clear error is
+   the right UX; `misPuntosPlaneacion` is a LIST an inspector's whole picker depends on — one missing
+   env var must never blank the entire screen. Each returned point's `survey_web`/`survey_app` are
+   simply `null` in that case, and the "Abrir encuesta" button renders `aria-disabled` with an
+   explanatory `title` instead of a dead link (`formulario/js/form.js`'s `buildPlaneacionCard`).
+
+### Issues Found
+
+1. **Reported, not fixed (out of this task's explicit scope): the backend's own Firestore read cost
+   is very likely the LARGER share of the measured 9-35s, and lowering `LIMIT_DEFAULT` does not touch
+   it.** Two findings, both already-known, already-flagged tradeoffs from Batch 2 (not new bugs):
+   (a) `resumen()` reads the FULL `planeacion_puntos` collection (~14.8k docs today) on every call —
+   the Planeación tab calls it on every KPI-tile render/reload; (b) `list_puntos()`'s truncation-safe
+   over-fetch ALWAYS queries `LIMIT_MAX + 1` (5001) documents from Firestore, regardless of the
+   caller's requested `limit` — so a default (no-`limit`) call reads 5001 docs from Firestore even
+   though only 300 are now returned to the client. Lowering `LIMIT_DEFAULT` therefore reduces the
+   CLIENT-side cost (payload size, JSON parse, DOM rows — the part the task described measuring:
+   "the tab renders 2000 table rows") but leaves the SERVER-side Firestore read cost unchanged. Not
+   fixed here: this task's explicit scope for "other obvious wins" was `web/js/planeacion.js`'s render
+   path, and changing either backend read's bound is a real behavior decision (both are deliberate,
+   tested tradeoffs, not oversights — see Batch 2's own "Deviations" #1/#2) rather than a mechanical,
+   low-risk win. Flagged here for a follow-up decision: scaling the over-fetch to the ACTUAL requested
+   limit (with a smaller, explicit safety margin instead of the fixed `LIMIT_MAX`) and/or moving
+   `resumen` to a true Firestore `count()` aggregation query are both real candidates, but each needs
+   its own reasoning about the override-promotion edge case Batch 2 already documented, not a
+   speculative change bundled into this batch.
+2. **No new Firestore composite index is required for `misPuntosPlaneacion`.** It queries
+   `db.collection(PLANEACION_PUNTOS_COLLECTION).where("inspector_uid", "==", uid)` — a single
+   equality filter, no `order_by`, exactly mirroring `_mis_puntos`'s existing `sticker_matches` query
+   shape (which needs no index either). All further filtering (`hecho`/`no_aplica` exclusion) happens
+   in Python, same "filter the harder conditions in code" pattern the admin router's own
+   `list_puntos`/`resumen` already use for the same Firestore one-inequality-per-query limitation.
+   tasks.md's task **5.3** (still open, Railway/Firebase console work) already covers the TWO indexes
+   the ADMIN router's `listPuntos` needs; this batch adds no new index requirement on top of it.
+
+### Workload / PR Boundary
+
+- Mode: single local commit — this batch's own scope (an own-uid-scoped read/write pair on an
+  EXISTING router, one frontend UI addition, one backend constant, one frontend micro-optimization)
+  is small and cohesive enough not to need chaining; `git diff --stat` for the files THIS batch
+  touches (excluding the concurrent, unrelated files noted above): **13 files changed, ~695
+  insertions(+), ~25 deletions(-)** — see the exact per-file line counts in "Files Changed" above.
+  Above the 400-line single-PR budget on raw insertions, but the two halves (backend own-uid actions
+  vs. frontend UI+speed) are naturally separable if a real PR review later wants a split; not split
+  here per this batch's own "commit locally, orchestrator handles push" instruction, which did not
+  ask for a chained-PR decision.
+- Current work unit: `feat(planeacion): inspector-facing points, survey link button, tab speed` (one
+  commit covering 6.1-6.6).
+- Boundary: starts from an admin-only Planeación feature with no assignee-facing surface and ends
+  with an inspector able to see their own pending points, open a prefilled Survey123 form, and the
+  admin tab rendering fewer rows by default; zero changes to the ADMIN router's action set, zero
+  changes to any Firestore document shape (no new/renamed field on `planeacion_puntos`), zero changes
+  to the concurrent unrelated files noted above.
+- Rollback: `git revert` this commit — removes the two new inspector actions (their own allowlist
+  entry reverts with it), the `formulario` UI section, and the two `web/js/planeacion.js` speed
+  changes; `planeacion_asignaciones.py`'s `LIMIT_DEFAULT` and `list_puntos`/`resumen` behavior return
+  to their exact prior state; no other module depends on anything this commit adds.
+
+### Status
+
+**Phase 6: 6/6 tasks complete.** Backend: 391/391 passing (372 baseline + this batch's own 8; the
+remaining 11 are a concurrent, unrelated batch's own additions, not this batch's — see Files Changed).
+`formulario`: 58/58 passing (53 baseline + 5 new). `web` JS: `planeacion.js`/`planeacion.test.mjs`
+`node --check` clean, `node --test js/planeacion.test.mjs` → 1 passed. No new Firestore composite
+index required. One finding reported, not fixed (backend read-cost, see Issues Found #1) — flagged
+for a follow-up decision, not silently worked around.
+
+### Next Batch
+
+If the backend read-cost finding (Issues Found #1) is worth fixing: scale `list_puntos`'s over-fetch
+to the actual requested limit (bounded, not unconditionally `LIMIT_MAX`), and/or move `resumen` to a
+true Firestore `count()` aggregation query — both need their own design decision on the
+override-promotion edge case Batch 2 already documented, not a speculative bundle into this batch.
+Otherwise, Phase 5 (Railway/Firebase console + ArcGIS org steps) remains the only other open item on
+this change, and is not a repo diff.
