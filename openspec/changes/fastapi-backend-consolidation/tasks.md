@@ -157,14 +157,19 @@ reverting the PR; zero production impact.
 
 Chain PR #2. Depends on: Phase 1 (auth, credentials, CORS, `create_app()`). Lowest blast radius.
 
-- [ ] **2.1** (RED) Write `backend/tests/routers/test_sign.py` FIRST: fake/mocked S3 client (no real
+- [x] **2.1** (RED) Write `backend/tests/routers/test_sign.py` FIRST: fake/mocked S3 client (no real
       AWS creds in CI); valid Bearer + `codigo` matching `^76001-[123]-\d{7,8}$` + `slot` in
       `1..MAX_SLOT` → 200 `{uploadUrl, publicUrl}`; missing/invalid Bearer → 401; bad `codigo` → 400;
       out-of-range `slot` → 400. MUST fail.
       — Satisfies: inspection-photo-capture "Unified Token Verification For Signer" (both scenarios),
       "Presign Acceptance Semantics Unchanged".
+      — STATUS: done. Confirmed RED — `AttributeError: module 'app.credentials.clients' has no
+      attribute 's3'` (6 failed, 0 passed) before 2.2 landed. Uses the REAL `credentials.s3()`
+      accessor with fake/dummy AWS keys rather than a hand-rolled fake client:
+      `generate_presigned_url` is a pure local HMAC computation (confirmed empirically — no network
+      call), so this satisfies "no real AWS creds/calls in CI" without extra mocking machinery.
 
-- [ ] **2.2** (GREEN) Implement `backend/app/routers/sign.py`: `POST /api/sign`,
+- [x] **2.2** (GREEN) Implement `backend/app/routers/sign.py`: `POST /api/sign`,
       `Depends(require_auth)` — Authorization Bearer header, NOT `idToken` in the JSON body as the
       legacy signer used (`services/photo-signer/api/sign.js:54`); new body is `{codigo, slot}` only.
       Same `CODIGO_RE`/`MAX_SLOT`/presign shape (`key = evaluaciones/{codigo}/foto_{slot}.jpg`,
@@ -173,25 +178,56 @@ Chain PR #2. Depends on: Phase 1 (auth, credentials, CORS, `create_app()`). Lowe
       fail-fast). Run 2.1, confirm green.
       — Satisfies: inspection-photo-capture "Unified Token Verification For Signer", "Presign
       Acceptance Semantics Unchanged".
+      — STATUS: done. First GREEN pass, no rework (`python -m pytest backend/tests/routers/test_sign.py
+      -v` → 6 passed). `s3()` NOT added to `WEB_STARTUP_CLIENTS` — the sign router's own
+      `REQUIRED_CLIENTS = ("s3",)` is unioned in automatically by `create_app()` once mounted, which
+      already satisfies ADR-4's per-client "fail-fast at web startup" rule. This DID require updating
+      two slice-1 fixtures (`test_cors.py`, `test_startup.py`) to also set `SIGNER_*` env vars, since
+      `create_app()` now validates `s3` unconditionally — a correct, expected consequence of mounting
+      the router, not a regression. Full suite: `python -m pytest backend/tests/ -v` → 45 passed.
 
 - [ ] **2.3** VERIFY (ADR-7 parity procedure): side-by-side same-token calls, old
       (`sismo-fotos-signer.vercel.app`, body-idToken) vs new (Bearer header) — equivalent presigned URL
       for the same `codigo`/`slot`; both reject the same invalid cases. Record both payloads in the PR
       description.
       — Satisfies: backend-platform "Old endpoint still serves after the new one deploys".
+      — STATUS: BLOCKED on 1.4 (no live Railway URL exists yet). Repo-side prep done:
+      `backend/scripts/verify_sign_parity.py` — a standalone MANUAL operator tool (not imported by
+      `app/` or `tests/`, not run in CI) that, given `NEW_SIGN_URL` + `FIREBASE_ID_TOKEN` env vars,
+      calls both endpoints side by side (valid request + bad-codigo + bad-token cases), prints both
+      payloads for the PR description, and exits non-zero on any parity mismatch. Verified its
+      BLOCKED guard runs correctly with no env vars set (exit 2, explanatory message) — no live call
+      is possible until 1.4 lands. Run it once 1.4 is done; no further code changes needed for 2.3
+      itself.
 
 - [ ] **2.4** REPOINT: `formulario/js/form.js` — `FOTO_SIGNER_URL` → consolidated app base URL;
       `subirUnaFoto` (`form.js:556-575`) changes from `body:{idToken,codigo,slot}` to
       `Authorization: Bearer ${idToken}` header + `body:{codigo,slot}`. MANUAL Vercel redeploy of
       `formulario/`.
       — Satisfies: inspection-photo-capture "FOTO_SIGNER_URL repoint after parity verification".
+      — STATUS: BLOCKED on 1.4 + 2.3, `formulario/js/form.js` intentionally NOT touched this batch.
+      This apply batch's hard scope boundary was backend-only (`backend/app/routers/sign.py` + tests,
+      no consumer switch) — and touching `subirUnaFoto`'s request shape now (Bearer header +
+      `{codigo,slot}` body) while `FOTO_SIGNER_URL` still points at the LIVE legacy signer would
+      actively break production photo uploads for field inspectors: `services/photo-signer/api/sign.js`
+      only reads `idToken` from the JSON body — it has no Bearer-header support — so the two changes
+      (URL flip + body/header shape) MUST land atomically, only after 2.3's parity check passes
+      against a real `NEW_SIGN_URL`. The exact diff to apply then is already fully specified above
+      (this task's own text) — no design work remains, only the repoint + redeploy once unblocked.
 
 - [ ] **2.5** — MANUAL OPERATOR STEP. Confirm the legacy `sismo-fotos-signer.vercel.app` project stays
       deployed, untouched — rollback target until slice 9.
       — Satisfies: inspection-photo-capture "Old signer stays live during transition".
+      — STATUS: not started (manual operator confirmation; `services/photo-signer/` was not modified
+      by this batch, so nothing on the repo side changed its live status).
 
 **ROLLBACK BOUNDARY (Slice 2)**: revert `FOTO_SIGNER_URL` + `subirUnaFoto`'s body/header shape in one
 commit; redeploy `formulario/`. No deletion before slice 9.
+
+**Batch status (sdd-apply, `feat/fastapi-consolidation-2-sign`)**: 2.1/2.2 done (backend route +
+tests, 45/45 `backend/tests/` green); 2.3 repo-side prep done (parity script), execution BLOCKED on
+1.4; 2.4 BLOCKED on 1.4+2.3 by design — `formulario/` untouched, zero production risk this batch; 2.5
+not started (manual). See `apply-progress.md` "Batch 2" for full detail.
 
 ---
 
