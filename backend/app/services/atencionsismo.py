@@ -28,7 +28,7 @@ import math
 import os
 import time
 from datetime import datetime, timezone
-from typing import Iterable, Mapping
+from typing import Callable, Iterable, Mapping
 
 import httpx
 
@@ -220,6 +220,29 @@ async def probe_api(client: httpx.AsyncClient, user: str, password: str) -> None
         raise ApiUnavailableError(f"API no disponible (HTTP {resp.status_code})", status=503)
 
 
+RecordMapper = Callable[[dict], dict]
+
+
+def _map_summary_record(r: dict) -> dict:
+    """Default per-record shape: the ANALYTIC fields only (user directive:
+    metrics over all records) — id/coords for dedupe/inmuebles plus every
+    AGG_FIELDS category. Deliberately nothing else: no PII, no heavy nested
+    lists, ever. This is what the `/reportados` snapshot needs; the
+    `dashboard_refresh` job's fuller `reportes.json` export passes its own
+    `mapper` (see `app/jobs/dashboard_refresh.py`) instead of duplicating
+    this day-walk (design.md ADR-5, task 7.2)."""
+    return {
+        "id": r.get("id"),
+        "estado": r.get("estadoVerificacion") or "—",
+        "lat": r.get("latitud"),
+        "lng": r.get("longitud"),
+        "afectacion": r.get("afectacion"),
+        "comuna": r.get("comuna"),
+        "habitabilidad": r.get("habitabilidad"),
+        "tipoInmueble": r.get("tipoInmueble"),
+    }
+
+
 async def fetch_window(
     client: httpx.AsyncClient,
     user: str,
@@ -228,6 +251,7 @@ async def fetch_window(
     d1: int,
     *,
     failed_windows: list[tuple[int, int]] | None = None,
+    mapper: RecordMapper | None = None,
 ) -> list[dict]:
     """Fetch [d0, d1] (ms UTC epoch). Recursively halves SEQUENTIALLY (not
     concurrently — a concurrent split would fan a dense window out into an
@@ -235,7 +259,14 @@ async def fetch_window(
     than `MIN_WINDOW_MS`. Otherwise retries up to `MAX_ATTEMPTS` times with
     a `RETRY_SLEEP_S` backoff, then gives up and returns `[]` — appending
     `(d0, d1)` to `failed_windows` if the caller passed one, for a later
-    sequential recovery pass (api/reportados.js's fetchWindow, ported)."""
+    sequential recovery pass (api/reportados.js's fetchWindow, ported).
+
+    `mapper` shapes each raw API record into the caller's desired dict;
+    defaults to `_map_summary_record` (the `/reportados` snapshot's slim
+    shape) so every existing caller/test is unaffected. `dashboard_refresh`
+    passes a fuller mapper to reuse this exact split/retry mechanics for
+    `reportes.json` instead of duplicating it (task 7.2)."""
+    active_mapper = mapper or _map_summary_record
     headers = _headers(user, password)
     for attempt in range(MAX_ATTEMPTS):
         try:
@@ -248,31 +279,19 @@ async def fetch_window(
             splittable = resp.status_code in SPLITTABLE_STATUSES
             if splittable and (d1 - d0) > MIN_WINDOW_MS:
                 mid = (d0 + d1) // 2
-                first = await fetch_window(client, user, password, d0, mid, failed_windows=failed_windows)
-                second = await fetch_window(client, user, password, mid + 1, d1, failed_windows=failed_windows)
+                first = await fetch_window(
+                    client, user, password, d0, mid, failed_windows=failed_windows, mapper=mapper
+                )
+                second = await fetch_window(
+                    client, user, password, mid + 1, d1, failed_windows=failed_windows, mapper=mapper
+                )
                 return first + second
             if resp.status_code >= 400:
                 raise httpx.HTTPStatusError(
                     f"HTTP {resp.status_code}", request=resp.request, response=resp
                 )
             data = resp.json()
-            # Keep the ANALYTIC fields per record (user directive: metrics
-            # over all records) — id/coords for dedupe/inmuebles plus every
-            # AGG_FIELDS category. Deliberately nothing else: no PII, no
-            # heavy nested lists, ever.
-            return [
-                {
-                    "id": r.get("id"),
-                    "estado": r.get("estadoVerificacion") or "—",
-                    "lat": r.get("latitud"),
-                    "lng": r.get("longitud"),
-                    "afectacion": r.get("afectacion"),
-                    "comuna": r.get("comuna"),
-                    "habitabilidad": r.get("habitabilidad"),
-                    "tipoInmueble": r.get("tipoInmueble"),
-                }
-                for r in data.get("reportes", [])
-            ]
+            return [active_mapper(r) for r in data.get("reportes", [])]
         except httpx.HTTPError:
             if attempt == MAX_ATTEMPTS - 1:
                 break
@@ -285,19 +304,22 @@ async def fetch_window(
     return []
 
 
-async def count_reportes(
+async def day_walk(
     client: httpx.AsyncClient,
     user: str,
     password: str,
     desde: str,
     *,
     until_ms: int | None = None,
-) -> dict:
+    mapper: RecordMapper | None = None,
+) -> list[dict]:
     """Walk `desde` (YYYY-MM-DD) through `until_ms` (default: now + 1 day)
     in day windows, `CONCURRENCY` at a time, then run one sequential retry
     pass over windows that gave up — anything that fails twice stays
-    dropped (api/reportados.js's countReportes, ported). Returns the
-    `summarize()` shape."""
+    dropped (api/reportados.js's countReportes, ported). Returns the raw
+    (mapped, NOT deduped/aggregated) record list — `count_reportes()` is
+    `summarize(day_walk(...))`; `dashboard_refresh` calls this directly with
+    a fuller `mapper` for `reportes.json` (task 7.2)."""
     import asyncio
 
     start = _parse_desde(desde)
@@ -311,7 +333,7 @@ async def count_reportes(
         batch = windows[i : i + CONCURRENCY]
         results = await asyncio.gather(
             *[
-                fetch_window(client, user, password, d0, d1, failed_windows=failed_windows)
+                fetch_window(client, user, password, d0, d1, failed_windows=failed_windows, mapper=mapper)
                 for d0, d1 in batch
             ]
         )
@@ -322,10 +344,25 @@ async def count_reportes(
     failed_windows.clear()
     for d0, d1 in retry:
         all_records.extend(
-            await fetch_window(client, user, password, d0, d1, failed_windows=failed_windows)
+            await fetch_window(client, user, password, d0, d1, failed_windows=failed_windows, mapper=mapper)
         )
 
-    return summarize(all_records)
+    return all_records
+
+
+async def count_reportes(
+    client: httpx.AsyncClient,
+    user: str,
+    password: str,
+    desde: str,
+    *,
+    until_ms: int | None = None,
+) -> dict:
+    """`summarize(day_walk(...))` — kept as its own function for the
+    existing `/reportados` snapshot call sites; see `day_walk` for the
+    underlying walk/retry mechanics."""
+    records = await day_walk(client, user, password, desde, until_ms=until_ms)
+    return summarize(records)
 
 
 async def fetch_reportados(
