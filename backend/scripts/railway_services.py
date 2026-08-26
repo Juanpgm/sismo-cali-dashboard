@@ -63,12 +63,14 @@ SERVICES = [
     # on the consolidated image (git-connected, backend/Dockerfile).
     {"name": "dashboard-refresh", "start_command": "python -m app.jobs.dashboard_refresh",
      "cron": EVERY_15, "service_id": "156e97a2-596b-4861-95f4-4060dab408e2"},
-    # service_id: None — created fresh by the MANUAL operator step (tasks.md
-    # 7.13); the legacy cruce-sticker shell in railway_setup.py never
-    # deployed successfully (Node-upload bug, 2026-08-25) and stays deleted
-    # there, not reused here.
+    # A service named "cruce-sticker" already existed in this project (an
+    # earlier abandoned attempt, startCommand `python job_sticker.py` on the
+    # old image) — task 7.13 reused it rather than creating a duplicate,
+    # repointed to `backend/Dockerfile` + this consolidated startCommand,
+    # env vars wired per ADR-6 (FIREBASE_SERVICE_ACCOUNT_JSON,
+    # INSPECTIONS_URL), 2026-08-26.
     {"name": "cruce-sticker", "start_command": "python -m app.jobs.cruce_sticker",
-     "cron": STICKER_EVERY_15, "service_id": None},
+     "cron": STICKER_EVERY_15, "service_id": "b18c74c8-0b7a-459c-ada5-5e5df6db8050"},
 ]
 
 # builder: None (unset) lets Railway auto-detect the Dockerfile — same

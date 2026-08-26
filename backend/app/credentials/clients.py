@@ -171,8 +171,22 @@ def s3() -> S3Client:
     Mirrors `services/photo-signer/api/sign.js`'s bucket/region selection —
     `SIGNER_S3_REGION` defaults to `us-east-1` when unset, exactly like the
     legacy signer.
+
+    ``Config(signature_version="s3v4")`` is REQUIRED: without it, botocore
+    picks a signer per-region, and for the default `us-east-1` bucket it
+    falls back to the legacy SigV2 scheme (`AWSAccessKeyId=...&Signature=...
+    &Expires=...` query params) instead of SigV4
+    (`X-Amz-Algorithm=AWS4-HMAC-SHA256...`, what the legacy Node signer
+    always produces via the AWS SDK v3, which defaults to SigV4
+    unconditionally). AWS now rejects SigV2-presigned URLs with `403
+    InvalidAccessKeyId` even for a perfectly valid key — a misleading error
+    that looks like a credentials problem but isn't one. Confirmed live
+    (2026-08-26): the SAME `SIGNER_AWS_*` values that work fine through the
+    legacy signer failed every real S3 PUT through this client until this
+    `Config` was added.
     """
     import boto3
+    from botocore.config import Config
 
     settings = _s3_settings()
     client = boto3.client(
@@ -180,5 +194,6 @@ def s3() -> S3Client:
         region_name=settings.region,
         aws_access_key_id=settings.access_key_id,
         aws_secret_access_key=settings.secret_access_key,
+        config=Config(signature_version="s3v4"),
     )
     return S3Client(client=client, bucket=settings.bucket)
