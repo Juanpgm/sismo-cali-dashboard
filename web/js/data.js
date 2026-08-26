@@ -4,6 +4,7 @@ import {
   bucketNpisos, suspensionServicios, bustParams, AFECTACION_ORDER,
 } from './utils.js';
 import { fetchIsraelRecords } from './israel-source.js';
+import { apiUrl } from './api-config.js';
 
 // Re-exported so existing/potential external import sites (`import { bucketNpisos } from './data.js'`)
 // keep working; the actual implementation lives in utils.js (see comment there
@@ -118,7 +119,8 @@ class Store {
     this.records = []; // raw records + _search index
     this.filtered = [];
     // Reportes ciudadanos en estado "Reportado", leído EN VIVO de la API
-    // atencionsismo vía /api/reportados (proxy serverless, caché CDN de 15 min).
+    // atencionsismo vía el endpoint `reportados` de api-config.js (consolidated
+    // FastAPI backend en Railway desde tasks.md 3.7; caché CDN de 15 min).
     // Fallback: el agregado estático del pipeline. Global, no depende de los
     // filtros del tablero. null si ninguna fuente está disponible.
     this.reportados = null;
@@ -242,17 +244,20 @@ class Store {
   }
 
   // KPI "Reportados" = solo los reportes en estado "Reportado" (decisión del
-  // usuario 2026-08-20), leídos EN VIVO de /api/reportados. SIN fallback: si la
-  // API no responde, no trae el campo, o el valor no es un número, el KPI se
-  // pone en null y se OCULTA (kpi.js) — nunca se muestra un dato viejo o de otra
-  // fuente que pueda contradecir a la API. Con bust=true agrega un query param
-  // único que saltea la caché CDN de 15 min (botón "Actualizar datos").
+  // usuario 2026-08-20), leídos EN VIVO del endpoint `reportados` de
+  // api-config.js (tasks.md 3.7: apunta al backend consolidado en Railway,
+  // parity-verificado en 3.6). SIN fallback: si la API no responde, no trae
+  // el campo, o el valor no es un número, el KPI se pone en null y se OCULTA
+  // (kpi.js) — nunca se muestra un dato viejo o de otra fuente que pueda
+  // contradecir a la API. Con bust=true agrega un query param único que
+  // saltea la caché CDN de 15 min (botón "Actualizar datos").
   async refreshReportados({ bust = false } = {}) {
     let val = null;
     let inmuebles = null;
     const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
     try {
-      const res = await fetch(bust ? `/api/reportados?refresh=${Date.now()}` : '/api/reportados');
+      const url = apiUrl('reportados');
+      const res = await fetch(bust ? `${url}?refresh=${Date.now()}` : url);
       if (res.ok) {
         const body = await res.json();
         val = num(body?.por_estadoVerificacion?.Reportado);
