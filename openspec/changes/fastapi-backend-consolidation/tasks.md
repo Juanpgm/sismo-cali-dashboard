@@ -35,15 +35,16 @@ review budget (see Review Workload Forecast).
       DST_TAB)` (`integrar_f3.py:196-199`; `asignar_f3.py:829-835`, incl. `add_worksheet` fallback).
       **Cutting these branches removes the ONLY F3 input source and the ONLY output sink for both
       jobs** — there is no non-Sheets replacement in either module today.
-      — **STOP condition triggered, then resolved.** This finding was escalated to the user, who
-      decided (proposal.md, "Extension" to the Scope Exclusion Addendum, 2026-08-25 post-tasks):
-      `integracion-f3` and `asignaciones` join `normalizador` in the excluded set — their Sheets I/O is
-      operationally dead and is NOT replaced. Slice 7's migrated set is therefore THREE job services
-      (`dashboard-refresh`, `cruce-gestion`, `cruce-sticker`); tasks 7.11/7.12 record the exclusion
-      (no migration tasks) rather than remaining open escalation stubs. `cruce-gestion`, `cruce-sticker`,
-      `dashboard-refresh` were unaffected by the original finding (no gspread found) and proceed
-      normally.
-      — Satisfies: design.md open question 6; Scope Exclusion Addendum item 3 and its Extension.
+      — **STOP condition triggered, then resolved (twice over).** This finding was escalated to the
+      user, who decided (proposal.md, "Extension" to the Scope Exclusion Addendum, 2026-08-25
+      post-tasks): `integracion-f3` and `asignaciones` join `normalizador` in the excluded set — their
+      Sheets I/O is operationally dead and is NOT replaced (tasks 7.10/7.11 record the exclusion). The
+      user then separately directed "no usar nada relacionado con el dagma" (Extension 2, 2026-08-25
+      post-slice-1a), which additionally excludes `cruce-gestion` (task 7.7) and removes the `dagma()`
+      credentials client entirely (task 1.10). Slice 7's migrated set is therefore TWO job services
+      (`dashboard-refresh`, `cruce-sticker`); the excluded legacy set is FOUR jobs (`normalizador`,
+      `integracion-f3`, `asignaciones`, `cruce-gestion`).
+      — Satisfies: design.md open question 6; Scope Exclusion Addendum item 3 and both Extensions.
 
 ---
 
@@ -69,14 +70,15 @@ Chain PR #1 (may need 1a/1b split — see forecast). Depends on: none.
 
 - [ ] **1.4** — MANUAL OPERATOR STEP, not a repo diff. Create the Railway "web" service, git-connected
       to this GitHub repo, root = repo root, `dockerfilePath = backend/Dockerfile`, always-on (proposal
-      answer 8). Provision env vars: `FIREBASE_SERVICE_ACCOUNT_JSON`, `GOOGLE_SERVICE_ACCOUNT_JSON`,
-      `SIGNER_AWS_ACCESS_KEY_ID/SECRET`, `SIGNER_S3_BUCKET/REGION`, `SUPERADMIN_EMAIL`. Confirm no CLI
-      upload is ever used.
+      answer 8). Provision env vars: `FIREBASE_SERVICE_ACCOUNT_JSON`, `SIGNER_AWS_ACCESS_KEY_ID/SECRET`,
+      `SIGNER_S3_BUCKET/REGION`, `SUPERADMIN_EMAIL` — NOT `GOOGLE_SERVICE_ACCOUNT_JSON` (dagma is
+      unused anywhere in this backend, per proposal.md Scope Exclusion Addendum Extension 2). Confirm
+      no CLI upload is ever used.
       — Satisfies: backend-platform "No CLI-upload path exists for the web service".
       — STATUS: not started (manual operator step, out of scope for the automated 1a/1b apply
       batches; requires human action in the Railway dashboard).
 
-- [ ] **1.5** (RED) Write `backend/tests/auth/test_roles_parity.py` FIRST: table-driven port of the
+- [x] **1.5** (RED) Write `backend/tests/auth/test_roles_parity.py` FIRST: table-driven port of the
       exact fixture matrix from `api/usuarios.test.js:8-22` (the actual JS parity source — NOT a
       dedicated `refresh.test.js`, which does not exist despite `api/refresh.js:183`'s stale comment):
       inspector (`@sismocali.gov.co`+password) → `inspector`; generic password → `usuario`; explicit
@@ -86,40 +88,47 @@ Chain PR #1 (may need 1a/1b split — see forecast). Depends on: none.
       — Satisfies: backend-platform "Parity suite passes identically to the JS test matrix",
       "Precedence order resolves to the earliest matching rule".
 
-- [ ] **1.6** (RED) Write `backend/tests/auth/test_verify.py` FIRST: injectable fake cert-fetcher (no
+- [x] **1.6** (RED) Write `backend/tests/auth/test_verify.py` FIRST: injectable fake cert-fetcher (no
       network); valid token accepted; unknown `kid` → exactly one forced refetch then 401 if still
       unknown; bad `iss`/`aud`/`exp`/`iat`/empty `sub` rejected. MUST fail.
       — Satisfies: backend-platform "Ported Auth Verifier And Role Resolution".
 
-- [ ] **1.7** (GREEN) Implement `backend/app/auth/roles.py`: `role_from(email, claim_role, provider)`,
+- [x] **1.7** (GREEN) Implement `backend/app/auth/roles.py`: `role_from(email, claim_role, provider)`,
       `role_from_claims(claims)`, precedence ported verbatim from `api/refresh.js:77-94`. Run 1.5,
       confirm green.
       — Satisfies: backend-platform "Precedence order resolves to the earliest matching rule",
       "Parity suite passes identically to the JS test matrix".
 
-- [ ] **1.8** (GREEN) Implement `backend/app/auth/verify.py`: `async verify_firebase_token(id_token,
+- [x] **1.8** (GREEN) Implement `backend/app/auth/verify.py`: `async verify_firebase_token(id_token,
       project_id) -> claims`, RS256 against Google's rotating x509 certs, cert cache TTL from
       `Cache-Control: max-age`, injectable cert-fetcher, single forced refetch on unknown `kid`. Run
       1.6, confirm green.
       — Satisfies: backend-platform "Ported Auth Verifier And Role Resolution".
 
-- [ ] **1.9** (GREEN) Implement `backend/app/auth/deps.py`: `require_auth`, `require_role("admin")`,
+- [x] **1.9** (GREEN) Implement `backend/app/auth/deps.py`: `require_auth`, `require_role("admin")`,
       `current_claims` — foundation for the ADR-3 per-route matrix later slices attach to.
       — Satisfies: backend-platform "Route Parity Across Consolidated Endpoints" (auth-level column,
       foundation).
 
-- [x] **1.10** (GREEN) Implement `backend/app/credentials/clients.py`: exactly 2 named memoized
-      clients — `sismo()` (`FIREBASE_SERVICE_ACCOUNT_JSON`, fail-fast) and `dagma()`
-      (`GOOGLE_SERVICE_ACCOUNT_JSON`, lazy/job-only) — no `sheets()` client, no Sheets env var
-      anywhere. `REQUIRED_CLIENTS` declaration mechanism per ADR-4.
+- [x] **1.10** (GREEN) Implement `backend/app/credentials/clients.py`: exactly ONE named memoized
+      client — `sismo()` (`FIREBASE_SERVICE_ACCOUNT_JSON`, fail-fast). No `dagma()` client — removed
+      per proposal.md Scope Exclusion Addendum Extension 2 (`cruce-gestion` is excluded from
+      migration, see Phase 7); no `sheets()` client, no dagma/Sheets env var anywhere.
+      `REQUIRED_CLIENTS` declaration mechanism per ADR-4.
       — Satisfies: backend-platform "Named-Client Credential Matrix Across Two Service Accounts" (all
       3 scenarios).
+      — STATUS NOTE: this task was already implemented with 2 clients (sismo + dagma) before this
+      revision; checkbox stays ticked — the apply agent's current batch removes the `dagma()` client
+      to match this revised text, not a new task.
 
 - [x] **1.11** (RED) Write `backend/tests/test_startup.py` FIRST: missing
-      `FIREBASE_SERVICE_ACCOUNT_JSON` → app startup fails before serving; missing
-      `GOOGLE_SERVICE_ACCOUNT_JSON` does NOT block web startup. MUST fail (`create_app()` incomplete).
-      — Satisfies: backend-platform "Missing web-route credential fails startup", "Job-only credential
-      loads lazily".
+      `FIREBASE_SERVICE_ACCOUNT_JSON` → app startup fails before serving. No second/job-only client
+      to test — `GOOGLE_SERVICE_ACCOUNT_JSON`/dagma is unused anywhere in this backend (Scope
+      Exclusion Addendum Extension 2). MUST fail (`create_app()` incomplete).
+      — Satisfies: backend-platform "Missing web-route credential fails startup".
+      — STATUS NOTE: originally written/implemented with a dagma job-only-credential assertion;
+      checkbox stays ticked — the apply agent's current batch drops that assertion to match this
+      revised text, not a new task.
 
 - [x] **1.12** (GREEN) Implement `backend/app/config.py` (CORS allowlist per ADR-7:
       `https://sismo-cali-dashboard.vercel.app`, `https://formulario-atc20-cali.vercel.app`,
@@ -130,12 +139,12 @@ Chain PR #1 (may need 1a/1b split — see forecast). Depends on: none.
       — Satisfies: backend-platform "Named-Client Credential Matrix..."; "Universal Explicit CORS
       Allowlist".
 
-- [ ] **1.13** (RED) Write `backend/tests/test_cors.py` FIRST: allowed origin gets
+- [x] **1.13** (RED) Write `backend/tests/test_cors.py` FIRST: allowed origin gets
       `Access-Control-Allow-Origin`; unlisted origin gets no permitting header; cookie-only request (no
       Bearer) on a stub authenticated route is rejected. Run against 1.12's `create_app()`.
       — Satisfies: backend-platform "Universal Explicit CORS Allowlist" (all 3 scenarios).
 
-- [ ] **1.14** Runnable check: `pytest backend/tests/` green (roles parity, verify, startup, CORS,
+- [x] **1.14** Runnable check: `pytest backend/tests/` green (roles parity, verify, startup, CORS,
       health). Zero repoints this slice.
       — Satisfies: design.md ADR-8 (slice 1 red suite green before any admin route moves).
 
@@ -318,20 +327,23 @@ Chain PR #5. Depends on: Phase 1. Completes formulario cutover.
 Chain PR #6. Depends on: Phase 1. Re-wires the Vercel↔Railway GraphQL coupling.
 
 - [ ] **6.1** (RED) Write `backend/tests/routers/test_refresh.py` FIRST: admin token → 202 with
-      `deploymentId`/`cruceDeploymentId` (mocked Railway GraphQL client); non-admin → 403, no Railway
-      call; cruce-gestion redeploy failure is fail-soft (main `deploymentId` still returned). MUST
-      fail.
+      `deploymentId` (mocked Railway GraphQL client, `dashboard-refresh` service only — NO
+      `cruceDeploymentId`/cruce-gestion trigger, per proposal.md Scope Exclusion Addendum Extension 2
+      item 5); non-admin → 403, no Railway call. MUST fail.
       — Satisfies: backend-platform "Admin-gated route rejects non-admin" (`/refresh`).
 
 - [ ] **6.2** (GREEN) Implement `backend/app/routers/refresh.py`: `POST /refresh`,
       `Depends(require_role("admin"))`, port `api/refresh.js:134-181`'s dual-header Railway auth
-      fallback + fail-soft cruce-gestion redeploy. Update service/environment IDs to the NEW
-      consolidated Railway service ids created in slices 1/7 — confirm exact ids before hardcoding.
-      Run 6.1, confirm green.
+      fallback, triggering ONLY the `dashboard-refresh` service redeploy — the legacy fail-soft
+      cruce-gestion redeploy branch is NOT ported (cruce-gestion is excluded from migration). Update
+      the service/environment id to the NEW consolidated `dashboard-refresh` Railway service id
+      created in slice 7 — confirm exact id before hardcoding. Run 6.1, confirm green.
       — Satisfies: backend-platform "Route Parity Across Consolidated Endpoints" (`/refresh` row).
 
 - [ ] **6.3** VERIFY (ADR-7 procedure, mutating-action carve-out — redeploy trigger is idempotent
-      enough to exercise live): admin-token POST old vs new; both 202 with matching shape.
+      enough to exercise live): admin-token POST old vs new; both 202, `deploymentId` present (old
+      response's `cruceDeploymentId` field has no new-side equivalent — expected, documented
+      difference, not a parity failure).
       — Satisfies: backend-platform "Old endpoint still serves after the new one deploys".
 
 - [ ] **6.4** REPOINT: flip the `refresh` entry in `api-config.js`. MANUAL Vercel redeploy of `web/`.
@@ -344,10 +356,12 @@ Chain PR #6. Depends on: Phase 1. Re-wires the Vercel↔Railway GraphQL coupling
 ## Phase 7 — Slice 7 + 7b: Crons per-job + `survey_cali` ingestion
 
 Depends on: Phase 1. Can interleave from slice 2 onward per proposal; sequenced here to match the PR
-chain. **Migrated set is THREE job services**: `dashboard-refresh`, `cruce-gestion`, `cruce-sticker`
-(per Task 0.1's resolution — `integracion-f3` and `asignaciones` are excluded, see 7.11/7.12).
-**Recommend per-job sub-PRs** (7a-7d, see forecast) — each independently mergeable once Phase 1 lands.
-`dashboard-refresh` first (code already in this repo).
+chain. **Migrated set is TWO job services**: `dashboard-refresh`, `cruce-sticker` (per Task 0.1's
+resolution and proposal.md Scope Exclusion Addendum Extension 2 — `integracion-f3`, `asignaciones`,
+and `cruce-gestion` are ALL excluded; see 7.7, 7.10, 7.11). `cruce-gestion` is excluded because its
+sole purpose was writing Firestore `dagma-85aad`/`cruce_criticos_survey`, and nothing dagma-related is
+used anywhere in the new backend. **Recommend per-job sub-PRs** (7a-7c, see forecast) — each
+independently mergeable once Phase 1 lands. `dashboard-refresh` first (code already in this repo).
 
 - [ ] **7.1** (RED) Write `backend/tests/jobs/test_dashboard_refresh.py` FIRST: offline `--check`-style
       idempotency/watermark fixtures for `refresh_data.py` + `fetch_reportes_api.py` (now calling
@@ -396,81 +410,83 @@ chain. **Migrated set is THREE job services**: `dashboard-refresh`, `cruce-gesti
       `app/jobs/dashboard_refresh.py`.
       — Satisfies: design.md ADR-9 (survey_cali sole-writer treatment).
 
-- [ ] **7.7** (RED) Write `backend/tests/jobs/test_cruce_gestion.py` FIRST: offline fixture for
-      `cruce_criticos_survey.main(--firebase)` idempotency. MUST fail.
-      — Satisfies: job-scheduling "Watermark And Idempotent-Write Behavior Preserved" (cruce-gestion
-      row).
+- [x] **7.7** (RESOLVED — `cruce-gestion` EXCLUDED) Per the user's binding directive "no usar nada
+      relacionado con el dagma" (proposal.md Scope Exclusion Addendum Extension 2): `cruce-gestion`
+      does NOT migrate. Its sole purpose is writing Firestore `dagma-85aad`/`cruce_criticos_survey` via
+      the `dagma()` client, which is removed from the new backend entirely (see 1.10) — there is no
+      dagma-free version of this job to port. No RED/GREEN tasks, no absorption of
+      `cruce_criticos_survey.py` into `backend/app/integracion/`, no Railway cron service on the
+      consolidated image. It joins `normalizador`, `integracion-f3`, `asignaciones` in the excluded
+      set, staying on the legacy `integracion_F1` image/service (`job_cruce.py`) until decommissioned
+      in slice 9 (task 9.8) pending explicit operator confirmation.
+      — Satisfies: proposal.md Scope Exclusion Addendum Extension 2 items 1-2.
 
-- [ ] **7.8** (GREEN) Absorb `cruce_criticos_survey.py` into `backend/app/integracion/` with
-      provenance header + `PROVENANCE.md` row (ADR-2; no gspread found — confirmed clean, no Sheets cut
-      needed). Implement `backend/app/jobs/cruce_gestion.py` wrapping it with `runlog.py` (copy with
-      provenance if not already copied by an earlier job slice). `dagma()` client (lazy). Run 7.7,
-      confirm green.
-      — Satisfies: job-scheduling "integracion_F1 Job Code Absorbed With Provenance".
-
-- [ ] **7.9** (RED) Write `backend/tests/jobs/test_cruce_sticker.py` FIRST: port the offline `--check`
+- [ ] **7.8** (RED) Write `backend/tests/jobs/test_cruce_sticker.py` FIRST: port the offline `--check`
       fixture already established in `integracion_F1/cruce_sticker.py` (stickers-asignacion change) —
       same pipeline-owned merge-safety/first-write assertions, targeting the new
       `backend/app/jobs/cruce_sticker.py` location. MUST fail.
       — Satisfies: job-scheduling "Watermark And Idempotent-Write Behavior Preserved" (cruce-sticker
       row); backend-platform "sticker_matches And cuadrillas Sole-Writer Invariant" (job side).
 
-- [ ] **7.10** (GREEN) Absorb `integracion_F1/cruce_sticker.py` into `backend/app/integracion/` +
+- [ ] **7.9** (GREEN) Absorb `integracion_F1/cruce_sticker.py` into `backend/app/integracion/` +
       `backend/app/jobs/cruce_sticker.py` (ADR-2 provenance; no gspread — confirmed clean). Third
       module allowlisted for `sticker_matches`/`cuadrillas` (with 5.2, and slice 8's
-      `sticker_asignaciones.py`) — extend `test_sole_writer.py`. `sismo()` client (fail-fast). Run 7.9,
+      `sticker_asignaciones.py`) — extend `test_sole_writer.py`. `sismo()` client (fail-fast). Run 7.8,
       confirm green.
       — Satisfies: job-scheduling "integracion_F1 Job Code Absorbed With Provenance".
 
-- [x] **7.11** (RESOLVED — `integracion-f3` EXCLUDED) Per Task 0.1's escalation and the user's final
+- [x] **7.10** (RESOLVED — `integracion-f3` EXCLUDED) Per Task 0.1's escalation and the user's final
       decision (proposal.md Scope Exclusion Addendum Extension, 2026-08-25 post-tasks): `integracion-f3`
       does NOT migrate. Its gspread I/O (F3_SRC_TAB read, DST_TAB write) is confirmed operationally dead
-      and is not replaced — the job joins `normalizador` in the excluded set. No RED/GREEN tasks, no
-      absorption into `backend/app/integracion/`, no Railway cron service on the consolidated image.
-      It stays on the legacy `integracion_F1` image/service (`job_integrar_f3.py`,
+      and is not replaced — the job joins `normalizador`/`cruce-gestion` in the excluded set. No
+      RED/GREEN tasks, no absorption into `backend/app/integracion/`, no Railway cron service on the
+      consolidated image. It stays on the legacy `integracion_F1` image/service (`job_integrar_f3.py`,
       `python job_integrar_f3.py`) until decommissioned in slice 9 (task 9.6) pending explicit operator
       confirmation.
       — Satisfies: design.md open question 6 (resolved); Scope Exclusion Addendum Extension items 1-2.
 
-- [x] **7.12** (RESOLVED — `asignaciones` EXCLUDED) Same resolution as 7.11 for `asignar_f3.py`: does
-      NOT migrate, gspread I/O confirmed dead, no replacement, joins `normalizador`/`integracion-f3` in
-      the excluded set. Stays on the legacy `integracion_F1` image/service
+- [x] **7.11** (RESOLVED — `asignaciones` EXCLUDED) Same resolution as 7.10 for `asignar_f3.py`: does
+      NOT migrate, gspread I/O confirmed dead, no replacement, joins `normalizador`/`cruce-gestion`/
+      `integracion-f3` in the excluded set. Stays on the legacy `integracion_F1` image/service
       (`job_asignaciones.py`) until decommissioned in slice 9 (task 9.7) pending explicit operator
       confirmation.
       — Satisfies: design.md open question 6 (resolved); Scope Exclusion Addendum Extension items 1-2.
 
-- [ ] **7.13** Implement/update `backend/scripts/railway_services.py` (ADR-6, replaces
+- [ ] **7.12** Implement/update `backend/scripts/railway_services.py` (ADR-6, replaces
       `integracion_F1/scripts/railway_setup.py` as source of truth): drift-only LIST/INSTANCE/UPDATE
-      GraphQL, `SERVICES` rows for exactly the three migrated jobs — `dashboard-refresh`,
-      `cruce-gestion`, `cruce-sticker` (schedules per job-scheduling spec table). No rows for
-      `integracion-f3`/`asignaciones` — per 7.11/7.12 they never move to this script. Delete the
-      migrated rows from `integracion_F1/scripts/railway_setup.py` in the SAME PR per job;
-      `normalizador`'s, `integracion-f3`'s, and `asignaciones`' rows stay untouched there.
+      GraphQL, `SERVICES` rows for exactly the TWO migrated jobs — `dashboard-refresh`,
+      `cruce-sticker` (schedules per job-scheduling spec table). No rows for
+      `integracion-f3`/`asignaciones`/`cruce-gestion` — per 7.7/7.10/7.11 none of them ever move to
+      this script. Delete the migrated rows from `integracion_F1/scripts/railway_setup.py` in the SAME
+      PR per job; `normalizador`'s, `integracion-f3`'s, `asignaciones`', and `cruce-gestion`'s rows
+      stay untouched there.
       — Satisfies: job-scheduling "Per-Job Schedule Parity", "Drift-Only Provisioning Convention
       Preserved".
 
-- [ ] **7.14** — MANUAL OPERATOR STEP. Create Railway cron services for the three migrated jobs
-      (`dashboard-refresh`, `cruce-gestion`, `cruce-sticker`), git-connected, same pinned
-      `dockerfilePath`, `startCommand: python -m app.jobs.<job>`, schedules from 7.13. Provision
-      per-job env vars per ADR-6 table. No service is created for `integracion-f3`/`asignaciones`.
+- [ ] **7.13** — MANUAL OPERATOR STEP. Create Railway cron services for the TWO migrated jobs
+      (`dashboard-refresh`, `cruce-sticker`), git-connected, same pinned `dockerfilePath`,
+      `startCommand: python -m app.jobs.<job>`, schedules from 7.12. Provision per-job env vars per
+      ADR-6 table (`cruce-sticker` needs only `FIREBASE_SERVICE_ACCOUNT_JSON`/`INSPECTIONS_URL` — no
+      `GOOGLE_SERVICE_ACCOUNT_JSON`). No service is created for
+      `integracion-f3`/`asignaciones`/`cruce-gestion`.
       — Satisfies: job-scheduling "Per-Job Schedule Parity"; backend-platform "Deploy triggers from a
       git push".
 
-- [ ] **7.15** VERIFY: manually trigger each new cron service once; confirm `runs.jsonl` on the mounted
+- [ ] **7.14** VERIFY: manually trigger each new cron service once; confirm `runs.jsonl` on the mounted
       volume shows a successful run; confirm `cruce-sticker` resumes from its existing
       `_meta/cruce_sticker_state` watermark.
       — Satisfies: job-scheduling "cruce-sticker resumes from watermark after migration", "Re-running a
       job does not duplicate output".
 
-- [ ] **7.16** Delete each migrated job's row from `integracion_F1/scripts/railway_setup.py` (same PR
-      as that job's migration); pause/delete its OLD Railway cron service only after 7.15 verifies the
+- [ ] **7.15** Delete each migrated job's row from `integracion_F1/scripts/railway_setup.py` (same PR
+      as that job's migration); pause/delete its OLD Railway cron service only after 7.14 verifies the
       new one green.
       — Satisfies: job-scheduling "Per-Job Independent Rollback".
 
-**ROLLBACK BOUNDARY (Slice 7/7b)**: each of the three migrated jobs rolls back independently — repoint
-its Railway service back to the old image/command; web service and the other jobs unaffected.
-`integracion-f3`/`asignaciones` never leave the legacy `integracion_F1` service in this slice (excluded
-per 7.11/7.12) — no rollback applies to them until their slice 9 decommission.
+**ROLLBACK BOUNDARY (Slice 7/7b)**: each of the two migrated jobs rolls back independently — repoint
+its Railway service back to the old image/command; web service and the other job unaffected.
+`integracion-f3`/`asignaciones`/`cruce-gestion` never leave the legacy `integracion_F1` service in this
+slice (excluded per 7.7/7.10/7.11) — no rollback applies to them until their slice 9 decommission.
 
 ---
 
@@ -568,9 +584,9 @@ separate future change).
 Depends on: ALL prior slices verified (every consumer repointed, every job migrated or excluded).
 
 - [ ] **9.1** Confirm `proposal.md`'s Success Criteria checklist (all consumers repointed; parity green
-      per endpoint; 3 migrated crons — `dashboard-refresh`, `cruce-gestion`, `cruce-sticker` — running
-      from the git-connected image on schedule; `roleFrom` parity suite green; zero production downtime
-      record) before deleting anything.
+      per endpoint; 2 migrated crons — `dashboard-refresh`, `cruce-sticker` — running from the
+      git-connected image on schedule; `roleFrom` parity suite green; zero production downtime record)
+      before deleting anything.
       — Satisfies: proposal.md Success Criteria.
 
 - [ ] **9.2** Delete `api/*.js` (all 8 legacy Vercel functions) and their `.test.js` files.
@@ -580,10 +596,11 @@ Depends on: ALL prior slices verified (every consumer repointed, every job migra
 - [ ] **9.3** Delete `services/photo-signer/`. MANUAL: pause/delete its Vercel project via dashboard.
       — Satisfies: proposal.md Success Criteria.
 
-- [ ] **9.4** Confirm no CLI-upload Railway cron services remain for the 2 already-migrated
-      `integracion_F1` jobs (`cruce-gestion`, `cruce-sticker`; superseded per-job in 7.16); confirm
-      `integracion_F1/scripts/railway_setup.py` retains exactly three rows at this point —
-      `normalizador`, `integracion-f3`, `asignaciones` — and no others.
+- [ ] **9.4** Confirm no CLI-upload Railway cron services remain for the 1 already-migrated
+      `integracion_F1` job (`cruce-sticker`; superseded in 7.15 — `dashboard-refresh`'s code already
+      lived in this repo, not `integracion_F1`); confirm `integracion_F1/scripts/railway_setup.py`
+      retains exactly four rows at this point — `normalizador`, `integracion-f3`, `asignaciones`,
+      `cruce-gestion` — and no others.
       — Satisfies: proposal.md Success Criteria.
 
 - [ ] **9.5** — MANUAL OPERATOR STEP, EXPLICIT CONFIRMATION REQUIRED. Decommission the `normalizador`
@@ -596,22 +613,28 @@ Depends on: ALL prior slices verified (every consumer repointed, every job migra
 - [ ] **9.6** — MANUAL OPERATOR STEP, EXPLICIT CONFIRMATION REQUIRED. Decommission the `integracion-f3`
       Railway service ONLY after explicit operator confirmation the F3 Google Sheet input/output
       (`F3_SPREADSHEET_ID`/`F3_SRC_TAB`/`DST_TAB`) is no longer consulted by anyone (Scope Exclusion
-      Addendum Extension). Standalone sign-off, separate checkbox from 9.5/9.7.
+      Addendum Extension). Standalone sign-off, separate checkbox from 9.5/9.7/9.8.
       — Satisfies: Scope Exclusion Addendum Extension items 2, 4.
 
 - [ ] **9.7** — MANUAL OPERATOR STEP, EXPLICIT CONFIRMATION REQUIRED. Decommission the `asignaciones`
       Railway service ONLY after explicit operator confirmation its F3/VISITAS Sheets output is no
       longer consulted by anyone (Scope Exclusion Addendum Extension). Standalone sign-off, separate
-      checkbox from 9.5/9.6. Once 9.5-9.7 all confirm, `integracion_F1` is no longer required as a
-      deploy unit for anything.
+      checkbox from 9.5/9.6/9.8.
       — Satisfies: Scope Exclusion Addendum Extension items 2, 4.
 
-- [ ] **9.8** Final parity sign-off: re-run every slice's VERIFY task (2.3, 3.6, 4.5, 5.4, 6.3, 7.15,
+- [ ] **9.8** — MANUAL OPERATOR STEP, EXPLICIT CONFIRMATION REQUIRED. Decommission the `cruce-gestion`
+      Railway service ONLY after explicit operator confirmation that nothing still depends on its
+      `dagma-85aad`/`cruce_criticos_survey` Firestore writes (Scope Exclusion Addendum Extension 2).
+      Standalone sign-off, separate checkbox from 9.5/9.6/9.7. Once 9.5-9.8 all confirm,
+      `integracion_F1` is no longer required as a deploy unit for anything.
+      — Satisfies: Scope Exclusion Addendum Extension 2 items 1-2.
+
+- [ ] **9.9** Final parity sign-off: re-run every slice's VERIFY task (2.3, 3.6, 4.5, 5.4, 6.3, 7.14,
       8.7, 8.12) once more against the fully-decommissioned state.
       — Satisfies: proposal.md Success Criteria; Rollback Plan.
 
 **ROLLBACK BOUNDARY (Slice 9)**: NONE — terminal cleanup. Per `proposal.md`'s Rollback Plan, rollback
-stops being a config revert once old code is deleted. Do not merge 9.2-9.7 until 9.1 is fully green.
+stops being a config revert once old code is deleted. Do not merge 9.2-9.8 until 9.1 is fully green.
 
 ---
 
@@ -626,9 +649,9 @@ stops being a config revert once old code is deleted. Do not merge 9.2-9.7 until
 | 4 | ~180-230 | Low | Single PR |
 | 5 | ~150-200 | Low | Single PR |
 | 6 | ~130-170 | Low | Single PR |
-| 7/7b | ~800-1000 | Medium-High | 7a dashboard-refresh / 7b survey_cali ingestion / 7c cruce-gestion / 7d cruce-sticker+railway_services.py (3-service SERVICES table, no `integracion-f3`/`asignaciones` rows — no code for excluded jobs) |
+| 7/7b | ~650-800 | Medium | 7a dashboard-refresh / 7b survey_cali ingestion / 7c cruce-sticker+railway_services.py (2-service SERVICES table, no `integracion-f3`/`asignaciones`/`cruce-gestion` rows — no code for any of the three excluded jobs) |
 | 8/8b | ~950-1150+ | High | 8a stickers+sticker-asignaciones / 8b-admin usuarios / 8c survey_cali CRUD/history/revert |
-| 9 | ~1000-1500 (mostly deletions) | High (line count) / Low (cognitive load) | 9a api/*.js+tests delete / 9b photo-signer delete / 9c legacy railway_setup.py cleanup / 9d-9f normalizador/integracion-f3/asignaciones manual sign-offs (no diff, 3 separate checkboxes) |
+| 9 | ~1000-1500 (mostly deletions) | High (line count) / Low (cognitive load) | 9a api/*.js+tests delete / 9b photo-signer delete / 9c legacy railway_setup.py cleanup / 9d-9g normalizador/integracion-f3/asignaciones/cruce-gestion manual sign-offs (no diff, 4 separate checkboxes) |
 
 Decision needed before apply: No
 Chained PRs recommended: Yes
@@ -639,12 +662,17 @@ Chain strategy: stacked-to-main
 top-level slice chaining; the sub-splits above are guidance for `sdd-apply` to apply autonomously
 within each oversized slice, following the same stacked-to-main principle (each sub-PR merges to main
 in order, independently reviewable, independently rollback-able). Total estimated lines across all
-slices: roughly 4400-5900 authored/deleted lines (down from the pre-exclusion estimate — Slice 7 no
-longer carries `integracion-f3`/`asignaciones` implementation code) — this is a large multi-slice
-migration by nature (proposal's own 9-slice plan), not a sizing mistake; the per-slice/sub-slice
-splits keep every individual PR at or near the 400-line single-lens-review budget.
+slices: roughly 4200-5700 authored/deleted lines (down again — Slice 1 drops the `dagma()` client,
+Slice 6 drops the fail-soft `cruce-gestion` redeploy branch, and Slice 7 now carries only TWO migrated
+jobs' implementation code) — this is a large multi-slice migration by nature (proposal's own 9-slice
+plan), not a sizing mistake; the per-slice/sub-slice splits keep every individual PR at or near the
+400-line single-lens-review budget.
 
-**Task 0.1's escalation is RESOLVED**: the user decided `integracion-f3` and `asignaciones` join
-`normalizador` in the excluded set (proposal.md Scope Exclusion Addendum Extension, 2026-08-25
-post-tasks) rather than having their Sheets I/O replaced. No outstanding decision gate remains before
-Slice 7 or Slice 9 can proceed.
+**Task 0.1's escalation is RESOLVED, twice over**: the user first decided `integracion-f3` and
+`asignaciones` join `normalizador` in the excluded set (proposal.md Scope Exclusion Addendum
+Extension, 2026-08-25 post-tasks), then directed "no usar nada relacionado con el dagma" (Extension 2,
+2026-08-25 post-slice-1a), which additionally excludes `cruce-gestion` and removes the `dagma()`
+client from the credentials module entirely. The excluded legacy set is now FOUR jobs
+(`normalizador`, `integracion-f3`, `asignaciones`, `cruce-gestion`); the migrated set is TWO
+(`dashboard-refresh`, `cruce-sticker`). No outstanding decision gate remains before Slice 6, Slice 7,
+or Slice 9 can proceed.
