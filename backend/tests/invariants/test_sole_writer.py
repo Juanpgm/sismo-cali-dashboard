@@ -9,6 +9,20 @@ module joining later: `routers/sticker_asignaciones.py` (slice 8) — do NOT
 anticipate it here; extend `ALLOWED_MODULES` in its own slice's RED task
 (8.4 per tasks.md).
 
+**Slice 7b (task 7.6)** adds a SECOND, INDEPENDENT literal check for
+`survey_cali` — ADR-9's "same treatment" extension for that collection.
+Its declared writer set is `services/survey_cali.py` (the sole module that
+touches Firestore for this collection) and `app/jobs/dashboard_refresh.py`
+(calls INTO `services/survey_cali.py`'s `ingest_records`/`apply_mutation`,
+never Firestore directly — but its source text still contains the literal,
+via `from app.services import survey_cali` + `survey_cali.ingest_records(...)`,
+which is exactly what this scan is built to catch either way). A third
+module, `routers/survey_cali.py`, joins this allowlist once it exists —
+task 7.4/design.md ADR-9 both say so explicitly — but it does NOT exist yet
+(that router is slice 8b's job, task 8.x per tasks.md; task 7.6's own text:
+"do NOT anticipate it here" — same "do not anticipate" discipline as the
+`sticker_matches`/`cuadrillas` note above for `sticker_asignaciones.py`).
+
 **Slice 7 finding**: `app/integracion/cruce_gestor.py` (the copied pipeline
 module `cruce_sticker.py` imports its matching cascade from) does NOT
 itself reference the `sticker_matches`/`cuadrillas` literals anywhere — its
@@ -68,6 +82,24 @@ ALLOWED_MODULES = {
     APP_ROOT / "jobs" / "cruce_sticker.py",
 }
 
+# Slice 7b (task 7.6): `survey_cali`'s OWN allowlist — INDEPENDENT of
+# ALLOWED_MODULES above (different collection, different ADR-9 clause).
+# `routers/survey_cali.py` is named by ADR-9 but does NOT exist yet
+# (slice 8b) — do NOT add it here ahead of that slice's own RED task.
+ALLOWED_MODULES_SURVEY_CALI = {
+    APP_ROOT / "services" / "survey_cali.py",
+    APP_ROOT / "jobs" / "dashboard_refresh.py",
+    # Plain docstring mention ("... survey_cali.py -- land in their own
+    # migration slices") in the package's module docstring -- no Firestore
+    # access, verified by reading the file in full. Allowlisted rather than
+    # scrubbed: the scan's job is to catch WRITE paths, and a doc comment
+    # naming a sibling module isn't one (same "verified harmless" precedent
+    # 7.9's docstring note used for app/integracion/cruce_gestor.py, which
+    # needed no entry at all because it had zero hits; this one needs an
+    # entry because it genuinely contains the substring).
+    APP_ROOT / "services" / "__init__.py",
+}
+
 
 def _files_containing(literal: str) -> set[Path]:
     hits: set[Path] = set()
@@ -94,3 +126,15 @@ def test_cuadrillas_literal_appears_only_in_allowlisted_modules():
     hits = _files_containing("cuadrillas")
     unexpected = hits - ALLOWED_MODULES
     assert not unexpected, f"unexpected cuadrillas reference(s): {sorted(unexpected)}"
+
+
+def test_survey_cali_literal_is_used_by_an_allowlisted_module():
+    """Slice 7b (task 7.6): `survey_cali` gets its OWN sole-writer check,
+    independent of `sticker_matches`/`cuadrillas` above (design.md ADR-9's
+    extension for this collection). Allowlist is `services/survey_cali.py`
+    + `app/jobs/dashboard_refresh.py` ONLY this slice —
+    `routers/survey_cali.py` joins in slice 8b, not anticipated here."""
+    hits = _files_containing("survey_cali")
+    unexpected = hits - ALLOWED_MODULES_SURVEY_CALI
+    assert not unexpected, f"unexpected survey_cali reference(s): {sorted(unexpected)}"
+    assert hits, "expected survey_cali to be referenced by an allowlisted module by now"
