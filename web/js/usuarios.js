@@ -7,16 +7,33 @@
 // the role/status filter, the delete action, and password reset via the
 // Firebase client SDK directly (no API hop — Firebase's hosted email +
 // action URL). See design.md ADR-5/ADR-6.
-import { getAuth, sendPasswordResetEmail } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
 import { escapeHtml } from './utils.js';
-import { getFirebaseApp } from './firebase-config.js';
+import { apiUrl } from './api-config.js';
+import { buildConductorPayload } from './planeacion.js';
 
-const ENDPOINT = '/api/usuarios';
+// `getFirebaseApp`/`getAuth`/`sendPasswordResetEmail` are only needed once
+// this tab actually runs in a browser (reload()'s ownUid lookup, and the
+// "Resetear contraseña" click) — loaded lazily so importing this module for
+// its pure `payloadForTipo` (usuarios.test.mjs) never has to resolve
+// firebase-config.js's own CDN import under plain Node.
+async function loadFirebaseAuth() {
+  const [{ getFirebaseApp }, { getAuth, sendPasswordResetEmail }] = await Promise.all([
+    import('./firebase-config.js'),
+    import('https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js'),
+  ]);
+  return { getFirebaseApp, getAuth, sendPasswordResetEmail };
+}
 
-async function callApi(getToken, body) {
+// Parameterized so the SAME helper (same headers/error-unwrap shape) also
+// serves the `stickers` and `planeacionAsignaciones` branches of the
+// unified creation modal's fan-out (design.md ADR-1) — no forked near-
+// identical fetch functions. Existing call sites (list/setEnabled/delete/
+// setRole/setPassword) are untouched: they never pass `endpointName`, so
+// they keep hitting `apiUrl('usuarios')` exactly as before.
+async function callApi(getToken, body, endpointName = 'usuarios') {
   const token = await getToken();
   if (!token) throw new Error('Sesión no válida. Volvé a iniciar sesión.');
-  const res = await fetch(ENDPOINT, {
+  const res = await fetch(apiUrl(endpointName), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
@@ -24,6 +41,51 @@ async function callApi(getToken, body) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
   return data;
+}
+
+const INSPECTOR_DOMAIN = '@sismocali.gov.co';
+const TIPO_LABEL = { admin: 'Administrador', viewer: 'Viewer', usuario: 'Usuario', inspector: 'Inspector', conductor: 'Conductor' };
+const DEFAULT_TIPO_NOTE = 'Crea una cuenta de usuario (contraseña): ve solo el Panel. Promovela a administrador después con "Cambiar rol" si hace falta.';
+const TIPO_NOTE = {
+  admin: DEFAULT_TIPO_NOTE,
+  viewer: DEFAULT_TIPO_NOTE,
+  usuario: DEFAULT_TIPO_NOTE,
+  inspector: 'El código de brigada se asigna solo: el servidor toma el número libre más bajo (001, 002, …) y nunca reutiliza uno ya entregado.',
+  conductor: 'El conductor queda como un registro de datos, sin cuenta ni acceso al dashboard — visible en Planeación.',
+};
+
+/** tipo + form fields -> {endpoint, body} for the unified creation modal's
+ *  fan-out (design.md ADR-1). Pure — no DOM, no fetch. Each tipo maps to
+ *  exactly one endpoint/body shape; conductor reuses planeacion.js's own
+ *  `buildConductorPayload` (same trimming, no duplicated logic). Throws on
+ *  an unknown tipo, or on a `@sismocali.gov.co` email typed under a
+ *  non-inspector tipo (client-side fast-fail mirroring the spec scenario —
+ *  `api/usuarios.js`'s own server-side guard, untouched, remains the
+ *  authoritative check). */
+export function payloadForTipo(tipo, fields = {}) {
+  if (tipo === 'admin' || tipo === 'viewer' || tipo === 'usuario') {
+    const email = (fields.email || '').trim();
+    if (email.toLowerCase().endsWith(INSPECTOR_DOMAIN)) {
+      throw new Error(`Los inspectores se crean con tipo «${TIPO_LABEL.inspector}», no aquí.`);
+    }
+    return { endpoint: 'usuarios', body: { action: 'create', email, password: fields.password || '' } };
+  }
+  if (tipo === 'inspector') {
+    return {
+      endpoint: 'stickers',
+      body: {
+        action: 'create',
+        cedula: (fields.cedula || '').trim(),
+        nombre_completo: (fields.nombre_completo || '').trim(),
+        entidad: (fields.entidad || '').trim(),
+        password: fields.password || '',
+      },
+    };
+  }
+  if (tipo === 'conductor') {
+    return { endpoint: 'planeacionAsignaciones', body: buildConductorPayload(fields) };
+  }
+  throw new Error(`Tipo de usuario desconocido: ${tipo}`);
 }
 
 const ROLE_LABEL = { admin: 'Administrador', usuario: 'Usuario', viewer: 'Viewer', inspector: 'Inspector', otro: 'Otro' };
@@ -153,15 +215,36 @@ function rosterHtml(usuarios, filtered, pageItems, ownUid, { role, status, query
         </div>
         <div class="modal-body">
           <form id="usuario-form" class="sticker-form" novalidate>
-            <div class="sticker-form-grid">
+            <label class="sticker-field"><span>Tipo</span>
+              <select id="usuario-form-tipo" name="tipo">
+                <option value="admin">Administrador</option>
+                <option value="viewer">Viewer</option>
+                <option value="usuario">Usuario</option>
+                <option value="inspector">Inspector</option>
+                <option value="conductor">Conductor</option>
+              </select>
+            </label>
+            <div class="sticker-form-grid" data-tipo-group="admin,viewer,usuario">
               ${field('email', 'Email *', 'type="email" required placeholder="usuario@ejemplo.com" autocomplete="off"')}
               ${field('password', 'Contraseña *', 'type="text" required placeholder="mínimo 6 caracteres" autocomplete="off"')}
             </div>
-            <p class="sticker-note">Crea una cuenta de usuario (contraseña): ve solo el Panel. Promovela a administrador después con "Cambiar rol" si hace falta. Los inspectores se crean desde la pestaña Stickers.</p>
+            <div class="sticker-form-grid" data-tipo-group="inspector" hidden>
+              ${field('cedula', 'Cédula *', 'inputmode="numeric" required placeholder="1020735324" autocomplete="off" disabled')}
+              ${field('nombre_completo', 'Nombre completo', 'placeholder="Andrés Torres" autocomplete="off" disabled')}
+              ${field('entidad', 'Entidad', 'placeholder="SGRED" autocomplete="off" disabled')}
+              ${field('password', 'Contraseña *', 'type="text" required placeholder="mínimo 6 caracteres" autocomplete="off" disabled')}
+            </div>
+            <div class="sticker-form-grid" data-tipo-group="conductor" hidden>
+              ${field('nombre_completo', 'Nombre completo', 'placeholder="Ana Ríos" autocomplete="off" disabled')}
+              ${field('cedula', 'Cédula', 'placeholder="1020735324" autocomplete="off" disabled')}
+              ${field('email', 'Email', 'type="email" placeholder="conductor@ejemplo.com" autocomplete="off" disabled')}
+              ${field('telefono', 'Teléfono', 'placeholder="3001234567" autocomplete="off" disabled')}
+            </div>
+            <p class="sticker-note" id="usuario-form-note">Crea una cuenta de usuario (contraseña): ve solo el Panel. Promovela a administrador después con "Cambiar rol" si hace falta.</p>
             <p class="sticker-error" id="usuario-form-error" role="alert" hidden></p>
             <div class="sticker-form-actions">
               <button type="button" class="btn-secondary" data-modal-close>Cancelar</button>
-              <button type="submit" class="btn-primary" id="usuario-submit">Crear usuario</button>
+              <button type="submit" class="btn-primary" id="usuario-submit">Crear</button>
             </div>
           </form>
         </div>
@@ -286,6 +369,7 @@ export function initUsuarios(root, { getToken }) {
   async function reload() {
     rosterRoot.innerHTML = '<p class="sticker-loading">Cargando usuarios…</p>';
     try {
+      const { getFirebaseApp, getAuth } = await loadFirebaseAuth();
       ownUid = getAuth(getFirebaseApp()).currentUser?.uid || null;
       const { usuarios: list } = await callApi(getToken, { action: 'list' });
       usuarios = list;
@@ -470,14 +554,30 @@ export function initUsuarios(root, { getToken }) {
     const modal = rosterRoot.querySelector('#usuario-modal');
     const form = rosterRoot.querySelector('#usuario-form');
     const formErr = rosterRoot.querySelector('#usuario-form-error');
+    const formNote = rosterRoot.querySelector('#usuario-form-note');
+    const tipoSelect = rosterRoot.querySelector('#usuario-form-tipo');
     const showFormError = (msg) => { formErr.textContent = msg; formErr.hidden = !msg; };
+
+    // Field-swap: exactly one `data-tipo-group` visible + enabled at a time,
+    // so FormData never picks up a stale value from a previously-selected
+    // tipo (two groups share field names like `password`/`cedula`/`email`).
+    function syncTipoFields(tipo) {
+      form.querySelectorAll('[data-tipo-group]').forEach((group) => {
+        const active = group.dataset.tipoGroup.split(',').includes(tipo);
+        group.hidden = !active;
+        group.querySelectorAll('input').forEach((inp) => { inp.disabled = !active; });
+      });
+      formNote.textContent = TIPO_NOTE[tipo] || '';
+    }
+    tipoSelect.addEventListener('change', () => syncTipoFields(tipoSelect.value));
 
     const openModal = () => {
       showFormError('');
       form.reset();
+      syncTipoFields(tipoSelect.value);
       modal.classList.add('is-open');
       modal.setAttribute('aria-hidden', 'false');
-      form.querySelector('[name="email"]').focus();
+      form.querySelector('[data-tipo-group]:not([hidden]) input')?.focus();
     };
     const closeModal = () => {
       modal.classList.remove('is-open');
@@ -492,17 +592,50 @@ export function initUsuarios(root, { getToken }) {
       e.preventDefault();
       if (busy) return;
       showFormError('');
-      const body = { action: 'create' };
-      new FormData(form).forEach((v, k) => { body[k] = String(v).trim(); });
+      const tipo = tipoSelect.value;
+      const tipoLabel = TIPO_LABEL[tipo] || tipo;
+      const fields = {};
+      new FormData(form).forEach((v, k) => { if (k !== 'tipo') fields[k] = String(v).trim(); });
+
+      let routed;
+      try {
+        routed = payloadForTipo(tipo, fields);
+      } catch (err) {
+        // Client-side fast-fail (e.g. @sismocali under a non-inspector tipo,
+        // or an unknown tipo) — no network call made for either endpoint.
+        showFormError(err.message);
+        return;
+      }
+
       busy = true;
       rosterRoot.querySelector('#usuario-submit').disabled = true;
       try {
-        await callApi(getToken, body);
-        notice = `Usuario creado: ${body.email}.`;
+        // Each tipo is exactly ONE write, to the endpoint that already owns
+        // that person kind (design.md ADR-1) — never a second attempt against
+        // a different endpoint from the same submit.
+        const result = await callApi(getToken, routed.body, routed.endpoint);
+        if (tipo === 'inspector') {
+          notice = `Inspector creado. Código: ${result.codigo}.`;
+        } else if (tipo === 'conductor') {
+          notice = 'Conductor creado. Visible en Planeación.';
+        } else {
+          notice = `Usuario creado: ${routed.body.email}.`;
+        }
         closeModal();
-        await reload();
+        if (tipo === 'conductor') {
+          // No Auth account is created, so it never appears in THIS list
+          // (v1 scope) — just surface the confirmation, no refetch.
+          render();
+        } else {
+          // admin/viewer/usuario/inspector are all Auth-backed and DO appear
+          // in `api/usuarios.js`'s own listUsers() on the next load.
+          await reload();
+        }
       } catch (err) {
-        showFormError(err.message);
+        // Per-tipo inline error, modal stays open on the SAME tipo, no
+        // follow-up call to either of the other two endpoints (spec "Per-tipo
+        // error isolation in the unified creation modal").
+        showFormError(`${tipoLabel}: ${err.message}`);
         rosterRoot.querySelector('#usuario-submit').disabled = false;
       } finally {
         busy = false;
@@ -556,6 +689,7 @@ export function initUsuarios(root, { getToken }) {
           // Client SDK, no API hop (design.md ADR-5): Firebase's hosted
           // email + action URL, same getAuth(getFirebaseApp()) handle
           // web/js/auth.js already uses.
+          const { getFirebaseApp, getAuth, sendPasswordResetEmail } = await loadFirebaseAuth();
           await sendPasswordResetEmail(getAuth(getFirebaseApp()), btn.dataset.email);
           alert(`Correo de recuperación enviado a ${btn.dataset.email}.`);
         } catch (err) {
