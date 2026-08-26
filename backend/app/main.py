@@ -14,12 +14,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import config
 from app.credentials import clients as credentials
-from app.routers import health, reportados, sign
+from app.routers import health, reportados, sign, sticker_status
+from app.routers.sticker_status import StickerStatusCache
 from app.services.snapshot import ReportadosSnapshot, refresh_loop, seed_from_blob
 
 # Every router mounted by create_app(). Extended one module per migration
 # slice (tasks.md phases 2-8).
-_ROUTERS = (health, sign, reportados)
+_ROUTERS = (health, sign, reportados, sticker_status)
 
 
 @asynccontextmanager
@@ -61,6 +62,12 @@ def create_app() -> FastAPI:
     # populate/replace it via a plain `TestClient(app)` — no need to enter
     # `lifespan` just to get a snapshot store to write to.
     app.state.reportados_snapshot = ReportadosSnapshot()
+
+    # One TTL-cache instance per app, same synchronous-attach convention as
+    # `reportados_snapshot` above (design.md ADR-4; see
+    # `routers/sticker_status.py`'s module docstring for why this replaces
+    # the legacy warm-lambda-only cache).
+    app.state.sticker_status_cache = StickerStatusCache()
 
     app.add_middleware(
         CORSMiddleware,
