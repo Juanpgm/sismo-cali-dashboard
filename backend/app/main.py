@@ -84,7 +84,13 @@ def create_app() -> FastAPI:
     required = credentials.required_clients_for(_ROUTERS)
     credentials.require(*required)
 
-    app = FastAPI(title=config.Settings().app_name, lifespan=_lifespan)
+    app = FastAPI(
+        title=config.Settings().app_name,
+        lifespan=_lifespan,
+        # Keep the Authorize-button token across /docs reloads (the bearerAuth
+        # scheme comes from auth/deps.py's HTTPBearer).
+        swagger_ui_parameters={"persistAuthorization": True},
+    )
 
     # Attached synchronously (not inside `_lifespan`) so router tests can
     # populate/replace it via a plain `TestClient(app)` — no need to enter

@@ -17,18 +17,25 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.auth.roles import role_from_claims
 from app.auth.verify import TokenVerificationError, verify_firebase_token
 
 FIREBASE_PROJECT_ID = os.environ.get("FIREBASE_PROJECT_ID", "sismo-agosto-sgred")
 
+# HTTPBearer (not a raw `Header`) so an OpenAPI `bearerAuth` security scheme
+# gets registered — that is what puts the Authorize button in Swagger `/docs`.
+# `auto_error=False`: WE raise the 401 below (same status/detail every legacy
+# `api/*.js` handler and `test_deps.py` assert), never HTTPBearer's own 403.
+bearer = HTTPBearer(auto_error=False)
 
-async def current_claims(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    token = ""
-    if authorization and authorization.startswith("Bearer "):
-        token = authorization[len("Bearer "):]
+
+async def current_claims(
+    cred: HTTPAuthorizationCredentials | None = Depends(bearer),
+) -> dict[str, Any]:
+    token = cred.credentials if cred else ""
     if not token:
         raise HTTPException(status_code=401, detail="Autenticación requerida.")
     try:
