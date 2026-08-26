@@ -617,7 +617,7 @@ independently mergeable once Phase 1 lands. `dashboard-refresh` first (code alre
       status-write steps — `_status.json`'s best-effort write mirrors the bash `trap report_status
       EXIT`. Full suite: `python -m pytest backend/tests/ -v` → 131 passed (116 baseline + 15 new).
 
-- [ ] **7.3** (RED) Write `backend/tests/services/test_survey_cali.py` FIRST (mutation core only,
+- [x] **7.3** (RED) Write `backend/tests/services/test_survey_cali.py` FIRST (mutation core only,
       ADR-10/11/12 — router lands in 8b): `apply_mutation` diff/revision computation; ingest
       idempotency (same input twice → zero new writes/revisions, hash equality); per-field conflict
       rule (manual edit on an unchanged-upstream field survives ingest; upstream change on a
@@ -627,16 +627,35 @@ independently mergeable once Phase 1 lands. `dashboard-refresh` first (code alre
       GlobalID", "A run never rewrites the full collection", "Ingest update writes a pipeline-authored
       revision", "History is never destroyed", "Manual edit survives an unrelated ingest run", "Source
       move overwrites a manually-edited field, visibly".
+      — STATUS: done. 14 cases (apply_mutation create/edit/no-op/metadata-only, canonical_hash RAW-vs-
+      derived, diff_upstream_fields, ingest_records skip/upsert/never-rewrite-full-collection/pipeline-
+      authored-revision, manual-edit-survives, source-move-overwrites). Confirmed RED by temporarily
+      hiding the already-drafted `app/services/survey_cali.py` (same honesty convention 7.8 used) —
+      `ImportError: cannot import name 'survey_cali' from 'app.services'`, 1 collection error — restored,
+      then 7.4 landed GREEN.
 
-- [ ] **7.4** (GREEN) Implement `backend/app/services/survey_cali.py`:
+- [x] **7.4** (GREEN) Implement `backend/app/services/survey_cali.py`:
       `apply_mutation(id, changes, author, kind, revert_of=None)` per ADR-12 (Firestore transaction:
       read → diff → write effective fields + `_rev+1` + history doc atomically); document shape per
       ADR-10 (`_rev`, `_updated_at`, `_updated_by`, `_source`, `_source_hash`, `_deleted`;
       `history/{rev_NNNNNN}`). One of three modules allowlisted for the `survey_cali` literal (ADR-9).
       Run 7.3, confirm green.
       — Satisfies: survey-cali-collection "Append-Only Per-Record Revision History" (all 3 scenarios).
+      — STATUS: done. `apply_mutation(id, changes, author, kind, revert_of=None, *, db=None)` — the `db=`
+      keyword is an ADDITIVE deviation from the literal signature (injectable for testing without a live
+      Firestore project; defaults to `credentials.sismo().firestore` in production, so every production
+      call site is unaffected). Real transactions use `db.transaction()` + the SDK's own
+      `@firestore.transactional` (confirmed via the installed SDK's source that this is the ONLY
+      officially-supported atomic path — a hand-rolled transaction would fight the SDK, not simplify it);
+      test doubles (marked `_is_test_double = True`) bypass the decorator and call the mutation function
+      directly, since the real decorator requires a live gRPC-backed `Transaction` (verified by reading
+      `_Transactional._pre_commit`/`__call__` — calls real `_begin()`/`_commit()`/`_rollback()`), matching
+      how every other Firestore-touching module in this repo is tested (fakes only, no live project
+      anywhere in this suite). First GREEN pass required ONE fix (not zero) — see Deviations/Issues in
+      apply-progress.md's Batch 7b entry (EditDate/CreationDate/Creator/Editor/ObjectID excluded from the
+      canonical hash as Survey123 audit metadata, not content).
 
-- [ ] **7.5** (GREEN) Wire ingestion into 7.2's `dashboard_refresh.py`: after the Survey123 fetch, per
+- [x] **7.5** (GREEN) Wire ingestion into 7.2's `dashboard_refresh.py`: after the Survey123 fetch, per
       record build the canonical normalized form → SHA-256 → compare to `_source_hash`; skip on
       equality; else diff each field against `_source[field]`, write only changed fields via
       `apply_mutation(..., author='pipeline', kind='ingest')` (design open question 4: confirm at
@@ -646,11 +665,41 @@ independently mergeable once Phase 1 lands. `dashboard-refresh` first (code alre
       — Satisfies: survey-cali-collection "Unchanged record is skipped", "Changed record is upserted by
       GlobalID", "A run never rewrites the full collection", "Manual edit survives an unrelated ingest
       run", "Source move overwrites a manually-edited field, visibly".
+      — STATUS: done. `dashboard_refresh.py` gains `ingest_survey_cali()`, called fail-soft (try/except,
+      same convention `fetch_reportes()` uses) right after the `refresh_data` subprocess step. **Design
+      Interpretation — RAW-vs-computed hashing (open question 4), DEVIATES from the literal recommendation
+      for a documented reason**: this batch's scope forbids editing anything outside `backend/` (no
+      `scripts/refresh_data.py` changes) and forbids a second Survey123 upstream call; `refresh_data.py`
+      runs as an opaque `subprocess.run`, so its pre-normalize DataFrame is unreachable across that process
+      boundary without one of those two edits. The only artifact available without violating either
+      constraint is `web/data/inspections.json` — `refresh_data.py`'s ALREADY-NORMALIZED output. The
+      canonical hash therefore hashes THAT record shape minus an explicit `DERIVED_FIELDS` exclusion set
+      (every pipeline-computed field name — `comuna`/`barrio_geo`/`x`/`y`/`geocode_*`/`*_calc`/etc. —
+      confirmed by reading `scripts/refresh_data.py`'s `normalize()` pipeline function-by-function) plus a
+      `SOURCE_SYSTEM_FIELDS` set (`EditDate`/`CreationDate`/`Creator`/`Editor`/`ObjectID` — Survey123 audit
+      metadata, not content). This is the closest achievable approximation to "RAW fields only" within the
+      batch's file-scope constraint — see `app/services/survey_cali.py`'s module docstring for the full
+      reasoning. Batching per ADR-11 done via `_batched_read_source_state` (`get_all` in ≤500-id chunks,
+      `field_paths=["_source","_source_hash"]` projection, mirroring `cruce_sticker.py`'s
+      `read_tiene_sticker_state` precedent). `_meta/survey_cali_ingest_state` updated every run
+      (`last_run_at`, `max_edit_date`, `created`/`updated`/`skipped` counts).
 
-- [ ] **7.6** (RED) Extend `test_sole_writer.py`: assert `survey_cali` literal appears ONLY in
+- [x] **7.6** (RED) Extend `test_sole_writer.py`: assert `survey_cali` literal appears ONLY in
       `services/survey_cali.py`, `routers/survey_cali.py` (allowlist entry now, router lands 8b),
       `app/jobs/dashboard_refresh.py`.
       — Satisfies: design.md ADR-9 (survey_cali sole-writer treatment).
+      — STATUS: done, NO genuine RED-before-GREEN gap this task (same honest-flagging situation 1.13/3.5/
+      7.9's docstring note already documented) — `services/survey_cali.py` and `dashboard_refresh.py`'s
+      wiring already existed by the time this task ran (7.3-7.5 landed first per this batch's own
+      sequencing), so the new `test_survey_cali_literal_is_used_by_an_allowlisted_module` passed on first
+      run rather than failing first. New `ALLOWED_MODULES_SURVEY_CALI` set, INDEPENDENT of the existing
+      `sticker_matches`/`cuadrillas` `ALLOWED_MODULES` (different collection, different ADR-9 clause):
+      `services/survey_cali.py` + `app/jobs/dashboard_refresh.py` ONLY — `routers/survey_cali.py` named by
+      ADR-9 but NOT added (doesn't exist yet, slice 8b, "do not anticipate" discipline preserved). One
+      unplanned finding: `app/services/__init__.py`'s own module docstring mentions `survey_cali.py` by
+      name (plain prose, "land in their own migration slices") — genuinely matched by the literal scan (no
+      Firestore access, verified by reading the file in full, 3 lines total) — allowlisted with an inline
+      comment explaining why, rather than rewording the docstring to dodge the scan.
 
 - [x] **7.7** (RESOLVED — `cruce-gestion` EXCLUDED) Per the user's binding directive "no usar nada
       relacionado con el dagma" (proposal.md Scope Exclusion Addendum Extension 2): `cruce-gestion`
@@ -789,6 +838,16 @@ remain manual-operator/verify steps, unticked. See `apply-progress.md` "Batch 7a
 the Review Budget flag (this batch's actual diff is well above the forecast's 650-800-line estimate for
 7/7b combined, driven mostly by `cruce_gestor.py`/`coords.py`/`normalization.py`'s verbatim ADR-2
 copies — a recommended PR split is documented there).
+
+**Batch status (sdd-apply, `feat/fastapi-consolidation-7b-survey-cali`)**: 7.3/7.4/7.5/7.6 ALL DONE — the
+`survey_cali` INGESTION-CORE portion of slice 7b (mutation core + document/history model + wiring into
+`dashboard_refresh.py`'s ingest step ONLY). The CRUD/history/revert ROUTER (`routers/survey_cali.py`,
+tasks 8.9/8.10-shaped) is explicitly OUT OF SCOPE for this batch — it lands in slice 8b. Full
+`backend/tests/` suite 158/158 green at merge (140 baseline + 18 new: 14 mutation-core + 3
+dashboard-refresh wiring + 1 sole-writer invariant), `services/survey_cali.py` confirmed NOT mounted as
+an HTTP route (`app/main.py`'s `_ROUTERS` untouched). See `apply-progress.md` "Batch 7b" for full detail
+incl. the Review Budget flag and recommended PR split (854 changed lines total, above the 400-line
+single-PR budget — 2 recommended PRs: mutation-core foundation, then wiring+invariant).
 
 ---
 

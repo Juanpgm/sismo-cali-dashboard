@@ -4,6 +4,13 @@ Absorbs `deploy/refresh.sh`'s pipeline:
 
 1. best-effort seed the geocode cache from Blob;
 2. run `scripts/refresh_data.py` (Survey123 → `web/data/{meta,inspections}.json`);
+2b. ingest `web/data/inspections.json` into Firestore `survey_cali` via
+    `app.services.survey_cali.ingest_records` — REUSES the rows
+    `refresh_data.py` just wrote (no second Survey123 upstream call),
+    fail-soft (design.md ADR-11, task 7.5 — the mutation core itself,
+    `apply_mutation`/`ingest_records`, lives in `app/services/survey_cali.py`
+    per ADR-9's sole-writer allowlist; the CRUD/history/revert ROUTER is
+    OUT OF SCOPE here, it lands in slice 8b);
 3. fetch `reportes.json`/`reportes_meta.json`/`reportes_agg.json` — formerly
    `scripts/fetch_reportes_api.py`'s OWN day-walk, now calling
    `app.services.atencionsismo`'s day-walk/split-retry (`day_walk`, with a
@@ -43,7 +50,7 @@ from pathlib import Path
 import httpx
 
 from app.integracion import runlog
-from app.services import atencionsismo
+from app.services import atencionsismo, survey_cali
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
@@ -176,6 +183,37 @@ async def fetch_reportes() -> int:
     return len(records)
 
 
+# ── survey_cali ingestion (task 7.5, design.md ADR-11) ──────────────────────
+
+
+def ingest_survey_cali() -> dict:
+    """Reads `web/data/inspections.json` (just written by the `refresh_data`
+    subprocess step above -- NO second Survey123 upstream call) and upserts
+    every record into Firestore `survey_cali` via
+    `app.services.survey_cali.ingest_records` -- the ONLY write path
+    (ADR-9/ADR-12; this function never touches Firestore directly). Returns
+    `{"created", "updated", "skipped"}`; a no-op `{0,0,0}` when
+    inspections.json doesn't exist (e.g. `refresh_data.py` itself failed --
+    `run_refresh()` would already have raised before reaching this step in
+    that case, this is defense in depth for direct callers/tests).
+
+    NOT wrapped in try/except here -- `run_refresh()`'s call site wraps it
+    fail-soft (matching `fetch_reportes()`'s convention), so this function
+    stays a plain, directly-testable propagate-on-error unit."""
+    inspections_path = WEB_DATA_DIR / "inspections.json"
+    if not inspections_path.exists():
+        print("  inspections.json no existe; nada que ingerir en survey_cali.")
+        return {"created": 0, "updated": 0, "skipped": 0}
+
+    records = json.loads(inspections_path.read_text(encoding="utf-8"))
+    summary = survey_cali.ingest_records(records)
+    print(
+        f"  survey_cali: {summary['created']} nuevos, {summary['updated']} actualizados, "
+        f"{summary['skipped']} sin cambios (de {len(records)} registros)."
+    )
+    return summary
+
+
 # ── meta-guard: never publish empty/broken refresh_data.py output ──────────
 
 
@@ -269,6 +307,13 @@ def run_refresh() -> dict:
             timeout=REFRESH_DATA_TIMEOUT_S,
             check=True,
         )
+
+        step = "survey_cali_ingest"
+        print(f"[{step}] Ingiriendo Survey Cali a Firestore (survey_cali)…")
+        try:
+            ingest_survey_cali()
+        except Exception as exc:  # noqa: BLE001 - fail-soft, main refresh continues
+            print(f"  survey_cali ingest falló; sigo sin actualizar Firestore: {exc}")
 
         step = "fetch_reportes"
         print(f"[{step}] Trayendo reportes de la API (informe/json, vía services.atencionsismo)…")
