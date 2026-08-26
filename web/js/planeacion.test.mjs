@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import {
   colorForPunto, buildRows, sortRows, filterRows, formatTruncacion, metricasHtml,
+  buildHistorialRows, buildHistorialFiltro,
 } from './planeacion.js';
 
 // ---- colorForPunto — design.md ADR-10 map legend, 5 states -----------------
@@ -137,5 +138,34 @@ assert.match(htmlSinRoster, /uid-a/);
 const vacio = metricasHtml({ grupos: {}, inspectores: {}, combinado: { asignados: 0, hechos: 0, pendientes: 0, no_aplica: 0, completado_pct: 0 }, stickers: { asignados: 0, hechos: 0, pendientes: 0, no_aplica: 0, completado_pct: 0 }, survey: { asignados: 0, hechos: 0, pendientes: 0, no_aplica: 0, completado_pct: 0 } }, new Map());
 assert.match(vacio, /Todavía no hay grupos/);
 assert.match(vacio, /Todavía no hay inspectores/);
+
+// ---- buildHistorialRows / buildHistorialFiltro — "Historial" sub-tab
+// (`planeacion-auditoria` change, Phase 5) --------------------------------
+
+const auditEntradas = [
+  { id: '1', actor_uid: 'u1', actor_email: 'ana@x.com', entidad: 'grupo', resumen: 'Crear grupo «Norte»', ts: '2026-08-20T10:00:00' },
+  { id: '2', actor_uid: 'u2', actor_email: null, entidad: 'vehiculo', resumen: 'Crear vehículo ABC123', ts: '2026-08-21T10:00:00' },
+];
+const historialRows = buildHistorialRows(auditEntradas);
+assert.equal(historialRows.length, 2);
+assert.equal(historialRows[0].actorLabel, 'ana@x.com');
+// Fallback to the raw uid when no email is on the entry.
+assert.equal(historialRows[1].actorLabel, 'u2');
+assert.equal(historialRows[0].entidadLabel, 'Grupo');
+assert.equal(historialRows[1].entidadLabel, 'Vehículo');
+assert.equal(historialRows[0].resumen, 'Crear grupo «Norte»');
+assert.equal(buildHistorialRows(null).length, 0, 'fail open on missing data, never throw');
+
+assert.deepEqual(buildHistorialFiltro({}), { action: 'listAuditoria' });
+assert.deepEqual(buildHistorialFiltro({ tipo: 'vehiculo' }), { action: 'listAuditoria', tipo: 'vehiculo' });
+assert.deepEqual(buildHistorialFiltro({ usuario: 'u9' }), { action: 'listAuditoria', usuario: 'u9' });
+assert.deepEqual(
+  buildHistorialFiltro({ tipo: 'vehiculo', usuario: 'u9' }),
+  { action: 'listAuditoria', tipo: 'vehiculo', usuario: 'u9' },
+);
+assert.deepEqual(
+  buildHistorialFiltro({ fecha: '2026-08-20' }),
+  { action: 'listAuditoria', desde: '2026-08-20T00:00:00', antes_de: '2026-08-20T23:59:59' },
+);
 
 console.log('ok — planeacion.js pure table/map/filter logic');

@@ -100,6 +100,12 @@ class _FakeQuery:
             matched = [i for i in self._ids if self._store.get(i, {}).get(field) == value]
         elif op == "!=":
             matched = [i for i in self._ids if self._store.get(i, {}).get(field) != value]
+        elif op == ">=":
+            matched = [i for i in self._ids if self._store.get(i, {}).get(field) is not None
+                       and self._store[i][field] >= value]
+        elif op == "<":
+            matched = [i for i in self._ids if self._store.get(i, {}).get(field) is not None
+                       and self._store[i][field] < value]
         else:
             raise AssertionError(f"unsupported op {op!r} in fake Firestore")
         return _FakeQuery(
@@ -305,6 +311,7 @@ def test_limit_default_is_a_few_hundred_not_two_thousand():
         "asignarVehiculoAGrupo",
         "desasignarVehiculo",
         "metricasProgreso",
+        "listAuditoria",
     ],
 )
 def test_non_admin_is_rejected_no_mutation(monkeypatch, action):
@@ -1891,6 +1898,95 @@ def test_read_only_action_leaves_zero_auditoria_docs(monkeypatch):
     resp = client.post("/planeacion-asignaciones", json={"action": "listGrupos"})
     assert resp.status_code == 200
     assert stores[PLANEACION_AUDITORIA] == {}
+
+
+def _auditoria_doc(*, entidad, actor_uid, ts, accion="crearGrupo", entidad_id="x", resumen="r"):
+    return {
+        "actor_uid": actor_uid, "actor_email": f"{actor_uid}@example.com", "accion": accion,
+        "entidad": entidad, "entidad_id": entidad_id, "params": {}, "resultado": {},
+        "resumen": resumen, "ts": ts,
+    }
+
+
+# ── `planeacion-auditoria` change, Phase 3 (2026-08-26): `listAuditoria`.
+# design.md ADR-4; spec `listAuditoria read action`. ─────────────────────────
+
+
+def test_list_auditoria_no_filters_orders_newest_first(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_AUDITORIA] = {
+        "a": _auditoria_doc(entidad="grupo", actor_uid="u1", ts=100),
+        "b": _auditoria_doc(entidad="vehiculo", actor_uid="u2", ts=300),
+        "c": _auditoria_doc(entidad="conductor", actor_uid="u3", ts=200),
+    }
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={"action": "listAuditoria"})
+    assert resp.status_code == 200
+    entradas = resp.json()["entradas"]
+    assert [e["ts"] for e in entradas] == [300, 200, 100]
+
+
+def test_list_auditoria_filters_by_tipo(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_AUDITORIA] = {
+        "a": _auditoria_doc(entidad="grupo", actor_uid="u1", ts=100),
+        "b": _auditoria_doc(entidad="vehiculo", actor_uid="u2", ts=300),
+    }
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={"action": "listAuditoria", "tipo": "vehiculo"})
+    assert resp.status_code == 200
+    entradas = resp.json()["entradas"]
+    assert len(entradas) == 1
+    assert entradas[0]["entidad"] == "vehiculo"
+
+
+def test_list_auditoria_filters_by_usuario(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_AUDITORIA] = {
+        "a": _auditoria_doc(entidad="grupo", actor_uid="u1", ts=100),
+        "b": _auditoria_doc(entidad="vehiculo", actor_uid="u9", ts=300),
+    }
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={"action": "listAuditoria", "usuario": "u9"})
+    assert resp.status_code == 200
+    entradas = resp.json()["entradas"]
+    assert len(entradas) == 1
+    assert entradas[0]["actor_uid"] == "u9"
+
+
+def test_list_auditoria_filters_by_date_range(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_AUDITORIA] = {
+        "a": _auditoria_doc(entidad="grupo", actor_uid="u1", ts=100),
+        "b": _auditoria_doc(entidad="grupo", actor_uid="u1", ts=200),
+        "c": _auditoria_doc(entidad="grupo", actor_uid="u1", ts=300),
+    }
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={
+        "action": "listAuditoria", "desde": 150, "antes_de": 300})
+    assert resp.status_code == 200
+    entradas = resp.json()["entradas"]
+    assert [e["ts"] for e in entradas] == [200]
+
+
+def test_list_auditoria_pagination_bounds_result(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_AUDITORIA] = {
+        str(i): _auditoria_doc(entidad="grupo", actor_uid="u1", ts=i) for i in range(5)
+    }
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={"action": "listAuditoria", "limit": 2})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["entradas"]) == 2
+    assert data["hay_mas"] is True
+
+    # second page, via the cursor
+    cursor = data["entradas"][-1]["ts"]
+    resp2 = client.post("/planeacion-asignaciones", json={
+        "action": "listAuditoria", "limit": 2, "antes_de": cursor})
+    assert resp2.status_code == 200
+    assert len(resp2.json()["entradas"]) == 2
 
 
 def test_audit_write_failure_does_not_alter_the_mutation_response(monkeypatch):

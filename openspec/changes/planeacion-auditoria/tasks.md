@@ -131,16 +131,17 @@ Depends on Phase 1/2 (reads the collection Phase 2 starts writing to). The read 
 `planeacion_audit.py` (per the sole-writer/sole-reader spec wording: the literal `planeacion_auditoria`
 may appear ONLY inside that file — the router must call into it, never query the collection directly).
 
-- [ ] **3.1** Extend the fake Firestore double in `test_planeacion_asignaciones.py`: `_FakeQuery.where`
+- [x] **3.1** Extend the fake Firestore double in `test_planeacion_asignaciones.py`: `_FakeQuery.where`
       currently supports only `==`/`!=` (needed by every other action so far). Add `>=` and `<`
       support so the `ts`-cursor pagination (design.md ADR-4) is testable against this repo's
       existing fake-double convention, matching the precedent `planeacion-asignaciones` design.md set
       for extending this same double (`.order_by()`/`.limit()` were added there for the identical
       reason).
       — Satisfies: *Requirement: `listAuditoria` read action* (date-range and pagination scenarios,
-      test-infrastructure prerequisite).
+      test-infrastructure prerequisite). — STATUS: DONE. Full `test_planeacion_asignaciones.py`
+      module re-run after the extension: 133/133 green, no regression.
 
-- [ ] **3.2** (RED) Extend `test_planeacion_asignaciones.py` FIRST with the `listAuditoria` scenarios,
+- [x] **3.2** (RED) Extend `test_planeacion_asignaciones.py` FIRST with the `listAuditoria` scenarios,
       seeding `planeacion_auditoria` docs directly into the fake store:
       - No filters → results ordered by `ts` descending.
       - `tipo:'vehiculo'` → only `entidad:'vehiculo'` entries returned.
@@ -155,9 +156,12 @@ may appear ONLY inside that file — the router must call into it, never query t
         this action too, not assumed from the shared `Depends(require_role("admin"))`.
       MUST fail (`listAuditoria` is not a recognized action yet — 400 "Acción desconocida").
       — Satisfies: *Requirement: `listAuditoria` read action* (all 6 scenarios, including the
-      non-admin-403 scenario).
+      non-admin-403 scenario). — STATUS: DONE. RED confirmed: all 5 new `listAuditoria` scenario
+      tests failed with 400 "Acción desconocida: listAuditoria"; the non-admin parametrize addition
+      passed immediately (the shared `Depends(require_role("admin"))` gate runs before dispatch, so
+      it needed no new hook — still asserted explicitly per the task).
 
-- [ ] **3.3** (GREEN) Implement `list_auditoria(db, *, tipo=None, usuario=None, desde=None,
+- [x] **3.3** (GREEN) Implement `list_auditoria(db, *, tipo=None, usuario=None, desde=None,
       antes_de=None, page_size=50)` in `planeacion_audit.py` per design.md ADR-4: optional
       `where("entidad","==",tipo)`, optional `where("actor_uid","==",usuario)`, optional
       `where("ts",">=",desde)` / `where("ts","<",antes_de)`, `order_by("ts", DESCENDING)`,
@@ -165,7 +169,13 @@ may appear ONLY inside that file — the router must call into it, never query t
       last row's `ts` as the next-page cursor. Add a `listAuditoria` branch inside `_dispatch()`
       calling this function, and add `tipo: str | None`, `usuario: str | None`, `desde: Any = None`,
       `antes_de: Any = None` fields to `PlaneacionAsignacionesRequest`. Run 3.2, confirm green.
-      — Satisfies: *Requirement: `listAuditoria` read action*.
+      — Satisfies: *Requirement: `listAuditoria` read action*. — STATUS: DONE. GREEN confirmed, 5/5.
+      `page_size` parsing added as its own `_positive_int` router helper (deliberately NOT
+      `_clamp_limit`, which defaults to `listPuntos`'s 300/5000 shape, not the bitácora's 50/
+      unbounded one) — the request's existing `limit` field is reused as the page-size input, no new
+      field needed for it. `tipo` filter reuses the ALREADY-DECLARED `tipo` field on
+      `PlaneacionAsignacionesRequest` (vehiculo's own type field) rather than adding a duplicate — the
+      two never collide since they belong to different actions on the same dispatcher.
 
 ---
 
@@ -210,15 +220,20 @@ Vehículos sub-tabs already in `web/js/planeacion.js` (the proposal's wording sa
 / Asignaciones" — the actual sub-tab set shipped by `planeacion-asignaciones` is Puntos / Grupos /
 Vehículos; Historial becomes the 4th).
 
-- [ ] **5.1** (RED) Extend `web/js/planeacion.test.mjs` FIRST (matches the existing file's
+- [x] **5.1** (RED) Extend `web/js/planeacion.test.mjs` FIRST (matches the existing file's
       script-style convention — plain asserts + a trailing `console.log`, not per-case `test()`
       blocks) with assertions against a not-yet-exported historial helper, e.g. `buildHistorialRows`
       or equivalent pure formatter (entry → display row) and a filter-params builder (tipo/usuario/
       fecha selects → the `{tipo, usuario, desde, antes_de}` request body). MUST fail (`node --test
       js/planeacion.test.mjs` errors — export does not exist).
-      — Satisfies: *Requirement: "Historial" sub-tab renders the feed and its filters*.
+      — Satisfies: *Requirement: "Historial" sub-tab renders the feed and its filters*. — STATUS:
+      DONE. Implemented `buildHistorialRows` (entry -> `{id, actorLabel, entidadLabel, resumen, ts}`,
+      email-then-uid fallback, fails open to `[]` on missing data) and `buildHistorialFiltro`
+      (tipo/usuario/fecha -> `{action:'listAuditoria', tipo?, usuario?, desde?, antes_de?}`, `fecha`
+      widened to a same-day range). RED confirmed: `SyntaxError: ... does not provide an export named
+      'buildHistorialFiltro'`.
 
-- [ ] **5.2** (GREEN) Add the "Historial" sub-tab to `web/js/planeacion.js`: a 4th
+- [x] **5.2** (GREEN) Add the "Historial" sub-tab to `web/js/planeacion.js`: a 4th
       `[data-subtab-btn="historial"]` button + `[data-subtab="historial"]` panel (matching the
       existing 3 sub-tabs' markup shape at lines ~222-227/228-304), filter `<select>`s for tipo/
       usuario/fecha, a `renderHistorialSection()` that calls `listAuditoria` via
@@ -226,32 +241,54 @@ Vehículos; Historial becomes the 4th).
       switch to this sub-tab — not on every `initPlaneacion` — matching design.md's File Changes note.
       UI copy in neutral Spanish infinitive ("Historial", "Filtrar por tipo", "Filtrar por usuario",
       "Filtrar por fecha"). Run 5.1, confirm green.
-      — Satisfies: *Requirement: "Historial" sub-tab renders the feed and its filters*.
+      — Satisfies: *Requirement: "Historial" sub-tab renders the feed and its filters*. — STATUS:
+      DONE. GREEN confirmed. `usuario` select is populated from the SAME cached inspector roster
+      (`getInspectores()`) every other section already uses, not a second fetch. Pagination via
+      `listAuditoria`'s own `hay_mas`/`antes_de` cursor, a "Ver más" button (append, not replace).
+      Lazy-load confirmed by reading `switchSubtab()`: the `historial` branch only fires
+      `loadHistorial()` once, guarded by `historialLoaded`, unlike Grupos/Vehículos which are eagerly
+      fetched by `reload()` on every `initPlaneacion` — the deliberate difference design.md's File
+      Changes note calls for.
 
 ---
 
 ## Phase 6 — Verification
 
-- [ ] **6.1** Run the full backend suite: `python -m pytest backend/tests/ -v`, all green (baseline +
+- [x] **6.1** Run the full backend suite: `python -m pytest backend/tests/ -v`, all green (baseline +
       this change's new tests in `test_planeacion_audit.py`, the hook/`listAuditoria` additions to
       `test_planeacion_asignaciones.py`, and the new `test_sole_writer.py` test).
-      — Satisfies: design.md Testing Strategy (Unit + Integration + Invariant rows).
+      — Satisfies: design.md Testing Strategy (Unit + Integration + Invariant rows). — STATUS: DONE.
+      **553 passed** (baseline 529 -> 547 after Commit 1 -> 553 after Commit 2: +14 audit-service
+      unit tests, +3 hook tests, +1 sole-writer invariant test, +5 `listAuditoria` tests).
 
-- [ ] **6.2** Run the frontend suite: `node --test "js/**/*.test.mjs"` from `web/`, all green.
-      — Satisfies: design.md Testing Strategy (E2E/frontend row).
+- [x] **6.2** Run the frontend suite: `node --test "js/**/*.test.mjs"` from `web/`, all green.
+      — Satisfies: design.md Testing Strategy (E2E/frontend row). — STATUS: DONE.
+      `js/planeacion.test.mjs` passes (7/7 assertions including the new Historial block). One
+      pre-existing, unrelated failure in `js/evaluaciones.test.mjs`
+      (`ERR_UNSUPPORTED_ESM_URL_SCHEME`, an environment issue importing an `https://` URL scheme,
+      reproduced identically on `main` before this change via `git stash`) — not caused by this
+      change, not touched by it.
 
-- [ ] **6.3** Grep-verify no accidental second writer: `rg -n "planeacion_auditoria" backend/app/`
+- [x] **6.3** Grep-verify no accidental second writer: `rg -n "planeacion_auditoria" backend/app/`
       returns hits ONLY inside `backend/app/services/planeacion_audit.py`. Record the result in this
       file.
       — Satisfies: *Requirement: Sole-writer invariant*; *Requirement: Audit entries are immutable*
       (no update/delete action exists — confirm by inspecting every branch inside `_dispatch()` for a
-      `planeacion_auditoria` write other than `registrar`'s own `.document().set(...)` append).
+      `planeacion_auditoria` write other than `registrar`'s own `.document().set(...)` append). —
+      STATUS: DONE. Result: 5 hits, all in `backend/app/services/planeacion_audit.py` (module
+      docstring x2, `PLANEACION_AUDITORIA_COLLECTION` constant, `registrar`'s docstring, and the
+      `logging.exception` message) — zero hits anywhere else under `backend/app/`. Immutability
+      confirmed: `planeacion_asignaciones.py`'s ONLY calls into `planeacion_audit` are the page-size
+      helper, `list_auditoria` (read), the `MUTATING_ACTIONS` membership check, and
+      `registrar_best_effort` (append) — no update/delete call exists.
 
 ---
 
 ## Manual operator task (no repo diff)
 
-- [ ] **M.1** — MANUAL, OPERATOR-ONLY, no code change. In the Firestore console for
+- [ ] **M.1** — BLOCKED (by design, not an apply failure): MANUAL, OPERATOR-ONLY, no code change,
+      cannot be performed by this agent. Carried as a "Follow-up (operator):" note in Commit 2's
+      message body per the explicit delivery instruction. In the Firestore console for
       `sismo-agosto-sgred`, create the composite indexes `listAuditoria`'s filters need on
       `planeacion_auditoria`:
       - `(entidad ASC, ts DESC)` — filtering by tipo alone.

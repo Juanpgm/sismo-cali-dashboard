@@ -47,7 +47,32 @@ Backend suite after Commit 1: **547 passed** (529 baseline + 14 audit service + 
 
 ## Commit 2 — read path + UI (Phases 3, 5, 6)
 
-See this file's later revision / the final SDD-apply result message for the read-path (`listAuditoria`
-+ `list_auditoria`) and frontend ("Historial" sub-tab) implementation notes, plus the Phase 6
-verification results and the Phase M.1 operator note (Firestore composite indexes — no repo diff,
-carried in Commit 2's commit-message body per the user's explicit instruction).
+- `backend/tests/routers/test_planeacion_asignaciones.py`: `_FakeQuery.where` extended with `>=`/`<`
+  support; `"listAuditoria"` added to the non-admin rejection parametrize list; 5 new `listAuditoria`
+  scenario tests (no filters/newest-first, tipo, usuario, date range, pagination + cursor).
+- `backend/app/services/planeacion_audit.py`: `list_auditoria(...)` (ADR-4 — ts-inequality cursor,
+  `page_size + 1` fetch, `hay_mas`/`antes_de` idiom, `PAGE_SIZE_DEFAULT = 50`) + a small local
+  `_jsonable`/`_doc_to_dict` pair (duplicated from the router's own, not imported — the router
+  already imports this module at module level, so the reverse import would be circular).
+- `backend/app/routers/planeacion_asignaciones.py`: `listAuditoria` branch in `_dispatch()`; new
+  `usuario`/`desde`/`antes_de` Pydantic fields (`tipo` reused verbatim from the existing vehiculo
+  field — no new field needed, no collision); a `_positive_int` page-size helper (kept separate from
+  `_clamp_limit`, whose defaults belong to `listPuntos`, not the bitácora).
+- `web/js/planeacion.js` / `web/js/planeacion.test.mjs`: new "Historial" sub-tab (4th, sibling to
+  Puntos/Grupos/Vehículos), `buildHistorialRows`/`buildHistorialFiltro` pure helpers (RED-tested
+  first), `renderHistorialSection`/`loadHistorial`, filter selects (tipo/usuario/fecha) + a
+  "Ver más" pagination button using the `hay_mas`/`antes_de` cursor. Lazy-loaded on first switch to
+  the sub-tab only (`historialLoaded` guard), NOT on every `initPlaneacion` — the deliberate
+  difference from Grupos/Vehículos (eagerly fetched by `reload()`) design.md's File Changes note
+  calls for.
+
+**Verification (Phase 6):** backend 553/553 passing; frontend `planeacion.test.mjs` 7/7 (one
+pre-existing, unrelated `evaluaciones.test.mjs` failure, reproduced on `main` before this change);
+`rg -n "planeacion_auditoria" backend/app/` — 5 hits, all inside `planeacion_audit.py`; no
+update/delete action against the collection exists (confirmed by inspecting every
+`planeacion_audit.*` call site in the router).
+
+**Phase M.1 (manual, no repo diff):** carried as a "Follow-up (operator):" note in Commit 2's own
+commit message — 3 Firestore composite indexes needed on `sismo-agosto-sgred` for `listAuditoria`'s
+filtered queries (`entidad+ts`, `actor_uid+ts`, `entidad+actor_uid+ts`). Not performed by this agent
+(console-only step); the in-memory test double needs no index and passes without it.

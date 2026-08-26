@@ -244,3 +244,61 @@ def registrar_best_effort(
 def _server_timestamp() -> Any:
     from google.cloud import firestore as _fs  # deferred import, credentials/clients.py's own convention
     return _fs.SERVER_TIMESTAMP
+
+
+PAGE_SIZE_DEFAULT = 50
+
+
+def list_auditoria(
+    db: Any,
+    *,
+    tipo: str | None = None,
+    usuario: str | None = None,
+    desde: Any = None,
+    antes_de: Any = None,
+    page_size: int = PAGE_SIZE_DEFAULT,
+) -> dict[str, Any]:
+    """ADR-4: one query, `ts`-inequality cursor pagination — never `offset`
+    or `start_after` (see design.md for why). `page_size + 1` rows fetched;
+    `hay_mas` reports truncation without a separate count query, same
+    `list_puntos`/`LIMIT_MAX + 1` idiom this router's own dispatcher uses."""
+    from google.cloud import firestore as _fs  # deferred import, credentials/clients.py's own convention
+
+    query = db.collection(PLANEACION_AUDITORIA_COLLECTION)
+    if tipo:
+        query = query.where("entidad", "==", tipo)
+    if usuario:
+        query = query.where("actor_uid", "==", usuario)
+    if desde is not None:
+        query = query.where("ts", ">=", desde)
+    if antes_de is not None:
+        query = query.where("ts", "<", antes_de)
+    query = query.order_by("ts", direction=_fs.Query.DESCENDING).limit(page_size + 1)
+
+    rows = [_doc_to_dict(d) for d in query.get()]
+    hay_mas = len(rows) > page_size
+    rows = rows[:page_size]
+    return {
+        "entradas": rows,
+        "hay_mas": hay_mas,
+        "antes_de": rows[-1]["ts"] if rows else None,
+    }
+
+
+def _jsonable(value: Any) -> Any:
+    """Same normalization `routers/planeacion_asignaciones.py`'s own
+    `_jsonable` performs (real Firestore timestamps -> ISO strings so
+    `JSONResponse` can encode them) — duplicated here rather than imported,
+    since the router already imports THIS module at module level."""
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    return value
+
+
+def _doc_to_dict(doc: Any) -> dict[str, Any]:
+    data = _jsonable(doc.to_dict() or {})
+    return {"id": doc.id, **data}

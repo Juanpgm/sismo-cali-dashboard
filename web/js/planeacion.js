@@ -189,6 +189,38 @@ export function formatTruncacion(shown, totalPendientes) {
 
 /** Filter the roster by a free-text query over nombre/código/cédula — same
  *  pattern as stickers-asignacion.js:filterInspectores. */
+// `planeacion-auditoria` change, Phase 5 — pure formatter (entry -> display
+// row) + filter-params builder for the "Historial" sub-tab.
+const ENTIDAD_LABELS = {
+  grupo: 'Grupo', vehiculo: 'Vehículo', conductor: 'Conductor',
+  asignacion: 'Asignación', cuadrilla: 'Cuadrilla',
+};
+
+export function buildHistorialRows(entradas) {
+  return (entradas || []).map((e) => ({
+    id: e.id,
+    actorLabel: e.actor_email || e.actor_uid || '—',
+    entidadLabel: ENTIDAD_LABELS[e.entidad] || e.entidad || '—',
+    resumen: e.resumen || '—',
+    ts: e.ts,
+  }));
+}
+
+/** tipo/usuario/fecha selects -> the `{tipo, usuario, desde, antes_de}`
+ *  request body `listAuditoria` expects. `fecha` (a plain `YYYY-MM-DD` from
+ *  an `<input type="date">`) widens to a same-day `desde`/`antes_de` range —
+ *  the operator picks one day, not a raw timestamp. */
+export function buildHistorialFiltro({ tipo, usuario, fecha } = {}) {
+  const body = { action: 'listAuditoria' };
+  if (tipo) body.tipo = tipo;
+  if (usuario) body.usuario = usuario;
+  if (fecha) {
+    body.desde = `${fecha}T00:00:00`;
+    body.antes_de = `${fecha}T23:59:59`;
+  }
+  return body;
+}
+
 export function filterInspectores(inspectores, query) {
   const q = (query || '').trim().toLowerCase();
   if (!q) return inspectores || [];
@@ -223,6 +255,7 @@ function shellHtml() {
       <button type="button" class="asignacion-segment is-active" data-subtab-btn="puntos" id="planeacion-tab-puntos" role="tab" aria-selected="true" aria-controls="planeacion-panel-puntos">Puntos</button>
       <button type="button" class="asignacion-segment" data-subtab-btn="grupos" id="planeacion-tab-grupos" role="tab" aria-selected="false" aria-controls="planeacion-panel-grupos">Grupos</button>
       <button type="button" class="asignacion-segment" data-subtab-btn="vehiculos" id="planeacion-tab-vehiculos" role="tab" aria-selected="false" aria-controls="planeacion-panel-vehiculos">Vehículos</button>
+      <button type="button" class="asignacion-segment" data-subtab-btn="historial" id="planeacion-tab-historial" role="tab" aria-selected="false" aria-controls="planeacion-panel-historial">Historial</button>
     </nav>
 
     <section class="planeacion-subpanel" data-subtab="puntos" id="planeacion-panel-puntos" role="tabpanel" aria-labelledby="planeacion-tab-puntos">
@@ -303,6 +336,35 @@ function shellHtml() {
       <div class="card">
         ${cardHead('Vehículos', 'Vehículos disponibles para asignar a un grupo — un vehículo solo puede estar en un grupo a la vez.', '<button type="button" class="btn-primary" id="planeacion-vehiculo-crear">Crear vehículo</button>')}
         <div class="asignacion-cuadrillas-scroll" id="planeacion-vehiculos"></div>
+      </div>
+    </section>
+
+    <section class="planeacion-subpanel" data-subtab="historial" id="planeacion-panel-historial" role="tabpanel" aria-labelledby="planeacion-tab-historial" hidden>
+      <div class="card">
+        ${cardHead('Historial', 'Bitácora de cambios: quién hizo qué y cuándo, en grupos, vehículos, conductores y asignaciones.')}
+        <div class="card-toolbar asignacion-filters">
+          <label class="sticker-field asignacion-inline-field">
+            <span>Filtrar por tipo</span>
+            <select id="planeacion-historial-tipo">
+              <option value="">Todos</option>
+              <option value="grupo">Grupo</option>
+              <option value="vehiculo">Vehículo</option>
+              <option value="conductor">Conductor</option>
+              <option value="asignacion">Asignación</option>
+              <option value="cuadrilla">Cuadrilla</option>
+            </select>
+          </label>
+          <label class="sticker-field asignacion-inline-field">
+            <span>Filtrar por usuario</span>
+            <select id="planeacion-historial-usuario"><option value="">Todos</option></select>
+          </label>
+          <label class="sticker-field asignacion-inline-field">
+            <span>Filtrar por fecha</span>
+            <input type="date" id="planeacion-historial-fecha">
+          </label>
+        </div>
+        <div class="table-scroll asignacion-table-scroll" id="planeacion-historial-wrap"></div>
+        <button type="button" class="sticker-action" id="planeacion-historial-mas" hidden>Ver más</button>
       </div>
     </section>
 
@@ -673,6 +735,20 @@ function vehiculosHtml(vehiculos) {
   </ul>`;
 }
 
+function historialHtml(rows) {
+  if (!rows.length) {
+    return '<p class="sticker-empty">Sin cambios registrados para este filtro.</p>';
+  }
+  return `<table><thead><tr><th>Fecha</th><th>Usuario</th><th>Tipo</th><th>Cambio</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr>
+        <td>${escapeHtml(r.ts ? new Date(r.ts).toLocaleString('es-CO') : '—')}</td>
+        <td>${escapeHtml(r.actorLabel)}</td>
+        <td>${escapeHtml(r.entidadLabel)}</td>
+        <td>${escapeHtml(r.resumen)}</td>
+      </tr>`).join('')}
+  </tbody></table>`;
+}
+
 // Vanilla searchable combobox — same shape as stickers-asignacion.js's own
 // mountCombobox (no cap, keyboard nav, mousedown-before-blur selection).
 //
@@ -874,12 +950,26 @@ export function initPlaneacion(root, { getToken }) {
   const grupoCrearBtn = root.querySelector('#planeacion-grupo-crear');
   const vehiculosWrap = root.querySelector('#planeacion-vehiculos');
   const vehiculoCrearBtn = root.querySelector('#planeacion-vehiculo-crear');
+  const historialWrap = root.querySelector('#planeacion-historial-wrap');
+  const historialTipoSelect = root.querySelector('#planeacion-historial-tipo');
+  const historialUsuarioSelect = root.querySelector('#planeacion-historial-usuario');
+  const historialFechaInput = root.querySelector('#planeacion-historial-fecha');
+  const historialMasBtn = root.querySelector('#planeacion-historial-mas');
 
-  // ---- sub-tabs (Puntos / Grupos / Vehículos) — show/hide panels that share
-  // the same in-memory state; switching never reloads. The map lives in the
-  // Puntos panel and Leaflet cannot measure a hidden container, so re-entering
-  // Puntos triggers an invalidateSize() (same fix renderMap already applies
-  // on first mount). ----------------------------------------------------------
+  // `planeacion-auditoria` change: unlike Grupos/Vehículos above (eagerly
+  // fetched by reload()), Historial fetches only on first switch to its
+  // sub-tab — a bitácora nobody opens should not cost a query on every
+  // Planeación page load (design.md File Changes note).
+  let historialLoaded = false;
+  let historialEntradas = [];
+  let historialCursor = null;
+
+  // ---- sub-tabs (Puntos / Grupos / Vehículos / Historial) — show/hide
+  // panels that share the same in-memory state; switching never reloads
+  // Puntos/Grupos/Vehículos. The map lives in the Puntos panel and Leaflet
+  // cannot measure a hidden container, so re-entering Puntos triggers an
+  // invalidateSize() (same fix renderMap already applies on first mount).
+  // ----------------------------------------------------------------------
   function switchSubtab(name) {
     root.querySelectorAll('[data-subtab-btn]').forEach((btn) => {
       const active = btn.dataset.subtabBtn === name;
@@ -891,6 +981,10 @@ export function initPlaneacion(root, { getToken }) {
     });
     if (name === 'puntos' && map) {
       setTimeout(() => { if (map) map.invalidateSize(); }, 0);
+    }
+    if (name === 'historial' && !historialLoaded) {
+      historialLoaded = true;
+      loadHistorial();
     }
   }
   root.querySelectorAll('[data-subtab-btn]').forEach((btn) => {
@@ -1603,6 +1697,46 @@ export function initPlaneacion(root, { getToken }) {
   // filter, which just re-renders `rows`.
   root.querySelector('#planeacion-incluir-levantados')
     ?.addEventListener('change', () => { reload(); });
+
+  // ---- Historial ("planeacion-auditoria" change, Phase 5) -------------------
+  function populateHistorialUsuarioOptions() {
+    const current = historialUsuarioSelect.value;
+    const options = getInspectores()
+      .map((i) => `<option value="${escapeHtml(i.uid)}">${escapeHtml(i.nombre_completo || i.codigo || i.uid)}</option>`)
+      .join('');
+    historialUsuarioSelect.innerHTML = `<option value="">Todos</option>${options}`;
+    historialUsuarioSelect.value = current;
+  }
+
+  function renderHistorialSection() {
+    historialWrap.innerHTML = historialHtml(buildHistorialRows(historialEntradas));
+    historialMasBtn.hidden = !historialCursor;
+  }
+
+  async function loadHistorial({ append = false } = {}) {
+    historialWrap.innerHTML = '<p class="sticker-loading">Cargando historial…</p>';
+    try {
+      await ensureInspectores();
+      populateHistorialUsuarioOptions();
+      const body = buildHistorialFiltro({
+        tipo: historialTipoSelect.value,
+        usuario: historialUsuarioSelect.value,
+        fecha: historialFechaInput.value,
+      });
+      if (append && historialCursor) body.antes_de = historialCursor;
+      const { entradas, hay_mas: hayMas, antes_de: cursor } = await callApi(getToken, body);
+      historialEntradas = append ? [...historialEntradas, ...(entradas || [])] : (entradas || []);
+      historialCursor = hayMas ? cursor : null;
+      renderHistorialSection();
+    } catch (err) {
+      historialWrap.innerHTML = `<p class="sticker-error" role="alert">${escapeHtml(err.message)}</p>`;
+    }
+  }
+
+  [historialTipoSelect, historialUsuarioSelect, historialFechaInput].forEach((el) => {
+    el.addEventListener('change', () => { historialCursor = null; loadHistorial(); });
+  });
+  historialMasBtn.addEventListener('click', () => loadHistorial({ append: true }));
 
   reload();
   return { reload };

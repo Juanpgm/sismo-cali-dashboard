@@ -385,6 +385,17 @@ def _sort_key(p: dict[str, Any]) -> tuple[int, float]:
     return (-rank, -score)
 
 
+def _positive_int(raw: Any, default: int) -> int:
+    """`listAuditoria`'s own page-size parsing — deliberately separate from
+    `_clamp_limit` above, which defaults to `listPuntos`'s LIMIT_DEFAULT
+    (300)/LIMIT_MAX (5000), not the bitácora's own 50/unbounded shape."""
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return n if n > 0 else default
+
+
 def _clamp_limit(raw: Any) -> int:
     try:
         n = int(raw)
@@ -1568,6 +1579,14 @@ class PlaneacionAsignacionesRequest(BaseModel):
     email: str | None = None
     nombre_completo: str | None = None
 
+    # `planeacion-auditoria` change: listAuditoria filters. `tipo` is already
+    # declared above (reused verbatim — vehiculo's own type field and this
+    # action's entidad filter never collide, since they belong to different
+    # actions on the same dispatcher).
+    usuario: str | None = None
+    desde: Any = None
+    antes_de: Any = None
+
 
 def _dispatch(
     body: PlaneacionAsignacionesRequest,
@@ -1644,6 +1663,19 @@ def _dispatch(
             return JSONResponse({"ok": True, **eliminar_conductor(db, payload)})
         if body.action == "metricasProgreso":
             return JSONResponse({"ok": True, "metricas": metricas_progreso(db)})
+        if body.action == "listAuditoria":
+            page_size = _positive_int(payload.get("limit"), planeacion_audit.PAGE_SIZE_DEFAULT)
+            return JSONResponse({
+                "ok": True,
+                **planeacion_audit.list_auditoria(
+                    db,
+                    tipo=payload.get("tipo"),
+                    usuario=payload.get("usuario"),
+                    desde=payload.get("desde"),
+                    antes_de=payload.get("antes_de"),
+                    page_size=page_size,
+                ),
+            })
         raise bad_request(f"Acción desconocida: {body.action}")
     except HTTPException:
         raise
