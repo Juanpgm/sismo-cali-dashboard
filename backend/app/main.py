@@ -24,6 +24,7 @@ from app.routers import (
     sticker_asignaciones,
     stickers,
     sticker_status,
+    usuarios,
 )
 from app.routers.sticker_status import StickerStatusCache
 from app.services.snapshot import ReportadosSnapshot, refresh_loop, seed_from_blob
@@ -40,6 +41,7 @@ _ROUTERS = (
     refresh,
     stickers,
     sticker_asignaciones,
+    usuarios,
 )
 
 
