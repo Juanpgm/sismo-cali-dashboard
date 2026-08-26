@@ -130,3 +130,73 @@ def test_a_record_with_neither_address_nor_coords_stands_alone():
     assert df.loc[0, "dup_grupo_id"] != df.loc[1, "dup_grupo_id"]
     assert list(df["dup_n"]) == [1, 1]
     assert df["es_representante"].all()
+
+
+# Same address, different towers ---------------------------------------------
+# A conjunto residencial has ONE street address and many buildings. Grouping
+# on the address alone merged 7 towers of "KR 77 # 1C-140" (T1, T3, T10, T15,
+# T19, T20 del Danubio) into a single building -- the opposite error to the
+# one this module exists to fix: it UNDER-counts.
+#
+# Measured on the live data, the two cases separate cleanly:
+#   accidental re-submits : name similarity 1.00, <= 13 m apart
+#   different towers      : name similarity <= 0.67, >= 48 m apart
+# So same-address records are the same building only when the building NAME
+# matches closely AND the coordinates are within GPS noise of each other.
+
+
+def test_same_address_different_tower_names_are_different_buildings():
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "t1", "direccion_norm": "KR 77 # 1C-140",
+         "nombre_edificacion": "Torre 1", "y": 3.38858, "x": -76.55357},
+        {"GlobalID": "t19", "direccion_norm": "KR 77 # 1C-140",
+         "nombre_edificacion": "T19", "y": 3.38874, "x": -76.55227},
+    ]))
+    assert df.loc[0, "dup_grupo_id"] != df.loc[1, "dup_grupo_id"]
+    assert df["es_representante"].all(), "two towers are two buildings, both count"
+
+
+def test_same_address_same_name_within_gps_noise_is_one_building():
+    """The real accidental re-submit: identical name, metres apart."""
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "a", "direccion_norm": "KR 94 B1 # 2A-26",
+         "nombre_edificacion": "Casa", "y": 3.40000, "x": -76.50000},
+        {"GlobalID": "b", "direccion_norm": "KR 94 B1 # 2A-26",
+         "nombre_edificacion": "Casa", "y": 3.40010, "x": -76.50000},
+    ]))
+    assert df.loc[0, "dup_grupo_id"] == df.loc[1, "dup_grupo_id"]
+    assert df["es_representante"].sum() == 1
+
+
+def test_spelling_variants_of_the_same_name_still_group():
+    """'ASTURIAS' vs 'Conjunto Multifamiliar Asturias' is one building --
+    the match must be fuzzy, not exact string equality."""
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "a", "direccion_norm": "CL 1", "nombre_edificacion": "ASTURIAS",
+         "y": 3.4, "x": -76.5},
+        {"GlobalID": "b", "direccion_norm": "CL 1",
+         "nombre_edificacion": "Conjunto Multifamiliar Asturias", "y": 3.40005, "x": -76.5},
+    ]))
+    assert df.loc[0, "dup_grupo_id"] == df.loc[1, "dup_grupo_id"]
+
+
+def test_same_name_but_far_apart_are_different_buildings():
+    """Identical names are common in a complex ('Torre', 'Bloque A'). Distance
+    is what says they are different structures."""
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "a", "direccion_norm": "CL 1", "nombre_edificacion": "Bloque A",
+         "y": 3.4000, "x": -76.5000},
+        {"GlobalID": "b", "direccion_norm": "CL 1", "nombre_edificacion": "Bloque A",
+         "y": 3.4015, "x": -76.5000},  # ~165 m
+    ]))
+    assert df.loc[0, "dup_grupo_id"] != df.loc[1, "dup_grupo_id"]
+
+
+def test_blank_names_fall_back_to_distance_alone():
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "a", "direccion_norm": "CL 1", "nombre_edificacion": "",
+         "y": 3.4, "x": -76.5},
+        {"GlobalID": "b", "direccion_norm": "CL 1", "nombre_edificacion": None,
+         "y": 3.40005, "x": -76.5},
+    ]))
+    assert df.loc[0, "dup_grupo_id"] == df.loc[1, "dup_grupo_id"]

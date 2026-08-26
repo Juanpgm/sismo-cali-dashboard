@@ -20,9 +20,11 @@ import hashlib
 import math
 import io
 import json
+from difflib import SequenceMatcher
 import logging
 import os
 import re
+import unicodedata
 import string
 import time
 from collections import Counter
@@ -1176,14 +1178,94 @@ def _recencia(row) -> tuple:
     )
 
 
-def _clave_edificio(row) -> str:
-    """Identity of the BUILDING, not of the submission.
+# A conjunto residencial shares ONE street address across many buildings, so
+# the address alone is not a building identity: grouping on it merged 7 towers
+# of "KR 77 # 1C-140" (T1, T3, T10, T15, T19, T20 del Danubio) into a single
+# building -- UNDER-counting, the opposite of the over-count this module fixes.
+#
+# Measured on the live data, the two cases separate with a wide margin:
+#   accidental re-submit : name similarity 1.00, <= 13 m apart
+#   different towers     : name similarity <= 0.67, >= 48 m apart
+# Both thresholds sit in that gap, so neither is knife-edge.
+_SIM_MISMO_EDIFICIO = 0.85
+_DIST_MISMO_EDIFICIO_M = 30.0
 
-    Normalized address first (it is what the duplicates actually share),
-    exact rounded coordinates as a fallback. A row with neither signal gets
-    its own GlobalID as the key: pooling all unidentifiable rows together
-    would silently merge unrelated buildings into one, which is worse than
-    the duplication being fixed.
+
+def _norm_nombre(value) -> str:
+    if pd.isna(value):
+        return ""
+    txt = unicodedata.normalize("NFKD", str(value)).encode("ascii", "ignore").decode().upper()
+    return re.sub(r"[^A-Z0-9 ]", " ", txt).strip()
+
+
+def _nombres_coinciden(na: str, nb: str) -> bool:
+    """Do two building names denote the same structure?
+
+    Plain string similarity is not enough: "ASTURIAS" vs "CONJUNTO
+    MULTIFAMILIAR ASTURIAS" is the same building on the live data but scores
+    only 0.41, because one is four times longer. So a token-SUBSET check runs
+    first — every word of the shorter name appearing in the longer one.
+
+    The subset must be over WHOLE tokens, never a substring: "TORRE 1" is
+    literally contained in "TORRE 15", and those are two different towers of
+    the same complex. Comparing tokens keeps them apart ({TORRE,1} is not a
+    subset of {TORRE,15}) where a substring check would have merged them.
+    """
+    # Numbers first, and they are DECISIVE: in a conjunto the number IS the
+    # building's identity ("Torre 1" / "Torre 15", "T10" / "T19"). Fuzzy text
+    # similarity actively betrays us here -- "TORRE 1" vs "TORRE 15" scores
+    # 0.93 and would merge two different towers. When both names carry digits
+    # and the digits differ, nothing else can make them the same structure.
+    nums_a, nums_b = set(re.findall(r"\d+", na)), set(re.findall(r"\d+", nb))
+    if nums_a and nums_b and nums_a != nums_b:
+        return False
+
+    ta, tb = set(na.split()), set(nb.split())
+    if ta and tb and (ta <= tb or tb <= ta):
+        return True
+    return SequenceMatcher(None, na, nb).ratio() >= _SIM_MISMO_EDIFICIO
+
+
+def _misma_edificacion(a: dict, b: dict) -> bool:
+    """Two records at the SAME address: same building, or different towers?
+
+    Requires BOTH signals to agree, because either alone is wrong in a real
+    conjunto: names repeat across towers ("Bloque A"), and towers sit only
+    tens of metres apart. When one signal is unavailable the other decides
+    alone rather than guessing — an unknown must not manufacture a match.
+    """
+    na, nb = _norm_nombre(a.get("nombre_edificacion")), _norm_nombre(b.get("nombre_edificacion"))
+    nombres_ok = _nombres_coinciden(na, nb) if na and nb else None  # None = at least one is blank
+
+    dist = None
+    if all(pd.notna(v) for v in (a.get("x"), a.get("y"), b.get("x"), b.get("y"))):
+        dist = _haversine_m(float(a["y"]), float(a["x"]), float(b["y"]), float(b["x"]))
+    dist_ok = dist <= _DIST_MISMO_EDIFICIO_M if dist is not None else None
+
+    if nombres_ok is None and dist_ok is None:
+        # Same address, nothing else to go on. Treat as the same building:
+        # the address IS the only identity available, and splitting on no
+        # evidence would re-inflate the very figures this module corrects.
+        return True
+    if nombres_ok is None:
+        return bool(dist_ok)
+    if dist_ok is None:
+        return bool(nombres_ok)
+    return bool(nombres_ok and dist_ok)
+
+
+def _haversine_m(lat1, lon1, lat2, lon2) -> float:
+    r = 6371000.0
+    dlat, dlon = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
+    h = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
+    return 2 * r * math.asin(min(1.0, math.sqrt(h)))
+
+
+def _clave_direccion(row) -> str:
+    """Coarse bucket: everything that COULD be the same building.
+
+    `_misma_edificacion` then splits each bucket into actual buildings.
     """
     # pd.isna() first: a missing value arrives as NaN, and str(NaN) is the
     # TRUTHY string "nan" -- without this guard every address-less record
@@ -1196,6 +1278,48 @@ def _clave_edificio(row) -> str:
     if pd.notna(x) and pd.notna(y):
         return f"geo:{round(float(y), 5)},{round(float(x), 5)}"
     return f"id:{row.get('GlobalID')}"
+
+
+def _claves_por_edificio(df: pd.DataFrame) -> list[str]:
+    """Address bucket -> one key per actual BUILDING inside it.
+
+    Within a bucket, records are chained together transitively: A joins B's
+    building if it matches B, even when it does not match every other member.
+    That is deliberate — a tower photographed from two ends can be 30 m from
+    the middle shot and 55 m from the far one, and demanding agreement with
+    ALL members would split one real building into three.
+    """
+    claves: list[str] = []
+    por_bucket: dict[str, list[tuple[int, dict]]] = {}
+    filas = df.to_dict("records")
+
+    for i, fila in enumerate(filas):
+        por_bucket.setdefault(_clave_direccion(fila), []).append((i, fila))
+
+    for bucket, miembros in por_bucket.items():
+        # edificios: list of (representative_row, key) built as we walk.
+        edificios: list[tuple[dict, str]] = []
+        asignada: dict[int, str] = {}
+        for idx, fila in miembros:
+            for ref, clave in edificios:
+                if _misma_edificacion(ref, fila):
+                    asignada[idx] = clave
+                    break
+            else:
+                clave = bucket if not edificios else f"{bucket}#{len(edificios) + 1}"
+                edificios.append((fila, clave))
+                asignada[idx] = clave
+        for idx, _ in miembros:
+            while len(claves) <= idx:
+                claves.append("")
+            claves[idx] = asignada[idx]
+
+    # `claves` was filled by index, but buckets are walked out of order.
+    ordenadas = [""] * len(filas)
+    for bucket, miembros in por_bucket.items():
+        for idx, _ in miembros:
+            ordenadas[idx] = claves[idx]
+    return ordenadas
 
 
 def leer_representantes_fijados() -> dict:
@@ -1250,7 +1374,7 @@ def add_dup_group(df: pd.DataFrame, overrides: dict | None = None) -> pd.DataFra
         return df
 
     df = df.copy()
-    df["dup_grupo_id"] = df.apply(_clave_edificio, axis=1)
+    df["dup_grupo_id"] = _claves_por_edificio(df)
     df["dup_n"] = df.groupby("dup_grupo_id")["dup_grupo_id"].transform("size")
 
     df["_orden"] = df.apply(_recencia, axis=1)
