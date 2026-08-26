@@ -1479,6 +1479,47 @@ def normalize(rows_raw: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_revisar_flags(df: pd.DataFrame) -> pd.DataFrame:
+    """Tag each record with data-quality review cases (feature: Analista
+    'Gestión de datos'). Adds `revisar` (bool) and `revisar_casos` (list of
+    ``{"caso": str, "campos": [str, ...]}``) so the grid can surface the
+    records an analyst should verify, and WHICH fields to look at. Rules are
+    conservative — only genuinely contradictory or atypical values, measured
+    against the live dataset (see the review-cases analysis 2026-08-26)."""
+    def _si(v) -> bool:
+        return str(v).strip().lower() in ("si", "sí", "true", "1", "x")
+
+    def _num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _norm(v) -> str:
+        return str(v).strip().lower() if v is not None else ""
+
+    casos_por_fila: list[list[dict]] = []
+    for _, r in df.iterrows():
+        casos: list[dict] = []
+        if _si(r.get("colapso_total")) and _si(r.get("colapso_parcial")):
+            casos.append({"caso": "Colapso total y parcial simultáneos",
+                          "campos": ["colapso_total", "colapso_parcial"]})
+        n_pisos = _num(r.get("n_pisos"))
+        if n_pisos is not None and (n_pisos > 60 or n_pisos <= 0):
+            casos.append({"caso": "Número de pisos atípico", "campos": ["n_pisos"]})
+        n_ocup = _num(r.get("n_ocupantes"))
+        if n_ocup is not None and n_ocup > 2000:
+            casos.append({"caso": "Número de ocupantes atípico", "campos": ["n_ocupantes"]})
+        if _norm(r.get("nivel_dano")) == "alto" and _norm(r.get("criterio_habitabilidad")) == "h":
+            casos.append({"caso": "Nivel de daño alto con criterio habitable",
+                          "campos": ["nivel_dano", "criterio_habitabilidad"]})
+        casos_por_fila.append(casos)
+
+    df["revisar_casos"] = casos_por_fila
+    df["revisar"] = [len(c) > 0 for c in casos_por_fila]
+    return df
+
+
 # --- Orchestration ----------------------------------------------------------
 
 
@@ -1512,6 +1553,8 @@ def run_once(out_dir: Path) -> None:
     df = resolve_barrio_vereda(df)
     # Derived triage flag consumed by the dashboard and shipped in the xlsx.
     df = add_suspension_servicios(df)
+    # Data-quality review flags for the Analista "Gestión de datos" grid.
+    df = add_revisar_flags(df)
 
     # Direct photo download URLs for the xlsx export.
     photo_urls = fetch_photo_urls(groups)
