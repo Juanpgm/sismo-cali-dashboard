@@ -87,25 +87,40 @@ def _token() -> str:
 
 
 def gql(query: str, variables: dict | None = None) -> dict:
-    request = urllib.request.Request(
-        API,
-        data=json.dumps({"query": query, "variables": variables or {}}).encode(),
-        headers={
-            "Content-Type": "application/json",
-            # Token de PROYECTO (creado en el dashboard del proyecto): Railway lo
-            # autoriza con el header Project-Access-Token, no con Authorization Bearer.
-            "Project-Access-Token": _token(),
-            # Cloudflare answers 403 to requests without a User-Agent.
-            "User-Agent": "sismo-cali-backend/1.0",
-        },
+    token = _token()
+    data = json.dumps({"query": query, "variables": variables or {}}).encode()
+    # Dual-header auth fallback, matching app/routers/refresh.py's
+    # _railway_graphql(): Railway authorizes account/team tokens via
+    # Authorization: Bearer and project tokens via Project-Access-Token. Try
+    # Bearer first, fall back to the project header, so either token type
+    # works transparently (previously this script accepted a project token
+    # only, diverging from its own runtime sibling).
+    auth_headers = (
+        {"Authorization": f"Bearer {token}"},
+        {"Project-Access-Token": token},
     )
-    try:
-        payload = json.load(urllib.request.urlopen(request))
-    except urllib.error.HTTPError as exc:
-        raise SystemExit(f"Railway API {exc.code}: {exc.read().decode()[:400]}")
-    if "errors" in payload:
-        raise SystemExit(f"Railway API error: {payload['errors']}")
-    return payload["data"]
+    last_error: str | None = None
+    for auth in auth_headers:
+        request = urllib.request.Request(
+            API,
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                # Cloudflare answers 403 to requests without a User-Agent.
+                "User-Agent": "sismo-cali-backend/1.0",
+                **auth,
+            },
+        )
+        try:
+            payload = json.load(urllib.request.urlopen(request))
+        except urllib.error.HTTPError as exc:
+            last_error = f"Railway API {exc.code}: {exc.read().decode()[:400]}"
+            continue
+        if "errors" in payload:
+            last_error = f"Railway API error: {payload['errors']}"
+            continue
+        return payload["data"]
+    raise SystemExit(last_error or "Railway API request failed")
 
 
 LIST_SERVICES = """query($p:String!){
