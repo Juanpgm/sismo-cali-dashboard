@@ -141,6 +141,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 REPORTES_JSON = REPO_ROOT / "web" / "data" / "reportes.json"
 
 PLANEACION_PUNTOS_COLLECTION = "planeacion_puntos"
+# feature D: israel "done" source, READ-ONLY here. Mirrored into the sismo
+# project by an out-of-backend ingestor (never the dagma-85aad original —
+# the backend never touches dagma).
+INSPECCIONES_ISRAEL_COLLECTION = "inspecciones_israel"
 # `survey_cali`'s collection name is imported (never re-literaled here) from
 # its OWN sole-writer module — see the module docstring's "Scope note"
 # above for why this makes `planeacion_cruce.py` a flagged, read-only entry
@@ -610,6 +614,32 @@ def fetch_surveys(db, watermark=None) -> list[dict]:
     return out
 
 
+def fetch_israel(db) -> list[dict]:
+    """israel survey points (sismo project, `inspecciones_israel`), flattened
+    to the SAME X/Y/DIRECCION shape `fetch_surveys` returns so the imported
+    cascade primitives treat them identically. Feature D: a punto is
+    "levantado" if it matches survey_cali OR israel.
+
+    Deliberately FULL-SCAN, no watermark: israel is a small, near-static set
+    (~101 docs) and the incremental watermark only tracks `survey_cali`. Were
+    israel watermark-filtered it would drop out of the survey universe after
+    the first run, so a pending punto landing near an israel point on a later
+    run would never see it. `codigoapp` is always "" (israel has no app code),
+    so it can only ever match by geo/dirección, never rung-1. `GlobalID` is
+    prefixed `isr-` so a match's `survey_globalid` is unambiguously israel and
+    never collides with a real `survey_cali` doc id."""
+    out = []
+    for doc in db.collection(INSPECCIONES_ISRAEL_COLLECTION).stream():
+        e = doc.to_dict() or {}
+        out.append({
+            "GlobalID": f"isr-{doc.id}",
+            "Y": e.get("y"), "X": e.get("x"),
+            "DIRECCION": e.get("direccion_norm") or e.get("direccion") or "",
+            "codigoapp": "",
+        })
+    return out
+
+
 def read_watermark(db):
     """Timestamp of the last successful run, or `None` (first run, or a
     prior run that never reached the end) — meaning "process everything"."""
@@ -738,11 +768,14 @@ def run_planeacion_cruce() -> dict:
 
     watermark = read_watermark(db)
     print(f"watermark: {watermark or '(ninguno — primera corrida, procesa todo survey_cali)'}")
-    surveys = fetch_surveys(db, watermark)
+    surveys_cali = fetch_surveys(db, watermark)
+    surveys_israel = fetch_israel(db)  # feature D: full-scan, no watermark (see fetch_israel)
+    surveys = surveys_cali + surveys_israel
     key_index = build_key_index(surveys)
     addr_index = build_addr_index(surveys)
-    print(f"surveys nuevos desde el watermark: {len(surveys)} "
-          f"({len(key_index)} con clave_integracion verificada)")
+    print(f"surveys este run: {len(surveys)} "
+          f"({len(surveys_cali)} survey_cali desde watermark + {len(surveys_israel)} israel full-scan; "
+          f"{len(key_index)} con clave_integracion verificada)")
 
     now = datetime.now(timezone.utc)
     to_write: list[dict] = []

@@ -262,6 +262,67 @@ def test_well_formed_key_matching_no_point_does_not_corrupt_anything():
     assert r["match_via"] != "clave"
 
 
+# ── feature D: fetch_israel — israel as a second "levantado" source ─────────
+
+
+class _FakeDoc:
+    def __init__(self, doc_id, data):
+        self.id = doc_id
+        self._data = data
+
+    def to_dict(self):
+        return dict(self._data)
+
+
+class _FakeDb:
+    def __init__(self, by_collection):
+        self._by = by_collection
+
+    def collection(self, name):
+        docs = self._by.get(name, [])
+
+        class _Col:
+            def stream(self_inner):
+                return iter(docs)
+
+        return _Col()
+
+
+def test_fetch_israel_flattens_to_survey_shape_with_isr_prefix():
+    db = _FakeDb({job.INSPECCIONES_ISRAEL_COLLECTION: [
+        _FakeDoc("GID-1", {"x": -76.53, "y": 3.42, "direccion_norm": "CALLE 1 2 3"}),
+    ]})
+    assert job.fetch_israel(db) == [{
+        "GlobalID": "isr-GID-1",
+        "Y": 3.42, "X": -76.53,
+        "DIRECCION": "CALLE 1 2 3",
+        "codigoapp": "",
+    }]
+
+
+def test_fetch_israel_falls_back_to_direccion_when_no_norm():
+    db = _FakeDb({job.INSPECCIONES_ISRAEL_COLLECTION: [
+        _FakeDoc("G2", {"x": -76.5, "y": 3.4, "direccion": "Cra 5 # 6-7"}),
+    ]})
+    out = job.fetch_israel(db)
+    assert out[0]["DIRECCION"] == "Cra 5 # 6-7"
+
+
+def test_fetch_israel_drops_codigoapp_so_it_never_matches_rung1():
+    db = _FakeDb({job.INSPECCIONES_ISRAEL_COLLECTION: [
+        _FakeDoc("G3", {"x": -76.5, "y": 3.4, "codigoapp": "SHOULD-BE-IGNORED"}),
+    ]})
+    out = job.fetch_israel(db)
+    assert out[0]["codigoapp"] == ""
+    # israel can never enter the clave (rung-1) index
+    assert job.build_key_index(out) == {}
+
+
+def test_fetch_israel_empty_collection_returns_empty():
+    db = _FakeDb({job.INSPECCIONES_ISRAEL_COLLECTION: []})
+    assert job.fetch_israel(db) == []
+
+
 # ── build_write_ops: ownership + merge safety (task 2.7) ────────────────────
 
 
