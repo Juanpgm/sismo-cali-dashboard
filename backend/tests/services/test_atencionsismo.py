@@ -146,6 +146,50 @@ def test_summarize_accepts_reportes_json_field_names():
     assert result["inmuebles"] == 1
 
 
+def test_summarize_aggregates_all_analytic_fields():
+    # User directive: metrics over ALL records — the full field set the
+    # atencionsismo API carries (same categories reportes_agg.json uses),
+    # not just the estadoVerificacion tally the legacy JS kept.
+    records = [
+        {"id": "a", "estado": "Reportado", "lat": "3.1", "lng": "-76.1",
+         "afectacion": "DAÑO ESTRUCTURAL", "comuna": "Comuna 19",
+         "habitabilidad": "No habitable", "tipoInmueble": "Casa"},
+        {"id": "b", "estado": "Asignado", "lat": "3.2", "lng": "-76.2",
+         "afectacion": "DAÑO ESTRUCTURAL", "comuna": "Comuna 2",
+         "habitabilidad": None, "tipoInmueble": "Edificio"},
+        {"id": "c", "estado": "Reportado", "lat": None, "lng": None,
+         "afectacion": None, "comuna": "Comuna 19",
+         "habitabilidad": "Habitable", "tipoInmueble": "Casa"},
+    ]
+
+    result = atencionsismo.summarize(records)
+
+    assert result["por_afectacion"] == {"DAÑO ESTRUCTURAL": 2, "—": 1}
+    assert result["por_comuna"] == {"Comuna 19": 2, "Comuna 2": 1}
+    assert result["por_habitabilidad"] == {"—": 1, "Habitable": 1, "No habitable": 1}
+    assert result["por_tipoInmueble"] == {"Casa": 2, "Edificio": 1}
+    assert result["con_coordenadas"] == 2
+    assert result["sin_coordenadas"] == 1
+    # Every per-category breakdown reconciles with the total — no record is
+    # ever silently ignored (same invariant fetch_reportes_api.py asserts).
+    for field in ("por_estadoVerificacion", "por_afectacion", "por_comuna",
+                  "por_habitabilidad", "por_tipoInmueble"):
+        assert sum(result[field].values()) == result["total"], field
+
+
+def test_summarize_counts_dropped_idless_records_as_sin_id():
+    records = [
+        {"id": "a", "estado": "Reportado", "lat": "3.1", "lng": "-76.1"},
+        {"id": None, "estado": "Reportado", "lat": "3.2", "lng": "-76.2"},
+        {"estado": "Asignado", "lat": "3.3", "lng": "-76.3"},
+    ]
+
+    result = atencionsismo.summarize(records)
+
+    assert result["total"] == 1
+    assert result["sin_id"] == 2  # dropped records are COUNTED, never silent
+
+
 # --- probe_api ----------------------------------------------------------------
 
 
@@ -206,7 +250,12 @@ def test_fetch_window_returns_mapped_records_on_success():
 
     records = _run(go())
 
-    assert records == [{"id": "r1", "estado": "Reportado", "lat": "3.1", "lng": "-76.1"}]
+    assert records == [{
+        "id": "r1", "estado": "Reportado", "lat": "3.1", "lng": "-76.1",
+        # Analytic fields ride along even when the API omits them (None) so
+        # summarize() can aggregate over ALL records (user directive).
+        "afectacion": None, "comuna": None, "habitabilidad": None, "tipoInmueble": None,
+    }]
 
 
 @pytest.mark.parametrize("status", [413, 500, 502, 503, 504])
