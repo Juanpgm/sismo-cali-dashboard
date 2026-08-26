@@ -633,7 +633,7 @@ the smoke env), clean shutdown, no stray-task warning.
 1.4, deliberately not touching `web/js/data.js` yet). Full `backend/tests/` suite: **95 passed, 0
 failed**.
 
-### Next Batch
+### Next Batch (superseded — see "Cutover status sync" below)
 
 Slice 3 cannot fully close without task 1.4 (manual Railway "web" service creation) — the same blocker
 batches 1b and 2 already flagged; it now also blocks slice 3's 3.6/3.7 the same way it blocks slice 2's
@@ -644,3 +644,30 @@ that one entry to the Railway base URL for 3.7, + manual Vercel redeploy of `web
 is complete and Slice 4 (`sticker-status` + `source-status`, tasks 4.1-4.6, `~180-230` lines, low
 400-line risk, single PR) can start — it depends on Phase 1 (merged) and Phase 3 (reuses
 `api-config.js`, now scaffolded).
+
+---
+
+## Cutover status sync (2026-08-25, recorded post-hoc from git history)
+
+Task 1.4 (manual Railway "web" service creation) and slice 3's 3.6/3.7 were completed by the operator
+and a follow-up apply pass, but neither this file nor `tasks.md` was updated at the time — both were
+found stale (checkboxes still unticked) at the start of the session that added this section. Corrected
+here and in `tasks.md` from git log, not from a fresh apply run:
+
+- **1.4 DONE**: Railway "web" service live at `sismo-cali-dashboard-production.up.railway.app`.
+- **3.6 DONE, PASS** (commit `c2fb564`): shape-identical parity, `Reportado`/`inmuebles` deltas within
+  the 50-record tolerance, 0.346s response (<2s budget).
+- **3.7 DONE** (commit `c2fb564`): `web/js/api-config.js`'s `reportados` entry repointed to the Railway
+  URL; `web/js/data.js` reads it via `apiUrl('reportados')`. Merged to `main` via `7dacbde` ("cutover
+  batch 1 — reportados live on Railway + full metrics").
+- **Scope extension landed alongside** (commit `acbde37`, user directive, not a slice-3 task):
+  `/reportados`'s `summarize()` now aggregates every analytic field
+  (`por_afectacion`/`comuna`/`habitabilidad`/`tipoInmueble` + coordinate coverage + `sin_id`), legacy
+  consumer fields unchanged. 97/97 backend tests green after this change.
+- **Slice 2 still NOT closed**: 2.3's structural parity tier is runnable (`51be382`), but its
+  token-required tier is explicitly PENDING a live `FIREBASE_ID_TOKEN` — never fabricated. 2.4
+  (`formulario/` repoint) and 2.5 (manual signer-stays-live confirmation) remain undone, blocked on
+  that token, not on 1.4 anymore.
+
+**Slice 3 is fully COMPLETE and merged to `main`.** Slice 4 (`sticker-status` + `source-status`) is
+unblocked (depends only on Phase 1 + Phase 3, both done) and is the next batch.

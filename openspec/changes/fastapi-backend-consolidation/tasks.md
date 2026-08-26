@@ -68,15 +68,18 @@ Chain PR #1 (may need 1a/1b split — see forecast). Depends on: none.
       directory = repo root (per ADR-1's rejection of `backend/`-as-root).
       — Satisfies: backend-platform "Deploy triggers from a git push" scenario.
 
-- [ ] **1.4** — MANUAL OPERATOR STEP, not a repo diff. Create the Railway "web" service, git-connected
+- [x] **1.4** — MANUAL OPERATOR STEP, not a repo diff. Create the Railway "web" service, git-connected
       to this GitHub repo, root = repo root, `dockerfilePath = backend/Dockerfile`, always-on (proposal
       answer 8). Provision env vars: `FIREBASE_SERVICE_ACCOUNT_JSON`, `SIGNER_AWS_ACCESS_KEY_ID/SECRET`,
       `SIGNER_S3_BUCKET/REGION`, `SUPERADMIN_EMAIL` — NOT `GOOGLE_SERVICE_ACCOUNT_JSON` (dagma is
       unused anywhere in this backend, per proposal.md Scope Exclusion Addendum Extension 2). Confirm
       no CLI upload is ever used.
       — Satisfies: backend-platform "No CLI-upload path exists for the web service".
-      — STATUS: not started (manual operator step, out of scope for the automated 1a/1b apply
-      batches; requires human action in the Railway dashboard).
+      — STATUS: DONE (operator step completed outside the automated apply batches). Live at
+      `sismo-cali-dashboard-production.up.railway.app`, confirmed serving `/reportados` in production
+      as of commit `c2fb564` / merge `7dacbde` (2026-08-25). This checkbox was left unticked by the
+      1a/1b apply batches (correctly, since it was out of their automated scope) but was never synced
+      back after the operator finished it — corrected here from git history, not from a new apply run.
 
 - [x] **1.5** (RED) Write `backend/tests/auth/test_roles_parity.py` FIRST: table-driven port of the
       exact fixture matrix from `api/usuarios.test.js:8-22` (the actual JS parity source — NOT a
@@ -299,39 +302,33 @@ Chain PR #3 (may need 3a/3b split — see forecast). Depends on: Phase 1. Public
       (lifespan startup → `GET /reportados` → 503+Retry-After when misconfigured → clean shutdown) —
       confirmed no hang/crash. Full suite: 95/95 passed.
 
-- [ ] **3.6** VERIFY (ADR-5 parity-diff plan): within the same 15-min window, fetch live
+- [x] **3.6** VERIFY (ADR-5 parity-diff plan): within the same 15-min window, fetch live
       `sismo-cali-dashboard.vercel.app/api/reportados` and the Railway route; compare JSON shape and
       consumed fields (`reportados` total, `inmuebles`) with tolerance for in-flight drift; confirm
       <2s response; record both payloads in the PR description.
       — Satisfies: backend-platform "reportados responds fast from snapshot".
-      — STATUS: BLOCKED on 1.4 (no live Railway URL exists yet), same blocker as 2.3/2.4/2.5.
-      Repo-side prep done: `backend/scripts/verify_reportados_parity.py` — a standalone MANUAL
-      operator tool (not imported by `app/`/`tests/`, never run in CI) that, given
-      `NEW_REPORTADOS_URL` (+ optional `OLD_REPORTADOS_URL`/`DRIFT_TOLERANCE`), calls both endpoints
-      (no auth — `/reportados` is public), prints both payloads for the PR description, checks the
-      new route's response time against the <2s budget, and compares
-      `por_estadoVerificacion.Reportado`/`inmuebles` within a configurable drift tolerance. Verified
-      its BLOCKED guard runs correctly with no env vars set (exit 2, explanatory message). Run it once
-      1.4 lands AND the background refresh has completed at least once; no further code changes
-      needed for 3.6 itself.
+      — STATUS: DONE, PASS (commit `c2fb564`, 2026-08-25). Shape-identical payload (`ok`, `generado`,
+      `fuente`, `total`, `inmuebles`, `por_estadoVerificacion`); `Reportado` delta 5, `inmuebles` delta
+      6, both within the 50-record drift tolerance; new route measured 0.346s (<2s budget). Ticked here
+      after the fact from git history — the 1a/1b/batch-3 apply-progress record never got a follow-up
+      entry for the cutover batch that actually ran this.
 
-- [ ] **3.7** REPOINT: introduce `web/js/api-config.js` (per-endpoint URL map, default = current
+- [x] **3.7** REPOINT: introduce `web/js/api-config.js` (per-endpoint URL map, default = current
       relative path, per ADR-7) and flip the `reportados` entry to the Railway base URL in
       `web/js/data.js`. MANUAL Vercel redeploy of `web/`.
       — Satisfies: backend-platform "Rollback is a config revert" (establishes the mechanism reused by
       every later repoint).
-      — STATUS: repo-side prep done, PARTIAL. `web/js/api-config.js` created — a per-endpoint URL map
-      covering every `web/`-side `/api/*` call found by grep (`reportados`, `sticker-status`,
-      `refresh`, `stickers`, `sticker-asignaciones`, `usuarios`, `source-status`), each defaulting to
-      today's relative path (zero behavior change; verified with a standalone `node --check` +
-      dynamic-import smoke test, no build step exists for `web/js`). The actual "flip the `reportados`
-      entry" half is BLOCKED on 1.4: `web/js/data.js` intentionally NOT touched this batch — wiring
-      `refreshReportados()` to read from `api-config.js` only makes sense once that one entry actually
-      points at a live Railway URL; wiring it now while every entry still resolves to the same
-      relative path would be a no-op edit that still needs re-touching (and re-reviewing) once 1.4
-      lands. `formulario/`'s own `DASHBOARD_API`/`FOTO_SIGNER_URL` constants are OUT of this file's
-      scope (ADR-7: those slices flip their existing constants directly, not through
-      `web/js/api-config.js`).
+      — STATUS: DONE (commit `c2fb564`, 2026-08-25). `web/js/api-config.js`'s `reportados` entry now
+      points at `https://sismo-cali-dashboard-production.up.railway.app/reportados`;
+      `web/js/data.js`'s `refreshReportados()` reads it via `apiUrl('reportados')`. Every other
+      `api-config.js` entry stays on its legacy relative path, per ADR-7's per-endpoint repoint
+      mechanism — unaffected by this slice. As a scope extension beyond this task's original text,
+      commit `acbde37` also widened `/reportados`' `summarize()` to aggregate every analytic field
+      (`por_afectacion`/`comuna`/`habitabilidad`/`tipoInmueble` + coordinate coverage + `sin_id`) per a
+      user directive, with the legacy consumer fields (`total`, `inmuebles`,
+      `por_estadoVerificacion`) left unchanged so `web/js/data.js` needed no further edit for that
+      extension. `formulario/`'s own `DASHBOARD_API`/`FOTO_SIGNER_URL` constants remain OUT of
+      `api-config.js`'s scope (ADR-7: those slices flip their existing constants directly).
 
 **ROLLBACK BOUNDARY (Slice 3)**: revert the single `reportados` entry in `api-config.js`; redeploy
 `web/`. Old `api/reportados.js` untouched.
