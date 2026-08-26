@@ -340,6 +340,19 @@ def points_excluded(points: list[dict[str, Any]]) -> list[str]:
     return [p["id"] for p in (points or []) if p and p.get("estado_asignacion") == "no_aplica"]
 
 
+def points_locked(points: list[dict[str, Any]]) -> list[str]:
+    """Assignment lock (feature F): a point already **levantado**
+    (`tiene_survey` — EDAN survey or israel) or **done**
+    (`estado_asignacion == 'hecho'`) must NOT be re-assigned; only pending
+    points get assigned. Superset of `points_with_survey`, adding the
+    already-completed case."""
+    return [
+        p["id"]
+        for p in (points or [])
+        if p and (p.get("tiene_survey") is True or p.get("estado_asignacion") == "hecho")
+    ]
+
+
 def commit_in_chunks(db: Any, items: list[Any], apply_fn: Callable[[Any, Any], None]) -> None:
     """Firestore caps a write batch at 500 ops; split a flat list of writes
     into <=500-op commits. Verbatim port of `commit_in_chunks`."""
@@ -625,13 +638,23 @@ def editar_cuadrilla(db: Any, body: dict[str, Any]) -> dict[str, Any]:
         add_refs = [db.collection(PLANEACION_PUNTOS_COLLECTION).document(pid) for pid in add]
         add_snaps = db.get_all(add_refs)
         add_current = [
-            {"id": s.id, "cuadrilla_id": (s.to_dict() or {}).get("cuadrilla_id") if s.exists else None}
+            {
+                "id": s.id,
+                "cuadrilla_id": (s.to_dict() or {}).get("cuadrilla_id") if s.exists else None,
+                "tiene_survey": (s.to_dict() or {}).get("tiene_survey") is True if s.exists else False,
+                "estado_asignacion": (s.to_dict() or {}).get("estado_asignacion") if s.exists else None,
+            }
             for s in add_snaps
         ]
         conflicts = points_already_assigned(add_current, cuadrilla_id)
         if conflicts:
             raise bad_request(
                 f"{len(conflicts)} punto(s) ya pertenecen a una cuadrilla; quitalos de su cuadrilla actual antes de reasignar."
+            )
+        locked = points_locked(add_current)
+        if locked:
+            raise bad_request(
+                f"{len(locked)} punto(s) ya están levantados o hechos; no se pueden agregar a una cuadrilla."
             )
 
     current = {str(p) for p in (snap.to_dict() or {}).get("puntos") or []}
@@ -671,19 +694,40 @@ def asignar_inspector(db: Any, body: dict[str, Any]) -> dict[str, Any]:
 
     puntos = [str(p) for p in (snap.to_dict() or {}).get("puntos") or []]
 
+    # feature F: never re-assign a levantado/hecho member. Read each point's
+    # state and propagate the inspector only to the still-assignable ones —
+    # the cuadrilla always records the inspector, but a point whose survey
+    # arrived after the cuadrilla was formed is skipped, not reset.
+    punto_snaps = db.get_all(
+        [db.collection(PLANEACION_PUNTOS_COLLECTION).document(pid) for pid in puntos]
+    ) if puntos else []
+    locked = set(
+        points_locked(
+            [
+                {
+                    "id": s.id,
+                    "tiene_survey": (s.to_dict() or {}).get("tiene_survey") is True,
+                    "estado_asignacion": (s.to_dict() or {}).get("estado_asignacion"),
+                }
+                for s in punto_snaps
+            ]
+        )
+    )
+    asignables = [pid for pid in puntos if pid not in locked]
+
     from google.cloud import firestore as _fs  # deferred import, credentials/clients.py's own convention
 
     now = _fs.SERVER_TIMESTAMP
     batch = db.batch()
     batch.set(ref, {"inspector_uid": inspector_uid}, merge=True)
-    for punto_id in puntos:
+    for punto_id in asignables:
         batch.set(
             db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id),
             {"inspector_uid": inspector_uid, "asignado_en": now, "estado_asignacion": "asignado"},
             merge=True,
         )
     batch.commit()
-    return {"id": cuadrilla_id}
+    return {"id": cuadrilla_id, "asignados": len(asignables), "omitidos": len(locked)}
 
 
 def desasignar_inspector(db: Any, body: dict[str, Any]) -> dict[str, Any]:
@@ -730,7 +774,13 @@ def reasignar_punto(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     if not snap.exists:
         raise bad_request(f"No existe el punto {punto_id}.")
 
-    prev_inspector_uid = (snap.to_dict() or {}).get("inspector_uid")
+    data = snap.to_dict() or {}
+    if points_locked([{"id": punto_id, **data}]):
+        raise bad_request(
+            "El punto ya está levantado o hecho; no se puede re-asignar (solo se asignan pendientes)."
+        )
+
+    prev_inspector_uid = data.get("inspector_uid")
     ref.set({"inspector_uid": nuevo_inspector_uid, "reasignado_de": prev_inspector_uid}, merge=True)
     return {"id": punto_id, "inspector_uid": nuevo_inspector_uid, "reasignado_de": prev_inspector_uid}
 
@@ -1087,6 +1137,22 @@ def asignar_grupo_a_puntos(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     missing = [s.id for s in punto_snaps if not s.exists]
     if missing:
         raise bad_request(f"{len(missing)} punto(s) no existen en planeacion_puntos: {sorted(missing)}.")
+
+    # feature F: a levantado/hecho point is not re-assignable — reject the whole
+    # op (like crearCuadrilla) so the operator drops those points and retries.
+    current = [
+        {
+            "id": s.id,
+            "tiene_survey": (s.to_dict() or {}).get("tiene_survey") is True,
+            "estado_asignacion": (s.to_dict() or {}).get("estado_asignacion"),
+        }
+        for s in punto_snaps
+    ]
+    locked = points_locked(current)
+    if locked:
+        raise bad_request(
+            f"{len(locked)} punto(s) ya están levantados o hechos; quitar esos puntos de la selección."
+        )
 
     def _apply(batch: Any, punto_id: str) -> None:
         batch.set(db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id), {"grupo_id": grupo_id}, merge=True)
