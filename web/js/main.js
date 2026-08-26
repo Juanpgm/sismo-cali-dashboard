@@ -12,6 +12,7 @@ import { coverageGaugeHtml } from './coverage-gauge.js';
 import { initTable, renderTable, setTotalRecords, openDetailModal } from './table.js';
 import { renderAcciones } from './acciones.js';
 import { initStickers } from './stickers.js';
+import { initPlaneacion } from './planeacion.js';
 import { initUsuarios } from './usuarios.js';
 import { initAnalista } from './analista.js';
 import { initTheme } from './theme.js';
@@ -237,6 +238,12 @@ function switchView(view) {
   // Stickers pulls live data from /api/stickers — (re)load it each time it opens.
   if (view === 'stickers') {
     initStickers(document.getElementById('view-stickers'), { getToken: getIdToken });
+  }
+  // Planeación is a top-level tab (design.md ADR-10) — (re)initialize it each
+  // time it opens, same lifecycle as Stickers/Usuarios/Analista; it fetches
+  // its own inspector roster since nothing else has loaded it for this tab.
+  if (view === 'planeacion') {
+    initPlaneacion(document.getElementById('view-planeacion'), { getToken: getIdToken });
   }
   // Usuarios pulls live data from /api/usuarios — (re)load it each time it opens.
   if (view === 'usuarios') {

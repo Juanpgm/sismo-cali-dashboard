@@ -1560,6 +1560,7 @@ body:not([data-role="admin"]) #refresh-btn,
 body:not([data-role="admin"]) #transito-download,
 body:not([data-role="admin"]) .view-tab[data-view="acciones"],
 body:not([data-role="admin"]) .view-tab[data-view="stickers"],
+body:not([data-role="admin"]) .view-tab[data-view="planeacion"],
 body:not([data-role="admin"]) .view-tab[data-view="usuarios"],
 body:not([data-role="admin"]) .view-tab[data-view="analista"] { display: none !important; }
 
@@ -2003,6 +2004,27 @@ body:not([data-role="admin"]) .view-tab[data-view="analista"] { display: none !i
 .map-sticker-gauge .asignacion-gauge { gap: 0; }
 .map-sticker-gauge .asignacion-gauge-svg { max-width: 110px; }
 .map-sticker-gauge .asignacion-gauge-legend { display: none; }
+
+/* ---- Planeación tab (planeacion-asignaciones change, Phase 4) ----------
+   Reuses .kpi-row/.kpi-tile, .card/.card-toolbar, .asignacion-workspace/
+   -main/-aside/-map*/-chip/-combo*/-cuadrilla*, .sticker-*, .table-scroll,
+   .eval-pill and .modal* as-is (design.md ADR-10, task 4.9's own precedent
+   of reusing rather than duplicating). Only what genuinely differs gets a
+   `.planeacion-*` class below. */
+.planeacion-truncacion {
+  margin: 4px 0 10px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: .82rem;
+}
+.planeacion-toggle-field { flex-direction: row !important; align-items: center; gap: 6px !important; width: auto; }
+.planeacion-row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.planeacion-row-actions .sticker-action { padding: 5px 8px; font-size: .74rem; }
+.planeacion-survey-links { align-items: center; }
+.planeacion-survey-links code { font-family: var(--font-mono); font-size: .82rem; }
 
 /* ---- Login overlay ---- */
 .auth-overlay {

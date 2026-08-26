@@ -31,6 +31,12 @@ export const API_CONFIG = {
   stickerAsignaciones: '/api/sticker-asignaciones',
   usuarios: '/api/usuarios',
   sourceStatus: `${RAILWAY_BASE_URL}/source-status`,
+  // `planeacion-asignaciones` change (Phase 3): this is a NEW endpoint with
+  // NO legacy Vercel twin, so — unlike every entry above — it has no
+  // parity check to pass before flipping. It starts on Railway from day
+  // one (design.md ADR-10's own note; the Planeación tab itself is
+  // Phase 4, not wired to this entry yet).
+  planeacionAsignaciones: `${RAILWAY_BASE_URL}/planeacion-asignaciones`,
 };
 
 // Small accessor so future consumers don't hand-index the map (typo-safety

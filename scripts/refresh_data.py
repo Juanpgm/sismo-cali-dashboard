@@ -1051,6 +1051,12 @@ LAYER_TO_RAW = {
     "— No Ingreso (no fue posible entrar), Parcial (se inspeccionaron algunas "
     "áreas) o Completa (se recorrió toda la edificación por dentro).",
     "matricula_profesional": "Matrícula Profesional:",
+    # planeacion-asignaciones (2026-08-26): the round-trip integration key
+    # (design.md ADR-7) — was silently dropped by this very allowlist
+    # before this fix. Raw label = the layer field name itself, because
+    # unlike every other entry this field has no historical Survey123
+    # xlsx-export header to preserve.
+    "codigoapp": "codigoapp",
 }
 
 
@@ -1107,6 +1113,12 @@ def fetch_survey_raw() -> pd.DataFrame:
     df = df.replace("", pd.NA)
     df["GlobalID"] = df["GlobalID"].astype("string").str.strip("{}").str.lower()
 
+    # TRAP for the next person who adds a field to the form: this is an
+    # explicit ALLOWLIST, not a drop-list. A new layer field with no
+    # LAYER_TO_RAW entry is fetched (outFields: "*" above) and then
+    # silently discarded right here — it never reaches inspections.json.
+    # This is exactly the bug that shipped `codigoapp` empty for months
+    # (planeacion-asignaciones, design.md ADR-7); check LAYER_TO_RAW first.
     # Same column order as the xlsx export: survey order, then x/y.
     df = df[list(LAYER_TO_RAW.values()) + ["x", "y"]]
     log.info("Fetched %d record(s) from the Survey123 layer.", len(df))

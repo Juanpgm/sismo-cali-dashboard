@@ -22,3 +22,10 @@ class Settings(BaseSettings):
     """Process-wide configuration, sourced from environment variables."""
 
     app_name: str = "sismo-cali-backend"
+
+    # `planeacion-asignaciones` change, Phase 3, design.md ADR-6:
+    # `getEnlaceSurvey` config. Both default to "" (not configured) so a
+    # missing env var fails loud (503) rather than emitting a broken link —
+    # see `routers/planeacion_asignaciones.py`'s `get_enlace_survey`.
+    survey123_form_url: str = ""
+    survey123_field_app_item_id: str = ""
