@@ -14,17 +14,20 @@ now also asserts a non-empty hit set, mirroring the `sticker_matches` test.
 
 **Slice 7b (task 7.6)** adds a SECOND, INDEPENDENT literal check for
 `survey_cali` — ADR-9's "same treatment" extension for that collection.
-Its declared writer set is `services/survey_cali.py` (the sole module that
+Its declared writer set was `services/survey_cali.py` (the sole module that
 touches Firestore for this collection) and `app/jobs/dashboard_refresh.py`
 (calls INTO `services/survey_cali.py`'s `ingest_records`/`apply_mutation`,
 never Firestore directly — but its source text still contains the literal,
 via `from app.services import survey_cali` + `survey_cali.ingest_records(...)`,
-which is exactly what this scan is built to catch either way). A third
-module, `routers/survey_cali.py`, joins this allowlist once it exists —
-task 7.4/design.md ADR-9 both say so explicitly — but it does NOT exist yet
-(that router is slice 8b's job, task 8.x per tasks.md; task 7.6's own text:
-"do NOT anticipate it here" — same "do not anticipate" discipline as the
-`sticker_matches`/`cuadrillas` note above for `sticker_asignaciones.py`).
+which is exactly what this scan is built to catch either way).
+
+**Slice 8c (task 8.11)** closes this set: `routers/survey_cali.py` (task
+8.10's CRUD/history/revert router) joins as the THIRD and FINAL write
+module — every mutation it performs (create/patch/delete/revert) funnels
+through `services/survey_cali.apply_mutation`, never a direct Firestore
+write, same "funnel through the single mutation core" discipline
+`app/jobs/dashboard_refresh.py` already follows. The `survey_cali`
+allowlist is now CLOSED — no further module is named by ADR-9 to join it.
 
 **Slice 7 finding**: `app/integracion/cruce_gestor.py` (the copied pipeline
 module `cruce_sticker.py` imports its matching cascade from) does NOT
@@ -88,13 +91,15 @@ ALLOWED_MODULES = {
     APP_ROOT / "routers" / "sticker_asignaciones.py",
 }
 
-# Slice 7b (task 7.6): `survey_cali`'s OWN allowlist — INDEPENDENT of
+# Slice 7b (task 7.6) opened `survey_cali`'s OWN allowlist — INDEPENDENT of
 # ALLOWED_MODULES above (different collection, different ADR-9 clause).
-# `routers/survey_cali.py` is named by ADR-9 but does NOT exist yet
-# (slice 8b) — do NOT add it here ahead of that slice's own RED task.
+# Slice 8c (task 8.11) adds `routers/survey_cali.py` as the THIRD and FINAL
+# write module, per ADR-9's own naming and task 7.6's "do not anticipate it
+# here" note (now resolved — the router exists). This set is now CLOSED.
 ALLOWED_MODULES_SURVEY_CALI = {
     APP_ROOT / "services" / "survey_cali.py",
     APP_ROOT / "jobs" / "dashboard_refresh.py",
+    APP_ROOT / "routers" / "survey_cali.py",
     # Plain docstring mention ("... survey_cali.py -- land in their own
     # migration slices") in the package's module docstring -- no Firestore
     # access, verified by reading the file in full. Allowlisted rather than
@@ -104,6 +109,17 @@ ALLOWED_MODULES_SURVEY_CALI = {
     # needed no entry at all because it had zero hits; this one needs an
     # entry because it genuinely contains the substring).
     APP_ROOT / "services" / "__init__.py",
+    # Slice 8c finding: `app/main.py` imports the `survey_cali` router
+    # module by name (`from app.routers import (..., survey_cali, ...)`)
+    # and mounts it in `_ROUTERS`, so its source text genuinely contains
+    # the literal too -- an inherent consequence of the router module
+    # sharing its name with the Firestore collection, unlike every other
+    # router (`stickers.py`, `usuarios.py`, ...) whose module name never
+    # happens to match a scanned collection literal. Verified harmless by
+    # reading `main.py` in full: import + `app.include_router(...)` only,
+    # zero Firestore access -- same "import/mount reference, not a write
+    # path" reasoning as the `services/__init__.py` entry above.
+    APP_ROOT / "main.py",
 }
 
 
@@ -137,11 +153,13 @@ def test_cuadrillas_literal_appears_only_in_allowlisted_modules():
 
 
 def test_survey_cali_literal_is_used_by_an_allowlisted_module():
-    """Slice 7b (task 7.6): `survey_cali` gets its OWN sole-writer check,
+    """Slice 7b (task 7.6) opened `survey_cali`'s OWN sole-writer check,
     independent of `sticker_matches`/`cuadrillas` above (design.md ADR-9's
-    extension for this collection). Allowlist is `services/survey_cali.py`
-    + `app/jobs/dashboard_refresh.py` ONLY this slice —
-    `routers/survey_cali.py` joins in slice 8b, not anticipated here."""
+    extension for this collection). Slice 8c (task 8.11) finalizes the
+    allowlist to its CLOSED set: `services/survey_cali.py`,
+    `app/jobs/dashboard_refresh.py`, `routers/survey_cali.py` — confirmed
+    by this scan that no other module under `backend/app/` references the
+    literal."""
     hits = _files_containing("survey_cali")
     unexpected = hits - ALLOWED_MODULES_SURVEY_CALI
     assert not unexpected, f"unexpected survey_cali reference(s): {sorted(unexpected)}"

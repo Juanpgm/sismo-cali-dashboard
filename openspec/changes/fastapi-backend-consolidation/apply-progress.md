@@ -2047,3 +2047,155 @@ across PR boundaries. Committed as 2 work-unit commits (RED, then GREEN) on `fea
 **Rollback**: delete the branch / do not merge. Zero production impact — no consumer repointed
 (`api-config.js` untouched, task 8.8 explicitly out of scope), and `/usuarios` was not live before this
 batch (task 8.6 is the first time this router exists in the new backend).
+
+---
+
+## Batch 8c — survey_cali CRUD/history/revert router
+
+Branch: `feat/fastapi-consolidation-8c-survey-cali-router` (off `main` at `0370fbb`, not pushed).
+Confirmed `python -m pytest backend/tests/ -q` on `main` before branching → **242 passed** (matching
+Batch 8b's final count). Scope: EXACTLY tasks 8.9, 8.10, 8.11 — the `survey_cali` CRUD/history/revert
+router, wired through 7.4's `apply_mutation` mutation core, plus the FINAL closure of
+`test_sole_writer.py`'s independent `survey_cali` allowlist. Task 8.12 (live-Firestore round-trip
+VERIFY) is explicitly OUT OF SCOPE — left `[ ]`, BLOCKED, same class of blocker as every prior
+live-integration VERIFY task in this change (2.3, 6.3, 7.14, 8.7); never fabricated.
+
+### TDD Cycle Evidence
+
+| Task | RED | GREEN | REFACTOR |
+|---|---|---|---|
+| 8.9/8.10 | `backend/tests/routers/test_survey_cali.py` written first, 17 cases — confirmed failing: `404 Not Found` on every route (`app.routers.survey_cali` did not exist / was not mounted) | `backend/app/routers/survey_cali.py` implemented; `python -m pytest backend/tests/routers/test_survey_cali.py -v` -> 17 passed, first pass, no rework | None needed — no rework required after the first GREEN pass |
+| 8.11 | `test_sole_writer.py`'s `ALLOWED_MODULES_SURVEY_CALI` extension — NOT a genuine RED-before-GREEN gap (router already existed once this task ran, same honest-flagging situation 7.6/1.13/3.5 documented) | `python -m pytest backend/tests/invariants/test_sole_writer.py -v` -> 3 passed after extending the allowlist (see Deviations/Issues below for the two unplanned collisions this task's own run surfaced and fixed) | None needed |
+
+### Completed Tasks
+
+- [x] **8.9** (RED) `backend/tests/routers/test_survey_cali.py` — 17 cases: 7 non-admin-rejected-no-
+      state-change (parametrized over all 7 routes — `GET/POST /survey-cali`, `GET/PATCH/DELETE
+      /survey-cali/{id}`, `GET /survey-cali/{id}/history`, `POST /survey-cali/{id}/revert` — asserting
+      the fake Firestore's full store snapshot is byte-identical before/after each rejected call), 1
+      unauthenticated-401, merge-only PATCH (`{a:1,b:2}`+`{b:3}` -> `{a:1,b:3}`), no-op PATCH (200, zero
+      new revision, verified by comparing `rev` before/after and counting history docs), 2
+      underscore-metadata-rejected cases (POST create's `id`-plus-content body, PATCH's plain-dict
+      body — both via Pydantic validators, both a real 422), list-excludes-`_deleted`-never-embeds-
+      history, history-returns-all-revisions-newest-first, history-shows-a-revision's-changed-fields,
+      admin-update-writes-a-uid-authored-revision, and the full revert round-trip
+      (create -> edit -> edit -> revert-to-rev-1 -> assert current state matches rev 1, a NEW rev 4 was
+      appended with `kind:'revert'`/`revert_of:1`, and revisions 1-3 are byte-identical before/after).
+      Confirmed RED — `404 Not Found` on every route before 8.10 landed (router module did not exist).
+- [x] **8.10** (GREEN) `backend/app/routers/survey_cali.py` — `GET/POST /survey-cali`, `GET/PATCH/
+      DELETE /survey-cali/{id}`, `GET /survey-cali/{id}/history`, `POST /survey-cali/{id}/revert`, all
+      `Depends(require_role("admin"))`. First GREEN pass, no rework — `python -m pytest
+      backend/tests/routers/test_survey_cali.py -v` -> 17 passed. Every WRITE (create/patch/delete/
+      revert) funnels through `services.survey_cali.apply_mutation` — this router never calls
+      `.set()`/`.update()` on the collection directly, only direct Firestore READS (list, get-by-id,
+      history), the same "reads are fine, only writes are sole-writer-gated" precedent
+      `routers/sticker_status.py` established. Underscore-prefixed metadata is rejected BY THE SCHEMA
+      (a Pydantic `BeforeValidator` for PATCH's plain-dict body via `Annotated[dict[str, Any],
+      BeforeValidator(_reject_metadata_keys), Body(...)]`, confirmed empirically to raise a genuine 422
+      `RequestValidationError`, not a hand-rolled 400; a `model_validator(mode="before")` for POST's
+      `id`-plus-content body). `POST /survey-cali` pre-checks doc existence BEFORE calling
+      `apply_mutation` (409 if the id already exists) — `apply_mutation`'s own first-run detection would
+      otherwise silently treat a pre-existing id as a `create`, which is wrong per ADR-12's "create
+      fails if id exists" semantics. Revert reconstructs the target revision's field state by replaying
+      every revision `<= rev` in ascending order (`changes[field].after`), matching ADR-10's own stated
+      derivation rule, then diffs that reconstructed state against the CURRENT doc via the normal
+      `apply_mutation` path — so a revert to a state identical to the current doc is correctly a no-op,
+      not a spurious revision. `_jsonable()` manually `.isoformat()`s any `datetime` field before
+      building each `JSONResponse` (Firestore Timestamps auto-convert to native `datetime` on
+      `to_dict()`, same precedent `routers/stickers.py` established — `starlette`'s plain `JSONResponse`
+      does not `jsonable_encode()` automatically). Mounted in `app/main.py`'s `_ROUTERS`. Full suite:
+      `python -m pytest backend/tests/ -q` -> 259 passed (242 baseline + 17 new).
+- [x] **8.11** (RED) `test_sole_writer.py`'s `ALLOWED_MODULES_SURVEY_CALI` finalized to its closed set:
+      `services/survey_cali.py`, `app/jobs/dashboard_refresh.py`, `routers/survey_cali.py` (+ two
+      verified-harmless non-write mentions, see Deviations below). `python -m pytest
+      backend/tests/invariants/test_sole_writer.py -v` -> 3 passed — confirms no OTHER module under
+      `backend/app/` references the `survey_cali` literal. This is the FINAL closure of BOTH
+      sole-writer allowlists in this whole change (`sticker_matches`/`cuadrillas` closed at 8.4;
+      `survey_cali` closed here).
+
+### Deviations from Design
+
+1. **Route shape — no `/api` prefix, deviates from ADR-12's own table (design.md), matches tasks.md's
+   own instruction.** design.md's ADR-12 writes these routes as `/api/survey-cali...`; tasks.md's task
+   8.10 text (the actual scoped instruction for this batch) lists them WITHOUT that prefix. Since
+   `survey_cali` is a brand-new capability with no legacy consumer to stay byte-for-byte parity with
+   (ADR-12 itself: "new capability, no legacy parity constraint"), the established no-`/api`-prefix
+   convention every other NEW-shape admin router in this backend already uses (`/stickers`,
+   `/sticker-asignaciones`, `/usuarios`, `/refresh`, `/sticker-status`, `/source-status`) was followed
+   instead — `/api/sign` is the one exception, and that's a literal parity requirement for an existing
+   Vercel consumer `survey_cali` simply doesn't have. ADR-12's table is treated as slightly stale on
+   this one cosmetic point, flagged here for verify rather than silently resolved.
+2. **A soft-deleted doc 404s on `GET /survey-cali/{id}` too, not just the list endpoint.** Neither
+   design.md nor the spec explicitly states single-doc GET behavior for a `_deleted` record — only the
+   LIST endpoint's exclusion is spelled out. Chosen for consistency with ADR-10's "Default Read Path
+   Returns Current State Only" requirement's spirit applying to BOTH current-state read routes, not
+   just the list one; the full doc (incl. `_deleted:true`) and its history stay reachable only via
+   `GET .../{id}/history`. Flagged for verify as a genuine interpretation, not an explicit requirement.
+3. **History page size (design open question 5) resolved: default 50, `limit` query param, capped at
+   200**, newest-first sorted by the revision's own `rev` integer (not a Firestore `order_by` — avoids
+   depending on a capability the offline fakes don't implement; ADR-10's own zero-padded `rev_NNNNNN`
+   ids already guarantee `rev`-integer order equals lexical order anyway).
+
+### Issues Found
+
+Two unplanned cross-module findings, BOTH surfaced and fixed within this same batch (task 8.11's own
+run), not deferred:
+
+1. **Mounting the router made `app/main.py` itself trip the `survey_cali` sole-writer scan.** Once
+   `app/main.py` imports `survey_cali` (`from app.routers import (..., survey_cali, ...)`) to mount it,
+   its own source text genuinely contains the literal `survey_cali` for the first time — an inherent
+   consequence of THIS router module sharing its exact name with the Firestore collection, unlike every
+   other router module (`stickers.py`, `usuarios.py`, ...) whose name never happens to collide with a
+   scanned collection literal. Verified harmless by reading `main.py` in full (import + `app.
+   include_router(...)` only, zero Firestore access) and added as a documented, "verified harmless"
+   entry in `ALLOWED_MODULES_SURVEY_CALI` — same reasoning already used for `services/__init__.py`'s
+   docstring-mention entry (task 7.6).
+2. **This router's own module docstring accidentally tripped the OTHER, already-closed
+   `sticker_matches`/`cuadrillas` invariant.** The docstring originally cited `routers/sticker_status.py`
+   as precedent using the literal substring `sticker_matches` in prose — which the OTHER
+   `test_sole_writer.py` check (closed since task 8.4) also scans for. Reworded to describe the same
+   precedent without quoting the literal substring, rather than reopening a closed allowlist for an
+   unrelated collection just to accommodate a docstring citation.
+
+Neither finding is a functional bug — both are review-tripwire hits from the invariant's own
+substring-scan design working exactly as intended (ADR-9: "a new write (or read) path... cannot merge
+without someone deliberately editing ALLOWED_MODULES"). No production behavior changed as a result of
+either fix; both are test/documentation-layer corrections.
+
+### Status
+
+**Batch 8c: 3/3 tasks complete** (8.9, 8.10, 8.11). **8.12 (live Firestore round-trip VERIFY)
+deliberately BLOCKED / out of scope** — no real or emulated `sismo-agosto-sgred` Firestore project is
+available to this automated batch; the equivalent create->patch->delete->revert round-trip is already
+exercised against a fake Firestore in 8.9's 17-case suite, which is the strongest signal available
+without fabricating a live run (same class of blocker as 2.3, 6.3, 7.14, 8.7 — never fabricated in this
+change). Full `backend/tests/` suite: **259 passed, 0 failed** (242 baseline + 17 new).
+
+**This is the FINAL scoped router for the whole `fastapi-backend-consolidation` change.** Phase 9 is
+decommission-only (deletions + manual operator sign-offs) — no further new routes are planned anywhere
+in this change's remaining scope.
+
+**Cross-cutting gap scan (explicitly requested by this batch's own instructions)**: read across the
+whole backend for anything that looks like a genuine cross-cutting gap, not just this router's own
+scope. One real, already-documented gap exists and is worth re-surfacing here rather than treating as
+newly discovered: Batch 8b flagged that `usuarios.py` is missing `setEnabled`/`setRole` (both present in
+`api/usuarios.js`, both required by `openspec/specs/user-management/spec.md`) — that gap is unrelated to
+`survey_cali` and remains open; no new cross-cutting gap was found during this batch's own work. The
+`survey_cali` CRUD router itself has NO legacy consumer/UI to gap-check against (ADR-12: "new capability
+with no legacy parity constraint") — its own completeness is scoped entirely by the survey-cali-
+collection spec's 5 requirements, all of which have route-layer coverage per 8.9/8.10 above.
+
+**Review Budget flag**: this batch's diff is **712 changed lines** (`app/main.py` +2, `app/routers/
+survey_cali.py` +317, `tests/invariants/test_sole_writer.py` +46/-14, `tests/routers/test_survey_cali.py`
++347) — above the general 400-line single-PR budget, but this IS the designated "8c survey_cali
+CRUD/history/revert" split unit the Review Workload Forecast itself recommended for the combined 8/8b
+slice (~950-1150+ lines total, split into 8a/8b-admin/8c), and it is a single coherent, independently
+reviewable, independently rollback-able deliverable (one router, its tests, and the sole-writer
+invariant's final closure) — not further split, matching the `chained-pr`/`work-unit-commits` skills'
+guidance to keep one deliverable work unit per PR rather than splitting a single router's RED/GREEN pair
+across PR boundaries. Committed as 3 work-unit commits (RED, GREEN, invariant-closure) on
+`feat/fastapi-consolidation-8c-survey-cali-router`, not merged, not pushed, per this batch's explicit
+"commit locally only" instruction.
+
+**Rollback**: delete the branch / do not merge. Zero production impact — no consumer repointed (this is
+a brand-new capability with no legacy UI), and `/survey-cali*` was not live before this batch.
