@@ -30,8 +30,8 @@ from app.main import create_app
 FAKE_CLAIMS_VIEWER = {"sub": "uid-viewer", "email": "someone@gmail.com"}
 FAKE_CLAIMS_ADMIN = {
     "sub": "uid-admin",
-    "email": "admin@sismocali.gov.co",
-    "customClaims": {"role": "admin"},
+    "email": "admin@example.com",
+    "role": "admin",
 }
 
 _FAKE_DOCS: list[dict[str, Any]] = [
