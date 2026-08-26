@@ -12,6 +12,19 @@ boto3>=1.35               # s3() — presigned upload URLs (slice 2, app/routers
 requests>=2.32            # cruce_sticker job's INSPECTIONS_URL fallback (slice 7, app/jobs/cruce_sticker.py)
 numpy>=1.26                # app/integracion/normalization.py's address vector (slice 7, ported)
 
+# scripts/refresh_data.py (invoked as a subprocess by app/jobs/dashboard_refresh.py,
+# same package list deploy/Dockerfile's legacy cron image pinned). Found missing
+# live (2026-08-26): the job crashed with ModuleNotFoundError on its first real
+# Railway run — this was never caught by backend/tests/ because those tests mock
+# the subprocess call, they never actually execute refresh_data.py.
+pandas>=2.2
+shapely>=2.0
+openpyxl>=3.1              # optional in refresh_data.py (xlsx export); degrades gracefully if absent, kept for parity
+# google-api-python-client / google-auth deliberately NOT added: refresh_data.py's
+# only use of them is the Drive/Sheets service-account xlsx fallback (design.md
+# ADR-4), dead code here — never wired to an env var, always falls through to the
+# public/local strategies (verified: no env var this backend sets triggers it).
+
 # --- test ---
 pytest>=8.3
 pytest-asyncio>=0.24
