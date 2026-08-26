@@ -60,29 +60,31 @@ exact-string-membership layer instead. This module has no reason to touch
 that logic at all: the key it returns is whatever the pipeline already
 persisted.
 
-## A note on a naming collision this module deliberately avoids
+## A note on a name this module shares with the sticker campaign
 
-`PLANEACION_CUADRILLAS_COLLECTION`'s value ("planeacion_" plus the plural
-Spanish word for work crew(s)) CONTAINS, as a plain substring, the exact
-literal the sticker campaign's OWN, CLOSED sole-writer scan
-(`test_sole_writer.py`'s `ALLOWED_MODULES`) searches for across every file
-under `backend/app/`. Writing that literal — or the same plural word used
-as a bare JSON response key (`{ok, <plural word>}`, per this router's own
-action table) — as ordinary contiguous text anywhere in this file would
-falsely flag this module in THAT scan, which this module has zero
-functional relationship to (it never reads or writes the sticker
-campaign's own collection). See `tests/invariants/test_sole_writer.py`'s
-own docstring for the full "naming collision" note, and this file's
-`PLANEACION_CUADRILLAS_COLLECTION`/`_CUADRILLAS_KEY` definitions below for
-how the collision is avoided (string concatenation producing the identical
-runtime value, not obfuscation of a real write path — this module's OWN
-dedicated sole-writer scan for `PLANEACION_CUADRILLAS_COLLECTION` still
-finds this file via that all-caps identifier). For the same reason, every
-function/variable name and prose comment in this file below uses the
-SINGULAR "cuadrilla" or the parenthesized "cuadrilla(s)" form instead of
-the bare plural word, even where English grammar would normally call for
-the plural — this is a deliberate, file-wide convention, not an
-inconsistency.
+This module's collections are `planeacion_puntos` and
+`planeacion_cuadrillas`, and its `listCuadrillas`/`autoAgrupar` actions
+answer `{"ok": true, "cuadrillas": [...]}` — deliberately the same payload
+shape the sticker endpoint uses, so the Planeación tab can reuse the same
+frontend reading pattern. It has ZERO functional relationship to the
+sticker campaign's own `cuadrillas` collection: it never reads or writes
+it. Its own two collections are guarded by their own two independent
+sole-writer allowlists in `tests/invariants/test_sole_writer.py`.
+
+That scan is deliberately COARSE — it flags the bare word anywhere under
+`backend/app/`, on the principle "if the word appears, prove it is fine" —
+so this file is listed in the sticker `ALLOWED_MODULES` set with an
+explicit annotation saying the only hit is the JSON response key. That
+annotation, not a code change, is the resolution.
+
+Recorded because the first implementation did the opposite: it wrote the
+constant as `"planeacion_cuadrilla" + "s"` so the word never appeared
+contiguously, and adopted a file-wide convention of avoiding the plural in
+prose. That passes the scan while defeating its purpose, and teaches the
+next author that an inconvenient tripwire is something to slip past.
+Reverted 2026-08-26 along with a real fix to the scan itself, which now
+matches whole identifiers — so `planeacion_cuadrillas` no longer
+false-positives against the sticker campaign's closed list at all.
 """
 from __future__ import annotations
 
@@ -102,15 +104,8 @@ from app.services.survey_link import build_survey_urls
 REQUIRED_CLIENTS: tuple[str, ...] = ("sismo",)
 
 PLANEACION_PUNTOS_COLLECTION = "planeacion_puntos"
-# See the module docstring's "naming collision" note. Concatenated (never a
-# single contiguous literal in this file's raw source text) so the STICKER
-# campaign's own CLOSED cuadrilla(s) sole-writer scan does not false-
-# positive on this UNRELATED collection. The runtime value is exactly
-# "planeacion_" + the plural word.
-PLANEACION_CUADRILLAS_COLLECTION = "planeacion_cuadrilla" + "s"
-# Same reasoning, for the bare plural word used as a JSON response key
-# (`{ok, <plural word>}`, ADR-8's action table).
-_CUADRILLAS_KEY = "cuadrilla" + "s"
+PLANEACION_CUADRILLAS_COLLECTION = "planeacion_cuadrillas"
+_CUADRILLAS_KEY = "cuadrillas"
 
 # Binding user decision (2026-08-26): DEFAULT_MAX_SIZE = 10 for Planeación,
 # NOT the sticker template's 8 — an EDAN survey is a far longer visit than

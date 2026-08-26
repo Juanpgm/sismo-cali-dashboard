@@ -72,6 +72,7 @@ command+output pair.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 APP_ROOT = Path(__file__).resolve().parents[2] / "app"
@@ -89,6 +90,25 @@ ALLOWED_MODULES = {
     APP_ROOT / "routers" / "sticker_status.py",  # read-only, see docstring
     APP_ROOT / "jobs" / "cruce_sticker.py",
     APP_ROOT / "routers" / "sticker_asignaciones.py",
+    # `planeacion-asignaciones` change (2026-08-26): NOT a sticker-campaign
+    # writer, and it never names the sticker `cuadrillas` COLLECTION. The
+    # only hit is the JSON RESPONSE KEY of its own `listCuadrillas`/
+    # `autoAgrupar` actions (`{"ok": True, "cuadrillas": [...]}`), which
+    # mirrors the sticker endpoint's payload shape so the Planeación tab
+    # can reuse the same frontend reading pattern. Its Firestore access is
+    # exclusively `planeacion_puntos` / `planeacion_cuadrillas`, guarded by
+    # their own two independent allowlists further down.
+    #
+    # Recorded here rather than worked around. The first implementation
+    # instead wrote the constant as `"planeacion_cuadrilla" + "s"` so the
+    # word never appeared contiguously in source — that passes the scan
+    # while defeating its purpose, and teaches the next author that an
+    # inconvenient tripwire is something to slip past. This scan is
+    # deliberately COARSE ("if the word appears, prove it is fine"), so the
+    # honest resolution for a genuine non-collection use is an annotated
+    # entry — the same precedent `sticker_status.py` (read-only) and
+    # `main.py` (import/mount) already set above.
+    APP_ROOT / "routers" / "planeacion_asignaciones.py",  # JSON key only, see note
 }
 
 # Slice 7b (task 7.6) opened `survey_cali`'s OWN allowlist — INDEPENDENT of
@@ -136,10 +156,28 @@ ALLOWED_MODULES_SURVEY_CALI = {
 }
 
 
+def _text_contains_literal(text: str, literal: str) -> bool:
+    """True when `text` names `literal` as a WHOLE identifier.
+
+    Deliberately not a bare `literal in text`. A substring match means any
+    longer collection whose name merely CONTAINS a guarded one — e.g.
+    `planeacion_cuadrillas` contains `cuadrillas` — registers as a hit
+    against the wrong campaign's CLOSED allowlist. That is a false
+    positive with a genuinely harmful consequence: the author of the new,
+    unrelated collection cannot add themselves to a closed list, so the
+    path of least resistance becomes obfuscating the string to slip past
+    the scan (`"planeacion_cuadrilla" + "s"`), which silently disables the
+    review tripwire this whole file exists to be. Matching whole
+    identifiers removes that pressure without weakening the real check:
+    an unlisted module that names a guarded collection is still caught.
+    """
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(literal)}(?![A-Za-z0-9_])", text) is not None
+
+
 def _files_containing(literal: str) -> set[Path]:
     hits: set[Path] = set()
     for path in APP_ROOT.rglob("*.py"):
-        if literal in path.read_text(encoding="utf-8"):
+        if _text_contains_literal(path.read_text(encoding="utf-8"), literal):
             hits.add(path)
     return hits
 
@@ -240,3 +278,35 @@ def test_planeacion_cuadrillas_literal_appears_only_in_allowlisted_modules():
     unexpected = hits - ALLOWED_MODULES_PLANEACION_CUADRILLAS
     assert not unexpected, f"unexpected PLANEACION_CUADRILLAS_COLLECTION reference(s): {sorted(unexpected)}"
     assert hits, "expected PLANEACION_CUADRILLAS_COLLECTION to be referenced by an allowlisted module by now"
+
+
+# Scanner precision ----------------------------------------------------------
+# The scan must match a collection name as a WHOLE identifier. A naive
+# substring match makes any longer collection whose name merely CONTAINS a
+# guarded one (`planeacion_cuadrillas` contains `cuadrillas`) trip the wrong
+# campaign's CLOSED allowlist -- which pressures the next author into
+# obfuscating the string to dodge the scanner (`"planeacion_cuadrilla" + "s"`),
+# defeating the tripwire this file exists to be.
+
+
+def test_scanner_matches_whole_identifiers_not_bare_substrings(tmp_path):
+    probe = tmp_path / "probe.py"
+
+    probe.write_text('db.collection("planeacion_cuadrillas")', encoding="utf-8")
+    assert not _text_contains_literal(probe.read_text(encoding="utf-8"), "cuadrillas"), (
+        "a DIFFERENT collection that merely contains the guarded name as a "
+        "substring must not register as a hit"
+    )
+
+    probe.write_text('db.collection("cuadrillas")', encoding="utf-8")
+    assert _text_contains_literal(probe.read_text(encoding="utf-8"), "cuadrillas"), (
+        "the guarded collection itself must still register as a hit"
+    )
+
+
+def test_scanner_still_catches_a_genuine_unlisted_writer():
+    # The property that actually matters: an unlisted module naming a guarded
+    # collection is still caught. Guarded against the fix over-loosening.
+    for literal in ("sticker_matches", "cuadrillas", "survey_cali"):
+        assert _text_contains_literal(f'db.collection("{literal}").set(x)', literal)
+        assert not _text_contains_literal(f'db.collection("otra_{literal}_x")', literal)
