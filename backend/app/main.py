@@ -14,12 +14,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import config
 from app.credentials import clients as credentials
-from app.routers import health, reportados, sign
+from app.routers import health, inspector_asignaciones, reportados, sign
 from app.services.snapshot import ReportadosSnapshot, refresh_loop, seed_from_blob
 
 # Every router mounted by create_app(). Extended one module per migration
 # slice (tasks.md phases 2-8).
-_ROUTERS = (health, sign, reportados)
+_ROUTERS = (health, sign, reportados, inspector_asignaciones)
 
 
 @asynccontextmanager
