@@ -118,6 +118,14 @@ ALLOWED_MODULES = {
     # only Firestore access is `planeacion_auditoria`, guarded by its own
     # independent allowlist further down.
     APP_ROOT / "services" / "planeacion_audit.py",  # JSON key + prose word only, see note
+    # `integracion` change (2026-08-26): READ-ONLY. `routers/integracion.py`
+    # probes `sticker_matches/ede_{survey_globalid}` EXISTENCE (batched
+    # `get_all`) to derive the inferred `sticker_globalid` interop key — it
+    # never calls `.set()`/`.update()`/`batch()` on this collection. Same
+    # "legitimate new reader, flagged rather than hidden" precedent
+    # `routers/sticker_status.py` (also read-only above) already set for this
+    # allowlist; the WRITE set stays CLOSED.
+    APP_ROOT / "routers" / "integracion.py",  # read-only ede_{sg} existence probe, see note
 }
 
 # Slice 7b (task 7.6) opened `survey_cali`'s OWN allowlist — INDEPENDENT of
@@ -162,6 +170,14 @@ ALLOWED_MODULES_SURVEY_CALI = {
     # zero Firestore access -- same "import/mount reference, not a write
     # path" reasoning as the `services/__init__.py` entry above.
     APP_ROOT / "main.py",
+    # `integracion` change (2026-08-26): DOCSTRING MENTION ONLY. `routers/
+    # integracion.py`'s module docstring names `survey_cali` when explaining
+    # how the `survey_globalid` namespace tie is derived (survey_cali doc id
+    # == Survey123 GlobalID); the module has ZERO Firestore access to this
+    # collection. Verified by reading the file in full — same "doc comment
+    # naming a sibling collection isn't a write path" reasoning as the
+    # `services/__init__.py`/`main.py` entries above.
+    APP_ROOT / "routers" / "integracion.py",  # docstring mention only, no Firestore access
 }
 
 
@@ -287,6 +303,13 @@ ALLOWED_MODULES_PLANEACION_PUNTOS = {
     APP_ROOT / "jobs" / "planeacion_cruce.py",
     APP_ROOT / "routers" / "planeacion_asignaciones.py",
     APP_ROOT / "routers" / "inspector_asignaciones.py",  # own-uid-scoped inspector access, see note above
+    # `integracion` change (2026-08-26): READ-ONLY. `routers/integracion.py`
+    # reads `planeacion_puntos` (imports `PLANEACION_PUNTOS_COLLECTION` from
+    # `planeacion_asignaciones.py`, never re-literaled) to project the
+    # interop-key subset for its `/integracion/*` endpoints — no write path
+    # of any kind. Flagged read-only entry, same precedent as this file's
+    # other read-only additions.
+    APP_ROOT / "routers" / "integracion.py",  # read-only interop reader, no write path
 }
 ALLOWED_MODULES_PLANEACION_CUADRILLAS = {
     APP_ROOT / "routers" / "planeacion_asignaciones.py",

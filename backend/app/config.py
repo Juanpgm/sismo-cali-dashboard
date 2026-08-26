@@ -29,3 +29,9 @@ class Settings(BaseSettings):
     # see `routers/planeacion_asignaciones.py`'s `get_enlace_survey`.
     survey123_form_url: str = ""
     survey123_field_app_item_id: str = ""
+
+    # Service API key for the read-only `/integracion/*` interop endpoints
+    # (`auth/api_key.py`'s `require_api_key`). Defaults to "" (unset) — the
+    # dependency FAILS CLOSED on empty, so an unconfigured deployment rejects
+    # every interop request rather than serving them openly.
+    interop_api_key: str = ""
