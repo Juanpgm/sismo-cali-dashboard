@@ -1,0 +1,11 @@
+{
+  "//": "Consolidated FastAPI backend (design.md ADR-1). Root directory = repo root, NOT backend/ — see backend/Dockerfile's comment. Every Railway service (web + 5 crons) is git-connected to this repo with this pinned dockerfilePath; startCommand/cronSchedule differ per service and are set on the service instance (backend/scripts/railway_services.py, ADR-6), never overridden here.",
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "backend/Dockerfile"
+  },
+  "deploy": {
+    "restartPolicyType": "ON_FAILURE"
+  }
+}
