@@ -1,11 +1,11 @@
 """Web-startup credential fail-fast behavior (design.md ADR-4; backend-platform
-spec: "Missing web-route credential fails startup", "Job-only credential
-loads lazily").
+spec: "Missing web-route credential fails startup").
 
-`sismo()` (FIREBASE_SERVICE_ACCOUNT_JSON) is the web-route credential and
-MUST be validated unconditionally at `create_app()` time — before any request
-is served. `dagma()` (GOOGLE_SERVICE_ACCOUNT_JSON) is job-only and MUST NOT
-block web startup.
+`sismo()` (FIREBASE_SERVICE_ACCOUNT_JSON) is the ONLY named credential client
+(proposal.md Extension 2, 2026-08-25: "no usar nada relacionado con el
+dagma" — the `dagma` client scaffolded in slice 1a is removed) and MUST be
+validated unconditionally at `create_app()` time — before any request is
+served.
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from app.credentials.clients import CredentialsError
 
 def test_missing_firebase_service_account_json_fails_startup(monkeypatch):
     monkeypatch.delenv("FIREBASE_SERVICE_ACCOUNT_JSON", raising=False)
-    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON", raising=False)
 
     from app.main import create_app
 
@@ -24,20 +23,8 @@ def test_missing_firebase_service_account_json_fails_startup(monkeypatch):
         create_app()
 
 
-def test_missing_google_service_account_json_does_not_block_web_startup(monkeypatch):
+def test_startup_succeeds_when_firebase_service_account_json_present(monkeypatch):
     monkeypatch.setenv("FIREBASE_SERVICE_ACCOUNT_JSON", '{"type": "service_account"}')
-    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_JSON", raising=False)
-
-    from app.main import create_app
-
-    app = create_app()
-
-    assert app is not None
-
-
-def test_startup_succeeds_when_both_credentials_present(monkeypatch):
-    monkeypatch.setenv("FIREBASE_SERVICE_ACCOUNT_JSON", '{"type": "service_account"}')
-    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON", '{"type": "service_account"}')
 
     from app.main import create_app
 

@@ -1,7 +1,9 @@
-"""Named, memoized service-account clients — design.md ADR-4.
+"""Named, memoized service-account clients — design.md ADR-4, as amended by
+proposal.md Extension 2 (2026-08-25, "no usar nada relacionado con el
+dagma").
 
 The ONLY module that reads service-account env vars or constructs
-Firestore/Auth clients. Exactly 2 named clients:
+Firestore/Auth clients. Exactly ONE named client:
 
 - ``sismo()``  — Firestore + Auth admin, `sismo-agosto-sgred`, bound to
   ``FIREBASE_SERVICE_ACCOUNT_JSON``. Used by nearly every web route
@@ -10,13 +12,12 @@ Firestore/Auth clients. Exactly 2 named clients:
   startup** — this is why ``WEB_STARTUP_CLIENTS`` below always includes it,
   independent of which routers happen to be mounted yet (relevant in slice 1,
   where only the unauthenticated ``health`` router exists).
-- ``dagma()``  — Firestore, `dagma-85aad`, bound to
-  ``GOOGLE_SERVICE_ACCOUNT_JSON``. Used only by the ``cruce_gestion`` job.
-  **Load rule: lazy** — never validated at web startup; the job's ``main()``
-  calls ``require("dagma")`` as its first statement instead.
 
-Google Sheets is fully out of scope for this consolidation (Scope Exclusion
-Addendum): no ``sheets()`` client and no Sheets-related env var exist here.
+No second named client exists in this module: proposal.md Extension 2 item 1
+removed the one scaffolded in slice 1a, whose sole consumer job is excluded
+from migration under that same Extension. Google Sheets is likewise fully
+out of scope for this consolidation (Scope Exclusion Addendum): no
+``sheets()`` client and no Sheets-related env var exist here.
 
 Declaration mechanism (ADR-4): each router/job module declares
 ``REQUIRED_CLIENTS: tuple[str, ...]`` at module top. ``create_app()`` unions
@@ -30,10 +31,10 @@ import os
 from functools import lru_cache
 from typing import Iterable, NamedTuple
 
-# Env var name per named client (ADR-4 table).
+# Env var name per named client (ADR-4 table, dagma removed per proposal.md
+# Extension 2).
 _ENV_VARS: dict[str, str] = {
     "sismo": "FIREBASE_SERVICE_ACCOUNT_JSON",
-    "dagma": "GOOGLE_SERVICE_ACCOUNT_JSON",
 }
 
 # Clients whose absence MUST fail web-process startup, regardless of which
@@ -103,14 +104,3 @@ def sismo() -> SismoClients:
         info, project=info.get("project_id")
     )
     return SismoClients(firestore=db, app=app)
-
-
-@lru_cache(maxsize=1)
-def dagma():
-    """Memoized Firestore client, `dagma-85aad`. Job-only, loaded lazily."""
-    from google.cloud import firestore
-
-    info = _service_account_info("dagma")
-    return firestore.Client.from_service_account_info(
-        info, project=info.get("project_id")
-    )
