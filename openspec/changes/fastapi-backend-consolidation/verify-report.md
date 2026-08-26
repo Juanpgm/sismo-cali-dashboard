@@ -564,3 +564,210 @@ the 2.3 parity-verification PR description once 1.4 unblocks it. Zero production
 `formulario/` and `services/photo-signer/` are both untouched, so nothing this branch does can affect
 live field-inspector photo uploads until 2.4's atomic repoint ships later, gated on 2.3's real parity
 pass.
+
+---
+
+## Slice 3 — `reportados` (unified day-walk + snapshot)
+
+Verified fresh-context on branch `feat/fastapi-consolidation-3-reportados`
+(`git branch --show-current` confirmed), against `main` at merge-base `1b6006a`. Re-ran the full
+test suite, independently reproduced RED evidence in disposable `git worktree`s, and diffed
+`api/reportados.js` / `scripts/fetch_reportes_api.py` line-by-line against
+`backend/app/services/atencionsismo.py` / `snapshot.py` / `routers/reportados.py`.
+
+### Test suite
+
+`python -m pytest backend/tests/ -v` -> **95 passed, 0 failed** (independently re-run, matches
+apply-progress claim exactly).
+
+### RED evidence legitimacy (independently reproduced)
+
+Used disposable `git worktree`s (not `git checkout -- .`, which silently leaves later-commit files
+in place and would have produced a false negative) to check out each RED commit in isolation:
+
+- `3a63b7b` (atencionsismo RED): `ImportError: cannot import name atencionsismo from
+  app.services` - 1 collection error. Legitimate.
+- `65f7623` (reportados router RED): `ImportError: cannot import name reportados from
+  app.routers` - 6 failed. Legitimate.
+
+Both match the RED evidence recorded in `apply-progress.md` exactly. Not fabricated/trivial REDs.
+
+### Day-walk parity audit -- `api/reportados.js` vs `backend/app/services/atencionsismo.py`
+
+Field-by-field comparison, both source files read in full:
+
+| Aspect | `api/reportados.js` | `atencionsismo.py` | Match |
+|---|---|---|---|
+| Split status set | `{413,500,502,503,504}` | `SPLITTABLE_STATUSES = {413,500,502,503,504}` | Yes |
+| `MIN_WINDOW_MS` | 60_000 | `MIN_WINDOW_MS = 60_000` | Yes |
+| `CONCURRENCY` | 4 | `CONCURRENCY = 4` | Yes |
+| Retry attempts / backoff | 3 attempts, 2000ms sleep | `MAX_ATTEMPTS=3`, `RETRY_SLEEP_S=2.0` | Yes |
+| Request/probe timeouts | 90s / 15s | `REQUEST_TIMEOUT_S=90.0` / `PROBE_TIMEOUT_S=15.0` | Yes |
+| Split recursion | sequential (not `Promise.all`) | sequential (await first half, then second) | Yes |
+| Probe (1-min window pre-flight) | `probeApi`, 413/504 = alive | `probe_api`, 413/504 in accepted set | Yes |
+| Concurrency batching | `for (i+=CONCURRENCY) Promise.all(batch)` | `for i in range(0,len,CONCURRENCY): asyncio.gather(batch)` | Yes |
+| Sequential failed-window retry pass | `failedWindows.splice(0)`, sequential re-fetch | `failed_windows[:]` + `.clear()`, sequential re-fetch | Yes |
+| Dedup key | `id` (Map) | `id` (dict) | Yes |
+| coordKey null/(0,0) exclusion | non-finite or (0,0) -> null | non-finite or (0,0) -> None | Yes |
+| Response shape | ok, generado, fuente, total, inmuebles, por_estadoVerificacion | identical keys, same values | Yes |
+| `DEFAULT_USER` | juanp.gzmz@gmail.com | same (confirmed against both legacy sources) | Yes |
+| Zero-total guard | 502 in JS (own request-scoped serving) | `ApiEmptyResultError` (mapped in caller) | Behaviorally equivalent -- see below |
+
+No behavioral difference found in the day-walk/split-retry/dedup algorithm itself. The
+`scripts/fetch_reportes_api.py` narrower `{413,504}` split set and its `AuthError` fast-abort
+special-case were correctly NOT ported -- the apply agent's documented choice to follow the JS's
+(currently-live) wider, more-defensive behavior is the right call and is explicitly logged in both
+`atencionsismo.py`'s module docstring and `apply-progress.md`.
+
+One structural (non-behavioral) difference: JS's zero-total guard returns HTTP 502 directly from
+the request handler (`api/reportados.js`'s serverless function IS the per-request day-walk caller).
+The new architecture never runs the day-walk inside a request (ADR-5's explicit design point) -- the
+guard now lives in `atencionsismo.fetch_reportados()` as `ApiEmptyResultError`, caught by
+`snapshot.refresh_loop()`'s broad `except Exception`, logged, and the previous good snapshot (if
+any) keeps serving. This is a spec-compliant, design-intended architectural shift (ADR-5: "never
+inline ~150s fetch in a request"), not a parity regression -- flagged as informational only.
+
+### Snapshot semantics
+
+- **<2s serving path**: `routers/reportados.py`'s handler does exactly one synchronous
+  `snap.get()` (an in-memory dict/attribute read) -- no `await`, no network call in the request path.
+  Confirmed by direct source read; the only I/O in the whole reportados code path happens in the
+  lifespan-owned background task, never inside a request.
+- **Staleness bound**: `ReportadosSnapshot.get()` raises `SnapshotStaleError` when
+  `age > STALE_AFTER_S` (86400s), matching design.md ADR-5's "same outer bound the CDN had." The
+  900s refresh interval matches the retired `s-maxage=900`. Verified via
+  `test_get_raises_stale_when_entry_exceeds_86400s_bound` and
+  `test_get_serves_snapshot_within_86400s_even_if_older_than_900s` (both pass).
+- **Cold-start behavior**: `_lifespan` best-effort Blob-seeds (`seed_from_blob`, never raises) before
+  starting the forever-refresh task. Manually re-verified end-to-end with
+  `with TestClient(create_app()) as client:` (misconfigured env, no `VISITADOS_API_PASS`,
+  no `REPORTES_BLOB_URL`): `GET /reportados` -> `503` + `Retry-After: 60` as claimed, clean shutdown,
+  zero leaked-task warnings under `warnings.catch_warnings(record=True)`.
+- **Error paths**: API down (probe/day-walk failure) or Blob seed failure both degrade to the
+  previous snapshot continuing to serve (if one exists) or `503 + Retry-After: 60` (if none does) --
+  never a 500, never an inline retry inside the request. Matches ADR-5 intent exactly.
+- **Lifespan task cancellation on shutdown**: confirmed via manual smoke test above -- `task.cancel()`
+  + `await task` inside `contextlib.suppress(asyncio.CancelledError)` produces a clean shutdown with
+  no stray-task warning.
+
+### No-auth route + Cache-Control parity
+
+`routers/reportados.py`'s `get_reportados` has no `Depends(require_auth)`/`Depends(require_role)` --
+confirmed by direct source read (grep for `Depends`/`require_auth` in the file returns nothing).
+`CACHE_CONTROL = "public, s-maxage=900, stale-while-revalidate=86400"` is byte-identical to
+`api/reportados.js`'s `res.setHeader('Cache-Control', ...)` value. Both confirmed by test
+(`test_response_preserves_legacy_cache_control_header`) and independent full-suite re-run.
+
+### Flagged interpretation (a): Blob-seed age semantics
+
+Design ADR-5 says cold start should "serve immediately with its age" -- ambiguous between
+download-time and the cron's `reportes_meta.json.generated_at`. The implementation measures age from
+this process's download time. **Ruling: compliant.** None of backend-platform's three
+"In-Process Caching..." spec scenarios require the seeded age to reflect the cron's original publish
+time -- they require `X-Snapshot-Age` present and the 86400s hard bound enforced, both of which hold
+regardless of which clock anchors "age." Noted as a real, if minor, accuracy gap worth a SUGGESTION
+below (not a spec violation): a Blob snapshot published by a 15-minute-cadence cron could itself
+already be up to ~15 minutes stale at the moment this process downloads it, and the seeded entry
+reports `age~=0` rather than reflecting that pre-existing staleness. This only matters during the
+cold-start window before the first live refresh completes.
+
+### Flagged interpretation (b): VISITADOS_API_PASS not in startup fail-fast union
+
+Confirmed in code: `routers/reportados.py`'s `REQUIRED_CLIENTS = ()`, and
+`credentials/clients.py`'s `WEB_STARTUP_CLIENTS = ("sismo",)` -- `VISITADOS_API_PASS` is never
+validated at `create_app()` startup; it is read lazily by `atencionsismo.credentials_from_env()`
+only when a refresh actually runs, and a missing/invalid value is caught by `refresh_loop`'s broad
+`except Exception`, logged, loop continues. **Ruling: compliant.** ADR-4's table entry ("plain
+secrets... fail-fast only if a mounted route needs it") is ambiguous about whether "the route" means
+the request-handling code path or the feature as a whole, but ADR-5's own text is unambiguous and
+directly on point: it explicitly designs for graceful 503-degradation as the intended behavior for
+every reportados failure mode, including a missing credential, and states this in-process-refresh
+design is why the web service is always-on. No backend-platform spec scenario requires reportados
+to crash startup on a missing `VISITADOS_API_PASS`. No remediation needed.
+
+### web/js/api-config.js inertness
+
+Confirmed via `grep -rln "api-config"` across the full repo (`web/`, `formulario/`, and root): the
+only match is the file itself. No consumer (`data.js`, `main.js`, `stickers.js`, etc.) imports it.
+`web/js/data.js`'s `refreshReportados()` still calls the hardcoded relative `/api/reportados` path
+directly -- confirmed by direct source read. Zero production behavior change this batch, as claimed.
+
+### Commit hygiene
+
+Seven commits, each single-purpose (RED/GREEN pairs + one final chore commit for the two
+non-test-covered artifacts). No secrets, no unrelated files, no `.env` leakage. `git diff --stat
+main...HEAD` (merge-base-relative, the correct comparison for a divergent branch) touches exactly
+the 9 backend files + `web/js/api-config.js` claimed in `apply-progress.md`'s "Files Changed" table
+-- nothing extra, nothing missing.
+
+### CRITICAL
+
+None.
+
+### WARNING
+
+1. **Branch is 1 commit behind main** (`git log --oneline main ^HEAD` -> `a8f98ce
+   fix(backend): Dockerfile CMD -- use uvicorn --factory and honor Railway PORT`). This branch
+   diverged from `main` at the slice-2 merge point (`1b6006a`) and never picked up this later,
+   independently-landed hotfix. Using the wrong diff direction (`git diff main..HEAD`, 2-dot) makes
+   this look like slice 3 regresses the Dockerfile CMD back to the broken `uvicorn app.main:app`
+   form (main.py exposes only `create_app()`, no module-level `app` -- that CMD would crash the
+   container). The correct, merge-base-relative diff (`git diff main...HEAD -- backend/Dockerfile`,
+   3-dot) is empty -- this branch's own commits never touch `Dockerfile`, so a standard merge
+   commit, rebase, or GitHub squash-merge would all correctly preserve main's current (fixed)
+   Dockerfile automatically, with zero conflict. Still, recommend rebasing this branch onto current
+   `main` before opening the PR, purely for reviewer clarity -- a reviewer running a naive 2-dot diff
+   locally (as this verification initially did, before correcting to the 3-dot comparison) will be
+   misled into thinking the PR reverts a production fix, when it does not.
+2. **Diff size**: `git diff --stat main...HEAD` shows 1708 insertions across 12 files including the
+   two openspec docs; the code-only figure (`backend/` + `web/js/api-config.js`) is 1434 insertions,
+   3 deletions -- well above the slice's own ~350-450 line forecast and above the chained-PR skill's
+   400-line single-lens-review budget. `apply-progress.md` already self-flags this and recommends
+   the exact 3a/3b split the original Review Workload Forecast proposed, mapped onto existing commit
+   boundaries with no history rewrite needed. Independently confirmed sound: 3a = `3a63b7b..b0a73a9`
+   (atencionsismo test+impl, 684 lines) / 3b = `a481525..5e292c7` (snapshot+router+lifespan+parity
+   script+api-config.js, 750 lines). Recommend applying this split before opening the PR(s),
+   consistent with the cached auto-chain/stacked-to-main delivery strategy.
+3. **Blob-seed age accuracy** (see Flagged interpretation (a) above): the seeded snapshot's reported
+   `X-Snapshot-Age` can understate true data staleness by up to the cron's own refresh cadence during
+   the cold-start window. Not a spec violation (see ruling above) but worth a one-line code comment
+   or a small follow-up if a future consumer ever treats `X-Snapshot-Age` as an exact freshness SLA
+   rather than an internal cache-serving signal.
+
+### SUGGESTION
+
+1. Same item as WARNING 3 -- a small, isolated follow-up (fetch `reportes_meta.json`'s
+   `generated_at` and anchor `fetched_at` to it) would close the gap entirely if ever needed; the
+   apply agent already correctly scoped `seed_from_blob`'s signature to make this a one-function
+   change, not a redesign.
+2. Consider adding a code comment in `credentials/clients.py` or `atencionsismo.py` cross-referencing
+   the ADR-4/ADR-5 interpretation ruling above (interpretation (b)), so a future reader does not
+   re-open the same ambiguity without finding this verify report.
+
+### Verdict
+
+**PASS WITH WARNINGS.**
+
+95/95 tests pass on independent re-run. RED evidence for 3.1 and 3.5 (the router's un-tasked but
+Strict-TDD-required RED) was independently reproduced in disposable `git worktree`s at the exact RED
+commits and is legitimate. The day-walk/split-retry/probe/dedup/coordKey algorithm in
+`atencionsismo.py` is a field-for-field behavioral match to the CURRENTLY LIVE `api/reportados.js`
+(not the narrower `scripts/fetch_reportes_api.py`), which is the correct choice per task 3.1's own
+instructions and is explicitly documented as such. The <2s serving path is real (no network in the
+request handler), the 15-minute/86400s staleness bounds are correctly enforced and tested, the route
+requires no auth, and the Cache-Control header is byte-identical to the legacy value. Both flagged
+design-interpretation questions -- (a) Blob-seed age semantics, (b) VISITADOS_API_PASS fail-fast
+scope -- are ruled COMPLIANT against the actual spec scenarios and ADR-5's explicit
+graceful-degradation design intent -- no remediation required for either. `web/js/api-config.js` is
+confirmed genuinely inert (zero consumers repo-wide). Commit hygiene is clean.
+
+**Safe to merge to main**, PROVIDED: (1) tasks 3.6/3.7 stay blocked and unchecked until manual task
+1.4 (Railway web service creation) lands -- this branch correctly does not attempt to close them;
+(2) this branch is rebased onto current `main` before opening the PR to pick up the unrelated
+`a8f98ce` Dockerfile hotfix and avoid reviewer confusion from a stale 2-dot diff (WARNING 1 -- not a
+real regression under any standard merge strategy, but worth doing for clarity); (3) the diff is
+split into the 3a/3b chained PRs both the original forecast and `apply-progress.md` already
+recommend, to stay within the 400-line review budget (WARNING 2). Zero production risk either way:
+`web/js/data.js` is confirmed genuinely untouched, so nothing this branch does can affect the live
+"Reportados" KPI card until 3.7's atomic repoint ships later, gated on 3.6's real parity pass against
+a live Railway URL.
