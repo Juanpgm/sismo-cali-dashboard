@@ -157,7 +157,7 @@ function onStoreChange() {
   renderKpis(kpiRow, unicos, unicosTodos);
   setTotalRecords(store.records.length);
   renderTable(store.filtered);
-  renderMap(store.filtered).catch((err) => {
+  renderMap(soloRepresentantes(store.filtered)).catch((err) => {
     console.error(err);
     showToast('No se pudo cargar la capa geográfica.', 'error');
   });
@@ -194,30 +194,30 @@ function wireMapControls() {
       document.querySelectorAll('[data-mode-controls]').forEach((panel) => {
         panel.classList.toggle('is-hidden', panel.dataset.modeControls !== mode);
       });
-      renderMap(store.filtered);
+      renderMap(soloRepresentantes(store.filtered));
       setTimeout(invalidateSize, 60);
     });
   });
 
   el('#color-by-select').addEventListener('change', (e) => {
     setColorBy(e.target.value);
-    renderMap(store.filtered);
+    renderMap(soloRepresentantes(store.filtered));
   });
   el('#size-by-select').addEventListener('change', (e) => {
     setSizeBy(e.target.value);
-    renderMap(store.filtered);
+    renderMap(soloRepresentantes(store.filtered));
   });
   el('#heat-weight-select').addEventListener('change', (e) => {
     setHeatWeight(e.target.value);
-    renderMap(store.filtered);
+    renderMap(soloRepresentantes(store.filtered));
   });
   el('#choropleth-level-select').addEventListener('change', (e) => {
     setChoroplethLevel(e.target.value);
-    renderMap(store.filtered).catch(() => showToast('No se pudo cargar el nivel geográfico.', 'error'));
+    renderMap(soloRepresentantes(store.filtered)).catch(() => showToast('No se pudo cargar el nivel geográfico.', 'error'));
   });
   el('#choropleth-metric-select').addEventListener('change', (e) => {
     setChoroplethMetric(e.target.value);
-    renderMap(store.filtered);
+    renderMap(soloRepresentantes(store.filtered));
   });
 }
 
