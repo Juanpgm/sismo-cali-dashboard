@@ -120,6 +120,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import sys
@@ -344,6 +345,14 @@ def build_key_index(surveys: list[dict]) -> dict[str, dict]:
     for s in surveys:
         clave = s.get("codigoapp")
         if clave and verify_clave_integracion(clave):
+            if clave in out:
+                # Two surveys carrying the same valid codigoapp: last-write-wins.
+                # The point still resolves tiene_survey=True, but survey_globalid
+                # becomes ambiguous — surface it instead of overwriting silently.
+                logging.warning(
+                    "planeacion_cruce: duplicate valid codigoapp %s across surveys "
+                    "(last-write-wins) — survey linkage is ambiguous", clave,
+                )
             out[clave] = s
     return out
 
@@ -567,10 +576,23 @@ def load_puntos() -> list[dict]:
     with no `id` are skipped (nothing to key a doc on)."""
     raw = _load_reportes()
     points = []
+    seen_ids: set[str] = set()
     for rec in raw:
         registro_id = rec.get("id")
         if not registro_id:
             continue
+        rid = str(registro_id)
+        if rid in seen_ids:
+            # registro_id uniqueness is the ONE unenforced assumption behind
+            # codigoapp's point->survey detection: two identical ids mint the same
+            # key AND the same doc_id, silently collapsing two points into one.
+            # Holds today (verified 14804/14804 unique); log loudly if it breaks.
+            logging.warning(
+                "planeacion_cruce: duplicate registro_id %s in reportes.json — two "
+                "points would collapse into one doc; codigoapp detection assumes uniqueness",
+                rid,
+            )
+        seen_ids.add(rid)
         lat, lon = rec.get("lat"), rec.get("lng")
         fecha_dt = parse_fecha_creacion_es(rec.get("fechaCreacion"))
         points.append({
