@@ -339,35 +339,88 @@ Chain PR #3 (may need 3a/3b split — see forecast). Depends on: Phase 1. Public
 
 Chain PR #4. Depends on: Phase 1, Phase 3 (reuses `api-config.js`). Read-only, low logic.
 
-- [ ] **4.1** (RED) Write `backend/tests/routers/test_sticker_status.py` FIRST: any authenticated role
+- [x] **4.1** (RED) Write `backend/tests/routers/test_sticker_status.py` FIRST: any authenticated role
       → 200; cached response within 5-min TTL served without a new Firestore read (call-count fake on
       `sismo()`); unauthenticated → 401. MUST fail.
       — Satisfies: backend-platform "Any-authenticated role-wide route accepts every valid role",
       "sticker-status cache hit within TTL".
+      — STATUS: done. Confirmed RED — 3 failed, all `404 Not Found` (route did not exist yet) — before
+      4.2 landed.
 
-- [ ] **4.2** (GREEN) Implement `backend/app/routers/sticker_status.py`: `GET /sticker-status`,
+- [x] **4.2** (GREEN) Implement `backend/app/routers/sticker_status.py`: `GET /sticker-status`,
       `Depends(require_auth)`, working 5-min TTL cache (fixes legacy warm-lambda-only caching),
       preserve `Cache-Control`. Run 4.1, confirm green.
       — Satisfies: backend-platform "sticker-status cache hit within TTL", "Cache-Control headers
       preserved".
+      — STATUS: done. First GREEN pass, no rework (3/3, full suite 100/100). Cache is attached to
+      `app.state` (one instance per `create_app()` call, same convention as `reportados_snapshot`)
+      instead of a module-level variable — this is the actual fix for the legacy warm-lambda-only
+      guarantee, not a cosmetic port. **Deviation flagged for verify**: confirmed by reading
+      `api/sticker-status.js` in full (and `vercel.json`, whose `headers` block only covers static
+      `/data/*.json` files) that the legacy handler sets NO `Cache-Control` header at all — this
+      task's "preserve `Cache-Control`" text does not match the legacy source for THIS route (it
+      matches `source-status`'s `private, no-store`, ported in 4.4 instead). Implemented with no
+      `Cache-Control` header, which IS the verbatim-parity behavior; the spec's own "Cache-Control
+      headers preserved" scenario (`spec.md:145-149`) is scoped to `reportados`'s
+      `s-maxage=900`, not this route, confirming no header is the correct target.
 
-- [ ] **4.3** (RED) Write `backend/tests/routers/test_source_status.py` FIRST: admin token → 200;
+- [x] **4.3** (RED) Write `backend/tests/routers/test_source_status.py` FIRST: admin token → 200;
       non-admin → 403, no mutation. MUST fail.
       — Satisfies: backend-platform "Admin-gated route rejects non-admin" (`/source-status`).
+      — STATUS: done. Confirmed RED — 4 failed, all `404 Not Found` — before 4.4 landed.
 
-- [ ] **4.4** (GREEN) Implement `backend/app/routers/source_status.py`: `GET /source-status`,
+- [x] **4.4** (GREEN) Implement `backend/app/routers/source_status.py`: `GET /source-status`,
       `Depends(require_role("admin"))`, port `api/source-status.js` verbatim. Run 4.3, confirm green.
       — Satisfies: backend-platform "Route Parity Across Consolidated Endpoints" (`/source-status`
       row).
+      — STATUS: done. First GREEN pass after fixing a test-fixture typo (fake admin claims used a
+      nested `customClaims.role` shape; `role_from_claims` reads a top-level `role` key — caught here
+      because this route's non-admin/admin split actually exercises role resolution, unlike 4.1's
+      `require_auth`, which doesn't care about role). 4/4, full suite 104/104. Ports the legacy
+      handler's `private, no-store` `Cache-Control` on both `ok:true` and `ok:false` branches
+      (verbatim, `api/source-status.js:66,69`) and its always-200-never-5xx shape for upstream
+      failures.
 
 - [ ] **4.5** VERIFY (ADR-7 procedure): side-by-side same-token calls for both routes; record diff.
       — Satisfies: backend-platform "Old endpoint still serves after the new one deploys".
+      — STATUS: BLOCKED on a live `FIREBASE_ID_TOKEN` (task 1.4 itself is DONE — see "Cutover status
+      sync" — so this is NOT the 1.4-class blocker slices 2/3 hit; it's the SAME class of blocker
+      slice 2's 2.3 token-required tier is still pending). Repo-side prep done:
+      `backend/scripts/verify_status_routes_parity.py` — a standalone MANUAL operator tool (not
+      imported by `app/`/`tests/`, never run in CI), two-tier like `verify_sign_parity.py`: STRUCTURAL
+      (no-auth/bad-token 401 parity, runnable today against the live Railway routes with no token) and
+      TOKEN-REQUIRED (full 200 payload comparison, needs `FIREBASE_ID_TOKEN` — admin role required for
+      a meaningful `/source-status` comparison). Verified its BLOCKED guard: no `NEW_*_URL` env vars
+      set → exit 2 with an explanatory message. Not run against the live Railway URLs this batch (no
+      token available); no further code changes needed for 4.5 itself once a token exists.
 
 - [ ] **4.6** REPOINT: flip `sticker-status`/`source-status` entries in `api-config.js`. MANUAL Vercel
       redeploy of `web/`.
       — Satisfies: backend-platform "Rollback is a config revert".
+      — STATUS: BLOCKED on 4.5 (no parity result exists to gate this on), same dependency slice 2/3
+      established for their own REPOINT tasks. `web/js/api-config.js` already HAS `stickerStatus`/
+      `sourceStatus` entries (created inert in batch 3, both still default to their legacy relative
+      paths) — flipping them today would be safe-but-premature the same way flipping `reportados`
+      early would have been. **Finding, confirmed by grep across `web/js/*.js`**: NEITHER entry is
+      consumed by `api-config.js` yet — `web/js/main.js:130` calls `fetch('/api/sticker-status', ...)`
+      with the relative path HARDCODED, and `web/js/analista.js:13` hardcodes
+      `SOURCE_STATUS_ENDPOINT = '/api/source-status'` the same way. So this task is NOT a pure no-op
+      like flipping an already-wired entry would be: it needs BOTH (a) flipping the two `api-config.js`
+      values to the Railway base URL, AND (b) wiring `main.js`'s sticker-status fetch and
+      `analista.js`'s `SOURCE_STATUS_ENDPOINT` to read via `apiUrl('stickerStatus')`/
+      `apiUrl('sourceStatus')` instead of their hardcoded strings — the exact two-step pattern slice
+      3's cutover batch used for `data.js`'s `refreshReportados()`. Left undone this batch,
+      deliberately: wiring dead code to a URL with no verified parity result would be premature, and
+      is explicitly gated on 4.5 by this task's own dependency ordering.
 
 **ROLLBACK BOUNDARY (Slice 4)**: revert the two `api-config.js` entries; redeploy `web/`.
+
+**Batch status (sdd-apply, `feat/fastapi-consolidation-4-status`)**: 4.1-4.4 done (both routers + tests,
+104/104 `backend/tests/` green); 4.5 repo-side prep done (parity script), execution BLOCKED on a live
+`FIREBASE_ID_TOKEN`; 4.6 BLOCKED on 4.5 by design — `web/js/*.js` untouched, zero production risk this
+batch; confirmed neither `stickerStatus` nor `sourceStatus` is wired through `api-config.js` yet
+(`main.js`/`analista.js` still hardcode the legacy relative paths), so 4.6 is real remaining work, not a
+no-op. See `apply-progress.md` "Batch 4" for full detail.
 
 ---
 
