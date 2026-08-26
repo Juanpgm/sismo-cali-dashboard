@@ -38,6 +38,7 @@ PLANEACION_CUADRILLAS = "planeacion_cuadrilla" + "s"  # see planeacion_asignacio
 STICKER_MATCHES = "sticker_matches"  # `grupos-inspectores` change: eliminarGrupo's cross-campaign orphan check
 GRUPOS_INSPECTORES = "grupos_inspectores"  # `grupos-inspectores` change
 VEHICULOS = "vehiculos"  # `grupos-inspectores` follow-up (2026-08-26): vehicles
+CONDUCTORES = "conductores"  # feature H (2026-08-26): drivers
 
 
 # ── Fake Firestore: path-keyed by (collection, id); supports .where()
@@ -1737,3 +1738,129 @@ def test_metricas_progreso_totales_combinados(monkeypatch):
     assert metricas["combinado"] == {"asignados": 3, "hechos": 2, "pendientes": 1, "no_aplica": 0, "completado_pct": 66.7}
     assert metricas["stickers"]["asignados"] == 1
     assert metricas["survey"]["asignados"] == 2
+
+
+# ── feature H: conductores (drivers) CRUD + link vehiculo->conductor ─────────
+
+
+def test_crear_conductor_succeeds_with_all_fields(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={
+        "action": "crearConductor", "cedula": "123", "nombre_completo": "Ana Pérez",
+        "email": "ana@example.com", "telefono": "3001112222",
+    })
+
+    assert resp.status_code == 201
+    cid = resp.json()["id"]
+    doc = stores[CONDUCTORES][cid]
+    assert doc["cedula"] == "123"
+    assert doc["nombre_completo"] == "Ana Pérez"
+    assert doc["email"] == "ana@example.com"
+    assert doc["telefono"] == "3001112222"
+    assert doc["activo"] is True
+    assert doc["creado_por"] == UID_ADMIN
+
+
+def test_crear_conductor_requires_cedula(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={
+        "action": "crearConductor", "cedula": "", "nombre_completo": "Ana"})
+    assert resp.status_code == 400
+
+
+def test_crear_conductor_requires_nombre(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={
+        "action": "crearConductor", "cedula": "123", "nombre_completo": ""})
+    assert resp.status_code == 400
+
+
+def test_crear_conductor_rejects_duplicate_cedula(monkeypatch):
+    stores = _stores()
+    stores[CONDUCTORES] = {"c1": {"cedula": "123", "nombre_completo": "Ana"}}
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={
+        "action": "crearConductor", "cedula": "123", "nombre_completo": "Otro"})
+    assert resp.status_code == 400
+    assert len(stores[CONDUCTORES]) == 1
+
+
+def test_list_conductores_returns_all(monkeypatch):
+    stores = _stores()
+    stores[CONDUCTORES] = {
+        "c1": {"cedula": "1", "nombre_completo": "A"},
+        "c2": {"cedula": "2", "nombre_completo": "B"},
+    }
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={"action": "listConductores"})
+    assert resp.status_code == 200
+    assert {c["id"] for c in resp.json()["conductores"]} == {"c1", "c2"}
+
+
+def test_editar_conductor_updates_fields(monkeypatch):
+    stores = _stores()
+    stores[CONDUCTORES] = {"c1": {"cedula": "1", "nombre_completo": "A", "email": None}}
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={
+        "action": "editarConductor", "conductor_id": "c1",
+        "nombre_completo": "Ana María", "email": "ana@x.com"})
+    assert resp.status_code == 200
+    assert stores[CONDUCTORES]["c1"]["nombre_completo"] == "Ana María"
+    assert stores[CONDUCTORES]["c1"]["email"] == "ana@x.com"
+
+
+def test_eliminar_conductor_refuses_while_a_vehiculo_references_it(monkeypatch):
+    stores = _stores()
+    stores[CONDUCTORES] = {"c1": {"cedula": "1", "nombre_completo": "A"}}
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "conductor_id": "c1"}}
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={
+        "action": "eliminarConductor", "conductor_id": "c1"})
+    assert resp.status_code == 400
+    assert "ABC123" in resp.json()["detail"]
+    assert "c1" in stores[CONDUCTORES]
+
+
+def test_eliminar_conductor_succeeds_when_unreferenced(monkeypatch):
+    stores = _stores()
+    stores[CONDUCTORES] = {"c1": {"cedula": "1", "nombre_completo": "A"}}
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={
+        "action": "eliminarConductor", "conductor_id": "c1"})
+    assert resp.status_code == 200
+    assert "c1" not in stores[CONDUCTORES]
+
+
+def test_crear_vehiculo_with_conductor_stores_the_link(monkeypatch):
+    stores = _stores()
+    stores[CONDUCTORES] = {"c1": {"cedula": "1", "nombre_completo": "A"}}
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={
+        "action": "crearVehiculo", "placa": "abc123", "conductor_id": "c1"})
+    assert resp.status_code == 201
+    vid = resp.json()["id"]
+    assert stores[VEHICULOS][vid]["conductor_id"] == "c1"
+
+
+def test_crear_vehiculo_rejects_nonexistent_conductor(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={
+        "action": "crearVehiculo", "placa": "abc123", "conductor_id": "ghost"})
+    assert resp.status_code == 400
+    assert stores.get(VEHICULOS, {}) == {}
+
+
+def test_editar_vehiculo_can_clear_conductor(monkeypatch):
+    stores = _stores()
+    stores[CONDUCTORES] = {"c1": {"cedula": "1", "nombre_completo": "A"}}
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "conductor_id": "c1"}}
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={
+        "action": "editarVehiculo", "vehiculo_id": "v1", "conductor_id": ""})
+    assert resp.status_code == 200
+    assert stores[VEHICULOS]["v1"]["conductor_id"] is None

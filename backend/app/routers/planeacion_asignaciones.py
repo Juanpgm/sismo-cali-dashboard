@@ -240,6 +240,12 @@ MAX_MIEMBROS_GRUPO = 4
 # module docstring's own "member cap + vehicles" section.
 VEHICULOS_COLLECTION = "vehiculos"
 
+# Feature H: drivers. Own, independent collection/allowlist. A vehiculo may
+# reference one conductor (its `conductor_id`); a conductor cannot be deleted
+# while any vehiculo still points at it (orphan-prevention, same discipline as
+# vehiculos vs grupos).
+CONDUCTORES_COLLECTION = "conductores"
+
 # Binding user decision (2026-08-26): DEFAULT_MAX_SIZE = 10 for Planeación,
 # NOT the sticker template's 8 — an EDAN survey is a far longer visit than
 # applying a sticker. DEFAULT_MAX_RADIUS_M is carried over from the sticker
@@ -1183,6 +1189,108 @@ def desasignar_grupo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
 # docstring's own "member cap + vehicles" section).
 
 
+# ── conductores (feature H) — driver CRUD, mirrors the vehiculos block ──────
+def _cedula_conflict(db: Any, cedula: str, exclude_id: str | None = None) -> bool:
+    existentes = db.collection(CONDUCTORES_COLLECTION).where("cedula", "==", cedula).get()
+    return any(s.id != exclude_id for s in existentes)
+
+
+def list_conductores(db: Any) -> list[dict[str, Any]]:
+    return [_doc_to_dict(d) for d in db.collection(CONDUCTORES_COLLECTION).get()]
+
+
+def crear_conductor(db: Any, body: dict[str, Any], claims: dict[str, Any]) -> dict[str, Any]:
+    cedula = str(body.get("cedula") or "").strip()
+    nombre_completo = str(body.get("nombre_completo") or "").strip()
+    email = str(body.get("email") or "").strip()
+    telefono = str(body.get("telefono") or "").strip()
+    if not cedula:
+        raise bad_request("crearConductor necesita una cédula.")
+    if not nombre_completo:
+        raise bad_request("crearConductor necesita el nombre completo.")
+    if _cedula_conflict(db, cedula):
+        raise bad_request(f"Ya existe un conductor con la cédula {cedula}.")
+
+    ref = db.collection(CONDUCTORES_COLLECTION).document()
+    data = {
+        "cedula": cedula,
+        "nombre_completo": nombre_completo,
+        "email": email or None,
+        "telefono": telefono or None,
+        "activo": True,
+        "creado_en": _now(),
+        "creado_por": claims.get("sub"),
+    }
+    ref.set(data)
+    return {"id": ref.id}
+
+
+def editar_conductor(db: Any, body: dict[str, Any]) -> dict[str, Any]:
+    conductor_id = str(body.get("conductor_id") or "").strip()
+    if not conductor_id:
+        raise bad_request("Falta conductor_id.")
+
+    ref = db.collection(CONDUCTORES_COLLECTION).document(conductor_id)
+    snap = ref.get()
+    if not snap.exists:
+        raise bad_request(f"No existe el conductor {conductor_id}.")
+
+    fields: dict[str, Any] = {}
+    raw_cedula = body.get("cedula")
+    if raw_cedula:
+        nueva = str(raw_cedula).strip()
+        if _cedula_conflict(db, nueva, exclude_id=conductor_id):
+            raise bad_request(f"Ya existe un conductor con la cédula {nueva}.")
+        fields["cedula"] = nueva
+    for key in ("nombre_completo", "email", "telefono"):
+        raw = body.get(key)
+        if raw is not None:
+            fields[key] = str(raw).strip() or None
+    raw_activo = body.get("activo")
+    if raw_activo is not None:
+        fields["activo"] = bool(raw_activo)
+
+    ref.set(fields, merge=True)
+    return {"id": conductor_id, **fields}
+
+
+def eliminar_conductor(db: Any, body: dict[str, Any]) -> dict[str, Any]:
+    """Orphan-prevention: REFUSE deletion while any `vehiculos` doc still
+    references this conductor, naming the plate(s) — same discipline as
+    `eliminar_vehiculo`/`eliminar_grupo`."""
+    conductor_id = str(body.get("conductor_id") or "").strip()
+    if not conductor_id:
+        raise bad_request("Falta conductor_id.")
+
+    ref = db.collection(CONDUCTORES_COLLECTION).document(conductor_id)
+    snap = ref.get()
+    if not snap.exists:
+        raise bad_request(f"No existe el conductor {conductor_id}.")
+
+    asignados = list(
+        db.collection(VEHICULOS_COLLECTION).where("conductor_id", "==", conductor_id).get()
+    )
+    if asignados:
+        placas = [(d.to_dict() or {}).get("placa") or d.id for d in asignados]
+        raise bad_request(
+            f"El conductor está asignado a {len(placas)} vehículo(s): {', '.join(placas)}. "
+            "Quitar el conductor de esos vehículos antes de eliminarlo."
+        )
+    ref.delete()
+    return {"id": conductor_id, "eliminado": True}
+
+
+def _validate_conductor(db: Any, raw_conductor_id: Any) -> str | None:
+    """Normalize + existence-check a vehicle's optional `conductor_id`. Empty
+    → None (no driver); a non-existent id → 400. Feature H."""
+    conductor_id = str(raw_conductor_id or "").strip()
+    if not conductor_id:
+        return None
+    if not db.collection(CONDUCTORES_COLLECTION).document(conductor_id).get().exists:
+        raise bad_request(f"No existe el conductor {conductor_id}.")
+    return conductor_id
+
+
 def _placa_conflict(db: Any, placa: str, exclude_id: str | None = None) -> bool:
     existentes = db.collection(VEHICULOS_COLLECTION).where("placa", "==", placa).get()
     return any(s.id != exclude_id for s in existentes)
@@ -1200,11 +1308,13 @@ def crear_vehiculo(db: Any, body: dict[str, Any], claims: dict[str, Any]) -> dic
         raise bad_request("crearVehiculo necesita una placa.")
     if _placa_conflict(db, placa):
         raise bad_request(f"Ya existe un vehículo con la placa {placa}.")
+    conductor_id = _validate_conductor(db, body.get("conductor_id"))
 
     ref = db.collection(VEHICULOS_COLLECTION).document()
     data = {
         "placa": placa,
         "tipo": str(tipo).strip() if tipo else None,
+        "conductor_id": conductor_id,
         "activo": True,
         "creado_en": _now(),
         "creado_por": claims.get("sub"),
@@ -1236,6 +1346,10 @@ def editar_vehiculo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     raw_activo = body.get("activo")
     if raw_activo is not None:
         fields["activo"] = bool(raw_activo)
+    raw_conductor = body.get("conductor_id")
+    if raw_conductor is not None:
+        # explicit "" clears the driver; a non-existent id is a 400
+        fields["conductor_id"] = _validate_conductor(db, raw_conductor)
 
     ref.set(fields, merge=True)
     return {"id": vehiculo_id, **fields}
@@ -1445,6 +1559,13 @@ class PlaneacionAsignacionesRequest(BaseModel):
     tipo: str | None = None
     activo: bool | None = None
 
+    # Feature H (conductores): driver CRUD + link vehiculo->conductor.
+    conductor_id: str | None = None
+    cedula: str | None = None
+    telefono: str | None = None
+    email: str | None = None
+    nombre_completo: str | None = None
+
 
 @router.post("/planeacion-asignaciones")
 def planeacion_asignaciones(
@@ -1509,6 +1630,14 @@ def planeacion_asignaciones(
             return JSONResponse({"ok": True, **asignar_vehiculo_a_grupo(db, payload)})
         if body.action == "desasignarVehiculo":
             return JSONResponse({"ok": True, **desasignar_vehiculo(db, payload)})
+        if body.action == "listConductores":
+            return JSONResponse({"ok": True, "conductores": list_conductores(db)})
+        if body.action == "crearConductor":
+            return JSONResponse({"ok": True, **crear_conductor(db, payload, claims)}, status_code=201)
+        if body.action == "editarConductor":
+            return JSONResponse({"ok": True, **editar_conductor(db, payload)})
+        if body.action == "eliminarConductor":
+            return JSONResponse({"ok": True, **eliminar_conductor(db, payload)})
         if body.action == "metricasProgreso":
             return JSONResponse({"ok": True, "metricas": metricas_progreso(db)})
         raise bad_request(f"Acción desconocida: {body.action}")

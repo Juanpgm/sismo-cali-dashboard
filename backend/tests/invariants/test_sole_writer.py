@@ -362,6 +362,24 @@ def test_vehiculos_literal_is_used_by_an_allowlisted_module():
     assert hits, "expected vehiculos to be referenced by an allowlisted module by now"
 
 
+# ── feature H (2026-08-26): `conductores` (drivers) ─────────────────────────
+#
+# A FOURTH, INDEPENDENT collection. ONE allowlisted module:
+# `planeacion_asignaciones.py` owns ALL of it (CRUD + the `conductor_id` link
+# it writes onto a `vehiculos` doc it already owns). No other module reads or
+# writes drivers.
+ALLOWED_MODULES_CONDUCTORES = {
+    APP_ROOT / "routers" / "planeacion_asignaciones.py",
+}
+
+
+def test_conductores_literal_is_used_by_an_allowlisted_module():
+    hits = _files_containing("conductores")
+    unexpected = hits - ALLOWED_MODULES_CONDUCTORES
+    assert not unexpected, f"unexpected conductores reference(s): {sorted(unexpected)}"
+    assert hits, "expected conductores to be referenced by an allowlisted module by now"
+
+
 # Scanner precision ----------------------------------------------------------
 # The scan must match a collection name as a WHOLE identifier. A naive
 # substring match makes any longer collection whose name merely CONTAINS a
