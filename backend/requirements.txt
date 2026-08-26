@@ -1,0 +1,15 @@
+# Consolidated FastAPI backend — dependencies
+# See openspec/changes/fastapi-backend-consolidation/design.md ADR-1/ADR-4.
+fastapi>=0.115
+uvicorn[standard]>=0.34
+pydantic>=2.9
+pydantic-settings>=2.6
+httpx>=0.28              # atencionsismo day-walk client (slice 3) + test client
+cryptography>=43.0       # RS256 verification against Google's rotating x509 certs
+firebase-admin>=6.6      # sismo() — Firestore + Auth admin (sismo-agosto-sgred)
+google-cloud-firestore>=2.19  # dagma() — Firestore (dagma-85aad)
+# boto3 (S3 presigner) is added in slice 2 when app/routers/sign.py lands.
+
+# --- test ---
+pytest>=8.3
+pytest-asyncio>=0.24
