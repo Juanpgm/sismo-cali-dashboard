@@ -943,20 +943,81 @@ the 950-1150+ forecast for combined 8/8b — a recommended 4-way PR split is doc
 two Design Interpretation findings (Python `datetime` vs JS `.toDate()`; the actual 10-action dispatcher
 vs the task text's "8-action matrix").
 
-- [ ] **8.5** (RED) Write `backend/tests/routers/test_usuarios.py` FIRST: port `api/usuarios.test.js`'s
+**Batch status (sdd-apply, `feat/fastapi-consolidation-8b-usuarios`)**: 8.5-8.6 ALL DONE — the admin
+`usuarios` router (create/list/setPassword/delete, per this batch's own explicit 4-action scope) + its
+extra provider/domain gate (242/242 `backend/tests/` green at merge, 210 baseline + 32 new). 8.7/8.8
+(VERIFY/REPOINT for the WHOLE slice-8 batch — stickers + sticker-asignaciones + usuarios together) and
+8.9-8.12 (`survey_cali` CRUD router, slice 8c) are OUT OF SCOPE for this batch. See `apply-progress.md`
+"Batch 8b" for full detail incl. the Review Budget flag (774 changed lines, above the 400-line
+single-PR budget but within this designated 8b-admin split of the 950-1150+ combined 8/8b forecast) and
+the Design Interpretation finding on the extra provider/domain gate (a deliberate additive security
+check, not a literal port of `usuarios.js`'s stale-commented executable shortcut) plus the `setEnabled`/
+`setRole` scope gap flagged for a future batch.
+
+- [x] **8.5** (RED) Write `backend/tests/routers/test_usuarios.py` FIRST: port `api/usuarios.test.js`'s
       full fixture matrix verbatim (`classify` precedence incl. claim-override; `checkDeleteGuards`
       last-enabled-admin block, non-admin delete allowed, second-admin unblocks, self-uid delete always
       blocked; `isValidPassword` bounds) plus the extra gate (`api/usuarios.js:200-201`: acting admin's
       provider MUST be `password` AND email MUST NOT be under `@sismocali.gov.co`, byte-for-byte per
       design open question 2). MUST fail.
       — Satisfies: backend-platform "usuarios endpoint enforces its extra provider/domain gate".
+      — STATUS: done. Confirmed RED — `ImportError: cannot import name 'usuarios' from 'app.routers'`
+      (1 collection error) before 8.6 landed. 33 cases (32 after removing one router-level test that
+      was unreachable as originally written — see 8.6's STATUS note): 7 `classify` precedence cases
+      incl. claim-override, 4 pure `checkDeleteGuards` cases (last-admin block, non-admin allowed,
+      second-admin unblocks, self-uid always blocked x3 targets), `isValidPassword` bounds, 3 extra-gate
+      cases (sismocali-domain admin rejected, google.com-provider admin rejected, password+non-sismocali
+      admin accepted), 4 non-admin-rejected-no-mutation (parametrized over the 4 in-scope actions), 1
+      unauthenticated-401, and 12 admin success/failure cases across `list`/`create`/`setPassword`/
+      `delete`. **Scope note**: per this task's own text and the orchestrator's scope instructions,
+      only `create`/`list`/`setPassword`/`delete` are covered — `setEnabled`/`setRole` are explicitly
+      OUT of scope for this batch (no task assigns them); see 8.6's module-docstring flag.
 
-- [ ] **8.6** (GREEN) Implement `backend/app/routers/usuarios.py`: `POST /usuarios`,
+- [x] **8.6** (GREEN) Implement `backend/app/routers/usuarios.py`: `POST /usuarios`,
       `Depends(require_role("admin"))` + 8.5's extra gate, port `api/usuarios.js` handler
       (create/list/setPassword/delete) verbatim incl. `checkDeleteGuards`/`isValidPassword`/`classify`.
       Run 8.5, confirm green.
       — Satisfies: backend-platform "usuarios endpoint enforces its extra provider/domain gate",
       "Route Parity Across Consolidated Endpoints" (`/usuarios` row).
+      — STATUS: done. First GREEN pass except one self-authored router-level test bug (not an
+      implementation bug — a "last admin, non-self delete" router test that turned out unreachable as
+      written, since any admin caller reaching `delete` necessarily counts as an enabled admin
+      themselves; removed, the equivalent guard stays fully covered at the pure-function level, matching
+      `api/usuarios.test.js`'s own fixture shape). `python -m pytest backend/tests/routers/
+      test_usuarios.py -v` → 32 passed. Full suite: `python -m pytest backend/tests/ -q` → 242 passed
+      (210 baseline + 32 new). Mounted in `app/main.py`'s `_ROUTERS`.
+      — **Extra provider/domain gate — design interpretation, flagged for verify.** Read
+      `api/usuarios.js:200-214` character-by-character: its comment (lines 200-201) claims "provider
+      'password', caller NOT @sismocali.gov.co", but its ACTUAL executable check is a single
+      `roleFromClaims(claims) !== 'admin'` test — identical in shape to `stickers.js`'s admin gate.
+      Reading `stickers.js:231-234`'s own comment confirms why: "`roleFromClaims` already resolves
+      inspectors ... to 'inspector' — not 'admin' — so this one check REPLACES the old provider + domain
+      guard." `usuarios.js`'s comment is the stale, un-updated leftover from BEFORE that refactor — the
+      separate check was never literally re-added when `classify`/`roleFromClaims` absorbed it. A LITERAL
+      byte-for-byte port of `usuarios.js`'s EXECUTABLE behavior would therefore need NO separate gate at
+      all beyond `require_role("admin")` — but that reading is REJECTED here in favor of implementing the
+      gate as a real, separate, additive check, because: (1)
+      `openspec/changes/fastapi-backend-consolidation/specs/backend-platform/spec.md`'s own formal
+      requirement row and dedicated scenario ("usuarios endpoint enforces its extra provider/domain gate")
+      explicitly require it as SEPARATE; (2) `openspec/specs/user-management/spec.md` (the already-built
+      spec) states the identical requirement; (3) the archived `usuarios-tab` design.md's ADR-1 locked
+      this in as the INTENDED auth preamble at design time, with a real security rationale that still
+      holds today: `role_from`'s claim-override precedence means an admin using `setRole` (out of THIS
+      batch's scope, but already shipped in `api/usuarios.js`) could in principle grant an `admin` custom
+      claim to a `@sismocali.gov.co` inspector or a `google.com`-provider viewer account, and such an
+      account would then pass a bare `require_role("admin")` check. `usuarios.py`'s
+      `_require_usuarios_admin` closes this gap explicitly at the route (layered on top of
+      `Depends(require_role("admin"))`, per `auth/deps.py`'s own docstring anticipating exactly this).
+      Full reasoning lives in `usuarios.py`'s module docstring.
+      — **Scope note, flagged for verify/future batch**: `setEnabled` and `setRole` (both present in
+      `api/usuarios.js`, both documented in `openspec/specs/user-management/spec.md`'s "Disable / enable
+      user" requirement) are NOT implemented this batch — tasks.md's own 8.6 text names exactly FOUR
+      actions (`create`/`list`/`setPassword`/`delete`), and the orchestrator's launch prompt repeated the
+      same four-action scope verbatim, unlike 8.3/8.4's "verbatim = whole file" instruction for
+      `sticker-asignaciones.js`. If task 8.8's repoint ever points `web/js/usuarios.js`'s "Habilitar/
+      deshabilitar" or "Cambiar rol" UI actions at this router before a follow-up batch adds them, those
+      two buttons will 400 (`Acción desconocida`) — a real functional gap, documented here rather than
+      silently discovered later.
 
 - [ ] **8.7** VERIFY (ADR-7 procedure, admin-POST carve-out): read-only actions (`listPuntos`,
       `listCuadrillas`, `usuarios` list) live side-by-side; mutating actions verified by
