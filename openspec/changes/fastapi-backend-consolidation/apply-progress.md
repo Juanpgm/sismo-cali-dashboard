@@ -268,7 +268,7 @@ upload).
 
 Slice 1 is otherwise COMPLETE. Full `backend/tests/` suite: **38 passed, 0 failed**.
 
-### Next Batch
+### Next Batch (superseded by Batch 2 below — slice 1 is fully merged to main)
 
 **Slice 2: Photo signer `/api/sign`** (tasks 2.1-2.5, `openspec/changes/fastapi-backend-consolidation/tasks.md`
 Phase 2) — lowest blast radius, depends only on Phase 1 (auth, credentials, CORS, `create_app()`, all
@@ -276,3 +276,159 @@ now complete). Estimated ~180-230 lines, low 400-line risk, single PR per the Re
 Forecast. Adds `s3()` to `credentials/clients.py` (`SIGNER_AWS_ACCESS_KEY_ID/SECRET`,
 `SIGNER_S3_BUCKET/REGION`, fail-fast) and `backend/app/routers/sign.py` (`POST /api/sign`,
 `Depends(require_auth)`, Bearer-header auth replacing the legacy signer's body-`idToken`).
+
+---
+
+## Batch 2 — Photo signer `/api/sign` (2.1-2.2 COMPLETE; 2.3 prep done, BLOCKED on 1.4; 2.4/2.5 BLOCKED)
+
+Branch: `feat/fastapi-consolidation-2-sign` (off `main`, not pushed). Slice 1 confirmed merged to
+`main` before this batch started (`git log --oneline -- backend/` shows all 10 slice-1 commits on
+`main`; `python -m pytest backend/tests/ -q` on `main` → 38 passed before branching).
+
+### Completed Tasks
+
+- [x] **2.1** (RED) `backend/tests/routers/test_sign.py` — 6 cases: valid Bearer+codigo+slot → 200
+      `{uploadUrl, publicUrl}`; missing Bearer → 401; invalid Bearer → 401; bad codigo → 400;
+      out-of-range slot (999) → 400; zero slot → 400. Confirmed failing:
+      `AttributeError: module 'app.credentials.clients' has no attribute 's3'` (6 failed, 0 passed).
+      Uses the REAL `credentials.s3()` accessor with fake/dummy AWS keys instead of a hand-rolled
+      fake S3 client — `boto3`'s `generate_presigned_url` is a pure local HMAC-SHA computation with
+      zero network I/O (confirmed empirically: `boto3.client('s3', aws_access_key_id='fake', ...)
+      .generate_presigned_url(...)` returns a syntactically valid URL offline, no AWS contact) — this
+      satisfies the task's "no real AWS creds/calls in CI" requirement without extra mock machinery.
+- [x] **2.2** (GREEN) `backend/app/routers/sign.py` — `POST /api/sign`, `Depends(require_auth)`
+      (Authorization Bearer header, replacing the legacy signer's body-`idToken` +
+      `accounts:lookup` call per inspection-photo-capture "Unified Token Verification For Signer");
+      body is `{codigo, slot}` only. Same `CODIGO_RE` (`^76001-[123]-\d{7,8}$`), same `SIGNER_MAX_SLOT`
+      env var (default 10, read per-request not at import time), same object key
+      (`evaluaciones/{codigo}/foto_{slot}.jpg`), same `ExpiresIn=300` as
+      `services/photo-signer/api/sign.js`. Added `s3()` to `credentials/clients.py`: second named
+      client (plain AWS key/secret env vars, NOT a JSON service-account blob — validated via a new
+      `_s3_settings()` path, not `_service_account_info()`). Mounted in `main.py`'s `_ROUTERS`. First
+      GREEN pass, no rework — `python -m pytest backend/tests/routers/test_sign.py -v` → 6 passed.
+
+### Design Interpretation (flag for verify)
+
+**`s3()` NOT added to `WEB_STARTUP_CLIENTS`.** ADR-4's table marks `s3()`'s Load rule as "fail-fast
+at web startup", same wording as `sismo()` — which batch 1a resolved by adding `sismo` to
+`WEB_STARTUP_CLIENTS` unconditionally. I did NOT mirror that for `s3`: `sign.py` declares
+`REQUIRED_CLIENTS = ("s3",)`, and `create_app()`'s `required_clients_for(_ROUTERS)` already unions
+every mounted router's declaration — since `sign` is now permanently in `_ROUTERS`, `s3` is validated
+at every `create_app()` call regardless, with zero behavioral difference from adding it to
+`WEB_STARTUP_CLIENTS` directly. The one difference: if a future refactor ever made router mounting
+conditional (e.g. feature-flagged), `WEB_STARTUP_CLIENTS` would keep validating `s3` even with `sign`
+unmounted, whereas my approach would not. Design.md doesn't address that hypothetical, and the
+current code has no conditional mounting anywhere, so I judged this consistent with ADR-4's
+declaration mechanism (the router's own declaration is the intended source of truth) rather than a
+deviation. Documented here so verify can re-check against ADR-4's literal table wording if that
+hypothetical becomes real.
+
+**Regression fix, not a deviation:** mounting `sign` made `s3` startup-required for every
+`create_app()` call, which broke two pre-existing slice-1 tests
+(`test_cors.py::test_allowed_origin_receives_cors_header` and 3 siblings,
+`test_startup.py::test_startup_succeeds_when_firebase_service_account_json_present`) that didn't set
+`SIGNER_*` env vars. Fixed by adding those env vars to the two fixtures — this is the CORRECT,
+expected consequence of ADR-4's fail-fast startup validation extending to a second client, not a bug
+introduced by this batch. Also added a new `test_missing_signer_s3_credentials_fails_startup` case to
+`test_startup.py` for symmetric coverage with the existing firebase-credential case (not in tasks.md's
+literal list for 2.1/2.2, but consistent with Strict TDD Mode's spirit — this is regression coverage
+for behavior the GREEN implementation already produces, flagged the same way batch-1b flagged 1.13).
+
+### Deviations from Design
+
+None. `s3()`'s WEB_STARTUP_CLIENTS placement is an interpretation (see above), not a deviation —
+ADR-4's actual requirement (s3 validated unconditionally at web startup) holds either way.
+
+### Issues Found
+
+None.
+
+### Blocked Tasks (2.3, 2.4, 2.5)
+
+- **2.3** VERIFY (ADR-7 parity procedure) — BLOCKED, no live Railway URL (task 1.4 not started; it is
+  a MANUAL operator step, out of automated apply scope, same as batch 1a/1b left it). Repo-side prep
+  done: `backend/scripts/verify_sign_parity.py`, a standalone MANUAL operator tool (not imported by
+  `app/` or `tests/`, never run in CI) that side-by-side-calls the legacy signer (body `idToken`) and
+  the new router (Bearer header) for a valid request plus the two reject cases (bad codigo, bad
+  token), driven entirely by `NEW_SIGN_URL`/`FIREBASE_ID_TOKEN`/`OLD_SIGN_URL` env vars, prints both
+  payloads (for the eventual PR description) and exits non-zero on any mismatch. Verified its BLOCKED
+  guard: running it with no env vars set exits 2 with an explanatory stderr message — confirmed this
+  is the actual current behavior, not just documented intent. Zero further code changes needed for
+  2.3 itself once 1.4 lands — just run the script.
+- **2.4** REPOINT `formulario/js/form.js` — BLOCKED, `formulario/` intentionally NOT touched this
+  batch. This was a deliberate scope decision, not an oversight: the hard scope boundary for this
+  batch was backend-only (no consumer switch), AND — independent of that boundary — flipping
+  `subirUnaFoto`'s request shape (Bearer header + `{codigo,slot}` body) now, while `FOTO_SIGNER_URL`
+  still points at the LIVE legacy signer, would break production photo uploads for field inspectors
+  immediately: `services/photo-signer/api/sign.js` reads `idToken` from the JSON body only — it has
+  no Bearer-header support, so it would 400/401 every real request from an unmodified deployment. The
+  URL flip and the body/header shape change are NOT independently safe; they must land in the same
+  deploy, gated on 2.3's parity pass against a real `NEW_SIGN_URL`. The exact future diff is already
+  fully specified in tasks.md 2.4's own text — no design work remains.
+- **2.5** MANUAL OPERATOR STEP (confirm legacy signer stays deployed) — not started; `services/photo-signer/`
+  was not touched by this batch, so its live status is unchanged and nothing needs confirming from
+  the repo side yet.
+
+### Files Changed (Batch 2)
+
+| File | Action | What Was Done |
+|---|---|---|
+| `backend/tests/routers/__init__.py` | Created | Test package marker |
+| `backend/tests/routers/test_sign.py` | Created | 6 cases: valid, missing-bearer, invalid-bearer, bad-codigo, out-of-range-slot, zero-slot |
+| `backend/app/credentials/clients.py` | Modified | Added `s3()`, `S3Client`, `S3Settings`, `_s3_settings()`, `_S3_REQUIRED_ENV_VARS`; `require()` dispatches `"s3"` to the new path; docstring rewritten for two named clients |
+| `backend/app/routers/sign.py` | Created | `POST /api/sign`, `Depends(require_auth)`, `CODIGO_RE`, `_max_slot()`, presign via `credentials.s3()` |
+| `backend/app/main.py` | Modified | Mounts `sign` router in `_ROUTERS` |
+| `backend/requirements.txt` | Modified | Added `boto3>=1.35` |
+| `backend/tests/test_cors.py` | Modified | `_client()` + cookie-only test now set `SIGNER_*` env vars |
+| `backend/tests/test_startup.py` | Modified | Added `SIGNER_*` env vars to existing tests; new `test_missing_signer_s3_credentials_fails_startup` |
+| `backend/scripts/verify_sign_parity.py` | Created | MANUAL operator tool for task 2.3, not imported anywhere, not run in CI |
+
+### TDD Cycle Evidence
+
+| Task | RED (command + result) | GREEN (command + result) |
+|---|---|---|
+| 2.1/2.2 (`test_sign.py` / `sign.py` + `s3()`) | `python -m pytest backend/tests/routers/test_sign.py -v` → `AttributeError: module 'app.credentials.clients' has no attribute 's3'` (6 failed, 0 passed) | `python -m pytest backend/tests/routers/test_sign.py -v` → `6 passed` |
+| Regression fix (`test_cors.py`/`test_startup.py`) | `python -m pytest backend/tests/ -v` (after 2.2 landed, before this fix) → `5 failed, 39 passed` — `CredentialsError: SIGNER_AWS_ACCESS_KEY_ID, SIGNER_AWS_SECRET_ACCESS_KEY, SIGNER_S3_BUCKET not set` | `python -m pytest backend/tests/ -v` → `45 passed, 0 failed` |
+
+Full-suite confirmation (end of batch 2): `python -m pytest backend/tests/ -v` → **45 passed, 0
+failed**.
+
+### Workload / PR Boundary
+
+- Mode: chained PR slice (`auto-chain` / `stacked-to-main`), Chain PR #2.
+- Work units (commits, in order): (1) `test(backend): add failing POST /api/sign router tests (RED)`
+  (`826cc72`); (2) `feat(backend): implement POST /api/sign presigner router (GREEN)` (`a42798b`);
+  (3) `fix(backend): require SIGNER_* s3 env vars in slice-1 test fixtures` (`282f7b7`);
+  (4) `chore(backend): add manual /api/sign parity verification script` (`8864a35`).
+- Boundary: starts from slice 1's merged `create_app()` (health-only route, 38/38 tests green on
+  `main`); ends at a tested `POST /api/sign` route mounted alongside `/health`, still zero consumer
+  repointed (`formulario/` untouched) — no production photo-upload path changed.
+- **Review budget flag**: `git diff --stat main..HEAD -- backend/` → **449 insertions, 24 deletions**
+  across 9 files — ABOVE the Review Workload Forecast's ~180-230 estimate and the chained-pr skill's
+  ≤400-line single-PR budget. Breakdown: `clients.py` (+112/-20, mostly docstring/comment expansion
+  matching this repo's existing verbosity convention, not new logic), `sign.py` (+82, the actual
+  route), `test_sign.py` (+109), `verify_sign_parity.py` (+122, a standalone non-invasive tool with
+  zero coupling to 2.1/2.2's GREEN implementation), remainder in `main.py`/`requirements.txt`/fixture
+  fixes (~24 lines). **Recommend splitting `verify_sign_parity.py` (commit `8864a35`, 122 lines) into
+  its own follow-up PR** if the 400-line budget is enforced strictly for chain PR #2 — it has no
+  runtime dependency on the router commits and can land before or after them independently. Left as
+  one branch here per this batch's explicit instruction not to push/PR; flagging for whoever opens
+  the actual PR(s).
+- Rollback: delete the branch / do not merge. `formulario/` and `services/photo-signer/` both
+  untouched — zero production impact regardless of how this branch is split into PRs.
+
+### Status
+
+**Slice 2: 2/5 tasks complete** (2.1, 2.2). **2.3 has repo-side prep complete but execution BLOCKED
+on 1.4.** **2.4 and 2.5 are BLOCKED** (2.4 by design — cannot safely repoint before 1.4+2.3; 2.5 is a
+manual confirmation with nothing left to verify from the repo side). Full `backend/tests/` suite: **45
+passed, 0 failed**.
+
+### Next Batch
+
+Slice 2 cannot fully close without task 1.4 (manual Railway "web" service creation) — the same
+blocker batch 1b already flagged. Once 1.4 is done: (1) run `backend/scripts/verify_sign_parity.py`
+against the real URL for 2.3; (2) if parity holds, apply 2.4's already-fully-specified repoint diff to
+`formulario/js/form.js` in one commit + manual Vercel redeploy; (3) confirm 2.5. After that, Slice 2 is
+complete and Slice 3 (`reportados` unified day-walk + snapshot, tasks 3.1-3.7,
+`~350-450` lines, suggested 3a/3b split) can start — it depends only on Phase 1, already merged.

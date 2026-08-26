@@ -23,6 +23,9 @@ LOCALHOST_DEV_ORIGIN = "http://localhost:5173"
 
 def _client(monkeypatch) -> TestClient:
     monkeypatch.setenv("FIREBASE_SERVICE_ACCOUNT_JSON", '{"type": "service_account"}')
+    monkeypatch.setenv("SIGNER_AWS_ACCESS_KEY_ID", "fake-access-key-id")
+    monkeypatch.setenv("SIGNER_AWS_SECRET_ACCESS_KEY", "fake-secret-access-key")
+    monkeypatch.setenv("SIGNER_S3_BUCKET", "test-sismo-fotos")
     return TestClient(create_app())
 
 
@@ -46,6 +49,9 @@ def test_localhost_dev_origin_is_allowed_via_regex(monkeypatch):
 
 def test_cookie_only_request_is_rejected_on_authenticated_route(monkeypatch):
     monkeypatch.setenv("FIREBASE_SERVICE_ACCOUNT_JSON", '{"type": "service_account"}')
+    monkeypatch.setenv("SIGNER_AWS_ACCESS_KEY_ID", "fake-access-key-id")
+    monkeypatch.setenv("SIGNER_AWS_SECRET_ACCESS_KEY", "fake-secret-access-key")
+    monkeypatch.setenv("SIGNER_S3_BUCKET", "test-sismo-fotos")
     app = create_app()
 
     @app.get("/stub-auth")

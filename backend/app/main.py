@@ -10,11 +10,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import config
 from app.credentials import clients as credentials
-from app.routers import health
+from app.routers import health, sign
 
 # Every router mounted by create_app(). Extended one module per migration
 # slice (tasks.md phases 2-8).
-_ROUTERS = (health,)
+_ROUTERS = (health, sign)
 
 
 def create_app() -> FastAPI:
