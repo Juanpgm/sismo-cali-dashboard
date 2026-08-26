@@ -56,11 +56,25 @@ def test_verify_clave_integracion_accepts_a_genuine_key():
     assert job.verify_clave_integracion(clave) is True
 
 
-def test_verify_clave_integracion_rejects_a_mutated_checksum():
+def test_a_mutated_checksum_pairs_with_no_point():
+    """A damaged digest must never pair a survey to a building.
+
+    It is NOT caught by `verify_clave_integracion` — that is structural
+    only, because the digest covers the full `registro_id` while the slug
+    is capped at 24 chars, so a stateless recompute is impossible for the
+    UUID-shaped ids every real point actually has (an earlier revision
+    tried, and thereby rejected every genuine real-world key). The
+    guarantee lives one layer up instead, at the exact-equality lookup:
+    a mutated key simply is not in the index of keys minted from known
+    points, so it matches nothing.
+    """
     clave = job.clave_integracion("atencionsismo", "14832")
     prefix, slug, digest = clave.split("-")
     damaged = f"{prefix}-{slug}-{'0' if digest[0] != '0' else '1'}{digest[1:]}"
-    assert job.verify_clave_integracion(damaged) is False
+
+    assert damaged != clave
+    index = job.build_key_index([{"GlobalID": "g", "codigoapp": damaged}])
+    assert index.get(clave) is None, "a damaged key must not resolve to the real point"
 
 
 def test_verify_clave_integracion_rejects_malformed_input():
@@ -400,3 +414,52 @@ def test_main_check_flag_runs_offline_selfcheck_and_returns_zero(monkeypatch):
 
 def test_required_clients_declares_only_sismo():
     assert job.REQUIRED_CLIENTS == ("sismo",)
+
+
+# Real-UUID round trip (regression: ADR-3's worked example used a short id) ----
+# Every real atencionsismo `id` is a UUID, so the minted slug is ALWAYS lossy
+# (32 hex chars sanitized, truncated to 24). These lock the property that
+# actually matters -- a key minted for a real point must survive the pipeline
+# and pair back to that point -- rather than the stateless self-recompute,
+# which is impossible for a lossy slug by construction.
+
+REAL_UUID = "00035fab-a24a-4f3c-a713-4712196d0bfd"
+OTHER_UUID = "ff4e643a-4057-4b49-bea1-a82f8bee9e81"
+
+
+def test_key_minted_for_a_real_uuid_point_survives_the_key_index():
+    clave = job.clave_integracion(job.FUENTE, REAL_UUID)
+    index = job.build_key_index([{"GlobalID": "g-1", "codigoapp": clave}])
+
+    assert clave in index, (
+        "a correctly minted key for a REAL (UUID) registro_id must not be "
+        "discarded by build_key_index -- discarding it kills rung-1 matching "
+        "for every real point in production"
+    )
+    assert index[clave]["GlobalID"] == "g-1"
+
+
+def test_two_uuids_sharing_a_24_char_slug_prefix_still_mint_distinct_keys():
+    # A UUID sanitizes to 32 hex chars, so the 24-char slug cap drops the last
+    # 8. These two differ ONLY in those dropped chars -> identical slugs, and
+    # the digest (taken over the FULL id) is the only thing telling them apart.
+    a = "aaaaaaaa-bbbb-cccc-dddd-eeee11111111"
+    b = "aaaaaaaa-bbbb-cccc-dddd-eeee22222222"
+    ka, kb = job.clave_integracion(job.FUENTE, a), job.clave_integracion(job.FUENTE, b)
+
+    assert ka.split("-")[1] == kb.split("-")[1], "precondition: slugs collide"
+    assert ka != kb, "the digest must disambiguate a slug collision"
+
+
+def test_garbage_codigoapp_values_are_still_rejected_by_the_index():
+    for junk in ("", None, "hola", "PLN-", "PLN-ABC", "XXX-14832-55C9286D",
+                 "PLN-14832-ZZZZZZZZ", "PLN-lowercase-55C9286D"):
+        assert job.build_key_index([{"GlobalID": "g", "codigoapp": junk}]) == {}, junk
+
+
+def test_a_survey_key_never_pairs_with_a_different_point():
+    mine = job.clave_integracion(job.FUENTE, REAL_UUID)
+    theirs = job.clave_integracion(job.FUENTE, OTHER_UUID)
+    index = job.build_key_index([{"GlobalID": "g-other", "codigoapp": theirs}])
+
+    assert index.get(mine) is None

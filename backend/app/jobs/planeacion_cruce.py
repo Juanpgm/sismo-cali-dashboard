@@ -80,28 +80,36 @@ Found" section for the concrete reasoning (obfuscating the collection name
 to dodge the scanner would defeat the review tripwire's actual purpose,
 which is worse than a minimal, honest, flagged addition).
 
-## `clave_integracion` verification — a known limitation, stated plainly
+## `clave_integracion` verification — where the guarantee actually lives
 
-`verify_clave_integracion` (ADR-3) recomputes the checksum from the KEY'S
-OWN PARSED id segment (not the point's true `registro_id`) and compares.
-That round-trip is LOSSLESS only when the true id is already <=24 chars of
-`[A-Z0-9]` — true for ADR-3's own worked example (`registro_id='14832'`),
-NOT true for real atencionsismo `id` values, which are full UUIDs (36
-chars incl. dashes; 32 hex chars once dashes are stripped, longer than the
-24-char slug cap). A genuinely, correctly minted key for a UUID-shaped
-`registro_id` will ALSO fail this stateless recompute — this is a real,
-non-obvious gap in ADR-3 as locked, not a bug in this implementation of
-it; flagged prominently in apply-progress.md and the apply return summary
-for design review before this feature is relied on in production. It does
-NOT block Phase 2 shipping: every task 2.1/2.5 spec scenario is written
-(and tested here) against short, ADR-3-example-shaped ids, exactly as
-ADR-3 itself illustrates, and the cascade's actual point<->survey pairing
-(`cruce_punto`) is exact-string equality between two values BOTH produced
-by the SAME pure `clave_integracion()` call for the SAME identity — which
-does not depend on `verify_clave_integracion`'s recompute-from-slug
-mechanism being lossless. `verify_clave_integracion` is used only as
-task 2.6 specifies: a defensive well-formedness filter before a survey's
-`codigoapp` value enters the exact-key index.
+ADR-3 illustrates the key with a SHORT worked example (`registro_id =
+'14832'`). Every real atencionsismo `id` is a UUID instead — 36 chars, 32
+hex once dashes are stripped — so the 24-char slug cap makes the slug
+ALWAYS lossy against real data, and the original id can never be
+recovered from the key alone.
+
+The first revision of this module took ADR-3's example literally and had
+`verify_clave_integracion` recompute the checksum from the key's own
+PARSED slug. That is impossible by construction for a lossy slug: it
+rejected every correctly minted real-world key, which would have silently
+disabled rung-1 exact matching for 100% of production points while
+passing every test in this file (all of which used short, example-shaped
+ids). Fixed 2026-08-26; `test_key_minted_for_a_real_uuid_point_survives_
+the_key_index` is the regression lock.
+
+`verify_clave_integracion` is now STRUCTURAL only — a well-formedness
+filter (right prefix, uppercase-alnum slug ≤24, 8 uppercase hex digits)
+that keeps hand-typed or garbage `codigoapp` values out of the index.
+The two properties that actually protect a field crew hold at the
+exact-equality lookup layer instead, and hold unconditionally:
+
+  * a damaged or forged key matches NO point, because pairing requires
+    the survey's `codigoapp` to equal a key this module minted for a
+    known point (`cruce_punto` against `build_key_index`); and
+  * two ids sharing their first 24 sanitized chars still mint DIFFERENT
+    keys, because the digest is taken over the FULL id — so a slug
+    collision can never pair a survey to the wrong building, which is
+    the failure that would actually cost a wasted trip.
 
     python -m app.jobs.planeacion_cruce --check     # offline self-check, no network
     python -m app.jobs.planeacion_cruce --dry       # real data, no Firestore write
@@ -239,19 +247,36 @@ _CLAVE_RE = re.compile(rf"^{KEY_PREFIX}-([A-Z0-9]{{1,24}})-([0-9A-F]{{8}})$")
 
 
 def verify_clave_integracion(clave: str | None, fuente: str = FUENTE) -> bool:
-    """Structural + checksum verification (ADR-3): parse the
-    `PLN-<slug>-<digest>` shape and confirm recomputing the key from the
-    PARSED slug reproduces the same digest. A malformed value (wrong
-    prefix, wrong charset, wrong digest length) or a digest that does not
-    verify is treated as NOT a match. See the module docstring's "known
-    limitation" section for the real-data caveat this carries."""
-    m = _CLAVE_RE.match(str(clave or ""))
-    if not m:
-        return False
-    slug, digest = m.groups()
-    raw = f"{fuente}:{slug}"
-    expected = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8].upper()
-    return expected == digest
+    """STRUCTURAL validation only: does `clave` have the exact
+    `PLN-<slug>-<digest>` shape (right prefix, uppercase-alnum slug of 1-24,
+    8 uppercase hex digits)? Anything else — empty, hand-typed, wrong
+    prefix, lowercase, truncated — is rejected.
+
+    It deliberately does NOT recompute the checksum, because a stateless
+    recompute is IMPOSSIBLE by construction: the digest is taken over the
+    FULL `registro_id`, while the slug is that id sanitized and capped at
+    24 chars. Every real atencionsismo id is a UUID (32 hex chars once
+    dashes are stripped), so the slug is ALWAYS lossy and the original
+    input can never be recovered from the key alone. An earlier revision
+    did attempt that recompute; it silently rejected every correctly
+    minted real-world key, which would have disabled rung-1 exact matching
+    entirely in production while passing every test (all of which used the
+    short ids from ADR-3's worked example). See
+    `test_key_minted_for_a_real_uuid_point_survives_the_key_index`.
+
+    The checksum is NOT wasted — it just does its job at a different
+    layer. Pairing is exact string equality between a survey's `codigoapp`
+    and a key minted by this same module for a known point (`cruce_punto`
+    against `build_key_index`). Under that lookup:
+      * a damaged/forged key matches NO point (it isn't in the index), and
+      * two ids sharing the first 24 sanitized chars still mint DIFFERENT
+        keys, because the digest is derived from the full id — so a slug
+        collision can never pair a survey to the wrong building.
+    That second property is the one that actually protects a field crew
+    from being sent to the wrong address, and it holds regardless of
+    whether the key can be self-verified.
+    """
+    return _CLAVE_RE.match(str(clave or "")) is not None
 
 
 # ── Prioritization (ADR-4) ──────────────────────────────────────────────────
@@ -303,10 +328,14 @@ def prioridad_de(score: int) -> str:
 
 # ── Matching cascade (ADR-5) — 5 rungs, exact key first ─────────────────────
 def build_key_index(surveys: list[dict]) -> dict[str, dict]:
-    """`codigoapp` -> survey record, keeping only entries whose checksum
-    verifies (ADR-3 / task 2.6) — a malformed or hand-typed `codigoapp`
-    value is discarded rather than accepted as a spurious exact match. See
-    the module docstring's "known limitation" note."""
+    """`codigoapp` -> survey record, keeping only well-formed keys (ADR-3 /
+    task 2.6) so a hand-typed or garbage `codigoapp` never enters the index.
+
+    Membership in this index is what "verifies" a key: a survey pairs to a
+    point only when its `codigoapp` EQUALS a key minted by this module for
+    that point, so a forged or damaged value simply resolves to nothing.
+    See the module docstring for why the checksum cannot be — and need not
+    be — re-derived from the key in isolation."""
     out: dict[str, dict] = {}
     for s in surveys:
         clave = s.get("codigoapp")

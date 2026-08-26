@@ -140,7 +140,12 @@ warnings, 0 failed** (259 baseline + 34 `test_planeacion_cruce.py` + 4
 
 ### Issues Found
 
-1. **CRITICAL — `verify_clave_integracion`'s checksum mechanism (ADR-3, locked) will reject every
+1. **RESOLVED 2026-08-26 (orchestrator follow-up, option (b) below) — was CRITICAL.** The batch
+   correctly identified and escalated this instead of shipping it silently; the fix and its
+   regression locks are recorded in "Follow-up fix" at the end of this section. Original finding,
+   kept verbatim for the record:
+
+   **CRITICAL — `verify_clave_integracion`'s checksum mechanism (ADR-3, locked) will reject every
    genuinely-minted key for a real, UUID-shaped `registro_id`, making rung-1 exact-key matching
    NON-FUNCTIONAL against real production data, even after `codigoapp` starts circulating.**
    `clave_integracion()`'s `slug` is `re.sub(r"[^A-Z0-9]", "", registro_id.upper())[:24]` — for the
@@ -239,3 +244,80 @@ invariant + mounting) per tasks.md's own forecast. Before starting, Issue 1 abov
 mitigation, since Phase 3's `getEnlaceSurvey` action is what puts `clave_integracion` into
 circulation in the first place — shipping Phase 3/4/5 without resolving it means the round-trip
 traceability feature will not actually close any points in production.
+
+---
+
+## Follow-up fix — Issue 1 resolved (orchestrator, 2026-08-26)
+
+Phase 3 is no longer gated: the UUID gap the batch escalated is fixed, verified against real data,
+and locked by regression tests. **Option (b)** from the batch's own list was taken.
+
+### Verification of the finding (before touching anything)
+
+The escalation was confirmed empirically, not accepted on description:
+
+```
+id='14832'                                   -> PLN-14832-55C9286D              verify=True
+id='00035fab-a24a-4f3c-a713-4712196d0bfd'    -> PLN-00035FABA24A4F3CA7134712-7B9252DA  verify=False
+```
+
+The second id is a real value read out of the live 14,804-record `web/data/reportes.json`. Every
+production point is UUID-shaped, so rung-1 matching would indeed have been dead on 100% of real
+data while the suite stayed green.
+
+### Root cause
+
+`verify_clave_integracion` recomputed `sha256(f"{fuente}:{slug}")` from the key's own **parsed**
+slug, but the embedded digest is taken over the **full** `registro_id`. `slug` is
+`re.sub(r"[^A-Z0-9]","",id.upper())[:24]` — lossy for any id longer than 24 sanitized chars. A
+stateless recompute is therefore impossible by construction, not merely inaccurate. ADR-3's
+worked example (`'14832'`) is the only shape where slug == id, which is why the design read as
+sound and every test passed.
+
+### The fix
+
+`verify_clave_integracion` is now **structural only** (prefix / charset / slug length / 8 hex
+digits). The checksum is not discarded — it moves to the layer where it can actually be checked:
+exact string equality between a survey's `codigoapp` and a key minted by this module for a known
+point (`cruce_punto` against `build_key_index`). Under that lookup both safety properties hold
+unconditionally:
+
+- a damaged or forged key is not in the index, so it matches **no** point; and
+- two ids sharing their first 24 sanitized chars still mint **different** keys, because the digest
+  covers the full id — so a slug collision can never pair a survey to the **wrong** building. That
+  is the failure mode that would actually send a crew to the wrong address, and it is preserved.
+
+### Real-data proof (post-fix)
+
+```
+punto real   : 00035fab-a24a-4f3c-a713-4712196d0bfd
+clave minted : PLN-00035FABA24A4F3CA7134712-7B9252DA
+pairing      : OK -> survey abc-123
+cruce falso  : correctamente rechazado
+```
+
+### Tests
+
+Suite: **297 → 301 passed, 0 failed.**
+
+Added (RED confirmed before the fix — `test_key_minted_for_a_real_uuid_point_survives_the_key_index`
+failed against the pre-fix code):
+
+| Test | Locks |
+|---|---|
+| `test_key_minted_for_a_real_uuid_point_survives_the_key_index` | the exact regression: a real UUID key must not be discarded |
+| `test_two_uuids_sharing_a_24_char_slug_prefix_still_mint_distinct_keys` | the digest disambiguates a genuine slug collision |
+| `test_garbage_codigoapp_values_are_still_rejected_by_the_index` | structural filter still rejects hand-typed junk |
+| `test_a_survey_key_never_pairs_with_a_different_point` | no cross-point pairing |
+
+Rewritten: `test_verify_clave_integracion_rejects_a_mutated_checksum` →
+`test_a_mutated_checksum_pairs_with_no_point`. The old test asserted the broken design (that a
+standalone recompute catches a mutated digest). The new one asserts the property that actually
+protects a field crew and that genuinely holds — a damaged key resolves to no point.
+
+### ADR-3 status
+
+ADR-3's *intent* (deterministic, URL-safe, checksummed, collision-resistant, no lookup table) is
+fully preserved; only its "verify by stateless recompute" scenario was unimplementable against the
+real id shape. Left for the verify phase to reconcile in design.md — the code and the docstring are
+now the accurate source of truth.
