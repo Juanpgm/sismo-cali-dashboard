@@ -2,12 +2,15 @@
 and `cuadrillas` have NO Firestore security rules, so "the backend is sole
 writer, and only from these modules" must hold by construction, not by
 policy. Slice 5 (`routers/inspector_asignaciones.py`) introduced this
-literal under the invariant. Slice 7 (task 7.9) adds the THIRD WRITE module,
-`app/jobs/cruce_sticker.py` (+ its copied pipeline module,
-`app/integracion/cruce_gestor.py` — see below). ADR-9 names one more WRITE
-module joining later: `routers/sticker_asignaciones.py` (slice 8) — do NOT
-anticipate it here; extend `ALLOWED_MODULES` in its own slice's RED task
-(8.4 per tasks.md).
+literal under the invariant. Slice 7 (task 7.9) added the THIRD WRITE
+module, `app/jobs/cruce_sticker.py` (+ its copied pipeline module,
+`app/integracion/cruce_gestor.py` — see below). Slice 8 (task 8.4) adds the
+FOURTH and FINAL WRITE module, `routers/sticker_asignaciones.py` — the
+`sticker_matches`/`cuadrillas` allowlist is now CLOSED; no further module is
+named by ADR-9 to join it. `cuadrillas` gets its first real hit this slice
+(`inspector-asignaciones.js` never touches `cuadrillas` — only
+`sticker-asignaciones.js` does), so `test_cuadrillas_literal_appears_only_in_allowlisted_modules`
+now also asserts a non-empty hit set, mirroring the `sticker_matches` test.
 
 **Slice 7b (task 7.6)** adds a SECOND, INDEPENDENT literal check for
 `survey_cali` — ADR-9's "same treatment" extension for that collection.
@@ -76,10 +79,13 @@ APP_ROOT = Path(__file__).resolve().parents[2] / "app"
 # call to this collection without a corresponding ADR-9 amendment. Slice 7
 # (task 7.9): app/jobs/cruce_sticker.py joins as the third WRITE module
 # (pipeline-owned fields, merge:true only — see its module docstring).
+# Slice 8 (task 8.4): routers/sticker_asignaciones.py joins as the FOURTH
+# and FINAL WRITE module (admin fields) — this set is now CLOSED per ADR-9.
 ALLOWED_MODULES = {
     APP_ROOT / "routers" / "inspector_asignaciones.py",
     APP_ROOT / "routers" / "sticker_status.py",  # read-only, see docstring
     APP_ROOT / "jobs" / "cruce_sticker.py",
+    APP_ROOT / "routers" / "sticker_asignaciones.py",
 }
 
 # Slice 7b (task 7.6): `survey_cali`'s OWN allowlist — INDEPENDENT of
@@ -117,15 +123,17 @@ def test_sticker_matches_literal_is_used_by_an_allowlisted_module():
 
 
 def test_cuadrillas_literal_appears_only_in_allowlisted_modules():
-    """`inspector-asignaciones.js` never touches `cuadrillas` at all (only
-    `sticker-asignaciones.js`, admin-only, ported in slice 8, does) — so
-    this collection has ZERO hits under backend/app/ at this slice, which
-    is a legitimate empty-subset pass, not a gap. Slice 8's 8.4 extends
-    ALLOWED_MODULES and this test will then also assert a non-empty hit
-    set for `cuadrillas`, mirroring the sticker_matches test above."""
+    """`inspector-asignaciones.js` never touches `cuadrillas` at all — only
+    `sticker-asignaciones.js` (admin-only, ported in slice 8, task 8.4)
+    does. Prior to slice 8 this collection had ZERO hits under backend/app/
+    (a legitimate empty-subset pass). Slice 8's 8.4 extends ALLOWED_MODULES
+    with routers/sticker_asignaciones.py, giving this collection its FIRST
+    real hit — so this test now also asserts a non-empty hit set, mirroring
+    the sticker_matches test above."""
     hits = _files_containing("cuadrillas")
     unexpected = hits - ALLOWED_MODULES
     assert not unexpected, f"unexpected cuadrillas reference(s): {sorted(unexpected)}"
+    assert hits, "expected cuadrillas to be referenced by an allowlisted module by now"
 
 
 def test_survey_cali_literal_is_used_by_an_allowlisted_module():

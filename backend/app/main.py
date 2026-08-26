@@ -21,6 +21,7 @@ from app.routers import (
     reportados,
     sign,
     source_status,
+    sticker_asignaciones,
     stickers,
     sticker_status,
 )
@@ -38,6 +39,7 @@ _ROUTERS = (
     inspector_asignaciones,
     refresh,
     stickers,
+    sticker_asignaciones,
 )
 
 
