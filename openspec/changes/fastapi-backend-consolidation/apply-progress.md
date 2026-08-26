@@ -843,12 +843,188 @@ live `FIREBASE_ID_TOKEN`.** **4.6 is BLOCKED on 4.5** (and, once unblocked, need
 `api-config.js` flip AND wiring `main.js`/`analista.js` off their hardcoded paths — not a single-line
 repoint). Full `backend/tests/` suite: **104 passed, 0 failed**.
 
-### Next Batch
+---
 
-Slice 4 cannot fully close without a live `FIREBASE_ID_TOKEN` — the same class of blocker slice 2's 2.3
-token-required tier still carries (NOT the 1.4 blocker; 1.4 itself is done). Once a token is available:
-(1) run `backend/scripts/verify_status_routes_parity.py` against the real Railway URLs for 4.5; (2) if
-parity holds, apply 4.6's two-part repoint (flip both `api-config.js` entries + wire `main.js`/
-`analista.js` off their hardcoded relative paths) in one commit + manual Vercel redeploy of `web/`.
-After that, Slice 4 is complete and Slice 5 (`inspector-asignaciones`, tasks 5.1-5.5, `~150-200` lines,
-low 400-line risk, single PR) can start — it depends only on Phase 1, already merged.
+## Batch 5 — `inspector-asignaciones` (5.1-5.3 COMPLETE; 5.4 prep done, BLOCKED; 5.5 BLOCKED on 5.4)
+
+Branch: `feat/fastapi-consolidation-5-inspector-asignaciones` (off `main`, not pushed). Cut before slice
+4 merged, so it branched from `main` directly rather than stacking on `feat/fastapi-consolidation-4-status`
+— both depend only on Phase 1, so this was safe. Confirmed `python -m pytest backend/tests/ -q` on
+`main` before branching → **97 passed** (slice 1+2+3 only; slice 4's routers were not yet present on
+`main` at that point). Both branches merged into `main` together right after this batch — see "Merge
+reconciliation" at the end of this file.
+
+### Completed Tasks
+
+- [x] **5.1** (RED) `backend/tests/routers/test_inspector_asignaciones.py` — 7 cases: unauthenticated →
+      401; `misPuntos` returns only the caller's own PENDING points (excludes a same-inspector point
+      already `hecho`, and excludes a different inspector's point entirely); `marcarHecho` on a point
+      whose `inspector_uid` belongs to a DIFFERENT inspector → 403, no write (asserted directly against
+      the fake Firestore store, not just the HTTP response); `marcarHecho` on the caller's OWN point →
+      200, `estado_asignacion` flips to `hecho`; `marcarHecho` with a missing `punto_id` → 400;
+      `marcarHecho` against a nonexistent point → 404; an unrecognized `action` → 400. Confirmed failing:
+      7 of 9 collected cases failed (all router cases `404 Not Found` — the route did not exist yet); 2
+      passed coincidentally (the nonexistent-point case expects 404 and got it for the wrong reason —
+      the whole route was 404; the `cuadrillas` invariant test, see 5.3, legitimately passed on an empty
+      hit set).
+- [x] **5.2** (GREEN) `backend/app/routers/inspector_asignaciones.py` — `POST /inspector-asignaciones`
+      (no `/api` prefix — matches the field-form-session/backend-platform spec deltas' own scenario text
+      and the `reportados`/`sticker-status`/`source-status` precedent, unlike `/api/sign`; see "Design
+      Interpretation" below), `Depends(require_auth)`, ports `api/inspector-asignaciones.js`'s
+      `misPuntos`/`marcarHecho` dispatch verbatim (incl. the `pendiente()` helper). Every
+      `sticker_matches` read/write goes through `db.collection("sticker_matches").where("inspector_uid",
+      "==", uid)` (reads) or `.document(punto_id).get()`/`.set(..., merge=True)` after an explicit
+      `inspector_uid == uid` check (writes) — the entire cross-inspector rejection boundary lives in
+      `_marcar_hecho()`'s one `if data.get("inspector_uid") != uid` branch, ported byte-for-byte from the
+      JS handler's `if (snap.data().inspector_uid !== uid)`. First of three modules allowlisted for the
+      `sticker_matches`/`cuadrillas` literal (ADR-9) — see 5.3. Mounted in `main.py`'s `_ROUTERS`. First
+      GREEN pass, no rework — `python -m pytest backend/tests/routers/test_inspector_asignaciones.py
+      backend/tests/invariants/test_sole_writer.py -v` → 9 passed. Full suite: `python -m pytest
+      backend/tests/ -v` → **106 passed** (97 baseline + 9 new).
+- [x] **5.3** (RED) `backend/tests/invariants/test_sole_writer.py` (NEW file) — scans every `.py` file
+      under `backend/app/` for the literal collection names `sticker_matches`/`cuadrillas` and asserts
+      they appear ONLY in `ALLOWED_MODULES` (currently just `routers/inspector_asignaciones.py`), plus a
+      positive (non-empty) assertion for `sticker_matches` specifically (there is at least one
+      allowlisted reference by now) — the `cuadrillas` literal legitimately has ZERO hits at this slice
+      (`inspector-asignaciones.js` never touches `cuadrillas`; only `sticker-asignaciones.js`, slice 8,
+      does), so its test asserts only the negative (no *unexpected* module) half, deliberately NOT a
+      positive-hit assertion yet — extending that is slice 8's 8.4, not anticipated here. **Genuine
+      RED-before-GREEN, not the no-implementation-gap-left situation batches 1b/3 hit for 1.13/3.5**:
+      this file was written and run immediately after 5.1, BEFORE 5.2's router existed — confirmed
+      failing (`AssertionError: expected sticker_matches to be referenced by an allowlisted module by
+      now`, 0 hits under `backend/app/` at that point) — then 5.2 landed and the identical command
+      passed (2/2).
+
+### Design Interpretation (flag for verify)
+
+**Route mounted at `/inspector-asignaciones`, WITHOUT an `/api` prefix** — task 5.2's own text just says
+"`POST /inspector-asignaciones`" (no prefix), and both `field-form-session/spec.md`'s delta ("CORS
+Enabled For The formulario Origin": `... /inspector-asignaciones or /api/sign is called cross-origin`)
+and `backend-platform/spec.md`'s route table (`/inspector-asignaciones | POST | Bearer, any
+authenticated role...`) consistently omit the prefix for this route while explicitly keeping it for
+`/api/sign` in the same sentence/table — this is a deliberate, spec-confirmed distinction, not an
+inconsistency I introduced. It also matches 3 of the 4 existing routers (`reportados`, `sticker-status`,
+`source-status` all mount without `/api`; only `sign` keeps it, for its own legacy-parity reasons per
+slice 2). **Consequence for the still-BLOCKED 5.5**: `formulario/js/form.js`'s `asignacionesApi()`
+currently calls `${DASHBOARD_API}/api/inspector-asignaciones` (WITH `/api`) — so the eventual repoint is
+not a pure host-flip like slice 3's `reportados` was; it also needs the `/api` segment dropped from that
+one template literal, in the same edit, once 5.4 unblocks it. Documented as a concrete finding in 5.5's
+tasks.md status note, not silently left for whoever does the repoint to rediscover.
+
+**`_marcar_hecho`'s uid-extraction fallback (`claims.get("sub") or claims.get("uid")`) is technically
+dead code** given `verify_firebase_token` already rejects empty-`sub` tokens (design.md ADR-3,
+confirmed in batch 1b's `verify.py`) — `require_auth` can never hand this router a claims dict with no
+usable identifier. Kept anyway because it is a verbatim, harmless port of
+`api/inspector-asignaciones.js`'s own belt-and-suspenders `uid = claims.sub || claims.uid;` check (JS
+has no equivalent Python-side guarantee at the verifier layer that Python's own verifier happens to
+provide) — not a functional gap, just carried-over defensive code from the source being ported.
+
+### Deviations from Design
+
+None. The `/inspector-asignaciones` route-prefix choice is a spec-confirmed interpretation (see above),
+not a deviation — both spec deltas' literal scenario text supports it.
+
+### Issues Found
+
+None.
+
+### Blocked Tasks (5.4, 5.5)
+
+- **5.4** VERIFY (ADR-7 procedure) — BLOCKED on a live `FIREBASE_ID_TOKEN` belonging to a registered
+  inspector. NOT the 1.4-class blocker slices 2/3 hit originally (task 1.4 — the Railway "web" service —
+  is in fact live in reality, confirmed via `main`'s own commit history, `c2fb564`/`7dacbde`); this is
+  the SAME class of blocker slice 2's 2.3 token-required tier and slice 4's 4.5 still carry: no
+  automated apply batch can fabricate a real Firebase ID token. Repo-side prep done:
+  `backend/scripts/verify_inspector_asignaciones_parity.py` — a standalone MANUAL operator tool (not
+  imported by `app/`/`tests/`, never run in CI), following the exact two-tier convention
+  `verify_sign_parity.py`/`verify_status_routes_parity.py` established: STRUCTURAL (no-auth/bad-token
+  401 parity for BOTH actions — runnable today with no token) and TOKEN-REQUIRED (`misPuntos` payload
+  comparison, needs `FIREBASE_ID_TOKEN`; `marcarHecho` is additionally opt-in via a separate
+  `MARCAR_HECHO_PUNTO_ID` env var even once a token exists, since it is a MUTATING action that could
+  flip a real production point to `hecho` — this script deliberately never calls it automatically).
+  Verified its BLOCKED guard: running it with no `NEW_INSPECTOR_ASIGNACIONES_URL` set exits 2 with an
+  explanatory stderr message (confirmed by direct execution, not just documented intent). Not run
+  against a live Railway URL this batch — no token available; no further code changes needed for 5.4
+  itself once one exists.
+- **5.5** REPOINT `formulario/js/form.js`'s `DASHBOARD_API` — BLOCKED on 5.4 by this task's own
+  dependency ordering (no parity result exists to gate a repoint on), same pattern every prior slice's
+  REPOINT task followed. `formulario/js/form.js` was read in full but NOT modified this batch (the
+  instructed scope boundary: read-only for the BLOCKED finding, no edit). **Finding, confirmed by
+  reading the file, not assumed**: `DASHBOARD_API` (line 24) currently resolves to
+  `https://sismo-cali-dashboard.vercel.app` (or `http://localhost:3000` on `localhost`);
+  `asignacionesApi()` (lines 101-108) already sends `Authorization: Bearer ${token}` — unlike slice 2's
+  legacy signer, there is no body-`idToken` shape to also change here, only the URL. Two call sites
+  consume it: `iniciarAsignaciones()` (line 112, `{action:'misPuntos'}`) and the submit flow (line 710,
+  `{action:'marcarHecho', punto_id:...}`), both via the same `asignacionesApi()` wrapper. Both currently
+  target `${DASHBOARD_API}/api/inspector-asignaciones` — see the Design Interpretation section above for
+  why the eventual repoint needs a two-part edit (host AND the `/api` segment), not a single-line flip.
+
+### Files Changed (Batch 5)
+
+| File | Action | What Was Done |
+|---|---|---|
+| `backend/tests/routers/test_inspector_asignaciones.py` | Created | 7 cases: unauthenticated, misPuntos-own-pending-only, cross-uid-marcarHecho-rejected-no-write, own-uid-marcarHecho-succeeds, missing-punto_id, nonexistent-point, unrecognized-action |
+| `backend/app/routers/inspector_asignaciones.py` | Created | `POST /inspector-asignaciones` — own-uid-scoped `misPuntos`/`marcarHecho` dispatch |
+| `backend/tests/invariants/__init__.py` | Created | Test package marker |
+| `backend/tests/invariants/test_sole_writer.py` | Created | ADR-9 sole-writer invariant: `sticker_matches`/`cuadrillas` literal allowlist scan |
+| `backend/app/main.py` | Modified | Mounts `inspector_asignaciones` in `_ROUTERS` |
+| `backend/scripts/verify_inspector_asignaciones_parity.py` | Created | MANUAL operator tool for task 5.4, not imported anywhere, not run in CI |
+
+### TDD Cycle Evidence
+
+| Task | RED (command + result) | GREEN (command + result) |
+|---|---|---|
+| 5.1/5.2 (`test_inspector_asignaciones.py` / `inspector_asignaciones.py`) | `python -m pytest backend/tests/routers/test_inspector_asignaciones.py backend/tests/invariants/test_sole_writer.py -v` → `7 failed, 2 passed` (router cases: `404 Not Found`; see Completed Tasks 5.1 for why 2 passed coincidentally/legitimately) | Same command → `9 passed`; full suite `python -m pytest backend/tests/ -q` → `106 passed` |
+| 5.3 (`test_sole_writer.py`, isolated from 5.2) | `python -m pytest backend/tests/invariants/test_sole_writer.py -v` (run BEFORE `inspector_asignaciones.py` was written) → `1 failed, 1 passed` — `AssertionError: expected sticker_matches to be referenced by an allowlisted module by now` (0 hits) | Same command, AFTER 5.2 landed → `2 passed` |
+
+Full-suite confirmation (end of batch 5): `python -m pytest backend/tests/ -v` → **106 passed, 0
+failed** (baseline 97 on `main` + 9 new: 7 router + 2 invariant).
+
+### Workload / PR Boundary
+
+- Mode: chained PR slice (`auto-chain` / `stacked-to-main`), Chain PR #5. Per tasks.md's Review Workload
+  Forecast, slice 5 is forecast `~150-200 lines, Low risk, Single PR` — no sub-split needed or attempted.
+- Work units (commits, in order): (1) `test(backend): add failing POST /inspector-asignaciones router
+  tests + sole-writer invariant (RED)` (`1b02834`); (2) `feat(backend): implement POST
+  /inspector-asignaciones own-uid-scoped dispatch (GREEN)` (`a2fa4ec`); (3) `chore(backend): add manual
+  inspector-asignaciones parity script (5.4, BLOCKED)` (`12a3053`); (4) `docs(sdd): record batch 5
+  progress — inspector-asignaciones (5.1-5.3 done)` (`bacce02`).
+- Boundary: starts from slice 1(+2+3)'s merged `create_app()` on `main` (97/97 tests green); ends at a
+  tested `POST /inspector-asignaciones` route mounted alongside the existing three, still zero consumer
+  repointed (`formulario/js/form.js` read but untouched) — no production field-form behavior changed.
+- **Review budget flag**: `git diff --stat main..HEAD -- backend/` → **641 insertions, 2 deletions**
+  across 6 files — ABOVE the Review Workload Forecast's ~150-200 estimate for slice 5, the same overrun
+  pattern every prior slice (2, 3, 4) hit. Breakdown: `inspector_asignaciones.py` (122) +
+  `test_inspector_asignaciones.py` (232) = 354 (the router itself); `test_sole_writer.py` (63) +
+  `__init__.py` (1) = 64 (the new invariant file); `verify_inspector_asignaciones_parity.py` (221,
+  standalone, zero coupling to the router's GREEN commit); `main.py` (+4/-2 wiring). **Recommend
+  splitting along the same seam batches 2/3/4 used**: **5a** = the RED+GREEN commits (router + tests +
+  invariant test, 418 lines) as one PR targeting `main`; **5b** = the parity-script commit (221 lines)
+  as a second, independently-mergeable PR — it has no runtime dependency on the router and can land
+  before or after it. Left as one branch here per this batch's explicit instruction not to push/PR;
+  flagging for whoever opens the actual PR(s).
+- Rollback: delete the branch / do not merge. `formulario/js/form.js` and every other consumer
+  untouched — zero production impact regardless of how this branch is split into PRs.
+
+### Status
+
+**Slice 5: 3/5 tasks complete** (5.1-5.3). **5.4 has repo-side prep complete but execution BLOCKED on a
+live `FIREBASE_ID_TOKEN`.** **5.5 is BLOCKED on 5.4** (and, once unblocked, needs a two-part edit — host
+flip AND dropping the `/api` prefix — not a single-line repoint, per the Design Interpretation above).
+Full `backend/tests/` suite: **106 passed, 0 failed**.
+
+---
+
+## Merge reconciliation (2026-08-26)
+
+Both branches were cut independently from `main` (each depending only on the already-merged Phase 1),
+so neither saw the other's commits. Merged into `main` in numeric order — `feat/fastapi-consolidation-4-
+status` first (fast-forward-free merge, no conflicts), then `feat/fastapi-consolidation-5-inspector-
+asignaciones` (conflicted in `backend/app/main.py`'s router imports/`_ROUTERS` tuple and in this file's
+append point — both resolved by union, no logic lost; `backend/app/main.py`'s `_ROUTERS` now lists all
+six routers: `health, sign, reportados, sticker_status, source_status, inspector_asignaciones`). Full
+suite green on `main` post-merge — see the top-level status note this session appended after this
+point for the exact count. Both slices' own "Next Batch" pointers above (referring to needing a live
+token before their own VERIFY/REPOINT tasks) still hold after the merge; the token-acquisition approach
+that unblocked them is recorded separately (not duplicated here — see the session's own follow-up
+entries below, if any, or `tasks.md`'s 2.3/4.5/5.4 status notes for the final resolution).

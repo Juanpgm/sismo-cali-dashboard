@@ -337,11 +337,17 @@ tests/
 **Decision.** These collections have NO Firestore rules; "backend is sole writer" must survive by
 construction:
 
-1. **Module boundary**: exactly three modules may contain the collection-name literals
+1. **Module boundary**: exactly three modules may WRITE the collection-name literals
    `sticker_matches` / `cuadrillas`: `routers/sticker_asignaciones.py` (admin fields),
    `routers/inspector_asignaciones.py` (own-uid `hecho` update), `app/jobs/cruce_sticker.py` +
    its copied pipeline module (pipeline fields, `merge=True` subset only). All access goes through
-   `credentials.sismo()`; no other module names the collections.
+   `credentials.sismo()`; no other module names the collections for writes.
+   **Amendment (2026-08-26, merge reconciliation of slices 4+5)**: `routers/sticker_status.py`
+   additionally reads (never writes) `sticker_matches` in full to compute a per-status tally,
+   mirroring `api/sticker-status.js`'s legacy behavior — it is allowlisted READ-ONLY in
+   `test_sole_writer.py`. The invariant's protection target is the WRITE side (no Firestore rules
+   guard against an uncontrolled write corrupting the collection); an additional read-only
+   consumer does not weaken that guarantee, so this is an allowlist amendment, not a violation.
 2. **Static invariant test** (`tests/invariants/test_sole_writer.py`): scans `backend/app/**/*.py`
    and asserts the literals appear ONLY in the allowlisted modules. A new write path cannot merge
    without editing the allowlist — which is the review tripwire.

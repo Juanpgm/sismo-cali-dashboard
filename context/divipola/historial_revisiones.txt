@@ -1,0 +1,173 @@
+2026-02-20
+----------
+Se actualizó el feature barrios, según con lo dispuesto en el Acuerdo 15 de 1982.
+
+2026-02-17
+----------
+Se actualizó el feature barrios, debido al ajuste del límite del barrio Mario Correa Rengifo de la Comuna 18, según lo estipulado en los Acuerdos 106 de 1987 y 02 de 1991.
+
+2025-11-21
+----------
+Se actualizó el feature barrios, debido al ajuste del límite del barrio Urbanización Tequendama en la intersección de la carrera 45A con la calle 6.
+
+2025-09-16
+----------
+Se actualizó el feature barrios, debido al ajuste del límite del barrio El Cortijo, el cual a su vez ajusta los límites de los barrios Siloé y Lleras Camargo, según el Acuerdo 30 de 1975. 
+
+2025-03-26
+----------
+Se actualizó el feature veredas, en el corregimiento de La Elvira, según lo descrito en el Acuerdo 49 1964. 
+
+2025-02-21
+----------
+Se actualizó el feature barrios, debido al ajuste del límite de Los Comuneros II, según lo estipulado en el Acuerdo 30 de 1983.
+
+2025-02-06
+----------
+Se actualizó el feature comunas, debido al ajuste del límite entre la comuna 14 y 21 para simplificar su trazado en el tramo de la KR 28 con CL 120.
+
+2025-02-04
+----------
+Se actualizó el feature barrios:
+- Se ajustó el límite entre los barrios Compartir - Ciudadela del Río para simplificar su trazado en la KR 25A con CL 102H.
+- Se ajustó el límite entre los barrios Ciudad Talanga - Compartir para simplificar su trazado en la KR 25 con CL 87.
+- Se ajustó el límite entre los sectores Villamercedes I - Villa Luz - Las Garzas para simplificar su trazado en la KR 28 con CL 120, y entre la CL 113A con KR 28E 5.
+
+2025-01-31
+----------
+Se actualizó el feature barrios, debido al ajuste del límite entre los barrios Potrero Grande y Pizamos II en el sector Surte 90. 
+
+2025-01-30
+----------
+Se actualizó el feature barrios, debido al ajuste del límite entre los barrios Pizamos I, Pizamos II y Pizamos III - Las Dalias en el sector de la Calle 121 con Carrera 28F, según el plano urbanístico de Pizamos II.
+
+2025-01-29
+----------
+Se actualizaron los features:
+- veredas: debido al ajuste del limite entre las veredas La Buitrera (cabecera) y El Rosario en el corregimiento La Buitrera, donde se identifica el elemento geográfico Alto La Tofa que es el límite que las divide.
+- comunas: debido al ajuste del límite de las comunas 18 y 22 en el río Meléndez para ajustarlos al vértice 36 del perímetro urbano; y debido al ajuste del límite entre las veredas La Riverita y El Club Campestre para ajustarlo al límite entre el barrio Urbanización Ciudad Jardín y El Club Campestre.
+- barrios: debido al ajuste del limite del sector Meléndez y el Club Campestre en el río Meléndez para ajustarlos al vértice 36 del perímetro urbano.
+
+2025-01-27
+----------
+Se actualizó el feature veredas, debido al ajuste de los límites de las veredas Pico de Águila, El Banqueo, El Peón y La María, según ajustes de identificación de elementos naturales o de infraestructura.
+
+2025-01-20
+----------
+Se actualizaron los features corregimientos y veredas, debido al ajuste del límite del corregimiento la Castilla en la vereda Alto Aguacatal, y el límite de los corregimientos de Navarro con el Hormiguero en el sector de cuatro esquinas, según lo establecido en el Acuerdo 049 de 1964 y el ajuste de las veredas La Paila y El Hormiguero (cabecera) en el zanjón antiguo cauce rio Cauca.
+
+2024-12-09
+----------
+Se actualizaron los features comuna y corregimientos, a la altura del Autocine Piedragrande, debido a un hueco que se presentaba entre los límites.
+
+2024-11-21
+----------
+Se actualizó el feature veredas, ya que en el artículo 13 del Acuerdo 049 de 1964 se menciona al Kilómetro 18 como vereda de este corregimiento.
+
+2024-11-01
+----------
+Se actualizó el feature barrios, debido a los siguientes ajustes:
+- Límite entre los barrios Juanambú y Granada, según lo estipulado en el Acuerdo 49 de 1964, donde el límite es la Calle 13 Norte.
+- Límite entre los barrios El Porvenir y La Esmeralda, según lo estipulado en el Acuerdo 49 de 1964, donde el límite es la Calle 36A.
+- Límite entre el barrio Champagnat y La Unidad Deportiva Jaime Aparicio, según lo estipulado en el Acuerdo 49 de 1964, donde su límite es la culata de los predios que dan frente a la Carrera 32A.
+- Límite entre los barrios Brisas de Mayo y Pueblo Joven, según lo establecido en los Acuerdos 2 de 1986 y 25 de 1991, donde el límite es la Quebrada El Indio.
+
+2024-10-02
+----------
+Se actualizaron los features:
+- barrios: se ajustó el límite del barrio de San Cayetano con el barrio Los Libertadores, según lo establecido en el Acuerdo 49 de 1964.
+- corregimientos y veredas: se ajustó el límite entre los corregimientos La Elvira y La Castilla, según el Acuerdo 049 de 1964. Por lo anterior, se ajustó el límite entre las veredas Alto Aguacatal (La Elvira) y El Futuro (La Castilla).
+
+2024-08-01
+----------
+Se actualizó el feature suelo_expansion (sectores), debido a que se identificó huecos con el features del corregimientos en la rivera del rio Lili.
+
+2024-07-31
+----------
+Se actualizó el feature corregimientos, debido al ajuste según lo establecido en el Acuerdo 49 de 1964, los límites de los corregimientos de El Hormiguero, Navarro y Pance a los cuales anteriormente se les había sustraído el área del límite del suelo de expansión urbano. Este ajuste se ratificó en una reunión presidida por el Subdirector de Planificación del Territorio Diego Giraldo el día 30 de julio de 2024, a la cual también asistió el equipo técnico de Planes Parciales.
+
+
+2024-06-21
+----------
+Se actualizó el feature barrios, debido al ajuste del límite del barrio Granada por la Calle 18 Norte, según lo estipulado en el límite establecido en el Acuerdo 49 de 1964 y en la verificación del lindero sur del barrio Champagant establecido en el Acuerdo 49 de 1964, se generó un polígono que se denominó Unidad Deportiva Jaime Aparicio.
+
+2024-06-19
+----------
+Se actualizó el feature barrios, debido al ajuste del límite del barrio U.R. Bueno Madrid, según el Acuerdo 30 de 1974, barrio Champagnat Acuerdo 49 de 1964 y el barro La Esmeralda Acuerdo 43 de 1970.
+
+2024-04-19
+----------
+Se actualizaron los features:
+- barrios: se ajustaron los límites de Terrón Colorado y Santa Rita, según lo establecido en el Acuerdo 49 de 1964 en el lindero occidental donde colindan la Urbanización Santa Rita y Santa Teresita.
+- comunas: se ajustó el límite de la Comuna 1, en el sector del Club de Emcali donde limita con la Urbanización Santa Rita y Santa Teresita.
+- veredas: se ajustó el límite de la vereda Atenas conforme al limite geográfico del rio Cali.
+
+2024-04-08
+----------
+Se actualizó el feature barrios, debido al ajuste del límite del barrio Terrón Colorado, siguiendo lo establecido en el Acuerdo 49 de 1964 donde establece el límite. 
+
+2024-04-08
+----------
+Se actualizó el feature barrios, debido al ajuste del limite del barrio "Los Alcázares" según lo establecido en el Acuerdo 15 de 1982, por lo cual se generó un sector geográfico denominado "La Portada - Las Encinas" en la comuna 06. 
+
+2024-03-18
+----------
+Se ajustó el límite del barrio El Bosque, según lo establecido en el Acuerdo 049 de 1964, donde especifica que el límite entre el sector Altos de Menga con el barrio El Bosque es por la vía que conduce a la cantera San Miguel y los linderos del proyecto de vivienda Colinas del Bosque.
+
+2024-03-01
+----------
+Se actualizaron los features de barrios y comunas, debido al ajuste en los límites de los mismos con respecto al perímetro urbano en la comuna 17 donde limita con el suelo de expansión.
+
+2024-02-20
+----------
+Se actualizaron los features corregimientos y veredas, debido al ajuste del lindero del límite entre los corregimientos La Elvira y La Castilla en la quebrada La Gorgona desde su nacimiento, siguiendo por la divisoria de aguas hasta el límite con el Municipio de Yumbo.
+
+2024-02-07
+----------
+Se actualizó el feature barrios, debido al ajuste del límite del barrio El Refugio, según lo estipulado en el Acuerdo 49 de 1964 en el costado Norte que limita con el barrio La Cascada.
+
+2023-08-16
+----------
+Se actualizó el feature barrios, donde se cambió el nombre del sector "Bataclán" por "Alto Normandía" (0297) para evitar duplicidad de identidad en dos sectores colindantes.
+
+2023-05-24
+----------
+Se ajustó el límite de la vereda K 18 (ID 6104) en el corregimiento La Elvira, de acuerdo a la identificación y denominación dada en el Acuerdo 049 de 1964.
+Se ajustó el código de las veredas Dinastia Ventiaderos (5613), Ecoparque Cristo Rey (5614) y Cristo Rey (5615).
+
+2023-03-29
+----------
+Se actualizó el feature modelo_localidades_cali_distrito, debido a ajustes en su definición y a las topologías de los demás features de la división político administrativa del Distrito.
+
+2023-03-13
+----------
+Se actualizó el feature suelo_expansion, debido a que se identificó huecos y solape con los features del perímetro urabano y barrios.
+
+2023-02-17
+----------
+Se actualizaron los feature barrios y comunas. Se ajustó el líite del barrio Granada por superposición del limite sobre una edificación, también se ajustó el límite del barrio Alfonso Bonilla y el límite entre la comuna 14 y 15 en la edificación del Colegio Nuevo Latir. 
+
+2023-02-14
+----------
+Se actualizó el feature veredas. Se ajustó el límite de la vereda El Mango del corregimiento Los Andes, ya que en el primer trazado se evidenció la ocupación de asentamientos en el sector y no se puede evidenciar la división territorial entre las dos veredas (El Mango y La Carolina). 
+
+2023-02-09
+----------
+Se actualizó el feature barrios. Se ajustó el límite del barrio San Fernando Viejo conforme a lo estblecido en el Acuerdo 49 de 1964.
+
+2023-01-30
+----------
+Se actualizó el feature suelo_expansion. Se añadió el campo de resolución, el cual fue definido mediante la Resolución No. 4132.010.21.0.07 de enero 27 de 2023.
+
+2022-12-27
+----------
+Se actualizó el feature suelo_expansion. Se modificó el nombre de las unidades político administrativas en suelo de expansión (8117 y 8120) y se ajust+o el curso del río Líli según ortofoto de 2019.
+
+
+2022-12-15
+----------
+Se actualizó el feature suelo_expansion.
+
+2022-11-24
+----------
+Publicación de la base de datos geográfica.
