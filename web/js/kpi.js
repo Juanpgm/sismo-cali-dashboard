@@ -137,9 +137,8 @@ function usoTilesHtml(records, total) {
   `).join('');
 }
 
-/** @param {HTMLElement} container @param {object[]} filteredRecords @param {object[]} allRecords
- *  @param {number|null} inmuebles Reportes únicos por predio (ubicación exacta), depurados, de la API atencionsismo — en vivo, global, no filtrable */
-export function renderKpis(container, filteredRecords, allRecords, inmuebles = null) {
+/** @param {HTMLElement} container @param {object[]} filteredRecords @param {object[]} allRecords */
+export function renderKpis(container, filteredRecords, allRecords) {
   const values = computeKpis(filteredRecords);
   const total = filteredRecords.length;
   // Cifras de colapso: la tarjeta sigue siendo reactiva (se recalcula con los
@@ -152,19 +151,6 @@ export function renderKpis(container, filteredRecords, allRecords, inmuebles = n
     colapso_total: allRecords.filter((r) => isYes(r.colapso_total)).length,
     colapso_parcial: allRecords.filter((r) => isYes(r.colapso_parcial)).length,
   };
-
-  // Encabeza la sección una sola cifra global de la API atencionsismo: los
-  // inmuebles reportados únicos por predio (ubicación exacta), depurados —
-  // independiente de los registros EDAN-F3 y de los filtros. Se oculta si la
-  // API no la trajo.
-  const fmtNum = (n) => n.toLocaleString('es-CO');
-  const inmueblesTile = inmuebles == null ? '' : `
-    <div class="kpi-tile">
-      <span class="kpi-label">Inmuebles reportados</span>
-      <span class="kpi-value">${fmtNum(inmuebles)}</span>
-      <div class="kpi-sub-row"><span class="kpi-sub">únicos por predio (depurado)</span></div>
-    </div>
-  `;
 
   const ocupantesTotalFiltrados = sumField(filteredRecords, 'n_ocupantes');
 
@@ -195,8 +181,7 @@ export function renderKpis(container, filteredRecords, allRecords, inmuebles = n
   const tilesFor = (section) => TILE_DEFS
     .filter((d) => d.group === 'headline' && d.section === section)
     .map(tileHtml).join('');
-  const headlineHtml = sectionTitle('Por número de registros', '"Inmuebles reportados" viene EN VIVO de la API atencionsismo: reportes ciudadanos únicos por predio (ubicación exacta), depurados (Momento 2). El resto cuenta INSPECCIONES (un registro por edificación evaluada) y se recalcula con los filtros.')
-    + inmueblesTile
+  const headlineHtml = sectionTitle('Por número de registros', 'Cuenta INSPECCIONES (un registro por edificación evaluada) y se recalcula con los filtros.')
     + tilesFor('registros')
     + sectionTitle('Por unidades habitacionales (viviendas)', 'Aquí se suman VIVIENDAS (n_residenciales), un aproximado según cada inspección — no inspecciones. Sirve para dimensionar cuántos hogares hay detrás de cada estado de habitabilidad.')
     + tilesFor('residenciales')

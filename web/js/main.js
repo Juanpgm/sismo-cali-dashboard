@@ -147,7 +147,7 @@ function onStoreChange() {
   if (searchInput.value !== (store.filters.searchRaw || '')) {
     searchInput.value = store.filters.searchRaw || '';
   }
-  renderKpis(kpiRow, store.filtered, store.records, store.inmuebles);
+  renderKpis(kpiRow, store.filtered, store.records);
   setTotalRecords(store.records.length);
   renderTable(store.filtered);
   renderMap(store.filtered).catch((err) => {
