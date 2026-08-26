@@ -44,33 +44,64 @@ def test_exactly_one_representative_per_group():
     assert df["es_representante"].sum() == 1
 
 
-def test_representative_is_the_most_critical_not_the_first():
-    """The user's rule: keep the most critical value. The severe record is
-    LAST here, so a naive first-wins would pick the wrong one."""
+def test_representative_is_the_most_recent_inspection():
+    """User's rule (2026-08-26, superseding "most critical"): the LATEST
+    re-inspection is the current truth about a building."""
     df = rd.add_dup_group(_df([
-        {"GlobalID": "leve", "direccion_norm": "CL 5",
-         "colapso_total": "no", "colapso_parcial": "no",
-         "criterio_habitabilidad": "h", "nivel_dano": "bajo"},
-        {"GlobalID": "grave", "direccion_norm": "CL 5",
-         "colapso_total": "si", "colapso_parcial": "no",
-         "criterio_habitabilidad": "i2", "nivel_dano": "alto"},
+        {"GlobalID": "vieja", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-14"},
+        {"GlobalID": "nueva", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-20"},
     ]))
+    assert df[df["es_representante"]].iloc[0]["GlobalID"] == "nueva"
+
+
+def test_most_recent_wins_even_when_it_is_the_less_severe_one():
+    """The case that makes this rule a real choice: a re-inspection that
+    DOWNGRADES a building. Under the old "most critical" rule the older,
+    more alarming record won; now the newer assessment does."""
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "vieja_grave", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-14",
+         "colapso_total": "si", "criterio_habitabilidad": "i2", "nivel_dano": "alto"},
+        {"GlobalID": "nueva_leve", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-20",
+         "colapso_total": "no", "criterio_habitabilidad": "h", "nivel_dano": "bajo"},
+    ]))
+    assert df[df["es_representante"]].iloc[0]["GlobalID"] == "nueva_leve"
+
+
+def test_same_day_ties_break_on_submission_time():
+    """61 of 77 real duplicate groups share an inspection DATE, so the date
+    alone cannot order them -- CreationDate (the system's own submission
+    timestamp) is what actually separates a re-submit from its original."""
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "temprano", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-14",
+         "CreationDate": "2026-08-14T08:00:00"},
+        {"GlobalID": "tarde", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-14",
+         "CreationDate": "2026-08-14T17:30:00"},
+    ]))
+    assert df[df["es_representante"]].iloc[0]["GlobalID"] == "tarde"
+
+
+def test_a_manual_override_wins_over_the_automatic_rule():
+    """The operator can pin a specific record as the group's representative
+    (`representante_manual`), for the cases the automatic rule gets wrong."""
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "auto", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-20"},
+        {"GlobalID": "elegido", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-14"},
+    ]), overrides={"dir:CL 5": "elegido"})
     rep = df[df["es_representante"]].iloc[0]
-    assert rep["GlobalID"] == "grave"
+    assert rep["GlobalID"] == "elegido"
+    assert df["es_representante"].sum() == 1
 
 
-@pytest.mark.parametrize("campo,leve,grave", [
-    ("colapso_total", "no", "si"),
-    ("colapso_parcial", "no", "si"),
-    ("criterio_habitabilidad", "h", "i2"),
-    ("nivel_dano", "bajo", "alto"),
-])
-def test_each_severity_signal_breaks_the_tie(campo, leve, grave):
+def test_an_override_pointing_at_a_missing_record_falls_back_to_the_rule():
+    """A stale pin (its record was deleted upstream) must not leave the
+    group with ZERO representatives -- that would silently drop a building
+    from every figure."""
     df = rd.add_dup_group(_df([
-        {"GlobalID": "leve", "direccion_norm": "CL 5", campo: leve},
-        {"GlobalID": "grave", "direccion_norm": "CL 5", campo: grave},
-    ]))
-    assert df[df["es_representante"]].iloc[0]["GlobalID"] == "grave"
+        {"GlobalID": "a", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-20"},
+        {"GlobalID": "b", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-14"},
+    ]), overrides={"dir:CL 5": "ya-no-existe"})
+    assert df["es_representante"].sum() == 1
+    assert df[df["es_representante"]].iloc[0]["GlobalID"] == "a"
 
 
 def test_nothing_is_dropped():

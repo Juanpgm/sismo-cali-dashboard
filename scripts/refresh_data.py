@@ -1145,17 +1145,30 @@ def _es_si(value) -> bool:
     return str(value).strip().lower() in {"si", "sí", "yes", "true", "1"}
 
 
-def _severidad(row) -> tuple:
-    """Ranking used to pick a group's representative — the user's rule is
-    "deja los valores más críticos", so the WORST assessment wins, never the
-    first or newest row.
+def _recencia(row) -> tuple:
+    """Ranking used to pick a group's representative — highest wins.
 
-    Note where this can disagree with chronology: a later re-inspection that
-    DOWNGRADES a building keeps the earlier, more alarming record. Measured
-    on live data that affects 8 of 941 buildings and never changes colapso
-    total (30 either way), so the user's rule is applied as stated.
+    The user's rule (2026-08-26, superseding an earlier "most critical"):
+    **the most recent inspection is the current truth about a building.** A
+    re-visit that downgrades a building now wins over the older, more
+    alarming record — which is the whole point: the building was re-checked.
+
+    Ordering, in priority order:
+      1. `fecha_inspeccion` — the field truth, but DATE-ONLY, so it cannot
+         separate the 61 of 77 real duplicate groups inspected the same day.
+      2. `CreationDate` — the system's own submission timestamp, which is
+         what actually distinguishes a re-submit from its original.
+      3. Severity — a last-resort tiebreak ONLY for rows identical in both
+         timestamps, so the pick stays deterministic across runs instead of
+         depending on row order. It never overrides recency.
     """
+    # format="mixed": the field arrives ISO ("2026-08-13") from the layer but
+    # dd/mm from older exports; inferring per value beats guessing one.
+    fecha = pd.to_datetime(row.get("fecha_inspeccion"), errors="coerce", format="mixed", dayfirst=True)
+    creado = pd.to_datetime(row.get("CreationDate"), errors="coerce")
     return (
+        fecha.value if pd.notna(fecha) else -1,
+        creado.value if pd.notna(creado) else -1,
         1 if _es_si(row.get("colapso_total")) else 0,
         1 if _es_si(row.get("colapso_parcial")) else 0,
         _HAB_SEVERIDAD.get(str(row.get("criterio_habitabilidad")).strip().lower(), 0),
@@ -1185,8 +1198,17 @@ def _clave_edificio(row) -> str:
     return f"id:{row.get('GlobalID')}"
 
 
-def add_dup_group(df: pd.DataFrame) -> pd.DataFrame:
-    """Tag every row with `dup_grupo_id` / `dup_n` / `es_representante`."""
+def add_dup_group(df: pd.DataFrame, overrides: dict | None = None) -> pd.DataFrame:
+    """Tag every row with `dup_grupo_id` / `dup_n` / `es_representante`.
+
+    `overrides` maps `dup_grupo_id -> GlobalID` and PINS that record as the
+    group's representative, beating the automatic recency rule. It exists
+    because no automatic rule is right every time: the operator can look at
+    a group and say "this is the one that counts". A pin whose record no
+    longer exists is ignored and the rule applies instead — never leave a
+    group with zero representatives, which would silently drop a whole
+    building out of every figure.
+    """
     if df.empty:
         for col, default in (("dup_grupo_id", ""), ("dup_n", 0), ("es_representante", True)):
             df[col] = default
@@ -1196,19 +1218,27 @@ def add_dup_group(df: pd.DataFrame) -> pd.DataFrame:
     df["dup_grupo_id"] = df.apply(_clave_edificio, axis=1)
     df["dup_n"] = df.groupby("dup_grupo_id")["dup_grupo_id"].transform("size")
 
-    orden = df.apply(_severidad, axis=1)
-    df["_sev"] = orden
-    # idxmax on a tuple-valued column is not defined; rank within each group
-    # by sorting on the tuple and taking the first row per group instead.
+    df["_orden"] = df.apply(_recencia, axis=1)
+    # A pinned row sorts above everything else in its group; the automatic
+    # ordering then decides the rest (and decides outright when no pin
+    # applies). One sort, no special-casing downstream.
+    pins = overrides or {}
+    df["_pin"] = [
+        1 if pins.get(grupo) is not None and str(pins.get(grupo)) == str(gid) else 0
+        for grupo, gid in zip(df["dup_grupo_id"], df.get("GlobalID", pd.Series([None] * len(df))))
+    ]
+
+    # idxmax is undefined on tuple-valued columns; sort and take the first
+    # row per group instead. mergesort keeps ties in input order (stable).
     ganadores = (
         df.assign(_pos=range(len(df)))
-        .sort_values("_sev", ascending=False, kind="mergesort")  # stable: ties keep input order
+        .sort_values(["_pin", "_orden"], ascending=False, kind="mergesort")
         .groupby("dup_grupo_id", sort=False)["_pos"]
         .first()
     )
     df["es_representante"] = False
     df.loc[df.index[list(ganadores.values)], "es_representante"] = True
-    return df.drop(columns=["_sev"])
+    return df.drop(columns=["_orden", "_pin"])
 
 
 def normalize(rows_raw: pd.DataFrame) -> pd.DataFrame:
