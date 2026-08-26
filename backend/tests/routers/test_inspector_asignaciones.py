@@ -47,6 +47,7 @@ from fastapi.testclient import TestClient
 
 from app.auth.deps import current_claims
 from app.credentials import clients as credentials
+from app.integracion.coords import haversine_m
 from app.main import create_app
 
 UID_A = "uid-inspector-a"
@@ -69,7 +70,12 @@ class _FakeDocRef:
         self._store = store
         self._id = doc_id
 
-    def get(self) -> _FakeSnapshot:
+    def get(self, transaction: Any = None) -> _FakeSnapshot:
+        # `transaction=` accepted and ignored — the fake store is a plain
+        # single-threaded dict, so a transactional read sees exactly the
+        # same data a plain read would. What's under test (`_tomar_punto`'s
+        # transactional claim) is the READ-CHECK-WRITE DECISION, not
+        # Firestore's own snapshot-isolation machinery.
         return _FakeSnapshot(self._id, self._store.get(self._id))
 
     def set(self, data: dict[str, Any], merge: bool = False) -> None:
@@ -79,47 +85,97 @@ class _FakeDocRef:
         self._store[self._id] = current
 
 
+def _get_field(data: dict[str, Any], field: str) -> Any:
+    """Dotted-path field access (`coords.lat`) — mirrors real Firestore's
+    own nested-field `where()` support, needed by the `puntos-disponibles`
+    change's bounding-box query."""
+    cur: Any = data
+    for part in field.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return cur
+
+
 class _FakeQuery:
-    def __init__(self, docs: list[_FakeSnapshot]) -> None:
-        self._docs = docs
+    """Supports CHAINED `.where()` calls (the `puntos-disponibles` change's
+    `coords.lat >= ... <= ...` bounding box needs two) — the original fake
+    here only supported a single `.where()` off `_FakeCollection`."""
 
-    def get(self) -> list[_FakeSnapshot]:
-        return list(self._docs)
-
-
-class _FakeCollection:
-    def __init__(self, store: dict[str, dict[str, Any]]) -> None:
+    def __init__(self, store: dict[str, dict[str, Any]], ids: list[str]) -> None:
         self._store = store
+        self._ids = ids
 
-    def where(self, field: str, op: str, value: Any) -> _FakeQuery:
+    def where(self, field: str, op: str, value: Any) -> "_FakeQuery":
         if op == "==":
+            matched = [i for i in self._ids if _get_field(self._store.get(i, {}), field) == value]
+        elif op == ">=":
             matched = [
-                _FakeSnapshot(doc_id, data)
-                for doc_id, data in self._store.items()
-                if data.get(field) == value
+                i
+                for i in self._ids
+                if (v := _get_field(self._store.get(i, {}), field)) is not None and v >= value
+            ]
+        elif op == "<=":
+            matched = [
+                i
+                for i in self._ids
+                if (v := _get_field(self._store.get(i, {}), field)) is not None and v <= value
             ]
         elif op == "array_contains":
-            matched = [
-                _FakeSnapshot(doc_id, data)
-                for doc_id, data in self._store.items()
-                if value in (data.get(field) or [])
-            ]
+            matched = [i for i in self._ids if value in (_get_field(self._store.get(i, {}), field) or [])]
         elif op == "in":
             # Real Firestore caps `in` at 30 values per query — assert it
             # here too so a chunking bug in the router fails loudly instead
             # of silently truncating a caller with >30 groups.
             assert len(value) <= 30, "fake Firestore: 'in' query exceeds the 30-value cap"
-            matched = [
-                _FakeSnapshot(doc_id, data)
-                for doc_id, data in self._store.items()
-                if data.get(field) in value
-            ]
+            matched = [i for i in self._ids if _get_field(self._store.get(i, {}), field) in value]
         else:
             raise AssertionError(f"unsupported op {op!r} in fake Firestore")
-        return _FakeQuery(matched)
+        return _FakeQuery(self._store, matched)
+
+    def get(self) -> list[_FakeSnapshot]:
+        return [_FakeSnapshot(doc_id, self._store.get(doc_id)) for doc_id in self._ids]
+
+
+class _FakeCollection(_FakeQuery):
+    def __init__(self, store: dict[str, dict[str, Any]]) -> None:
+        super().__init__(store, list(store.keys()))
 
     def document(self, doc_id: str) -> _FakeDocRef:
         return _FakeDocRef(self._store, doc_id)
+
+
+class _FakeTransaction:
+    """Minimal, duck-typed double for `google.cloud.firestore`'s real
+    `Transaction` — just enough surface for `@transactional` (imported
+    UNMODIFIED from `google.cloud.firestore` by the router, never
+    reimplemented) to drive it: `_clean_up`/`_begin`/`_id`/`_read_only`/
+    `_max_attempts`/`_commit`/`_rollback`, plus `.set()` for the buffered
+    write the router's transactional callback issues. Writes apply
+    immediately (single-threaded test — no concurrent commit ordering to
+    simulate); what's under test is the read-check-write DECISION inside
+    the callback (`_tomar_punto`), not Firestore's own commit protocol."""
+
+    _read_only = False
+    _max_attempts = 1
+
+    def __init__(self) -> None:
+        self._id: bytes | None = None
+
+    def _clean_up(self) -> None:
+        pass
+
+    def _begin(self, retry_id: bytes | None = None) -> None:
+        self._id = b"fake-txn"
+
+    def _commit(self) -> list[Any]:
+        return []
+
+    def _rollback(self) -> None:
+        pass
+
+    def set(self, ref: _FakeDocRef, data: dict[str, Any], merge: bool = False) -> None:
+        ref.set(data, merge=merge)
 
 
 class _FakeFirestore:
@@ -144,6 +200,9 @@ class _FakeFirestore:
     def collection(self, name: str) -> _FakeCollection:
         assert name in self._stores, f"unexpected collection: {name}"
         return _FakeCollection(self._stores[name])
+
+    def transaction(self) -> _FakeTransaction:
+        return _FakeTransaction()
 
 
 class _FakeSismoClients:
@@ -712,4 +771,356 @@ def test_non_member_cannot_complete_group_point_planeacion_no_write(monkeypatch)
     )
 
     assert resp.status_code == 403
-    assert planeacion["pln-group"]["estado_asignacion"] == "pendiente"
+
+
+# ---- puntos-disponibles: puntosCercanosDisponibles / tomarPunto -----------
+# `puntos-disponibles` change (2026-08-26). Nearby UNASSIGNED, still-pending,
+# NOT-ALREADY-COVERED points (either campaign) an inspector standing next to
+# one can claim on the spot — claiming assigns BOTH campaigns when the same
+# building has a pending record in each (binding user decision 1). See the
+# router module's own docstring ("puntos-disponibles change" section) for
+# the scale/race/identity reasoning these tests exercise.
+
+BASE_LAT, BASE_LON = 3.4200, -76.5300
+
+
+def _offset_lat_for_distance_m(base_lat: float, base_lon: float, target_m: float) -> float:
+    """Bisects a pure-north latitude offset until `haversine_m` against
+    (base_lat, base_lon) is as close as float precision allows to
+    `target_m` — used to build EXACT 299 m / 301 m boundary fixtures
+    against the SAME haversine function the router itself uses, rather
+    than a hand-rolled degrees-per-meter approximation."""
+    lo, hi = 0.0, 0.01
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        d = haversine_m((base_lat, base_lon), (base_lat + mid, base_lon))
+        if d < target_m:
+            lo = mid
+        else:
+            hi = mid
+    return base_lat + hi
+
+
+def _sticker_punto(lat=BASE_LAT, lon=BASE_LON, **overrides) -> dict[str, Any]:
+    data = {
+        "inspector_uid": None,
+        "grupo_id": None,
+        "estado_asignacion": "pendiente",
+        "tiene_sticker": False,
+        "direccion": "Calle 1 #2-3",
+        "coords": {"lat": lat, "lon": lon},
+    }
+    data.update(overrides)
+    return data
+
+
+def _planeacion_punto(lat=BASE_LAT, lon=BASE_LON, **overrides) -> dict[str, Any]:
+    data = {
+        "inspector_uid": None,
+        "grupo_id": None,
+        "estado_asignacion": "pendiente",
+        "tiene_survey": False,
+        "direccion": "Calle 1 #2-3",
+        "coords": {"lat": lat, "lon": lon},
+        "clave_integracion": "PLN-AAAAAA-11111111",
+    }
+    data.update(overrides)
+    return data
+
+
+def _cercanos_client(monkeypatch, sticker=None, planeacion=None, claims=FAKE_CLAIMS_A):
+    return _authed_client(monkeypatch, sticker or {}, claims, planeacion or {})
+
+
+def test_puntos_cercanos_requires_lat_lng(monkeypatch):
+    client = _cercanos_client(monkeypatch)
+
+    resp = client.post("/inspector-asignaciones", json={"action": "puntosCercanosDisponibles"})
+
+    assert resp.status_code == 400
+
+
+def test_puntos_cercanos_incluye_puntos_de_ambas_campanas(monkeypatch):
+    sticker = {"sk-1": _sticker_punto()}
+    planeacion = {"pl-1": _planeacion_punto(lat=BASE_LAT + 0.0005)}  # ~55 m away, still within radius
+    client = _cercanos_client(monkeypatch, sticker, planeacion)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "puntosCercanosDisponibles", "lat": BASE_LAT, "lng": BASE_LON},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    by_id = {p["id"]: p for p in body["puntos"]}
+    assert by_id["sk-1"]["campana"] == "sticker"
+    assert by_id["pl-1"]["campana"] == "survey"
+    # Nearest-first.
+    assert [p["id"] for p in body["puntos"]] == ["sk-1", "pl-1"]
+
+
+def test_puntos_cercanos_excluye_ya_asignado_individualmente(monkeypatch):
+    sticker = {"sk-1": _sticker_punto(inspector_uid=UID_B)}
+    client = _cercanos_client(monkeypatch, sticker)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "puntosCercanosDisponibles", "lat": BASE_LAT, "lng": BASE_LON},
+    )
+
+    assert resp.json()["puntos"] == []
+
+
+def test_puntos_cercanos_excluye_asignado_a_grupo(monkeypatch):
+    sticker = {"sk-1": _sticker_punto(grupo_id="g1")}
+    client = _cercanos_client(monkeypatch, sticker)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "puntosCercanosDisponibles", "lat": BASE_LAT, "lng": BASE_LON},
+    )
+
+    assert resp.json()["puntos"] == []
+
+
+def test_puntos_cercanos_excluye_ya_hecho(monkeypatch):
+    sticker = {"sk-1": _sticker_punto(estado_asignacion="hecho")}
+    client = _cercanos_client(monkeypatch, sticker)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "puntosCercanosDisponibles", "lat": BASE_LAT, "lng": BASE_LON},
+    )
+
+    assert resp.json()["puntos"] == []
+
+
+def test_puntos_cercanos_excluye_survey_no_aplica(monkeypatch):
+    planeacion = {"pl-1": _planeacion_punto(estado_asignacion="no_aplica")}
+    client = _cercanos_client(monkeypatch, planeacion=planeacion)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "puntosCercanosDisponibles", "lat": BASE_LAT, "lng": BASE_LON},
+    )
+
+    assert resp.json()["puntos"] == []
+
+
+def test_puntos_cercanos_excluye_ya_cubierto_por_sticker(monkeypatch):
+    """Coordinator correction (2026-08-26): unassigned is NOT enough — a
+    point already `tiene_sticker == True` must never show as available,
+    even with no inspector_uid/grupo_id at all (someone did it without an
+    assignment, or the cruce job matched it after the fact)."""
+    sticker = {"sk-1": _sticker_punto(tiene_sticker=True)}
+    client = _cercanos_client(monkeypatch, sticker)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "puntosCercanosDisponibles", "lat": BASE_LAT, "lng": BASE_LON},
+    )
+
+    assert resp.json()["puntos"] == []
+
+
+def test_puntos_cercanos_excluye_ya_cubierto_por_survey(monkeypatch):
+    """Same correction, survey side: `tiene_survey == True` excludes a
+    point regardless of assignment state."""
+    planeacion = {"pl-1": _planeacion_punto(tiene_survey=True)}
+    client = _cercanos_client(monkeypatch, planeacion=planeacion)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "puntosCercanosDisponibles", "lat": BASE_LAT, "lng": BASE_LON},
+    )
+
+    assert resp.json()["puntos"] == []
+
+
+def test_puntos_cercanos_respeta_radio_300m_frontera(monkeypatch):
+    """The 300 m boundary, built against the router's OWN haversine
+    function: a point at 299 m appears, a point at 301 m does not."""
+    lat_299 = _offset_lat_for_distance_m(BASE_LAT, BASE_LON, 299.0)
+    lat_301 = _offset_lat_for_distance_m(BASE_LAT, BASE_LON, 301.0)
+    sticker = {
+        "near": _sticker_punto(lat=lat_299, direccion="Cerca"),
+        "far": _sticker_punto(lat=lat_301, direccion="Lejos"),
+    }
+    client = _cercanos_client(monkeypatch, sticker)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "puntosCercanosDisponibles", "lat": BASE_LAT, "lng": BASE_LON},
+    )
+
+    ids = {p["id"] for p in resp.json()["puntos"]}
+    assert ids == {"near"}
+
+
+# ---- tomarPunto -------------------------------------------------------------
+
+
+def test_tomar_punto_requires_punto_id(monkeypatch):
+    client = _cercanos_client(monkeypatch)
+
+    resp = client.post("/inspector-asignaciones", json={"action": "tomarPunto", "campana": "sticker"})
+
+    assert resp.status_code == 400
+
+
+def test_tomar_punto_unknown_campana_is_rejected(monkeypatch):
+    sticker = {"sk-1": _sticker_punto()}
+    client = _cercanos_client(monkeypatch, sticker)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "tomarPunto", "punto_id": "sk-1", "campana": "bogus"},
+    )
+
+    assert resp.status_code == 400
+
+
+def test_tomar_punto_nonexistent_point_is_rejected(monkeypatch):
+    client = _cercanos_client(monkeypatch)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "tomarPunto", "punto_id": "does-not-exist", "campana": "sticker"},
+    )
+
+    assert resp.status_code == 404
+
+
+def test_tomar_punto_ya_asignado_es_rechazado_sin_escritura(monkeypatch):
+    sticker = {"sk-1": _sticker_punto(inspector_uid=UID_B)}
+    client = _cercanos_client(monkeypatch, sticker)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "tomarPunto", "punto_id": "sk-1", "campana": "sticker"},
+    )
+
+    assert resp.status_code == 409
+    assert "otro inspector ya tomó este punto" in resp.json()["detail"]
+    assert sticker["sk-1"]["inspector_uid"] == UID_B  # untouched
+
+
+def test_tomar_punto_race_solo_el_primero_gana(monkeypatch):
+    """THE single most important test in this batch: two inspectors tap
+    "tomar" on the same point. The FIRST call succeeds; the SECOND —
+    reading the doc's now-updated state inside its own transaction — is
+    rejected with a clear message and writes nothing, never a silent
+    overwrite."""
+    sticker = {"sk-1": _sticker_punto()}
+    client_a = _cercanos_client(monkeypatch, sticker, claims=FAKE_CLAIMS_A)
+
+    first = client_a.post(
+        "/inspector-asignaciones",
+        json={"action": "tomarPunto", "punto_id": "sk-1", "campana": "sticker"},
+    )
+    assert first.status_code == 200
+    assert sticker["sk-1"]["inspector_uid"] == UID_A
+
+    client_b = _cercanos_client(monkeypatch, sticker, claims={"sub": UID_B})
+    second = client_b.post(
+        "/inspector-asignaciones",
+        json={"action": "tomarPunto", "punto_id": "sk-1", "campana": "sticker"},
+    )
+
+    assert second.status_code == 409
+    assert "otro inspector ya tomó este punto" in second.json()["detail"]
+    # The second (losing) call left the FIRST claim completely intact.
+    assert sticker["sk-1"]["inspector_uid"] == UID_A
+
+
+def test_tomar_punto_cubierto_a_mitad_de_camino_es_rechazado_sin_escritura(monkeypatch):
+    """Coordinator correction (2026-08-26): the cruce job can flip
+    `tiene_sticker`/`tiene_survey` true between the phone rendering the
+    list and the inspector tapping "tomar" — `_tomar_punto` MUST re-check
+    coverage INSIDE the transaction, not trust what the list said."""
+    sticker = {"sk-1": _sticker_punto(tiene_sticker=True)}
+    client = _cercanos_client(monkeypatch, sticker)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "tomarPunto", "punto_id": "sk-1", "campana": "sticker"},
+    )
+
+    assert resp.status_code == 409
+    assert sticker["sk-1"]["inspector_uid"] is None  # no write happened
+
+
+def test_tomar_punto_asigna_ambas_campanas_cuando_hay_gemelo(monkeypatch):
+    """Binding user decision 1: claiming a point assigns BOTH campaigns
+    when the same building has a pending, unassigned, uncovered record in
+    the OTHER campaign too."""
+    sticker = {"sk-1": _sticker_punto(direccion="Calle 1 #2-3")}
+    planeacion = {"pl-1": _planeacion_punto(lat=BASE_LAT + 0.00001, direccion="Calle 1 #2-3")}
+    client = _cercanos_client(monkeypatch, sticker, planeacion)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "tomarPunto", "punto_id": "sk-1", "campana": "sticker"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["asignados"] == {"sticker": "sk-1", "survey": "pl-1"}
+    assert body["tambien_asignado"] is True
+    assert sticker["sk-1"]["inspector_uid"] == UID_A
+    assert planeacion["pl-1"]["inspector_uid"] == UID_A
+
+
+def test_tomar_punto_sin_gemelo_solo_asigna_una_campana(monkeypatch):
+    sticker = {"sk-1": _sticker_punto(direccion="Calle 1 #2-3")}
+    client = _cercanos_client(monkeypatch, sticker)  # no planeacion store at all
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "tomarPunto", "punto_id": "sk-1", "campana": "sticker"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["asignados"] == {"sticker": "sk-1"}
+    assert body["tambien_asignado"] is False
+
+
+def test_tomar_punto_no_reclama_campana_ya_cubierta(monkeypatch):
+    """Coordinator correction (2026-08-26): if the sibling building's OTHER
+    campaign is already covered, claim ONLY the uncovered campaign and say
+    so — never send the inspector to redo work that already exists."""
+    sticker = {"sk-1": _sticker_punto(direccion="Calle 1 #2-3")}
+    planeacion = {
+        "pl-1": _planeacion_punto(
+            lat=BASE_LAT + 0.00001, direccion="Calle 1 #2-3", tiene_survey=True
+        )
+    }
+    client = _cercanos_client(monkeypatch, sticker, planeacion)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "tomarPunto", "punto_id": "sk-1", "campana": "sticker"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["asignados"] == {"sticker": "sk-1"}
+    assert body["tambien_asignado"] is False
+    assert planeacion["pl-1"]["inspector_uid"] is None  # untouched — already covered
+
+
+def test_tomar_punto_stamps_inspector_uid_and_asignado_en(monkeypatch):
+    sticker = {"sk-1": _sticker_punto()}
+    client = _cercanos_client(monkeypatch, sticker)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "tomarPunto", "punto_id": "sk-1", "campana": "sticker"},
+    )
+
+    assert resp.status_code == 200
+    assert sticker["sk-1"]["inspector_uid"] == UID_A
+    assert sticker["sk-1"]["estado_asignacion"] == "asignado"
+    assert "asignado_en" in sticker["sk-1"]

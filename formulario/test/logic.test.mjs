@@ -9,6 +9,9 @@ import {
   filtrarPendientes, habitabilidadColor, colapsoLabel, mapsDirUrl,
   elegirEnlaceEncuesta, prioridadColor,
   distanciaM, ordenarPorCercania, formatDistancia,
+  etiquetaCampana, mensajeEstadoCercanos, cercanosMuestraLista,
+  mensajeTomarPunto, mensajeErrorTomarPunto,
+  CERCANOS_ESPERANDO, CERCANOS_SIN_GPS, CERCANOS_CARGANDO, CERCANOS_VACIO, CERCANOS_LISTO, CERCANOS_ERROR,
 } from '../js/logic.js';
 
 const base = {
@@ -411,4 +414,71 @@ test('formatDistancia por debajo de 1000 m se redondea a metros enteros', () => 
 test('formatDistancia de 1000 m en adelante usa kilometros con coma decimal', () => {
   assert.equal(formatDistancia(1200), '1,2 km');
   assert.equal(formatDistancia(1000), '1,0 km');
+});
+
+// ---- puntos-disponibles: nearby-available tab pure helpers ----------------
+
+test('etiquetaCampana mapea sticker y survey a etiquetas legibles', () => {
+  assert.equal(etiquetaCampana('sticker'), 'Sticker');
+  assert.equal(etiquetaCampana('survey'), 'Encuesta EDAN');
+});
+
+test('etiquetaCampana de un valor desconocido devuelve cadena vacia', () => {
+  assert.equal(etiquetaCampana('otra-cosa'), '');
+  assert.equal(etiquetaCampana(null), '');
+});
+
+test('mensajeEstadoCercanos cubre cada estado que muestra texto con un mensaje distinto y no vacio', () => {
+  // CERCANOS_LISTO deliberately excluded: that state shows the CARD LIST
+  // instead of a status message (see cercanosMuestraLista below).
+  const estados = [CERCANOS_ESPERANDO, CERCANOS_SIN_GPS, CERCANOS_CARGANDO, CERCANOS_VACIO, CERCANOS_ERROR];
+  const mensajes = estados.map(mensajeEstadoCercanos);
+  assert.ok(mensajes.every((m) => typeof m === 'string' && m.length > 0));
+  assert.equal(new Set(mensajes).size, mensajes.length); // every state reads differently
+});
+
+test('mensajeEstadoCercanos de listo no compite con la lista de tarjetas', () => {
+  assert.equal(mensajeEstadoCercanos(CERCANOS_LISTO), '');
+});
+
+test('mensajeEstadoCercanos de GPS denegado es explicito, no una lista vacia ambigua', () => {
+  const msg = mensajeEstadoCercanos(CERCANOS_SIN_GPS);
+  assert.match(msg, /ubicaci[oó]n/i);
+});
+
+test('mensajeEstadoCercanos de un estado desconocido devuelve cadena vacia', () => {
+  assert.equal(mensajeEstadoCercanos('bogus'), '');
+});
+
+test('cercanosMuestraLista solo es verdadero en estado listo', () => {
+  assert.equal(cercanosMuestraLista(CERCANOS_LISTO), true);
+  assert.equal(cercanosMuestraLista(CERCANOS_ESPERANDO), false);
+  assert.equal(cercanosMuestraLista(CERCANOS_SIN_GPS), false);
+  assert.equal(cercanosMuestraLista(CERCANOS_CARGANDO), false);
+  assert.equal(cercanosMuestraLista(CERCANOS_VACIO), false);
+  assert.equal(cercanosMuestraLista(CERCANOS_ERROR), false);
+});
+
+test('mensajeTomarPunto vacio cuando no se asigno la otra campana', () => {
+  assert.equal(mensajeTomarPunto('sticker', { asignados: { sticker: 'a' }, tambien_asignado: false }), '');
+  assert.equal(mensajeTomarPunto('sticker', null), '');
+});
+
+test('mensajeTomarPunto anuncia la encuesta cuando se reclamo desde sticker', () => {
+  const msg = mensajeTomarPunto('sticker', { asignados: { sticker: 'a', survey: 'b' }, tambien_asignado: true });
+  assert.match(msg, /encuesta EDAN/);
+});
+
+test('mensajeTomarPunto anuncia el sticker cuando se reclamo desde survey', () => {
+  const msg = mensajeTomarPunto('survey', { asignados: { sticker: 'a', survey: 'b' }, tambien_asignado: true });
+  assert.match(msg, /sticker/);
+});
+
+test('mensajeErrorTomarPunto prefiere el detalle del backend', () => {
+  assert.equal(mensajeErrorTomarPunto('otro inspector ya tomó este punto'), 'otro inspector ya tomó este punto');
+});
+
+test('mensajeErrorTomarPunto cae a un mensaje generico sin detalle', () => {
+  assert.match(mensajeErrorTomarPunto(''), /no se pudo tomar el punto/i);
+  assert.match(mensajeErrorTomarPunto(null), /no se pudo tomar el punto/i);
 });

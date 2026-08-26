@@ -14,6 +14,9 @@ import {
   habitabilidadColor, colapsoLabel, mapsDirUrl,
   prioridadColor, elegirEnlaceEncuesta,
   ordenarPorCercania, distanciaM, formatDistancia,
+  etiquetaCampana, mensajeEstadoCercanos, cercanosMuestraLista,
+  mensajeTomarPunto, mensajeErrorTomarPunto,
+  CERCANOS_ESPERANDO, CERCANOS_SIN_GPS, CERCANOS_CARGANDO, CERCANOS_VACIO, CERCANOS_LISTO, CERCANOS_ERROR,
 } from './logic.js';
 
 // Serverless signer that validates the Firebase idToken and presigns the
@@ -88,6 +91,20 @@ const state = {
   origenAsignaciones: null,
   geoAsigWatchId: null,
   geoAsigWatchTimer: null,
+  // `puntos-disponibles` change (2026-08-26): nearby, UNASSIGNED, not-yet-
+  // covered points (either campaign) the inspector can claim on the spot —
+  // a THIRD tab, deliberately never merged into `asignaciones`/
+  // `puntosPlaneacion` above (those are "mine"; this is "up for grabs").
+  puntosCercanos: [],
+  // Small state machine driving `#cercanos-status` (see logic.js's own
+  // CERCANOS_* constants/mensajeEstadoCercanos) — GPS is a HARD requirement
+  // for this tab, unlike the assigned tabs' own best-effort proximity sort.
+  cercanosEstado: CERCANOS_ESPERANDO,
+  // True once the first usable GPS fix has triggered a puntosCercanosDisponibles
+  // fetch this screen-visit — prevents re-fetching on every watchPosition
+  // update (only the assigned tabs' own re-sort does that; a fresh network
+  // call per GPS tick would hammer the backend for no benefit here).
+  cercanosSolicitados: false,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -114,6 +131,8 @@ function boot(inspector) {
 
   $('#asig-tab-survey').addEventListener('click', () => activarTabAsignaciones('survey'));
   $('#asig-tab-stickers').addEventListener('click', () => activarTabAsignaciones('stickers'));
+  $('#asig-tab-cercanos').addEventListener('click', () => activarTabAsignaciones('cercanos'));
+  $('#btn-registro-libre').addEventListener('click', () => mostrarFormulario());
 
   iniciarAsignaciones();
 }
@@ -136,7 +155,13 @@ async function asignacionesApi(body) {
   });
 }
 
-async function iniciarAsignaciones() {
+// Fetches misPuntos + misPuntosPlaneacion (each fails OPEN independently)
+// and updates state in place. Extracted from iniciarAsignaciones so
+// onTomarPunto can re-run the SAME logic after a successful claim — the
+// newly-assigned point then shows up with its full fields (survey links,
+// etc.) via the SAME endpoints the picker already trusts, not a hand-rolled
+// merge of tomarPunto's own (deliberately minimal) response.
+async function cargarMisPuntos() {
   try {
     const res = await asignacionesApi({ action: 'misPuntos' });
     if (!res.ok) throw new Error(`misPuntos-${res.status}`);
@@ -159,14 +184,17 @@ async function iniciarAsignaciones() {
     console.warn('No se pudieron cargar los levantamientos de Planeación:', err);
     state.puntosPlaneacion = [];
   }
+}
 
-  if (state.asignaciones.length === 0 && state.puntosPlaneacion.length === 0) {
-    mostrarFormulario();
-    return;
-  }
-  // Start the proximity GPS fix in the background (see "Geolocation for
-  // proximity sort" below) — it re-renders on its own once/if a fix lands,
-  // it never blocks showing the list.
+async function iniciarAsignaciones() {
+  await cargarMisPuntos();
+
+  // `puntos-disponibles` change: the picker screen is now ALWAYS shown —
+  // even with zero individual assignments — because the "Cercanos" tab may
+  // still find nearby unassigned work once GPS resolves. `#btn-registro-libre`
+  // is the fail-open escape hatch to a blank record (see index.html's own
+  // note on it), replacing the old "both lists empty -> straight to the
+  // blank form" bypass.
   requestLocationAsignaciones();
   // Fail open on a render fault too: a bug building the cards must never leave
   // the inspector on a blank screen — fall through to the usable blank form.
@@ -215,13 +243,19 @@ function renderAsignaciones() {
   $('#asig-tab-stickers-count').textContent = String(stickersOrdenados.length);
 
   // Open on whichever tab actually has work; if both have work, default to
-  // Survey; if neither (unreachable here — iniciarAsignaciones already
-  // falls through to the blank form when both are empty), Survey is a safe
-  // default too.
+  // Survey. If NEITHER has work, default to Cercanos instead — an inspector
+  // with nothing individually assigned should land straight on the one tab
+  // that might still have something to do, not on an empty Survey tab that
+  // gives no hint the Cercanos tab exists (`puntos-disponibles` change).
   if (!state.tabAsigActiva) {
-    state.tabAsigActiva = (planeacionOrdenados.length === 0 && stickersOrdenados.length > 0) ? 'stickers' : 'survey';
+    if (planeacionOrdenados.length === 0 && stickersOrdenados.length === 0) {
+      state.tabAsigActiva = 'cercanos';
+    } else {
+      state.tabAsigActiva = (planeacionOrdenados.length === 0 && stickersOrdenados.length > 0) ? 'stickers' : 'survey';
+    }
   }
   activarTabAsignaciones(state.tabAsigActiva);
+  renderCercanos();
 
   $('#app').hidden = true;
   $('#confirm').hidden = true;
@@ -233,12 +267,18 @@ function renderAsignaciones() {
 function activarTabAsignaciones(tab) {
   state.tabAsigActiva = tab;
   const esSurvey = tab === 'survey';
+  const esStickers = tab === 'stickers';
+  const esCercanos = tab === 'cercanos';
   $('#asig-tab-survey').classList.toggle('is-active', esSurvey);
   $('#asig-tab-survey').setAttribute('aria-selected', String(esSurvey));
-  $('#asig-tab-stickers').classList.toggle('is-active', !esSurvey);
-  $('#asig-tab-stickers').setAttribute('aria-selected', String(!esSurvey));
+  $('#asig-tab-stickers').classList.toggle('is-active', esStickers);
+  $('#asig-tab-stickers').setAttribute('aria-selected', String(esStickers));
+  $('#asig-tab-cercanos').classList.toggle('is-active', esCercanos);
+  $('#asig-tab-cercanos').setAttribute('aria-selected', String(esCercanos));
   $('#planeacion-asignaciones-section').hidden = !esSurvey;
-  $('#asignaciones-stickers-section').hidden = esSurvey;
+  $('#asignaciones-stickers-section').hidden = !esStickers;
+  $('#cercanos-asignaciones-section').hidden = !esCercanos;
+  ocultarErrorTomarPunto(); // a stale claim rejection must not linger across tab switches
 }
 
 // Prominent distance line shared by both card kinds — distance is the
@@ -389,6 +429,166 @@ function esDispositivoMovil() {
   return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
 }
 
+// ---- `puntos-disponibles` change: nearby UNASSIGNED points -------------------
+// Third tab, deliberately kept visually and structurally separate from the
+// two "mine" tabs above — see index.html/logic.js's own notes on why a tab
+// (not a section) was chosen. Requires a GPS fix (see `cargarPuntosCercanos`
+// below); every non-"listo" state shows an explicit `#cercanos-status`
+// message instead of an ambiguous empty list.
+
+function renderCercanos() {
+  const status = $('#cercanos-status');
+  const cont = $('#cercanos-lista');
+  const mostrarLista = cercanosMuestraLista(state.cercanosEstado);
+
+  status.textContent = mensajeEstadoCercanos(state.cercanosEstado);
+  status.hidden = mostrarLista;
+  // `cont` is left visible (not `.hidden`-toggled) on purpose, matching the
+  // existing `#asignaciones-lista`/`#planeacion-asignaciones-lista`
+  // convention above: `.asignaciones-lista` sets `display: grid`
+  // unconditionally, which — like `.foto-actions .foto-action-btn` (see
+  // form.css's own note on that) — would silently defeat the UA `[hidden]`
+  // rule. An empty grid with zero children renders nothing, so simply not
+  // populating it while the status message is showing is enough.
+  cont.innerHTML = '';
+  if (mostrarLista) {
+    const ordenados = ordenarPorCercania(state.puntosCercanos, state.origenAsignaciones);
+    ordenados.forEach((p) => cont.append(buildCercanoCard(p, state.origenAsignaciones)));
+  }
+  $('#asig-tab-cercanos-count').textContent = String(state.puntosCercanos.length);
+}
+
+// Fired once, from the FIRST usable GPS fix each screen-visit (see
+// requestLocationAsignaciones below) — never on every watchPosition tick,
+// which would hammer the backend for no benefit (the assigned tabs' own
+// re-sort is free; this is a network call). Fails OPEN: any error just
+// leaves the tab on its explanatory status message, never throws up to
+// iniciarAsignaciones/requestLocationAsignaciones.
+async function cargarPuntosCercanos() {
+  state.cercanosEstado = CERCANOS_CARGANDO;
+  renderCercanos();
+  try {
+    const res = await asignacionesApi({
+      action: 'puntosCercanosDisponibles',
+      lat: state.origenAsignaciones.lat,
+      lng: state.origenAsignaciones.lng,
+    });
+    if (!res.ok) throw new Error(`puntosCercanosDisponibles-${res.status}`);
+    state.puntosCercanos = (await res.json()).puntos || [];
+    state.cercanosEstado = state.puntosCercanos.length > 0 ? CERCANOS_LISTO : CERCANOS_VACIO;
+  } catch (err) {
+    console.warn('No se pudieron cargar los puntos cercanos disponibles:', err);
+    state.puntosCercanos = [];
+    state.cercanosEstado = CERCANOS_ERROR;
+  }
+  renderCercanos();
+}
+
+function buildCercanoCard(p, origen) {
+  const card = document.createElement('article');
+  card.className = 'card asignacion-card cercano-card';
+
+  card.append(buildDistanciaLinea(p.coords, origen));
+
+  const dir = document.createElement('h3');
+  dir.className = 'asignacion-dir';
+  dir.textContent = p.direccion || 'Dirección no registrada';
+  card.append(dir);
+
+  const pills = document.createElement('div');
+  pills.className = 'asignacion-pills';
+  const campanaPill = document.createElement('span');
+  campanaPill.className = 'pill pill-campana';
+  campanaPill.textContent = etiquetaCampana(p.campana);
+  pills.append(campanaPill);
+  card.append(pills);
+
+  const acciones = document.createElement('div');
+  acciones.className = 'asignacion-acciones';
+
+  const mapsUrl = mapsDirUrl(p.coords);
+  if (mapsUrl) {
+    const link = document.createElement('a');
+    link.className = 'btn-secondary asignacion-maps';
+    link.href = mapsUrl;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    link.textContent = '📍 Cómo llegar';
+    acciones.append(link);
+  }
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn-primary';
+  btn.textContent = 'Tomar este punto';
+  btn.addEventListener('click', () => onTomarPunto(p, btn));
+  acciones.append(btn);
+
+  card.append(acciones);
+  return card;
+}
+
+// Claims a nearby point. Success: refreshes misPuntos/misPuntosPlaneacion
+// and the cercanos list (the backend's own "available" definition is
+// authoritative — never a hand-rolled local removal), surfaces the "también
+// se te asignó X" outcome (mensajeTomarPunto — never swallowed), and hands
+// the right instrument: a sticker claim jumps straight into THIS form
+// (same as tapping "Registrar Sticker"); a survey claim opens the freshly
+// prefilled Survey123 link when misPuntosPlaneacion's re-fetch has it,
+// otherwise just switches to the Survey tab (fail open — never a dead
+// link). Failure (lost race / already covered / network): shows
+// mensajeErrorTomarPunto's message on the status line and refreshes the
+// list so a stale card cannot be tapped again.
+function mostrarErrorTomarPunto(msg) {
+  const box = $('#cercanos-claim-error');
+  box.textContent = msg;
+  box.hidden = false;
+}
+
+function ocultarErrorTomarPunto() {
+  $('#cercanos-claim-error').hidden = true;
+}
+
+async function onTomarPunto(p, btn) {
+  if (btn) btn.disabled = true;
+  ocultarErrorTomarPunto();
+  try {
+    const res = await asignacionesApi({ action: 'tomarPunto', punto_id: p.id, campana: p.campana });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || !body.ok) {
+      // A DEDICATED, independent error line (`#cercanos-claim-error`) — NOT
+      // `#cercanos-status`, which the cargarPuntosCercanos() refresh below
+      // is about to overwrite with the section's own loading/empty/listo
+      // state. The claim rejection must stay legible, not flash and vanish.
+      mostrarErrorTomarPunto(mensajeErrorTomarPunto(body && body.detail));
+      await cargarPuntosCercanos(); // the point is stale either way — drop it
+      return;
+    }
+
+    await cargarMisPuntos();
+    if (state.origenAsignaciones) await cargarPuntosCercanos();
+
+    const aviso = mensajeTomarPunto(p.campana, body);
+    if (aviso) window.alert(aviso); // eslint-disable-line no-alert -- do not swallow the "también asignado" outcome
+
+    if (p.campana === 'sticker') {
+      registrarSticker({ id: p.id, coords: p.coords, direccion: p.direccion });
+      return;
+    }
+    // Survey: hand the freshly prefilled Survey123 link when available.
+    const propio = state.puntosPlaneacion.find((x) => x.id === p.id);
+    const encuestaUrl = propio ? elegirEnlaceEncuesta(propio, esDispositivoMovil()) : '';
+    if (encuestaUrl) window.open(encuestaUrl, '_blank', 'noopener');
+    state.tabAsigActiva = 'survey';
+    renderAsignaciones();
+  } catch (err) {
+    console.warn('tomarPunto falló:', err);
+    mostrarErrorTomarPunto(mensajeErrorTomarPunto(''));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 // ---- Geolocation for the assignments proximity sort --------------------------
 // Same watchPosition/best-fix/battery-guard shape as requestLocation() below
 // (reused on purpose — one geolocation strategy, not two), but scoped to the
@@ -402,9 +602,21 @@ function requestLocationAsignaciones() {
   stopGeoAsigWatch();
   state.origenAsignaciones = null;
   ocultarNotaGeoAsignaciones();
+  // `puntos-disponibles` change: reset the Cercanos tab's own state machine
+  // too — a fresh visit to the picker re-requests location, and the
+  // Cercanos fetch (GPS-gated) must re-arm with it, not stay stuck on
+  // whatever it last showed.
+  state.cercanosSolicitados = false;
+  state.cercanosEstado = CERCANOS_ESPERANDO;
+  renderCercanos();
 
   if (!('geolocation' in navigator)) {
     mostrarNotaGeoAsignaciones('Este dispositivo no soporta geolocalización; los puntos se muestran sin ordenar por cercanía.');
+    // Binding requirement: Cercanos is HARD-gated on GPS — no fix is ever
+    // possible on this device, so say so plainly instead of leaving the
+    // tab on "Obteniendo tu ubicación…" forever.
+    state.cercanosEstado = CERCANOS_SIN_GPS;
+    renderCercanos();
     return;
   }
 
@@ -422,6 +634,13 @@ function requestLocationAsignaciones() {
         // so this never yanks the inspector off the tab they are viewing.
         renderAsignaciones();
       }
+      // Trigger the Cercanos fetch off the FIRST usable fix only — see
+      // `cargarPuntosCercanos`'s own docstring for why every subsequent,
+      // more-accurate fix does NOT re-fetch.
+      if (!state.cercanosSolicitados) {
+        state.cercanosSolicitados = true;
+        cargarPuntosCercanos();
+      }
       if (state.origenAsignaciones.accuracy <= GEO_ACCURACY_TARGET) {
         stopGeoAsigWatch();
       }
@@ -434,6 +653,13 @@ function requestLocationAsignaciones() {
           ? 'Ubicación no disponible: permiso denegado. Los puntos se muestran sin ordenar por cercanía.'
           : 'Ubicación no disponible por ahora. Los puntos se muestran sin ordenar por cercanía.',
       );
+      // Permission denial is final (the browser will not re-prompt this
+      // session) — Cercanos can never work, say so now rather than waiting
+      // out the full battery-guard timeout below.
+      if (err && err.code === 1) {
+        state.cercanosEstado = CERCANOS_SIN_GPS;
+        renderCercanos();
+      }
     },
     { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 },
   );
@@ -444,6 +670,8 @@ function requestLocationAsignaciones() {
     stopGeoAsigWatch();
     if (!state.origenAsignaciones) {
       mostrarNotaGeoAsignaciones('No se pudo obtener la ubicación a tiempo. Los puntos se muestran sin ordenar por cercanía.');
+      state.cercanosEstado = CERCANOS_SIN_GPS;
+      renderCercanos();
     }
   }, GEO_MAX_WATCH_MS);
 }

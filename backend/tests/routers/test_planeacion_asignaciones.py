@@ -302,6 +302,7 @@ def test_limit_default_is_a_few_hundred_not_two_thousand():
         "eliminarVehiculo",
         "asignarVehiculoAGrupo",
         "desasignarVehiculo",
+        "metricasProgreso",
     ],
 )
 def test_non_admin_is_rejected_no_mutation(monkeypatch, action):
@@ -1561,3 +1562,86 @@ def test_desasignar_vehiculo_clears_field(monkeypatch):
 
     assert resp.status_code == 200
     assert stores[GRUPOS_INSPECTORES]["g1"]["vehiculo_id"] is None
+
+
+# ── metricasProgreso (`puntos-disponibles` change, 2026-08-26) ─────────────
+# Appended at the END of the dispatcher, deliberately not touching the
+# group/vehicle CRUD region above (owned by a concurrent batch). Per-group
+# and per-inspector progress, both campaigns combined AND broken out.
+
+
+def test_metricas_progreso_por_grupo(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {
+        "g1": {"nombre": "Norte", "miembros": ["u1", "u2"], "activo": True},
+    }
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"grupo_id": "g1", "estado_asignacion": "hecho"},
+        "p2": {"grupo_id": "g1", "estado_asignacion": "pendiente"},
+        "p3": {"grupo_id": "g1", "estado_asignacion": "no_aplica"},
+        "p4": {"grupo_id": None, "estado_asignacion": "pendiente"},  # not this group
+    }
+    stores[STICKER_MATCHES] = {
+        "s1": {"grupo_id": "g1", "estado_asignacion": "hecho"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "metricasProgreso"})
+
+    assert resp.status_code == 200
+    g1 = resp.json()["metricas"]["grupos"]["g1"]
+    assert g1["nombre"] == "Norte"
+    assert g1["miembros"] == 2
+    assert g1["survey"] == {"asignados": 3, "hechos": 1, "pendientes": 1, "no_aplica": 1, "completado_pct": 33.3}
+    assert g1["stickers"] == {"asignados": 1, "hechos": 1, "pendientes": 0, "no_aplica": 0, "completado_pct": 100.0}
+    assert g1["combinado"]["asignados"] == 4
+    assert g1["combinado"]["hechos"] == 2
+
+
+def test_metricas_progreso_por_inspector_incluye_grupos(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {
+        "g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True},
+    }
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"inspector_uid": "u1", "estado_asignacion": "hecho"},
+        "p2": {"inspector_uid": "u1", "estado_asignacion": "pendiente"},
+    }
+    stores[STICKER_MATCHES] = {}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "metricasProgreso"})
+
+    assert resp.status_code == 200
+    u1 = resp.json()["metricas"]["inspectores"]["u1"]
+    assert u1["grupos"] == ["Norte"]
+    assert u1["survey"] == {"asignados": 2, "hechos": 1, "pendientes": 1, "no_aplica": 0, "completado_pct": 50.0}
+    assert u1["combinado"]["asignados"] == 2
+
+
+def test_metricas_progreso_inspector_sin_puntos_pero_con_grupo_aparece(monkeypatch):
+    """A group member with zero individually-assigned points still shows up
+    (0/0/0, 0%) — the roster is driven by group membership too, not only by
+    who happens to have inspector_uid points."""
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u9"], "activo": True}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "metricasProgreso"})
+
+    u9 = resp.json()["metricas"]["inspectores"]["u9"]
+    assert u9["combinado"] == {"asignados": 0, "hechos": 0, "pendientes": 0, "no_aplica": 0, "completado_pct": 0.0}
+
+
+def test_metricas_progreso_totales_combinados(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {"p1": {"estado_asignacion": "hecho"}, "p2": {"estado_asignacion": "pendiente"}}
+    stores[STICKER_MATCHES] = {"s1": {"estado_asignacion": "hecho"}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "metricasProgreso"})
+
+    metricas = resp.json()["metricas"]
+    assert metricas["combinado"] == {"asignados": 3, "hechos": 2, "pendientes": 1, "no_aplica": 0, "completado_pct": 66.7}
+    assert metricas["stickers"]["asignados"] == 1
+    assert metricas["survey"]["asignados"] == 2

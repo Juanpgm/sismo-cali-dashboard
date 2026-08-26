@@ -89,18 +89,92 @@ lookup only — it never writes that collection; group CRUD is exclusively
 admin-owned by `routers/planeacion_asignaciones.py`), allowlisted under
 `tests/invariants/test_sole_writer.py`'s
 `ALLOWED_MODULES_GRUPOS_INSPECTORES`.
+
+## `puntos-disponibles` change (2026-08-26) — claim a nearby UNassigned point
+
+Two NEW actions, both own-uid-scoped exactly like the four above:
+`puntosCercanosDisponibles {lat, lng}` (read-only) and `tomarPunto
+{punto_id, campana}` (the caller self-assigns). User decisions locked in:
+
+1. **Radius = `NEARBY_RADIUS_M` = 300 m** — "only what an inspector can see
+   on foot", one named constant so it is retunable in one place.
+2. **Claiming a point assigns BOTH campaigns.** The inspector is standing
+   at the building, so claiming ANY campaign's point ALSO claims the SAME
+   building's point in the OTHER campaign, IFF a pending, unassigned,
+   not-yet-covered record for it exists there — never fabricated.
+
+### Scale (same bounding-box discipline as the pipelines' own reads)
+
+`planeacion_puntos` has ~14.8k docs; `sticker_matches` is smaller but not
+tiny. Firestore allows only ONE inequality field per query, so
+`_fetch_bbox` queries a bounding box on `coords.lat` (`>=`/`<=` — the SAME
+field twice, which real Firestore does NOT require a composite index for)
+and filters longitude, exact haversine distance, assignment state, AND
+coverage (see below) in Python. No composite index is needed anywhere in
+this module: every other predicate runs in Python after the bbox fetch.
+
+### "Available" — corrected 2026-08-26: coverage, not just assignment
+
+A point is available when it is UNASSIGNED (no `inspector_uid`, no
+`grupo_id`), still PENDING (not `hecho`, not `no_aplica` for survey), AND
+NOT ALREADY COVERED — `sticker_matches.tiene_sticker` / `planeacion_puntos.
+tiene_survey` computed by the cruce jobs INDEPENDENTLY of assignment
+(`app/jobs/cruce_sticker.py`/`app/jobs/planeacion_cruce.py`). A point can be
+unassigned yet already covered — someone did it without an assignment, or
+the cruce matched it after the fact — and offering it would send an
+inspector to a building that is already done. `_razon_no_disponible` is the
+SINGLE source of truth for this rule, shared by `puntosCercanosDisponibles`
+(the read filter) and `_tomar_punto` (the transactional re-check below) —
+one definition, never duplicated.
+
+### The race: `tomarPunto` MUST use a Firestore transaction
+
+Two inspectors standing on the same corner can tap "tomar" at the same
+moment; the cruce job can ALSO flip `tiene_sticker`/`tiene_survey` true
+between the list being rendered and the tap. Read-then-write is a race in
+BOTH cases. `_tomar_punto` wraps the read-check-write (primary point AND,
+when found, the sibling "gemelo" point in the other campaign) in a REAL
+`google.cloud.firestore` transaction (`@transactional`, imported verbatim —
+not reimplemented), so a second/stale claim loses cleanly with a 409 and NO
+write, never a silent overwrite. The candidate SEARCH for the sibling
+(`_buscar_gemelo`, a plain query) runs OUTSIDE the transaction — it is only
+discovery, not the source of truth — but the actual claim decision for
+EVERY doc touched (primary and sibling alike) is a transactional
+`ref.get(transaction=transaction)` re-check right before the transactional
+`transaction.set(...)`, so a coverage flip or a competing claim on either
+doc is caught inside the SAME transaction that decides what to write.
+
+### Building identity across campaigns — no new matching rule invented
+
+`sticker_matches` and `planeacion_puntos` do NOT share a `registro_id`
+namespace (different upstream systems: EDE Panel vs atencionsismo
+`informe/json`), so there is no doc-id-level identity to compare. Both
+`app/jobs/cruce_sticker.py` and `app/jobs/planeacion_cruce.py` already
+cross-reference a point against ITS OWN campaign's field-reported source
+using the SAME imported primitives from `app.integracion.cruce_gestor`:
+geo proximity (`nearest`, <= `MAX_MATCH_M` = 40 m haversine) then address
+fuzzy match (`addr_key`, `SequenceMatcher` ratio >= `ADDR_MATCH_RATIO` =
+0.90). `_buscar_gemelo` reuses those exact same imported primitives and
+thresholds, applied directly BETWEEN the two campaigns' collections
+instead of between a campaign and its own source — the same tuned signal,
+not a new one.
 """
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from google.cloud.firestore import transactional
 from pydantic import BaseModel
 
 from app.auth.deps import require_auth
 from app.config import Settings
 from app.credentials import clients as credentials
+from app.integracion.coords import haversine_m
+from app.integracion.cruce_gestor import ADDR_MATCH_RATIO, MAX_MATCH_M, addr_key, nearest
 from app.services.survey_link import build_survey_urls
 
 # sismo() is already unconditionally in credentials.WEB_STARTUP_CLIENTS, but
@@ -127,12 +201,33 @@ GRUPOS_INSPECTORES_COLLECTION = "grupos_inspectores"
 # Real Firestore caps an `in` query at 30 values.
 _IN_QUERY_CHUNK = 30
 
+# `puntos-disponibles` change. "Only what an inspector can see on foot" —
+# binding user decision, one named constant so it is retunable in one place.
+NEARBY_RADIUS_M = 300.0
+
+# Standard great-circle approximation (WGS84 mean), used ONLY to size the
+# bounding-box prefilter — the ACTUAL distance test is always the exact
+# `haversine_m` below, never this approximation.
+_METERS_PER_DEG_LAT = 111_320.0
+
+CAMPANA_SURVEY = "survey"
+CAMPANA_STICKER = "sticker"
+CAMPANA_COLLECTIONS: dict[str, str] = {
+    CAMPANA_STICKER: STICKER_MATCHES_COLLECTION,
+    CAMPANA_SURVEY: PLANEACION_PUNTOS_COLLECTION,
+}
+
 router = APIRouter()
 
 
 class AsignacionesRequest(BaseModel):
     action: str
     punto_id: str | None = None
+    # `puntos-disponibles` change: tomarPunto {punto_id, campana} and
+    # puntosCercanosDisponibles {lat, lng}.
+    campana: str | None = None
+    lat: float | None = None
+    lng: float | None = None
 
 
 def _pendiente(data: dict[str, Any]) -> bool:
@@ -351,6 +446,193 @@ def _marcar_hecho(db: Any, uid: str, punto_id: str) -> dict[str, Any]:
     return {"id": punto_id, "estado_asignacion": DONE_ESTADO}
 
 
+# ── `puntos-disponibles` change (2026-08-26) ────────────────────────────────
+# Nearby UNASSIGNED points (any campaign) an inspector can claim on the spot,
+# plus the transactional claim itself. See the module docstring's own
+# "puntos-disponibles change" section for the scale/race/identity reasoning.
+
+
+def _bbox(lat: float, lon: float, radius_m: float) -> tuple[float, float, float, float]:
+    """(lat_min, lat_max, lon_min, lon_max) — a generous rectangular
+    prefilter, never the final distance test. Longitude degrees shrink with
+    latitude (`cos(lat)`); clamped away from 0 so a point exactly on the
+    equator (never true for Cali, but keeps this pure function total) can't
+    divide by zero."""
+    lat_delta = radius_m / _METERS_PER_DEG_LAT
+    lon_delta = radius_m / (_METERS_PER_DEG_LAT * max(math.cos(math.radians(lat)), 1e-6))
+    return lat - lat_delta, lat + lat_delta, lon - lon_delta, lon + lon_delta
+
+
+def _fetch_bbox(db: Any, collection_name: str, lat: float, lon: float, radius_m: float) -> list[Any]:
+    """Every doc in `collection_name` whose `coords.lat` falls in the bbox —
+    ONE Firestore inequality field (`coords.lat`, `>=` then `<=` — the SAME
+    field twice never needs a composite index in real Firestore), longitude
+    and everything else filtered in Python by the caller. This is the ONLY
+    Firestore-level filter in this module's nearby/claim path — see the
+    module docstring's "Scale" section."""
+    lat_min, lat_max, _lon_min, _lon_max = _bbox(lat, lon, radius_m)
+    return (
+        db.collection(collection_name)
+        .where("coords.lat", ">=", lat_min)
+        .where("coords.lat", "<=", lat_max)
+        .get()
+    )
+
+
+def _razon_no_disponible(data: dict[str, Any], campana: str) -> str | None:
+    """None iff `data` (a raw sticker_matches/planeacion_puntos doc dict) is
+    available to be claimed for `campana` — otherwise the reason it is not,
+    used both to FILTER `puntosCercanosDisponibles` and as the exact 409
+    detail `_tomar_punto` returns on a lost race. SINGLE source of truth for
+    "available" (module docstring's corrected "Available" section,
+    2026-08-26): unassigned (no inspector_uid, no grupo_id), still pending
+    (not hecho; not no_aplica for survey), AND not already covered by field
+    data independently of assignment (tiene_sticker/tiene_survey)."""
+    if data.get("inspector_uid") or data.get("grupo_id"):
+        return "otro inspector ya tomó este punto"
+    estado = data.get("estado_asignacion")
+    if estado == DONE_ESTADO:
+        return "otro inspector ya tomó este punto"
+    if campana == CAMPANA_SURVEY and estado == NO_APLICA_ESTADO:
+        return "este punto ya no aplica para encuesta"
+    cubierto_key = "tiene_sticker" if campana == CAMPANA_STICKER else "tiene_survey"
+    if data.get(cubierto_key):
+        return "este punto ya fue cubierto (ya tiene sticker o encuesta registrada)"
+    return None
+
+
+def _disponible(data: dict[str, Any], campana: str) -> bool:
+    return _razon_no_disponible(data, campana) is None
+
+
+def _puntos_cercanos_disponibles(db: Any, lat: float, lng: float) -> list[dict[str, Any]]:
+    """Every still-pending, UNASSIGNED, NOT-YET-COVERED point within
+    `NEARBY_RADIUS_M` of (lat, lng), from BOTH campaigns, each tagged with
+    its own `campana` so the UI can label it, sorted nearest-first."""
+    resultados: list[dict[str, Any]] = []
+    for campana, collection_name in CAMPANA_COLLECTIONS.items():
+        for doc in _fetch_bbox(db, collection_name, lat, lng, NEARBY_RADIUS_M):
+            data = doc.to_dict() or {}
+            if not _disponible(data, campana):
+                continue
+            coords = data.get("coords") or {}
+            dlat, dlon = coords.get("lat"), coords.get("lon")
+            if dlat is None or dlon is None:
+                continue
+            dist_m = haversine_m((lat, lng), (dlat, dlon))
+            if dist_m > NEARBY_RADIUS_M:
+                continue
+            resultados.append(
+                {
+                    "id": doc.id,
+                    "campana": campana,
+                    "direccion": data.get("direccion") or "",
+                    "coords": coords,
+                    "dist_m": round(dist_m, 1),
+                    "criterio_habitabilidad": data.get("criterio_habitabilidad"),
+                    "colapso": data.get("colapso"),
+                    "afectacion": data.get("afectacion"),
+                    "prioridad": data.get("prioridad"),
+                }
+            )
+    resultados.sort(key=lambda p: p["dist_m"])
+    return resultados
+
+
+def _gemelo_latlon(item: dict[str, Any]):
+    coords = item.get("coords") or {}
+    lat, lon = coords.get("lat"), coords.get("lon")
+    return (lat, lon) if lat is not None and lon is not None else None
+
+
+def _buscar_gemelo(db: Any, otra_campana: str, punto_data: dict[str, Any]) -> Any | None:
+    """The pending, unassigned, not-yet-covered record for the SAME
+    building in the OTHER campaign's collection, or None. See the module
+    docstring's "Building identity across campaigns" section — reuses
+    `cruce_gestor`'s own geo-then-address cascade verbatim, never a new
+    matching rule. Candidate discovery only (not transactional); the caller
+    re-validates freshness inside the transaction before writing."""
+    coords = punto_data.get("coords") or {}
+    lat, lon = coords.get("lat"), coords.get("lon")
+    if lat is None or lon is None:
+        return None
+    otra_collection = CAMPANA_COLLECTIONS[otra_campana]
+    candidatos = [
+        (doc.id, doc.to_dict() or {})
+        for doc in _fetch_bbox(db, otra_collection, lat, lon, NEARBY_RADIUS_M)
+    ]
+    disponibles = [(doc_id, data) for doc_id, data in candidatos if _disponible(data, otra_campana)]
+
+    # Rung 1: geo, nearest within MAX_MATCH_M (cruce_gestor's own tuned
+    # proximity threshold, reused — not retuned).
+    best, _dist = nearest(lat, lon, [data for _id, data in disponibles], _gemelo_latlon, max_m=MAX_MATCH_M)
+    if best is not None:
+        for doc_id, data in disponibles:
+            if data is best:
+                return db.collection(otra_collection).document(doc_id)
+
+    # Rung 2: address, exact-or-fuzzy normalized key (cruce_gestor's own
+    # addr_key + ADDR_MATCH_RATIO, reused — not retuned).
+    key_p = addr_key(punto_data.get("direccion"))
+    if key_p:
+        for doc_id, data in disponibles:
+            key_c = addr_key(data.get("direccion"))
+            if key_c and (key_c == key_p or SequenceMatcher(None, key_p, key_c).ratio() >= ADDR_MATCH_RATIO):
+                return db.collection(otra_collection).document(doc_id)
+    return None
+
+
+def _tomar_punto(db: Any, uid: str, punto_id: str, campana: str) -> dict[str, Any]:
+    """Self-claim `punto_id` in `campana` — AND, per binding user decision 1,
+    the SAME building's record in the OTHER campaign when one exists,
+    pending and unassigned. Wrapped in a REAL Firestore transaction so a
+    second/stale claim (race OR a coverage flip mid-flight) is rejected
+    with NO write, never a silent overwrite — see the module docstring's
+    "The race" section."""
+    if not punto_id:
+        raise HTTPException(status_code=400, detail="Falta el id del punto.")
+    if campana not in CAMPANA_COLLECTIONS:
+        raise HTTPException(status_code=400, detail="Campaña no reconocida.")
+
+    ref = db.collection(CAMPANA_COLLECTIONS[campana]).document(punto_id)
+    otra_campana = CAMPANA_SURVEY if campana == CAMPANA_STICKER else CAMPANA_STICKER
+
+    transaction = db.transaction()
+
+    @transactional
+    def _run(transaction: Any) -> dict[str, Any]:
+        snap = ref.get(transaction=transaction)
+        if not snap.exists:
+            raise HTTPException(status_code=404, detail="El punto no existe.")
+        data = snap.to_dict() or {}
+        razon = _razon_no_disponible(data, campana)
+        if razon is not None:
+            raise HTTPException(status_code=409, detail=razon)
+
+        gemelo_ref = _buscar_gemelo(db, otra_campana, data)
+        gemelo_id: str | None = None
+        if gemelo_ref is not None:
+            gemelo_snap = gemelo_ref.get(transaction=transaction)
+            if gemelo_snap.exists and _disponible(gemelo_snap.to_dict() or {}, otra_campana):
+                gemelo_id = gemelo_snap.id
+
+        now = datetime.now(timezone.utc)
+        campos = {
+            "inspector_uid": uid,
+            "asignado_en": now,
+            "estado_asignacion": "asignado",
+        }
+        transaction.set(ref, campos, merge=True)
+        asignados = {campana: punto_id}
+        if gemelo_id is not None:
+            transaction.set(gemelo_ref, campos, merge=True)
+            asignados[otra_campana] = gemelo_id
+        return asignados
+
+    asignados = _run(transaction)
+    return {"asignados": asignados, "tambien_asignado": otra_campana in asignados}
+
+
 @router.post("/inspector-asignaciones")
 def inspector_asignaciones(
     body: AsignacionesRequest,
@@ -370,5 +652,12 @@ def inspector_asignaciones(
         return {"ok": True, "puntos": _mis_puntos_planeacion(db, uid)}
     if body.action == "marcarHechoPlaneacion":
         result = _marcar_hecho_planeacion(db, uid, str(body.punto_id or ""))
+        return {"ok": True, **result}
+    if body.action == "puntosCercanosDisponibles":
+        if body.lat is None or body.lng is None:
+            raise HTTPException(status_code=400, detail="Faltan lat/lng.")
+        return {"ok": True, "puntos": _puntos_cercanos_disponibles(db, body.lat, body.lng)}
+    if body.action == "tomarPunto":
+        result = _tomar_punto(db, uid, str(body.punto_id or ""), str(body.campana or ""))
         return {"ok": True, **result}
     raise HTTPException(status_code=400, detail="Acción no reconocida.")

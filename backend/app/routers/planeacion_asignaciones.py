@@ -179,6 +179,26 @@ sole-writer allowlist, `ALLOWED_MODULES_VEHICULOS` in
 `tests/invariants/test_sole_writer.py`) — `routers/inspector_asignaciones.py`
 and `routers/sticker_asignaciones.py` have no reason to read or write it;
 only the admin dispatcher here ever touches it.
+
+## `puntos-disponibles` change (2026-08-26) — `metricasProgreso`
+
+ONE new, READ-ONLY action, appended at the very END of the dispatcher (a
+concurrent batch owns the group/vehicle CRUD region above — this action
+touches none of it). Returns per-GROUP and per-INSPECTOR progress —
+assigned/hecho/pendiente counts and completion % — for BOTH campaigns
+(`sticker_matches`, `planeacion_puntos`) combined AND broken out per
+campaign. Reads the SAME two collections `resumen()` above already reads in
+full (no new scale concern: this is the identical "bounded, aggregated in
+Python" tradeoff that function's own docstring note already documents,
+applied to two collections instead of one).
+
+Inspector NAMES are NOT resolved here — `metrics_progreso` returns raw
+uids. The admin tab already caches the inspector roster client-side
+(`web/js/planeacion.js`'s `inspectoresCache`/`inspectorById`, fetched once
+from `/api/stickers {action:'list'}`) and already resolves uid -> display
+name that way for `cuadrillasHtml`/`gruposHtml` — `metricasProgreso`
+reuses that SAME cache in the UI layer rather than adding a second,
+duplicated roster fetch on the backend.
 """
 from __future__ import annotations
 
@@ -1235,6 +1255,86 @@ def desasignar_vehiculo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     return {"grupo_id": grupo_id}
 
 
+# ---- metricasProgreso (`puntos-disponibles` change, 2026-08-26) -----------
+
+
+def _tally(puntos: list[dict[str, Any]]) -> dict[str, Any]:
+    """assigned/hecho/pendiente/no_aplica + completion % for a flat list of
+    raw point dicts (either collection's shape — both use the SAME
+    `estado_asignacion` values). `no_aplica` never appears on a
+    `sticker_matches` doc, so it is naturally always 0 there — one shared
+    function for both campaigns, no special-casing needed."""
+    total = len(puntos)
+    hechos = sum(1 for p in puntos if p.get("estado_asignacion") == "hecho")
+    no_aplica = sum(1 for p in puntos if p.get("estado_asignacion") == "no_aplica")
+    pendientes = total - hechos - no_aplica
+    pct = round((hechos / total) * 100, 1) if total else 0.0
+    return {
+        "asignados": total,
+        "hechos": hechos,
+        "pendientes": pendientes,
+        "no_aplica": no_aplica,
+        "completado_pct": pct,
+    }
+
+
+def metricas_progreso(db: Any) -> dict[str, Any]:
+    """Per-group and per-inspector progress, BOTH campaigns combined AND
+    broken out per campaign (spec: `metricasProgreso`). See this module's
+    own docstring ("puntos-disponibles change") for the scale/roster
+    reasoning."""
+    sticker_puntos = [_doc_to_dict(d, with_id=False) for d in db.collection(STICKER_MATCHES_COLLECTION).get()]
+    planeacion_puntos = [_doc_to_dict(d, with_id=False) for d in db.collection(PLANEACION_PUNTOS_COLLECTION).get()]
+    grupos = [_doc_to_dict(d) for d in db.collection(GRUPOS_INSPECTORES_COLLECTION).get()]
+
+    por_campana = {"stickers": sticker_puntos, "survey": planeacion_puntos}
+    todos_los_puntos = sticker_puntos + planeacion_puntos
+
+    grupos_metricas: dict[str, Any] = {}
+    for g in grupos:
+        gid = g["id"]
+        entry: dict[str, Any] = {
+            "nombre": g.get("nombre") or gid,
+            "miembros": len(g.get("miembros") or []),
+            "activo": g.get("activo", True),
+        }
+        combinado: list[dict[str, Any]] = []
+        for campana, puntos in por_campana.items():
+            propios = [p for p in puntos if p.get("grupo_id") == gid]
+            entry[campana] = _tally(propios)
+            combinado.extend(propios)
+        entry["combinado"] = _tally(combinado)
+        grupos_metricas[gid] = entry
+
+    uids: set[str] = set()
+    for puntos in por_campana.values():
+        uids.update(p["inspector_uid"] for p in puntos if p.get("inspector_uid"))
+    grupos_por_uid: dict[str, list[str]] = {}
+    for g in grupos:
+        for uid in g.get("miembros") or []:
+            uids.add(uid)
+            grupos_por_uid.setdefault(uid, []).append(g.get("nombre") or g["id"])
+
+    inspectores_metricas: dict[str, Any] = {}
+    for uid in sorted(uids):
+        entry = {"grupos": grupos_por_uid.get(uid, [])}
+        combinado = []
+        for campana, puntos in por_campana.items():
+            propios = [p for p in puntos if p.get("inspector_uid") == uid]
+            entry[campana] = _tally(propios)
+            combinado.extend(propios)
+        entry["combinado"] = _tally(combinado)
+        inspectores_metricas[uid] = entry
+
+    return {
+        "grupos": grupos_metricas,
+        "inspectores": inspectores_metricas,
+        "combinado": _tally(todos_los_puntos),
+        "stickers": _tally(sticker_puntos),
+        "survey": _tally(planeacion_puntos),
+    }
+
+
 class PlaneacionAsignacionesRequest(BaseModel):
     action: str
     # listPuntos / resumen
@@ -1343,6 +1443,8 @@ def planeacion_asignaciones(
             return JSONResponse({"ok": True, **asignar_vehiculo_a_grupo(db, payload)})
         if body.action == "desasignarVehiculo":
             return JSONResponse({"ok": True, **desasignar_vehiculo(db, payload)})
+        if body.action == "metricasProgreso":
+            return JSONResponse({"ok": True, "metricas": metricas_progreso(db)})
         raise bad_request(f"Acción desconocida: {body.action}")
     except HTTPException:
         raise

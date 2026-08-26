@@ -275,6 +275,11 @@ function shellHtml() {
         </div>
 
         <div class="card">
+          ${cardHead('Progreso por grupo e inspector', 'Avance combinado de ambas campañas (stickers y encuesta EDAN), con el detalle de cada una.')}
+          <div id="planeacion-metricas"></div>
+        </div>
+
+        <div class="card">
           ${cardHead('Paso 3 · Puntos', 'Filtrar, ordenar, corregir, excluir o abrir el enlace de Survey123.')}
           <div class="card-toolbar asignacion-filters" id="planeacion-filters"></div>
           <div class="table-scroll asignacion-table-scroll" id="planeacion-table-wrap"></div>
@@ -569,6 +574,72 @@ function gruposHtml(grupos, inspectorById, vehiculosDisponibles) {
   </ul>`;
 }
 
+/** One progress row's numbers — `{asignados, hechos, pendientes,
+ *  completado_pct}` from `metricasProgreso`'s own `_tally()` shape,
+ *  reused identically for the group/inspector/combined tallies. */
+function progresoBarraHtml(tally, inline = false) {
+  const t = tally || { asignados: 0, hechos: 0, pendientes: 0, completado_pct: 0 };
+  const cls = inline ? 'planeacion-progreso-cell planeacion-progreso-cell-inline' : 'planeacion-progreso-cell';
+  return `<div class="${cls}">
+    <div class="planeacion-progreso-barra" title="${t.hechos}/${t.asignados} hecho(s)">
+      <div class="planeacion-progreso-relleno" style="width:${Math.min(100, t.completado_pct)}%"></div>
+    </div>
+    <span class="planeacion-progreso-pct">${t.completado_pct}% · ${t.hechos}/${t.asignados}</span>
+  </div>`;
+}
+
+/** `metricasProgreso` change (`puntos-disponibles`, 2026-08-26) — per-group
+ *  and per-inspector progress, BOTH campaigns combined and broken out.
+ *  Inspector NAMES are resolved here, client-side, via the SAME cached
+ *  roster `inspectorById` every other section on this tab already uses
+ *  (`metricasProgreso` itself returns raw uids — see that endpoint's own
+ *  docstring for why: no second, duplicated roster fetch on the backend). */
+export function metricasHtml(metricas, inspectorById) {
+  if (!metricas) return '<p class="sticker-empty">Sin datos de progreso todavía.</p>';
+  const grupos = Object.entries(metricas.grupos || {});
+  const inspectores = Object.entries(metricas.inspectores || {});
+
+  const gruposFilas = grupos.length
+    ? grupos.map(([id, g]) => `<tr>
+        <td>${escapeHtml(g.nombre || id)}${g.activo === false ? ' (inactivo)' : ''}</td>
+        <td>${g.miembros}</td>
+        <td>${progresoBarraHtml(g.combinado)}</td>
+        <td>${progresoBarraHtml(g.stickers)}</td>
+        <td>${progresoBarraHtml(g.survey)}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="5" class="sticker-empty">Todavía no hay grupos.</td></tr>';
+
+  const inspectoresFilas = inspectores.length
+    ? inspectores.map(([uid, i]) => {
+      const insp = inspectorById.get(uid);
+      const nombre = insp ? (insp.nombre_completo || insp.codigo || uid) : uid;
+      return `<tr>
+        <td>${escapeHtml(nombre)}</td>
+        <td>${escapeHtml((i.grupos || []).join(', ') || '—')}</td>
+        <td>${progresoBarraHtml(i.combinado)}</td>
+        <td>${progresoBarraHtml(i.stickers)}</td>
+        <td>${progresoBarraHtml(i.survey)}</td>
+      </tr>`;
+    }).join('')
+    : '<tr><td colspan="5" class="sticker-empty">Todavía no hay inspectores con puntos o grupo.</td></tr>';
+
+  return `<div class="planeacion-metricas-totales">
+      <span>Total: ${progresoBarraHtml(metricas.combinado, true)}</span>
+      <span>Stickers: ${progresoBarraHtml(metricas.stickers, true)}</span>
+      <span>Survey: ${progresoBarraHtml(metricas.survey, true)}</span>
+    </div>
+    <h4 class="planeacion-metricas-subtitulo">Por grupo</h4>
+    <div class="table-scroll"><table class="sticker-table">
+      <thead><tr><th>Grupo</th><th>Miembros</th><th>Combinado</th><th>Stickers</th><th>Survey</th></tr></thead>
+      <tbody>${gruposFilas}</tbody>
+    </table></div>
+    <h4 class="planeacion-metricas-subtitulo">Por inspector</h4>
+    <div class="table-scroll"><table class="sticker-table">
+      <thead><tr><th>Inspector</th><th>Grupos</th><th>Combinado</th><th>Stickers</th><th>Survey</th></tr></thead>
+      <tbody>${inspectoresFilas}</tbody>
+    </table></div>`;
+}
+
 /** Vehículos (`grupos-inspectores` follow-up, 2026-08-26) — "cada grupo
  *  sale en un vehículo". Independent CRUD list; assignment to a grupo
  *  happens from the grupo row above (`vehiculoSelect`), not here. */
@@ -758,6 +829,7 @@ export function initPlaneacion(root, { getToken }) {
   let cuadrillas = [];
   let grupos = []; // grupos de INSPECTORES — `grupos-inspectores` change
   let vehiculos = []; // `grupos-inspectores` follow-up (2026-08-26)
+  let metricasData = null; // `metricasProgreso` — `puntos-disponibles` change (2026-08-26)
   let resumenData = null;
   let inspectoresCache = [];
   let inspectoresLoaded = false;
@@ -781,6 +853,7 @@ export function initPlaneacion(root, { getToken }) {
   const reiniciarBtn = root.querySelector('#planeacion-reiniciar');
   const gruposWrap = root.querySelector('#planeacion-grupos');
   const grupoSelect = root.querySelector('#planeacion-grupo-select');
+  const metricasWrap = root.querySelector('#planeacion-metricas');
   const asignarGrupoBtn = root.querySelector('#planeacion-asignar-grupo');
   const quitarGrupoBtn = root.querySelector('#planeacion-quitar-grupo');
   const grupoCrearBtn = root.querySelector('#planeacion-grupo-crear');
@@ -1183,6 +1256,15 @@ export function initPlaneacion(root, { getToken }) {
     });
   }
 
+  // ---- progreso section (`metricasProgreso`, `puntos-disponibles` change,
+  // 2026-08-26) — read-only, no actions of its own; just renders whatever
+  // `reload()` fetched into `metricasData`. Inspector names resolved via
+  // the SAME cached roster every other section already uses.
+  function renderMetricasSection() {
+    const inspectorById = new Map(getInspectores().map((i) => [i.uid, i]));
+    metricasWrap.innerHTML = metricasHtml(metricasData, inspectorById);
+  }
+
   const vehiculoModal = root.querySelector('#planeacion-vehiculo-modal');
   const vehiculoErr = root.querySelector('#planeacion-vehiculo-error');
   const vehiculoActivoField = root.querySelector('#planeacion-vehiculo-activo-field');
@@ -1388,16 +1470,18 @@ export function initPlaneacion(root, { getToken }) {
     try {
       await ensureInspectores();
       const incluirLevantados = !!root.querySelector('#planeacion-incluir-levantados')?.checked;
-      const [listResp, cuadrillasResp, resumenResp, gruposResp, vehiculosResp] = await Promise.all([
+      const [listResp, cuadrillasResp, resumenResp, gruposResp, vehiculosResp, metricasResp] = await Promise.all([
         callApi(getToken, { action: 'listPuntos', incluirLevantados }),
         callApi(getToken, { action: 'listCuadrillas' }),
         callApi(getToken, { action: 'resumen' }),
         callApi(getToken, { action: 'listGrupos' }),
         callApi(getToken, { action: 'listVehiculos' }),
+        callApi(getToken, { action: 'metricasProgreso' }),
       ]);
       cuadrillas = cuadrillasResp.cuadrillas || [];
       grupos = gruposResp.grupos || [];
       vehiculos = vehiculosResp.vehiculos || [];
+      metricasData = metricasResp.metricas || null;
       resumenData = resumenResp.resumen || null;
       rows = buildRows(listResp.puntos, cuadrillas, getInspectores());
       selected.clear();
@@ -1410,6 +1494,7 @@ export function initPlaneacion(root, { getToken }) {
       renderCuadrillasSection();
       renderGruposSection();
       renderVehiculosSection();
+      renderMetricasSection();
       renderMapSection();
     } catch (err) {
       teardownMap();

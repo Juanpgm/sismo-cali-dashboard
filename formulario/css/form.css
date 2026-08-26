@@ -450,6 +450,15 @@ button:focus-visible, summary:focus-visible, label:has(:focus-visible) {
 }
 .asig-tab.is-active .asig-tab-count { background: rgba(0, 0, 0, 0.28); }
 
+/* `puntos-disponibles` change: the third tab (nearby, UNASSIGNED points —
+   "up for grabs") gets its OWN accent color, green, deliberately different
+   from the brand-yellow the two "mine" tabs (Survey/Stickers) use when
+   active. Binding requirement: an inspector must never confuse "assigned
+   to me" with "up for grabs" — a distinct color is the fastest signal at a
+   glance, before even reading the tab label. */
+.asig-tab-cercanos.is-active { background: var(--verde); color: var(--bg); }
+.asig-tab-cercanos.is-active .asig-tab-count { background: rgba(0, 0, 0, 0.28); }
+
 /* Fail-open GPS note: informational, not an error — amber, not red. */
 .asig-geo-note {
   margin: -0.5rem 0 1rem;
@@ -513,6 +522,27 @@ button:focus-visible, summary:focus-visible, label:has(:focus-visible) {
   gap: 0.4rem;
   text-decoration: none;
 }
+
+/* `puntos-disponibles` change: "up for grabs" cards get a GREEN left
+   border (same accent as the tab, see above) instead of the criticality
+   color the assigned cards use inline — the visual cue is "this is
+   claimable", not "this is how severe it is" (severity is not yet even
+   knowable before a real inspection/survey happens). */
+.cercano-card { border-left-width: 8px; border-left-color: var(--verde); }
+
+.pill-campana { background: var(--verde); }
+
+/* Reuses .asig-geo-note's informational look for every non-"listo" status
+   message (waiting for GPS / GPS denied / loading / empty / error) — this
+   REPLACES the card list while shown, never sits above an ambiguous empty
+   grid (cercanosMuestraLista in logic.js). */
+.cercanos-status { margin: 0 0 1rem; }
+
+/* Escape hatch to a free-form record — deliberately LOW emphasis (a plain
+   secondary button, full width) at the very bottom of the picker screen,
+   so it reads as "also available" rather than competing with the actual
+   assigned/claimable work above it. */
+.btn-registro-libre { width: 100%; margin-block-start: 1.25rem; }
 
 /* ---- Auth overlay ---- */
 

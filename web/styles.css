@@ -1891,6 +1891,16 @@ body:not([data-role="admin"]) .view-tab[data-view="analista"] { display: none !i
 /* Bound the long lists so the columns stay compact and the map stays in view. */
 .asignacion-cuadrillas-scroll { max-height: 340px; overflow-y: auto; }
 .asignacion-table-scroll { max-height: 420px; overflow: auto; }
+
+/* `metricasProgreso` change (`puntos-disponibles`, 2026-08-26) — per-group/
+   per-inspector progress bars, both campaigns combined and broken out. */
+.planeacion-metricas-totales { display: flex; flex-wrap: wrap; gap: 20px; margin: 0 0 14px; }
+.planeacion-metricas-subtitulo { margin: 18px 0 8px; font-size: 0.85rem; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.03em; }
+.planeacion-progreso-cell { display: flex; flex-direction: column; gap: 4px; min-width: 120px; }
+.planeacion-progreso-cell-inline { flex-direction: row; align-items: center; gap: 8px; }
+.planeacion-progreso-barra { width: 100px; height: 8px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.planeacion-progreso-relleno { height: 100%; background: var(--accent); border-radius: inherit; }
+.planeacion-progreso-pct { font-size: 0.78rem; color: var(--text-secondary); white-space: nowrap; }
 @media (max-width: 900px) {
   .asignacion-workspace { grid-template-columns: 1fr; }
   .asignacion-aside { position: static; }

@@ -48,6 +48,17 @@
       <button type="button" id="asig-tab-stickers" class="asig-tab" data-tab="stickers" role="tab" aria-selected="false" aria-controls="asignaciones-stickers-section">
         Stickers <span id="asig-tab-stickers-count" class="asig-tab-count">0</span>
       </button>
+      <!-- THIRD tab, `puntos-disponibles` change (2026-08-26): nearby points
+           NOT assigned to anyone, up for grabs. A visually distinct tab
+           (`asig-tab-cercanos`, own accent color in form.css) rather than a
+           section stacked inside Survey/Stickers — see form.js's own module
+           note for why: "mine" vs "up for grabs" must never be readable as
+           the same list, and a third tab is the one layout where that
+           distinction cannot be scrolled past or mistaken for more of the
+           same list. -->
+      <button type="button" id="asig-tab-cercanos" class="asig-tab asig-tab-cercanos" data-tab="cercanos" role="tab" aria-selected="false" aria-controls="cercanos-asignaciones-section">
+        Cercanos <span id="asig-tab-cercanos-count" class="asig-tab-count">0</span>
+      </button>
     </nav>
 
     <!-- Fail-open GPS note: distance sort never blocks the list. Hidden
@@ -67,6 +78,25 @@
       <div id="asignaciones-lista" class="asignaciones-lista"></div>
       <p id="asignaciones-vacio" class="asignaciones-vacio" hidden>No tienes puntos de sticker pendientes.</p>
     </div>
+
+    <!-- `puntos-disponibles` change: nearby, UNASSIGNED, not-yet-covered
+         points (either campaign), claimable on the spot. Requires GPS —
+         `#cercanos-status` carries EVERY non-"listo" state's message
+         (waiting for a fix / GPS denied / loading / empty / error), so this
+         tab is never left showing a bare, ambiguous empty list. -->
+    <div id="cercanos-asignaciones-section" class="cercanos-section" role="tabpanel" aria-labelledby="asig-tab-cercanos" hidden>
+      <p class="asignaciones-intro">Puntos NO asignados, cerca de ti (dentro de 300 m). Si decides cubrir uno, tócalo para tomarlo: quedará asignado a ti y, si el mismo edificio también tiene pendiente la otra campaña (sticker o encuesta), se te asigna junto con este.</p>
+      <p id="cercanos-status" class="asig-geo-note cercanos-status" role="status"></p>
+      <p id="cercanos-claim-error" class="field-error" role="alert" hidden></p>
+      <div id="cercanos-lista" class="asignaciones-lista"></div>
+    </div>
+
+    <!-- Escape hatch: showing this screen no longer bypasses to the blank
+         form just because Survey/Stickers are both empty (the "Cercanos"
+         tab may still find something once GPS resolves) — so there must
+         always be an explicit way to start a free-form record instead,
+         fail-open exactly like the rest of this screen. -->
+    <button type="button" id="btn-registro-libre" class="btn-secondary btn-registro-libre">Registrar sin punto asignado</button>
   </section>
 
   <main id="app" hidden>

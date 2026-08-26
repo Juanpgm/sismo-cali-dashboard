@@ -2,7 +2,7 @@
 // Run: node --test "js/**/*.test.mjs" (from web/)
 import assert from 'node:assert/strict';
 import {
-  colorForPunto, buildRows, sortRows, filterRows, formatTruncacion,
+  colorForPunto, buildRows, sortRows, filterRows, formatTruncacion, metricasHtml,
 } from './planeacion.js';
 
 // ---- colorForPunto — design.md ADR-10 map legend, 5 states -----------------
@@ -92,5 +92,50 @@ assert.equal(
 );
 assert.equal(formatTruncacion(50, 50), null, 'not truncated -> no message');
 assert.equal(formatTruncacion(0, 0), null);
+
+// ---- metricasHtml — `metricasProgreso` change (`puntos-disponibles`, 2026-08-26)
+
+assert.equal(metricasHtml(null, new Map()), '<p class="sticker-empty">Sin datos de progreso todavía.</p>');
+
+const metricasFixture = {
+  grupos: {
+    g1: {
+      nombre: 'Norte', miembros: 2, activo: true,
+      combinado: { asignados: 4, hechos: 2, pendientes: 1, no_aplica: 1, completado_pct: 50.0 },
+      stickers: { asignados: 1, hechos: 1, pendientes: 0, no_aplica: 0, completado_pct: 100.0 },
+      survey: { asignados: 3, hechos: 1, pendientes: 1, no_aplica: 1, completado_pct: 33.3 },
+    },
+  },
+  inspectores: {
+    'uid-a': {
+      grupos: ['Norte'],
+      combinado: { asignados: 2, hechos: 1, pendientes: 1, no_aplica: 0, completado_pct: 50.0 },
+      stickers: { asignados: 0, hechos: 0, pendientes: 0, no_aplica: 0, completado_pct: 0.0 },
+      survey: { asignados: 2, hechos: 1, pendientes: 1, no_aplica: 0, completado_pct: 50.0 },
+    },
+  },
+  combinado: { asignados: 4, hechos: 2, pendientes: 1, no_aplica: 1, completado_pct: 50.0 },
+  stickers: { asignados: 1, hechos: 1, pendientes: 0, no_aplica: 0, completado_pct: 100.0 },
+  survey: { asignados: 3, hechos: 1, pendientes: 1, no_aplica: 1, completado_pct: 33.3 },
+};
+
+const inspectorById = new Map([['uid-a', { uid: 'uid-a', nombre_completo: 'Ana Pérez' }]]);
+const html = metricasHtml(metricasFixture, inspectorById);
+assert.match(html, /Norte/);
+assert.match(html, /50%/); // group's combined completion
+assert.match(html, /100%/); // group's sticker completion
+// Inspector NAME is resolved via inspectorById, never a bare raw uid.
+assert.match(html, /Ana Pérez/);
+assert.ok(!html.includes('uid-a'), 'raw uid must not leak into the rendered markup once resolved');
+assert.match(html, /Norte/); // the inspector's own group membership list
+
+const htmlSinRoster = metricasHtml(metricasFixture, new Map());
+// Fail open: an unresolved uid (roster not loaded yet) falls back to the
+// raw uid itself, never a blank/broken cell.
+assert.match(htmlSinRoster, /uid-a/);
+
+const vacio = metricasHtml({ grupos: {}, inspectores: {}, combinado: { asignados: 0, hechos: 0, pendientes: 0, no_aplica: 0, completado_pct: 0 }, stickers: { asignados: 0, hechos: 0, pendientes: 0, no_aplica: 0, completado_pct: 0 }, survey: { asignados: 0, hechos: 0, pendientes: 0, no_aplica: 0, completado_pct: 0 } }, new Map());
+assert.match(vacio, /Todavía no hay grupos/);
+assert.match(vacio, /Todavía no hay inspectores/);
 
 console.log('ok — planeacion.js pure table/map/filter logic');

@@ -247,6 +247,84 @@ export function formatDistancia(m) {
   return `${(m / 1000).toFixed(1).replace('.', ',')} km`;
 }
 
+// ---- Nearby UNASSIGNED points (puntosCercanosDisponibles / tomarPunto) ------
+// `puntos-disponibles` change (2026-08-26): a THIRD tab, "Cercanos", next to
+// the existing Survey/Stickers tabs — see form.js's own module notes for why
+// a third tab (not a section within each tab) was chosen: an inspector must
+// never confuse "assigned to me" with "up for grabs", and a separate tab is
+// the one layout that makes the two lists impossible to visually merge,
+// unlike a section that scrolls past and can be mistaken for more of the
+// same list above it.
+
+// Campaign label a "cercano" card shows — one lookup so form.js never
+// hand-picks the Spanish label inline.
+export function etiquetaCampana(campana) {
+  if (campana === 'sticker') return 'Sticker';
+  if (campana === 'survey') return 'Encuesta EDAN';
+  return '';
+}
+
+// The "cercanos" tab's own small state machine, driving BOTH the status
+// message and whether the card list itself is shown. GPS is a HARD
+// requirement for this tab (binding requirement: "if GPS is denied, this
+// section cannot work at all — say so plainly"), unlike the assigned-points
+// tabs where a missing fix only degrades sort order (they still show every
+// assigned point, just unordered).
+export const CERCANOS_ESPERANDO = 'esperando';
+export const CERCANOS_SIN_GPS = 'sin-gps';
+export const CERCANOS_CARGANDO = 'cargando';
+export const CERCANOS_VACIO = 'vacio';
+export const CERCANOS_LISTO = 'listo';
+export const CERCANOS_ERROR = 'error';
+
+// Deterministic status message per state — one function so form.js never
+// hand-picks Spanish strings inline (and the mapping is testable without
+// mocking geolocation/DOM).
+export function mensajeEstadoCercanos(estado) {
+  switch (estado) {
+    case CERCANOS_ESPERANDO:
+      return 'Obteniendo tu ubicación para mostrar puntos cercanos…';
+    case CERCANOS_SIN_GPS:
+      return 'No se pudo obtener tu ubicación: sin ubicación no es posible mostrar puntos cercanos disponibles.';
+    case CERCANOS_CARGANDO:
+      return 'Buscando puntos cercanos…';
+    case CERCANOS_VACIO:
+      return 'No hay puntos disponibles cerca de ti en este momento.';
+    case CERCANOS_ERROR:
+      return 'No se pudo cargar los puntos cercanos. Intenta de nuevo.';
+    default:
+      return '';
+  }
+}
+
+// True only once there is a real card list to render (a GPS fix landed AND
+// the fetch returned at least one point) — every other state shows the
+// status message INSTEAD of the list, never an ambiguous empty list that
+// could be misread as "confirmed nothing nearby" when it actually means
+// "we never even asked" (no GPS) or "still asking" (loading).
+export function cercanosMuestraLista(estado) {
+  return estado === CERCANOS_LISTO;
+}
+
+// Human-readable outcome line for a successful tomarPunto response
+// (`{ asignados: { sticker?: id, survey?: id }, tambien_asignado: bool }`),
+// so the "también se te asignó X" outcome is never swallowed. '' when the
+// claim only covered the campaign the inspector already tapped from.
+export function mensajeTomarPunto(campanaOriginal, resultado) {
+  if (!resultado || !resultado.tambien_asignado) return '';
+  const otra = campanaOriginal === 'sticker' ? 'la encuesta EDAN' : 'el sticker';
+  return `También te asignamos ${otra} de este mismo edificio.`;
+}
+
+// Failure message for a rejected tomarPunto (lost race, already covered,
+// etc.) — prefers the backend's own `detail` (already field-facing Spanish,
+// e.g. "otro inspector ya tomó este punto") and falls back to a generic
+// message only when the backend gave none.
+export function mensajeErrorTomarPunto(detalle) {
+  return detalle
+    || 'No se pudo tomar el punto. Puede que otro inspector ya lo haya tomado; actualiza la lista e intenta con otro.';
+}
+
 // ---- Session resilience ------------------------------------------------------
 
 const TRANSIENT_FIRESTORE_CODES = new Set(['unavailable', 'deadline-exceeded', 'network-request-failed']);
