@@ -17,4 +17,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Web service default; cron services override with
 # `startCommand: python -m app.jobs.<job>` (design.md ADR-6).
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --factory: app.main deliberately exposes only create_app() (no module-level
+# singleton, so importing it in tests never triggers the fail-fast credential
+# check). Shell form so Railway's injected $PORT is honored (exec form cannot
+# expand env vars); 8000 is the local-run fallback.
+CMD uvicorn app.main:create_app --factory --host 0.0.0.0 --port ${PORT:-8000}
