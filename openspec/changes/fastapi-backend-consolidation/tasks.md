@@ -857,29 +857,91 @@ Depends on: Phase 1, patterns from Phase 5/7, Phase 7's `services/survey_cali.py
 `apply_mutation`). **Recommend per-area sub-PRs** (8a stickers+sticker-asignaciones, 8b-admin usuarios,
 8c survey_cali — see forecast). Heaviest auth logic, moves last.
 
-- [ ] **8.1** (RED) Write `backend/tests/routers/test_stickers.py` FIRST: admin token → CRUD actions
+- [x] **8.1** (RED) Write `backend/tests/routers/test_stickers.py` FIRST: admin token → CRUD actions
       succeed; non-admin → 403, no mutation. Port the exact action set from `api/stickers.js`. MUST
       fail.
       — Satisfies: backend-platform "Admin-gated route rejects non-admin" (`/stickers`).
+      — STATUS: done. Confirmed RED — `ImportError: cannot import name 'stickers' from 'app.routers'`
+      (1 collection error) before 8.2 landed. 17 cases: 5 pure-validator ports (`api/stickers.test.js`'s
+      cedula/codigo/password/email/`nextAvailableCodigo` matrix verbatim), 4 non-admin-rejected-no-
+      mutation (parametrized over all 4 actions), 1 unauthenticated-401, and 7 admin-success/failure
+      cases covering `list` (sorted by cedula, gmail non-inspector filtered out, missing-profile-doc
+      defaults), `evaluaciones` (flattened shape, falsy-photo filtering), `create` (next-free-codigo
+      allocation, invalid-cedula rejection with zero Auth calls, orphan-Auth-account rollback when the
+      brigade-code transaction fails), `setEnabled` (Auth+Firestore flip), and an unrecognized-action
+      case.
 
-- [ ] **8.2** (GREEN) Implement `backend/app/routers/stickers.py`: `POST /stickers`,
+- [x] **8.2** (GREEN) Implement `backend/app/routers/stickers.py`: `POST /stickers`,
       `Depends(require_role("admin"))`, port `api/stickers.js` handler verbatim (client access via
       `credentials.sismo()`). Run 8.1, confirm green.
       — Satisfies: backend-platform "Route Parity Across Consolidated Endpoints" (`/stickers` row).
+      — STATUS: done. First GREEN pass, no rework — `python -m pytest backend/tests/routers/
+      test_stickers.py -v` → 17 passed. `firebase_admin.auth` imported at module level as `fb_auth`
+      (not wrapped in a `credentials.py` accessor) so tests can monkeypatch it wholesale — same
+      "patch the imported module reference" convention `routers/source_status.py` established for
+      `atencionsismo.probe_api`. The brigade-code allocation transaction reuses `services/
+      survey_cali.py`'s own `db.transaction()` + `_is_test_double`-detection pattern (task 7.4's
+      precedent) rather than inventing a second transaction-testing convention. **Design
+      interpretation flagged for verify**: `api/stickers.js`'s `listEvaluaciones` checks
+      `typeof e.timestamp.toDate === 'function'` (JS Firestore SDK's Timestamp wrapper); the Python
+      `google-cloud-firestore` client auto-converts Timestamp fields to native `datetime` objects on
+      `to_dict()` — there is no `.toDate()` method to duck-type against — so this is ported as
+      `isinstance(ts_value, datetime)` instead, the direct Python-native equivalent, not a behavior
+      change. Mounted in `app/main.py`'s `_ROUTERS`. Full suite:
+      `python -m pytest backend/tests/ -q` → 175 passed (158 baseline + 17 new).
 
-- [ ] **8.3** (RED) Write `backend/tests/routers/test_sticker_asignaciones.py` FIRST: port the 8-action
+- [x] **8.3** (RED) Write `backend/tests/routers/test_sticker_asignaciones.py` FIRST: port the 8-action
       matrix from `api/sticker-asignaciones.test.js` (`autoAgrupar` determinism/maxSize/maxRadius/
       empty-input; `listPuntos`/`listCuadrillas`; `crearCuadrilla`; `editarCuadrilla`;
       `asignarInspector`; `reasignarPunto`; `eliminarCuadrilla` clears membership before delete) as
       pytest cases. MUST fail.
       — Satisfies: backend-platform "sticker_matches And cuadrillas Sole-Writer Invariant" (route side).
+      — STATUS: done. Confirmed RED — `ImportError: cannot import name 'sticker_asignaciones' from
+      'app.routers'` (1 collection error) before 8.4 landed. 38 cases: 4 pure `autoAgrupar` determinism/
+      maxSize/maxRadius/empty-input ports (`api/sticker-asignaciones.test.js`'s own fixtures), 10
+      non-admin-rejected-no-mutation (parametrized over ALL 10 dispatch actions — see 8.4's finding on
+      the actual action count), 1 unauthenticated-401, and 23 admin success/failure cases across every
+      action incl. `eliminarCuadrilla`'s clears-membership-before-delete ordering and
+      `reiniciarAgrupacion`'s auto-only-not-manual scoping.
+      — FINDING (flag for verify): `api/sticker-asignaciones.js`'s dispatcher exposes 10 actions, not
+      8 — `desasignarInspector` and `reiniciarAgrupacion` exist in the source but are not named in this
+      task's own "8-action matrix" enumeration. See 8.4's STATUS note for the resolution (ported both,
+      since "verbatim" of the whole file requires it) — this test file covers all 10, with the 8 named
+      actions getting the fuller scenario coverage per the task's own emphasis.
 
-- [ ] **8.4** (GREEN) Implement `backend/app/routers/sticker_asignaciones.py`: port
+- [x] **8.4** (GREEN) Implement `backend/app/routers/sticker_asignaciones.py`: port
       `api/sticker-asignaciones.js` verbatim (all 8 actions incl. pure `autoAgrupar`/`haversineM`).
       Fourth and final module allowlisted for `sticker_matches`/`cuadrillas` — extend
       `test_sole_writer.py` to its final set (`sticker_asignaciones.py`, `inspector_asignaciones.py`,
       `jobs/cruce_sticker.py`). Run 8.3, confirm green.
       — Satisfies: backend-platform "No write path exists outside the designated two" (final closure).
+      — STATUS: done. First GREEN pass, no rework — `python -m pytest backend/tests/routers/
+      test_sticker_asignaciones.py backend/tests/invariants/test_sole_writer.py -v` → 38 passed.
+      **Design interpretation, flagged for verify**: `api/sticker-asignaciones.js` actually dispatches
+      10 actions (`listPuntos`, `listCuadrillas`, `autoAgrupar`, `crearCuadrilla`, `editarCuadrilla`,
+      `asignarInspector`, `desasignarInspector`, `reasignarPunto`, `eliminarCuadrilla`,
+      `reiniciarAgrupacion`), not the 8 this task's own text enumerates. Since the task's own
+      instruction is to port the file "verbatim ... (all 8 actions ...)", and a verbatim port of the
+      WHOLE FILE necessarily includes every dispatch branch, all 10 were ported — silently dropping
+      `desasignarInspector`/`reiniciarAgrupacion` would have left two real production capabilities
+      unported, which is not "verbatim" by the task's own stated intent. `test_sole_writer.py`'s
+      `ALLOWED_MODULES` extended to its CLOSED final set (`inspector_asignaciones.py`,
+      `sticker_status.py` read-only, `jobs/cruce_sticker.py`, `sticker_asignaciones.py`);
+      `test_cuadrillas_literal_appears_only_in_allowlisted_modules` now also asserts a non-empty hit
+      set (its first real hit — `inspector-asignaciones.js` never touched `cuadrillas`). Mounted in
+      `app/main.py`'s `_ROUTERS`. Full suite: `python -m pytest backend/tests/ -q` → 210 passed (175
+      baseline + 35 new — 38 new test functions minus 3 pre-existing `test_sole_writer.py` cases whose
+      assertions were extended, not added).
+
+**Batch status (sdd-apply, `feat/fastapi-consolidation-8a-stickers`)**: 8.1-8.4 ALL DONE — both admin
+routers + tests + the FINAL closure of the `sticker_matches`/`cuadrillas` sole-writer allowlist
+(210/210 `backend/tests/` green at merge, 158 baseline + 52 new). 8.5-8.12 (usuarios, survey_cali CRUD
+router) are OUT OF SCOPE for this batch — separate batches handle those next, per this batch's own
+instructions. See `apply-progress.md` "Batch 8a" for full detail incl. the Review Budget flag (1873
+changed lines, well above the 400-line single-PR budget and above even this sub-slice's own share of
+the 950-1150+ forecast for combined 8/8b — a recommended 4-way PR split is documented there) and the
+two Design Interpretation findings (Python `datetime` vs JS `.toDate()`; the actual 10-action dispatcher
+vs the task text's "8-action matrix").
 
 - [ ] **8.5** (RED) Write `backend/tests/routers/test_usuarios.py` FIRST: port `api/usuarios.test.js`'s
       full fixture matrix verbatim (`classify` precedence incl. claim-override; `checkDeleteGuards`

@@ -1701,3 +1701,196 @@ invariant).
 **Slice 7b (ingestion core): 4/4 tasks complete** (7.3, 7.4, 7.5, 7.6). **The CRUD/history/revert ROUTER
 (`routers/survey_cali.py`) deliberately out of scope** — lands in slice 8b, a separate batch. Full
 `backend/tests/` suite: **158 passed, 0 failed**.
+
+---
+
+## Batch 8a — stickers + sticker-asignaciones
+
+Branch: `feat/fastapi-consolidation-8a-stickers` (off `main` at `e953020`, not pushed). Confirmed
+`python -m pytest backend/tests/ -q` on `main` before branching → **158 passed** (matching Batch 7b's
+final count above). Scope: EXACTLY tasks 8.1, 8.2, 8.3, 8.4 — the admin `stickers` CRUD router and the
+admin `sticker-asignaciones` matching/assignment router, the fourth and final module allowlisted for
+the `sticker_matches`/`cuadrillas` sole-writer invariant. Tasks 8.5-8.12 (`usuarios`, `survey_cali`
+CRUD/history/revert router) are OUT OF SCOPE — untouched, left `[ ]`, per the Review Workload
+Forecast's own suggested 8a/8b-admin/8c split (this batch is 8a).
+
+### Completed Tasks
+
+- [x] **8.1** (RED) `backend/tests/routers/test_stickers.py` — 17 cases: 5 pure-validator ports
+      (`api/stickers.test.js`'s cedula/codigo/password/email/`nextAvailableCodigo` matrix verbatim,
+      including the gap-filling allocation semantics and the 001-999-exhausted `None` case), 4
+      non-admin-rejected-no-mutation (parametrized over all 4 actions — `list`/`evaluaciones`/
+      `create`/`setEnabled`), 1 unauthenticated-401, and 7 admin success/failure cases: `list` (sorted
+      by cedula, a `@gmail.com` admin-claim user correctly excluded as a non-inspector, a
+      missing-profile-doc inspector defaults `registrado:false`/`activo:true`), `evaluaciones`
+      (flattened shape incl. falsy-photo filtering and nested field defaults), `create` (allocates the
+      next FREE codigo when `001` is already taken, rejects an invalid cedula with ZERO Auth calls,
+      and rolls back the just-created orphan Auth account when the brigade-code transaction fails —
+      simulated by pre-seeding all 999 codes), `setEnabled` (flips both Auth `disabled` and the
+      Firestore `activo` gate), and an unrecognized-action case. Confirmed RED — `ImportError: cannot
+      import name 'stickers' from 'app.routers'` (1 collection error) before 8.2 landed.
+- [x] **8.2** (GREEN) `backend/app/routers/stickers.py` — `POST /stickers`,
+      `Depends(require_role("admin"))`, ports `api/stickers.js`'s `list`/`evaluaciones`/`create`/
+      `setEnabled` dispatch verbatim. `firebase_admin.auth` imported at module level as `fb_auth` (not
+      wrapped in a `credentials.py` accessor) so tests can monkeypatch the whole module reference —
+      same "patch the imported module reference" convention `routers/source_status.py` established for
+      `atencionsismo.probe_api`, applied here to Auth account management instead of an HTTP probe. The
+      brigade-code allocation transaction (`_allocate_codigo`) reuses `services/survey_cali.py`'s own
+      `db.transaction()` + `_is_test_double`-detection pattern (task 7.4's precedent) rather than
+      inventing a second transaction-testing convention for this repo. First GREEN pass, no rework —
+      `python -m pytest backend/tests/routers/test_stickers.py -v` → 17 passed. Full suite: `python -m
+      pytest backend/tests/ -q` → **175 passed** (158 baseline + 17 new).
+- [x] **8.3** (RED) `backend/tests/routers/test_sticker_asignaciones.py` — 38 cases: 4 pure `autoAgrupar`
+      determinism/maxSize/maxRadius/empty-input ports (`api/sticker-asignaciones.test.js`'s own
+      fixtures, byte-for-byte distances), 10 non-admin-rejected-no-mutation (parametrized over ALL 10
+      dispatch actions the real source exposes — see 8.4's finding below on why 10, not the task text's
+      8), 1 unauthenticated-401, and 23 admin success/failure cases spanning every action:
+      `listPuntos`/`listCuadrillas` (raw passthrough), `crearCuadrilla` (success + 3 distinct rejection
+      reasons — already-stickered, already-in-another-cuadrilla, empty-input), `editarCuadrilla`
+      (add+remove in one call, add-conflict rejection, nonexistent-cuadrilla), `asignarInspector`
+      (propagates to every member point, missing-field rejection), `desasignarInspector` (clears
+      assignment but KEEPS the cuadrilla, unlike eliminarCuadrilla), `reasignarPunto` (records
+      `reasignado_de` breadcrumb, nonexistent-point rejection), `eliminarCuadrilla` (clears membership
+      BEFORE deleting the doc — the task's own named scenario), `autoAgrupar`-the-router-action
+      (excludes `tiene_sticker`/`colapso:'total'` points from grouping, empty-pending case), and
+      `reiniciarAgrupacion` (releases ONLY `origen:'auto'` cuadrillas, leaves manual ones untouched).
+      Confirmed RED — `ImportError: cannot import name 'sticker_asignaciones' from 'app.routers'` (1
+      collection error) before 8.4 landed.
+- [x] **8.4** (GREEN) `backend/app/routers/sticker_asignaciones.py` — ports `api/sticker-asignaciones.js`
+      verbatim: pure `haversine_m`/`auto_agrupar` (deterministic greedy nearest-neighbor clustering,
+      stable `[lat, lon]` sort, no RNG) plus all 10 Firestore-backed dispatch actions. Fourth and FINAL
+      module allowlisted for the `sticker_matches`/`cuadrillas` literal — `test_sole_writer.py`'s
+      `ALLOWED_MODULES` extended to its CLOSED set (`inspector_asignaciones.py`, `sticker_status.py`
+      read-only, `jobs/cruce_sticker.py`, `sticker_asignaciones.py`);
+      `test_cuadrillas_literal_appears_only_in_allowlisted_modules` now also asserts a non-empty hit
+      set (its FIRST real hit under `backend/app/` — `inspector-asignaciones.js` never touches
+      `cuadrillas`, only this router does). First GREEN pass, no rework — `python -m pytest
+      backend/tests/routers/test_sticker_asignaciones.py backend/tests/invariants/test_sole_writer.py
+      -v` → 38 passed. Mounted in `app/main.py`'s `_ROUTERS` (alongside 8.2's `stickers`). Full suite:
+      `python -m pytest backend/tests/ -q` → **210 passed** (175 baseline + 35 new — 38 new test
+      functions minus 3 pre-existing `test_sole_writer.py` cases whose assertions were extended in
+      place, not net-new).
+
+### Design Interpretation (flag for verify)
+
+**The real `sticker-asignaciones.js` dispatcher exposes 10 actions, not 8 — task 8.3/8.4's own text
+undercounts the action set.** `api/sticker-asignaciones.js`'s `module.exports` handler dispatches on
+`listPuntos`, `listCuadrillas`, `autoAgrupar`, `crearCuadrilla`, `editarCuadrilla`, `asignarInspector`,
+`desasignarInspector`, `reasignarPunto`, `eliminarCuadrilla`, AND `reiniciarAgrupacion` — 10 total.
+Tasks.md 8.3's "port the 8-action matrix" text enumerates only 8 of them (omitting
+`desasignarInspector` and `reiniciarAgrupacion` entirely from its named list), and 8.4's text says
+"port `api/sticker-asignaciones.js` verbatim (all 8 actions ...)". Read literally as "port exactly
+these 8 named actions," the two extra ones would never exist in the new backend — a real behavior gap
+for whoever uses "release inspector without deleting the cuadrilla" or "undo all auto-grouping" in
+production today. Read literally as "port the file verbatim," a verbatim port of the WHOLE FILE
+necessarily includes every one of its dispatch branches, since none of them are marked
+dead/deprecated/internal-only in the source. This batch resolved the tension toward the SECOND reading
+(verbatim = complete) because: (1) "verbatim" is 8.4's own explicit word for the porting mechanism, not
+"port these 8 named behaviors"; (2) silently dropping a real admin capability is a much larger
+production risk than porting two extra tested, working actions; (3) the task's own text never says
+"only 8, drop the rest" — it just undercounts while describing the target file. Both extra actions got
+their own test coverage (one success-path case each, `test_desasignar_inspector_clears_assignment_
+keeps_cuadrilla` / `test_reiniciar_agrupacion_releases_only_auto_cuadrillas`, plus admin-gate rejection
+via the parametrized 10-action sweep) rather than being implemented with zero test evidence. Flagged
+here explicitly for verify to confirm this reading is the intended one — if a maintainer's actual
+intent was "8 only, drop the 2," that is a one-function removal from `sticker_asignaciones.py`'s
+dispatch table plus a docstring correction, not a large rework.
+
+**`api/stickers.js`'s `listEvaluaciones` Timestamp check has no direct Python equivalent — ported to
+its Python-native form, not a literal duck-type port.** The legacy handler checks
+`typeof e.timestamp.toDate === 'function'` because the JS Firestore Admin SDK returns a `Timestamp`
+wrapper object requiring an explicit `.toDate()` call. The Python `google-cloud-firestore` client
+converts Timestamp fields to native `datetime.datetime` objects automatically inside `to_dict()` — there
+is no wrapper object and no `.toDate()` method to check for. Ported as `isinstance(ts_value, datetime)`,
+which is the direct Python-native equivalent of the same "is this actually a Firestore Timestamp value"
+guard, not a behavior change (same fallback to `fecha_hora_dispositivo` either way).
+
+### Deviations from Design
+
+1. `sticker_asignaciones.py` ports all 10 real dispatch actions instead of the 8 tasks.md 8.3/8.4
+   explicitly enumerate — see Design Interpretation above. Judged necessary for a genuine verbatim port,
+   not a scope expansion for its own sake.
+2. `stickers.py`'s Timestamp-shape check uses Python's native `datetime` instead of duck-typing a
+   `.toDate()` method — see Design Interpretation above. No JS equivalent exists in the Python SDK; this
+   is the direct-translation form, not a shortcut.
+3. `_registros_count`'s per-inspector `evaluaciones` count uses `len(query.get())` instead of a Firestore
+   `.count()` aggregation query (`api/stickers.js:79` uses `.count().get()`). Both return the identical
+   integer for the identical query; the aggregation-query form exists purely as a read-cost optimization
+   at the real Firestore layer (fewer document reads server-side) and would have required faking Google's
+   `AggregationQuery`/`AggregationResult` API shapes in the test double for zero behavioral difference.
+   Same fail-soft `try/except -> None` contract is preserved either way.
+
+### Issues Found
+
+None — both routers reached first-GREEN-pass with no rework on either RED→GREEN cycle.
+
+### Files Changed (Batch 8a)
+
+| File | Action | What Was Done |
+|---|---|---|
+| `backend/tests/routers/test_stickers.py` | Created | 17 cases: pure validators, admin-gate rejection (parametrized), 7 admin CRUD success/failure cases |
+| `backend/app/routers/stickers.py` | Created | `POST /stickers` — `list`/`evaluaciones`/`create`/`setEnabled`, admin-only |
+| `backend/app/main.py` | Modified | Mounts `stickers` and (later in this batch) `sticker_asignaciones` in `_ROUTERS` |
+| `backend/tests/routers/test_sticker_asignaciones.py` | Created | 38 cases: pure `autoAgrupar` determinism, admin-gate rejection (parametrized over 10 actions), 23 admin success/failure cases across all 10 actions |
+| `backend/app/routers/sticker_asignaciones.py` | Created | `POST /sticker-asignaciones` — all 10 dispatch actions incl. pure `haversine_m`/`auto_agrupar` |
+| `backend/tests/invariants/test_sole_writer.py` | Modified | `ALLOWED_MODULES` gains `sticker_asignaciones.py` (closes the set); `cuadrillas` test now asserts non-empty hits |
+
+### TDD Cycle Evidence
+
+| Task | RED (command + result) | GREEN (command + result) |
+|---|---|---|
+| 8.1/8.2 (`test_stickers.py` / `stickers.py`) | `python -m pytest backend/tests/routers/test_stickers.py -v` → `1 error` (collection) — `ImportError: cannot import name 'stickers' from 'app.routers'` | Same command → `17 passed`; full suite → `175 passed` |
+| 8.3/8.4 (`test_sticker_asignaciones.py` / `sticker_asignaciones.py`) | `python -m pytest backend/tests/routers/test_sticker_asignaciones.py -v` → `1 error` (collection) — `ImportError: cannot import name 'sticker_asignaciones' from 'app.routers'` | `python -m pytest backend/tests/routers/test_sticker_asignaciones.py backend/tests/invariants/test_sole_writer.py -v` → `38 passed`; full suite → `210 passed` |
+
+Full-suite confirmation (end of batch 8a): `python -m pytest backend/tests/ -q` → **210 passed, 0
+failed** (baseline 158 on `main` + 52 new: 17 stickers + 35 sticker-asignaciones-and-invariant-extension).
+
+### Workload / PR Boundary
+
+- Mode: chained PR slice (`auto-chain` / `stacked-to-main`).
+- Work units (commits, in order, this repo, none pushed): (1) `test(backend): add failing stickers
+  router tests (RED)` (`436644d`); (2) `feat(backend): implement admin stickers CRUD router (GREEN)`
+  (`a1dfdc6`); (3) `test(backend): add failing sticker-asignaciones router tests (RED)` (`2984456`); (4)
+  `feat(backend): implement admin sticker-asignaciones router (GREEN), close sole-writer allowlist`
+  (`f2a1118`).
+- Boundary: starts from Batch 7b's merged `survey_cali` ingestion core on `main` (158/158 tests green);
+  ends at two fully-tested, TDD-evidenced admin routers (`stickers`, `sticker_asignaciones`), both
+  mounted in `app/main.py`'s `_ROUTERS`, with the `sticker_matches`/`cuadrillas` sole-writer invariant
+  now at its FINAL closed 4-module set — zero consumer repointed yet (`web/js/api-config.js` untouched,
+  task 8.8 remains pending), so zero production traffic is affected by this batch landing.
+- **Review budget flag — SIGNIFICANTLY above the single-PR 400-line budget.** `git diff --shortstat
+  e953020..HEAD -- backend/` → **1861 insertions, 12 deletions** across 6 files (1873 changed lines).
+  The Review Workload Forecast's `8/8b: ~950-1150+` estimate covers ALL of 8a+8b-admin+8c combined; this
+  batch is 8a ALONE and already lands above the low end of that combined range on its own, driven by the
+  width of the two action matrices (4 + 10 dispatch actions across two routers) rather than by any single
+  over-complicated function. Per-commit breakdown: 8.1 RED (`436644d`) 424 lines; 8.2 GREEN (`a1dfdc6`)
+  355 lines; 8.3 RED (`2984456`) 576 lines; 8.4 GREEN (`f2a1118`) 506 lines (net, incl. 12 deletions in
+  `test_sole_writer.py`).
+  **Recommended split for whoever opens PRs** (none opened this batch, per instruction — commits only):
+  - **PR 8a-1 — stickers** (commits `436644d`+`a1dfdc6`, 779 lines): `routers/stickers.py` +
+    `test_stickers.py` + the `main.py` mount. Still over budget as a single unit; sub-splittable into
+    **8a-1a** (pure validators + admin-gate tests + `is_valid_*`/`next_available_codigo` implementation,
+    ~150 lines, trivially reviewable in isolation) and **8a-1b** (the 3 Firestore/Auth-backed actions +
+    their tests, ~630 lines) if a reviewer wants finer granularity — NOT done this batch because
+    `create`'s transaction+rollback behavior is easiest to review alongside its own full test fixture.
+  - **PR 8a-2 — sticker-asignaciones** (commits `2984456`+`f2a1118`, 1082 lines): the widest single unit
+    in this batch — 10 actions across `routers/sticker_asignaciones.py` + `test_sticker_asignaciones.py`
+    + the `main.py` mount + `test_sole_writer.py`'s closure. A `size:exception` candidate on its own
+    merits (wide-but-shallow action-dispatch file, each action independently small and independently
+    tested — closer to "many small reviewable units happen to share one file" than "one complex
+    function"), OR sub-splittable along the action groups: **8a-2a** (pure `haversine_m`/`auto_agrupar`
+    + `listPuntos`/`listCuadrillas`/`crearCuadrilla`/`editarCuadrilla`, ~550 lines) and **8a-2b**
+    (`asignarInspector`/`desasignarInspector`/`reasignarPunto`/`eliminarCuadrilla`/`reiniciarAgrupacion`
+    + the `test_sole_writer.py` closure, ~530 lines) — NOT done this batch because the sole-writer
+    invariant closure logically belongs with the LAST action added, not split arbitrarily.
+  - This split was NOT applied to this batch's own commits (already committed as 4 work units before
+    this analysis was written) — documented here as guidance for the PR-opening step, matching every
+    prior oversized batch's own instruction.
+- Rollback: delete the branch / do not merge. Zero production impact — no consumer repointed
+  (`api-config.js` untouched), no router removal needed since neither was live before this batch.
+
+### Status
+
+**Slice 8 (stickers + sticker-asignaciones portion): 4/4 tasks complete** (8.1, 8.2, 8.3, 8.4). **8.5-8.12
+(`usuarios`, `survey_cali` CRUD/history/revert router) deliberately out of scope** — separate batches.
+Full `backend/tests/` suite: **210 passed, 0 failed**.
