@@ -257,6 +257,14 @@ CONDUCTORES_COLLECTION = "conductores"
 DEFAULT_MAX_RADIUS_M = 800
 DEFAULT_MAX_SIZE = 10
 
+# Auto-agrupar working-set cap (user decision 2026-08-26): cluster the top-N
+# highest-`prioridad_score` pending/ungrouped points per run instead of the
+# full ~11k pending set — keeps each run fluid. Critical damage concentrates
+# geographically, so the top-N by score still captures dense hard-hit zones;
+# points beyond N are picked up on the NEXT run (once this batch is grouped),
+# so coverage stays complete across runs. Overridable per call via `limite`.
+AUTOAGRUPAR_LIMIT = 2000
+
 # ADR-9: bounded, indexed listPuntos — never the full ~14.8k collection.
 #
 # Speed follow-up (2026-08-26): LIMIT_DEFAULT was 2000, and opening the
@@ -558,10 +566,21 @@ def run_auto_agrupar(db: Any, body: dict[str, Any]) -> list[dict[str, Any]]:
     max_radius_m = _positive_number(body.get("maxRadiusM"), DEFAULT_MAX_RADIUS_M)
     max_size = _positive_number(body.get("maxSize"), DEFAULT_MAX_SIZE)
 
+    from google.cloud import firestore as _fs  # deferred import, credentials/clients.py's own convention
+
+    # Cap the working set to the top-N most-critical pending/ungrouped points
+    # (by prioridad_score) instead of fetching the full ~11k pending set — this
+    # is the fluidity fix. Excludes surveyed/`no_aplica` points defensively in
+    # code below (Firestore allows only one inequality field, already spent on
+    # ordering by prioridad_score). Needs a composite index on
+    # (estado_asignacion, cuadrilla_id, prioridad_score DESC) — operator step.
+    limite = int(_positive_number(body.get("limite"), AUTOAGRUPAR_LIMIT))
     docs = (
         db.collection(PLANEACION_PUNTOS_COLLECTION)
         .where("estado_asignacion", "==", "pendiente")
         .where("cuadrilla_id", "==", None)
+        .order_by("prioridad_score", direction=_fs.Query.DESCENDING)
+        .limit(limite)
         .get()
     )
     all_puntos = [_doc_to_dict(d) for d in docs]
@@ -571,6 +590,9 @@ def run_auto_agrupar(db: Any, body: dict[str, Any]) -> list[dict[str, Any]]:
         return []
 
     grupos = auto_agrupar(puntos, max_radius_m=max_radius_m, max_size=int(max_size))
+    # Densest clusters first: teams get the fullest routes (most points per
+    # field position) — proximity criterion, "aprovechar el terreno".
+    grupos.sort(key=len, reverse=True)
     grupos_creados: list[dict[str, Any]] = []
     batch = db.batch()
     for grupo in grupos:
@@ -1548,6 +1570,7 @@ class PlaneacionAsignacionesRequest(BaseModel):
     # autoAgrupar
     maxRadiusM: Any = None
     maxSize: Any = None
+    limite: Any = None
     # crearCuadrilla / editarCuadrilla
     nombre: str | None = None
     puntos: list[str] | None = None

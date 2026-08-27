@@ -534,6 +534,49 @@ def test_auto_agrupar_router_creates_cuadrillas_from_pending_points(monkeypatch)
     assert stores[PLANEACION_PUNTOS]["p3"]["cuadrilla_id"] is None
 
 
+def test_auto_agrupar_router_caps_working_set_to_top_n_by_score(monkeypatch):
+    # `limite` bounds the fetch to the top-N pending/ungrouped by prioridad_score:
+    # only the 2 highest-score points are clustered; the low-score one is left
+    # ungrouped for a later run (fluidity fix, coverage preserved across runs).
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "hi1": {"estado_asignacion": "pendiente", "cuadrilla_id": None, "tiene_survey": False,
+                "prioridad_score": 90, "coords": {"lat": 3.40, "lon": -76.50}},
+        "hi2": {"estado_asignacion": "pendiente", "cuadrilla_id": None, "tiene_survey": False,
+                "prioridad_score": 80, "coords": {"lat": 3.4001, "lon": -76.5001}},
+        "lo": {"estado_asignacion": "pendiente", "cuadrilla_id": None, "tiene_survey": False,
+               "prioridad_score": 10, "coords": {"lat": 3.40, "lon": -76.50}},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "autoAgrupar", "limite": 2})
+
+    assert resp.status_code == 200
+    assigned = {pid for c in resp.json()["cuadrillas"] for pid in c["puntos"]}
+    assert assigned == {"hi1", "hi2"}
+    assert stores[PLANEACION_PUNTOS]["lo"]["cuadrilla_id"] is None
+
+
+def test_auto_agrupar_router_orders_cuadrillas_by_density_desc(monkeypatch):
+    # Densest cluster first — teams get the fullest route. A tight trio + a lone
+    # far-away point must come back as [3-point cuadrilla, 1-point cuadrilla].
+    stores = _stores()
+    dense = {"estado_asignacion": "pendiente", "cuadrilla_id": None, "tiene_survey": False,
+             "prioridad_score": 50}
+    stores[PLANEACION_PUNTOS] = {
+        "d1": {**dense, "coords": {"lat": 3.4000, "lon": -76.5000}},
+        "d2": {**dense, "coords": {"lat": 3.4001, "lon": -76.5001}},
+        "d3": {**dense, "coords": {"lat": 3.4002, "lon": -76.5002}},
+        "solo": {**dense, "coords": {"lat": 3.4600, "lon": -76.5600}},  # >800m away
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "autoAgrupar"})
+
+    cuadrillas = resp.json()["cuadrillas"]
+    assert [len(c["puntos"]) for c in cuadrillas] == [3, 1]
+
+
 def test_auto_agrupar_router_empty_when_no_pending_points(monkeypatch):
     stores = _stores()
     client = _admin_client(monkeypatch, stores)
