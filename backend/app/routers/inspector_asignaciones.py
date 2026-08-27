@@ -466,6 +466,104 @@ def _marcar_hecho_planeacion(db: Any, uid: str, punto_id: str) -> dict[str, Any]
     return {"id": punto_id, "estado_asignacion": DONE_ESTADO}
 
 
+def _marcar_survey_hecho(db: Any, uid: str, punto_id: str) -> dict[str, Any]:
+    """`survey-sticker-realtime-sync` change: close a `planeacion_puntos`
+    (survey) point AND, best-effort, materialize/pre-assign its sticker
+    twin so it appears in the same inspector's/group's sticker tab
+    immediately — without waiting for `app/jobs/cruce_sticker.py`'s next
+    cron run. Same `_puede_actuar` gate and `estado_asignacion:'hecho'` +
+    `completado_por`/`completado_en` write shape as
+    `_marcar_hecho_planeacion` (that write MUST succeed and is not gated by
+    the sticker step at all).
+
+    The sticker step is wrapped in one `try/except` that NEVER re-raises
+    (spec: "sticker-twin materialization/pre-assignment... NEVER blocks or
+    fails the survey-completion write on error") — twin lookup reuses
+    `_buscar_gemelo` VERBATIM (no new matching rule); on a miss, a NEW
+    `sticker_matches/atencionsismo_{registro_id}` doc is created via the
+    SAME deterministic `doc_id(fuente, registro_id)` shape
+    `cruce_sticker.py`/`planeacion_cruce.py` already use — `fuente` is
+    `'atencionsismo'`, a namespace `cruce_sticker.py` never mints
+    (`ede_*`/`israel_*` only), so this can never collide with a future cron
+    write (design.md's "Deterministic on-demand doc id" ADR). `cuadrilla_id`
+    is NEVER copied onto the twin: it names a `cuadrillas` doc in the
+    STICKER campaign's OWN id-space, distinct from `planeacion_puntos`' own
+    `cuadrilla_id` (`planeacion_cuadrillas`) — copying it would silently
+    create a cross-collection id collision."""
+    if not punto_id:
+        raise HTTPException(status_code=400, detail="Falta el id del punto.")
+    ref = db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id)
+    snap = ref.get()
+    if not snap.exists:
+        raise HTTPException(status_code=404, detail="El punto no existe.")
+    data = snap.to_dict() or {}
+    if not _puede_actuar(db, uid, data):
+        raise HTTPException(
+            status_code=403, detail="Ese punto no está asignado a este inspector."
+        )
+
+    now = datetime.now(timezone.utc)
+    ref.set(
+        {
+            "estado_asignacion": DONE_ESTADO,
+            "completado_por": uid,
+            "completado_en": now,
+        },
+        merge=True,
+    )
+
+    sticker_matches_id: str | None = None
+    sticker_creado = False
+    try:
+        # Local import: this router only ever needs `cruce_sticker`'s pure
+        # `doc_id` helper on the (rare) twin-miss path, not its whole cron
+        # module surface at request time every call.
+        from app.jobs.cruce_sticker import doc_id as _sticker_doc_id
+
+        gemelo_ref = _buscar_gemelo(db, CAMPANA_STICKER, data)
+        asignacion = {
+            "grupo_id": data.get("grupo_id"),
+            "inspector_uid": data.get("inspector_uid"),
+            "estado_asignacion": "asignado",
+            "asignado_en": now,
+        }
+        if gemelo_ref is not None:
+            gemelo_ref.set(asignacion, merge=True)
+            sticker_matches_id = gemelo_ref.id
+        else:
+            registro_id = data.get("registro_id")
+            new_id = _sticker_doc_id("atencionsismo", str(registro_id))
+            nuevo = {
+                "fuente": "atencionsismo",
+                "registro_id": str(registro_id) if registro_id is not None else None,
+                "tiene_sticker": False,
+                "tier": None,
+                "sticker_dist_m": None,
+                "direccion": data.get("direccion"),
+                "coords": data.get("coords"),
+                "zona_id": data.get("comuna"),
+                "matched_at": now,
+                "clave_integracion": data.get("clave_integracion"),
+                "planeacion_punto_id": punto_id,
+                "cuadrilla_id": None,
+                "reasignado_de": None,
+                **asignacion,
+            }
+            db.collection(STICKER_MATCHES_COLLECTION).document(new_id).set(nuevo, merge=True)
+            sticker_matches_id = new_id
+            sticker_creado = True
+    except Exception:
+        sticker_matches_id = None
+        sticker_creado = False
+
+    return {
+        "id": punto_id,
+        "estado_asignacion": DONE_ESTADO,
+        "sticker_matches_id": sticker_matches_id,
+        "sticker_creado": sticker_creado,
+    }
+
+
 def _marcar_hecho(db: Any, uid: str, punto_id: str) -> dict[str, Any]:
     """Flip one `sticker_matches` doc to `hecho`, IFF `uid` may act on it
     (own-uid OR active group member, `_puede_actuar`). Own-uid behavior is
@@ -700,6 +798,9 @@ def inspector_asignaciones(
         return {"ok": True, "puntos": _mis_puntos_planeacion(db, uid)}
     if body.action == "marcarHechoPlaneacion":
         result = _marcar_hecho_planeacion(db, uid, str(body.punto_id or ""))
+        return {"ok": True, **result}
+    if body.action == "marcarSurveyHecho":
+        result = _marcar_survey_hecho(db, uid, str(body.punto_id or ""))
         return {"ok": True, **result}
     if body.action == "puntosCercanosDisponibles":
         if body.lat is None or body.lng is None:

@@ -69,6 +69,10 @@ class _FakeDocRef:
     def __init__(self, store: dict[str, dict[str, Any]], doc_id: str) -> None:
         self._store = store
         self._id = doc_id
+        # Real `google.cloud.firestore.DocumentReference` exposes `.id` —
+        # `marcarSurveyHecho` (survey-sticker-sync, Phase 2) reads it off a
+        # ref (not just a snapshot) to report `sticker_matches_id`.
+        self.id = doc_id
 
     def get(self, transaction: Any = None) -> _FakeSnapshot:
         # `transaction=` accepted and ignored — the fake store is a plain
@@ -1214,3 +1218,216 @@ def test_tomar_punto_stamps_inspector_uid_and_asignado_en(monkeypatch):
     assert sticker["sk-1"]["inspector_uid"] == UID_A
     assert sticker["sk-1"]["estado_asignacion"] == "asignado"
     assert "asignado_en" in sticker["sk-1"]
+
+
+# ---- marcarSurveyHecho -----------------------------------------------------
+# `survey-sticker-sync` change, Phase 2. `specs/survey-sticker-realtime-sync/
+# spec.md`'s full contract: marks the survey point `hecho` (own-uid or active
+# group member, mirroring marcarHechoPlaneacion), then best-effort finds
+# (`_buscar_gemelo`, unchanged matching cascade) or creates
+# (`atencionsismo_{registro_id}`) the sticker twin and pre-assigns it —
+# NEVER `cuadrilla_id` — without ever failing the survey-side write.
+
+
+def _survey_punto(**overrides) -> dict[str, Any]:
+    data = {
+        "inspector_uid": UID_A,
+        "grupo_id": None,
+        "estado_asignacion": "pendiente",
+        "direccion": "Calle 1 #2-3",
+        "coords": {"lat": BASE_LAT, "lon": BASE_LON},
+        "comuna": "Comuna 3",
+        "registro_id": "14832",
+        "clave_integracion": "PLN-14832-AAAAAAAA",
+    }
+    data.update(overrides)
+    return data
+
+
+def test_marcar_survey_hecho_own_uid_success_returns_twin_id(monkeypatch):
+    planeacion = {"pln-1": _survey_punto()}
+    sticker = {"sk-1": _sticker_punto(direccion="Calle 1 #2-3")}
+    client = _authed_client(monkeypatch, sticker, FAKE_CLAIMS_A, planeacion)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "marcarSurveyHecho", "punto_id": "pln-1"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["id"] == "pln-1"
+    assert body["estado_asignacion"] == "hecho"
+    assert body["sticker_matches_id"] is not None
+    assert planeacion["pln-1"]["estado_asignacion"] == "hecho"
+    assert planeacion["pln-1"]["completado_por"] == UID_A
+    assert "completado_en" in planeacion["pln-1"]
+
+
+def test_marcar_survey_hecho_non_owner_non_group_is_rejected_no_write(monkeypatch):
+    planeacion = {"pln-1": _survey_punto(inspector_uid=UID_B)}
+    sticker = {"sk-1": _sticker_punto(direccion="Calle 1 #2-3")}
+    client = _authed_client(monkeypatch, sticker, FAKE_CLAIMS_A, planeacion)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "marcarSurveyHecho", "punto_id": "pln-1"},
+    )
+
+    assert resp.status_code == 403
+    assert planeacion["pln-1"]["estado_asignacion"] == "pendiente"
+    assert sticker["sk-1"]["estado_asignacion"] == "pendiente"
+    assert sticker["sk-1"].get("inspector_uid") is None
+    assert "completado_por" not in planeacion["pln-1"]
+
+
+def test_marcar_survey_hecho_sticker_failure_still_completes_survey(monkeypatch):
+    """Fail-soft contract: an exception in the sticker-twin step must never
+    block/fail the survey-side write — the response degrades to
+    sticker_matches_id: null instead of a 500."""
+    planeacion = {"pln-1": _survey_punto()}
+    client = _authed_client(monkeypatch, {}, FAKE_CLAIMS_A, planeacion)
+
+    import app.routers.inspector_asignaciones as router_mod
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("transient Firestore failure")
+
+    monkeypatch.setattr(router_mod, "_buscar_gemelo", _boom)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "marcarSurveyHecho", "punto_id": "pln-1"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["estado_asignacion"] == "hecho"
+    assert body["sticker_matches_id"] is None
+    assert planeacion["pln-1"]["estado_asignacion"] == "hecho"
+
+
+def test_marcar_survey_hecho_twin_found_pre_assigns_by_grupo_id_only(monkeypatch):
+    planeacion = {"pln-1": _survey_punto(inspector_uid=None, grupo_id="g1")}
+    sticker = {"sk-1": _sticker_punto(direccion="Calle 1 #2-3")}
+    grupos = {"g1": _grupo(miembros=[UID_A])}
+    client = _authed_client(monkeypatch, sticker, FAKE_CLAIMS_A, planeacion, grupos)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "marcarSurveyHecho", "punto_id": "pln-1"},
+    )
+
+    assert resp.status_code == 200
+    assert sticker["sk-1"]["grupo_id"] == "g1"
+    assert sticker["sk-1"].get("inspector_uid") is None
+    assert sticker["sk-1"]["estado_asignacion"] == "asignado"
+
+
+def test_marcar_survey_hecho_twin_found_pre_assigns_by_inspector_uid_only(monkeypatch):
+    planeacion = {"pln-1": _survey_punto(inspector_uid=UID_A, grupo_id=None)}
+    sticker = {"sk-1": _sticker_punto(direccion="Calle 1 #2-3")}
+    client = _authed_client(monkeypatch, sticker, FAKE_CLAIMS_A, planeacion)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "marcarSurveyHecho", "punto_id": "pln-1"},
+    )
+
+    assert resp.status_code == 200
+    assert sticker["sk-1"]["inspector_uid"] == UID_A
+    assert sticker["sk-1"].get("grupo_id") is None
+    assert sticker["sk-1"]["estado_asignacion"] == "asignado"
+
+
+def test_marcar_survey_hecho_never_writes_cuadrilla_id_onto_twin(monkeypatch):
+    planeacion = {"pln-1": _survey_punto(cuadrilla_id="pln-cuadrilla-9")}
+    sticker = {"sk-1": _sticker_punto(direccion="Calle 1 #2-3")}
+    client = _authed_client(monkeypatch, sticker, FAKE_CLAIMS_A, planeacion)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "marcarSurveyHecho", "punto_id": "pln-1"},
+    )
+
+    assert resp.status_code == 200
+    assert "cuadrilla_id" not in sticker["sk-1"]
+
+
+def test_marcar_survey_hecho_twin_missing_creates_deterministic_doc(monkeypatch):
+    planeacion = {"pln-1": _survey_punto()}
+    client = _authed_client(monkeypatch, {}, FAKE_CLAIMS_A, planeacion)  # no sticker twin at all
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "marcarSurveyHecho", "punto_id": "pln-1"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sticker_matches_id"] == "atencionsismo_14832"
+    assert body["sticker_creado"] is True
+
+
+def test_marcar_survey_hecho_created_doc_has_full_field_shape(monkeypatch):
+    planeacion = {"pln-1": _survey_punto()}
+    sticker: dict[str, Any] = {}
+    client = _authed_client(monkeypatch, sticker, FAKE_CLAIMS_A, planeacion)
+
+    client.post(
+        "/inspector-asignaciones",
+        json={"action": "marcarSurveyHecho", "punto_id": "pln-1"},
+    )
+
+    doc = sticker["atencionsismo_14832"]
+    assert doc["fuente"] == "atencionsismo"
+    assert doc["registro_id"] == "14832"
+    assert doc["tiene_sticker"] is False
+    assert doc["tier"] is None
+    assert doc["sticker_dist_m"] is None
+    assert doc["direccion"] == "Calle 1 #2-3"
+    assert doc["coords"] == {"lat": BASE_LAT, "lon": BASE_LON}
+    assert doc["zona_id"] == "Comuna 3"
+    assert "matched_at" in doc
+    assert doc["clave_integracion"] == "PLN-14832-AAAAAAAA"
+    assert doc["planeacion_punto_id"] == "pln-1"
+    assert doc["estado_asignacion"] == "asignado"
+    assert doc["grupo_id"] is None
+    assert doc["inspector_uid"] == UID_A
+    assert doc["cuadrilla_id"] is None
+    assert doc["reasignado_de"] is None
+    assert "asignado_en" in doc
+
+
+def test_marcar_survey_hecho_twin_missing_id_never_collides_with_cron_namespace(monkeypatch):
+    """`atencionsismo_*` must never look like an `ede_*`/`israel_*` id —
+    the cron's own namespace `cruce_sticker.py` mints."""
+    planeacion = {"pln-1": _survey_punto()}
+    sticker: dict[str, Any] = {}
+    client = _authed_client(monkeypatch, sticker, FAKE_CLAIMS_A, planeacion)
+
+    client.post(
+        "/inspector-asignaciones",
+        json={"action": "marcarSurveyHecho", "punto_id": "pln-1"},
+    )
+
+    assert not any(k.startswith("ede_") or k.startswith("israel_") for k in sticker)
+    assert "atencionsismo_14832" in sticker
+
+
+def test_marcar_survey_hecho_is_idempotent_no_duplicate_doc_on_rerun(monkeypatch):
+    planeacion = {"pln-1": _survey_punto()}
+    sticker: dict[str, Any] = {}
+    client = _authed_client(monkeypatch, sticker, FAKE_CLAIMS_A, planeacion)
+
+    client.post("/inspector-asignaciones", json={"action": "marcarSurveyHecho", "punto_id": "pln-1"})
+    assert len(sticker) == 1
+
+    # `marcarHechoPlaneacion` semantics allow a re-call (own-uid still passes
+    # `_puede_actuar` even though estado_asignacion is already 'hecho').
+    client.post("/inspector-asignaciones", json={"action": "marcarSurveyHecho", "punto_id": "pln-1"})
+
+    assert len(sticker) == 1  # merge-write onto the SAME doc id, not a duplicate
+    assert "atencionsismo_14832" in sticker
