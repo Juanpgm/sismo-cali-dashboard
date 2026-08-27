@@ -27,6 +27,12 @@ venv/
 # Tooling artifacts
 .atl/
 
+# Playwright E2E output (traces/screenshots CAN capture typed credentials —
+# never committed; see e2e/admin-flow.spec.ts).
+/test-results/
+/playwright-report/
+/blob-report/
+
 # Knowledge-graph sources (large PDFs/txt, re-downloadable via
 # knowledge/build_kg.py --extract)
 knowledge/fuentes/

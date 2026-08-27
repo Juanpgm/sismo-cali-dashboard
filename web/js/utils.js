@@ -589,10 +589,11 @@ export function isNoHabitableBinary(record) { return habBinary(record) === 'no_h
 
 /* ---- N.º de pisos buckets / suspensión de servicios / fetch cache-busting */
 // Kept here (not in data.js) because data.js transitively imports the Firebase
-// SDK (via israel-source.js -> firebase-config.js -> a bare https:// specifier)
-// which Node's ESM loader can't resolve — that import chain makes data.js
-// impossible to unit-test directly. utils.js has zero imports, so pure logic
-// that needs a `node:assert` self-check (data.test.mjs) lives here instead;
+// SDK (via israel-source.js -> firebase-config.js -> a bare https:// specifier).
+// D2 (planeacion-flujo-confiable) made that chain lazy (`await import()`), so
+// data.js itself no longer crashes Node's ESM loader on plain import — but
+// utils.js still has zero imports of its own, so pure logic that needs a
+// `node:assert` self-check (data.test.mjs) stays here rather than moving back;
 // data.js re-exports these three so its own call sites/import surface don't change.
 
 // Rangos de "N.º de pisos" en buckets de 3 (1–3, 4–6, 7–9, …). El dato de origen
