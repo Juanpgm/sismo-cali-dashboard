@@ -340,7 +340,7 @@ PUNTOS_LIST_FIELDS: tuple[str, ...] = (
     "direccion", "barrio", "comuna", "afectacion", "estado_verificacion",
     "tipo_inmueble", "habitabilidad", "prioridad", "prioridad_override",
     "prioridad_score", "estado_asignacion", "cuadrilla_id", "inspector_uid",
-    "tier", "match_via", "tiene_survey", "coords", "notas",
+    "grupo_id", "tier", "match_via", "tiene_survey", "coords", "notas",
     "motivo_exclusion", "clave_integracion",
 )
 
