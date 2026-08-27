@@ -429,13 +429,55 @@ def coerce_numeric(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# CRRA is a common data-entry typo for CARRERA that `normalize_address`'s
+# road-type table does not cover -- none of its \bCRA\b-style patterns match
+# a literal "CRRA" token, so it survives that function unchanged.
+_CRRA_RE = re.compile(r"\bCRRA\b")
+
+
+def normalize_direccion(value) -> str:
+    """Single normalizer shared by BOTH the `direccion_norm` column shipped
+    to the panel and `_clave_direccion`'s bucket key -- the address-matching
+    step that runs BEFORE `_misma_edificacion`'s name-similarity/30 m cascade
+    ever sees a pair of records (see that function's docstring: address
+    alone is never a merge key, but a weak bucket key still hides true
+    duplicates by splitting them into different buckets before the cascade
+    gets a chance to compare them).
+
+    `normalize_address` already canonicalizes most IGAC road-type
+    abbreviations (CARRERA/CRA/KRA/CR -> KR, CALLE/CLL -> CL, AVENIDA/AVDA
+    -> AV, DIAGONAL/DIAG -> DG, TRANSVERSAL/TRANSV -> TV) and No./Nro/N°/Nº
+    -> '#'. This closes what it still misses: the CRRA typo, accent/case
+    variance, and inconsistent spacing around '-'. Measured on live data,
+    closing those gaps collapses 998 raw unique addresses to 962 -- 36 true
+    duplicates the weaker key was hiding from the grouping cascade.
+    """
+    if pd.isna(value):
+        return ""
+    igac = normalize_address(value)
+    if not igac or igac in {"-", " "}:
+        return ""
+    # Fold accents/case the same way `_norm_nombre` does for building names:
+    # direccion_norm is a matching key first, a display value second, so
+    # "Peñón" and "Penon" must bucket together.
+    txt = unicodedata.normalize("NFKD", igac).encode("ascii", "ignore").decode().upper()
+    # Stray dots `normalize_address` leaves on abbreviations it doesn't
+    # recognize (e.g. "CRRA." -- not in its known-codes list) -- punctuation
+    # noise, never meaningful in a Colombian cadastral address.
+    txt = txt.replace(".", "")
+    txt = _CRRA_RE.sub("KR", txt)
+    txt = re.sub(r"\s*-\s*", "-", txt)   # tighten "46 - 45" -> "46-45"
+    txt = re.sub(r"\s*#\s*", " # ", txt)  # re-apply after the fold above
+    return re.sub(r"\s+", " ", txt).strip()
+
+
 def add_address_norm(df: pd.DataFrame) -> pd.DataFrame:
     """Add `direccion_norm` (IGAC-normalized address) right after `direccion`,
     and `coords` — the x (lon) / y (lat) pair as WGS84 "lat, lon", the same
     format as `coords_unificadas` in the EDAN SISMO table. Runs after
     coerce_numeric so x/y are already numeric."""
     if "direccion" in df.columns:
-        norm = df["direccion"].apply(normalize_address)
+        norm = df["direccion"].apply(normalize_direccion)
         df.insert(df.columns.get_loc("direccion") + 1, "direccion_norm", norm)
     if "x" in df.columns and "y" in df.columns:
         coords = [
