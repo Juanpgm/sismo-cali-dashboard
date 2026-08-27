@@ -724,7 +724,7 @@ function gruposHtml(grupos, inspectorById, vehiculosDisponibles) {
         .filter(Boolean);
       const vehiculoSelect = `<select data-vehiculo-select-grupo="${escapeHtml(g.id)}">
         <option value="">— Sin vehículo —</option>
-        ${opciones.map((v) => `<option value="${escapeHtml(v.id)}" ${vehiculo && vehiculo.id === v.id ? 'selected' : ''}>${escapeHtml(v.placa)}${v.tipo ? ` (${escapeHtml(v.tipo)})` : ''}</option>`).join('')}
+        ${opciones.map((v) => `<option value="${escapeHtml(v.id)}" ${vehiculo && vehiculo.id === v.id ? 'selected' : ''}>${escapeHtml(v.placa)}${v.empresa ? ` (${escapeHtml(v.empresa)})` : ''}</option>`).join('')}
       </select>`;
       return `<li class="sticker-row" data-grupo-row="${escapeHtml(g.id)}">
         <div class="sticker-identity">
@@ -821,7 +821,8 @@ function vehiculosHtml(vehiculos) {
     ${vehiculos.map((v) => `<li class="sticker-row" data-vehiculo-row="${escapeHtml(v.id)}">
         <div class="sticker-identity">
           <span class="sticker-name" title="ID: ${escapeHtml(v.id)}">${escapeHtml(v.placa)}${v.activo === false ? ' (inactivo)' : ''}</span>
-          <span class="sticker-meta">${escapeHtml(v.tipo || 'Sin tipo')}</span>
+          <span class="sticker-meta">${escapeHtml(v.empresa || 'Sin empresa')}</span>
+          <span class="sticker-meta">Pico y placa: ${escapeHtml(v.dia_pico_placa || 'sin restricción')}</span>
         </div>
         <div class="asignacion-cuadrilla-actions">
           <button type="button" class="sticker-action" data-editar-vehiculo="${escapeHtml(v.id)}">Editar</button>
@@ -1423,15 +1424,18 @@ export function initPlaneacion(root, { getToken }) {
 
   // ---- grupos de inspectores section (`grupos-inspectores` change) --------
   // NOT the cuadrillas section above (groups of POINTS under one inspector)
-  // — this is groups of PEOPLE, shared by both campaigns. Same "full reload
-  // after a toolbar/per-item mutation" convention `runCuadrillaAction` uses.
-  async function runGrupoAction(body, okMsg) {
+  // — this is groups of PEOPLE, shared by both campaigns. `reloadFn` defaults
+  // to the full `reload()` (needed by point-related actions like
+  // asignarGrupoAPuntos/desasignarGrupo) but grupo/vehiculo-only mutations
+  // pass `reloadGruposVehiculos` (hotfix A3/C4) so they don't wait on — or
+  // get hidden behind a failure in — the unrelated puntos/cuadrillas fetch.
+  async function runGrupoAction(body, okMsg, reloadFn = reload) {
     if (busy) return;
     busy = true;
     try {
       await callApi(getToken, body);
       showOk(okMsg);
-      await reload();
+      await reloadFn();
     } catch (err) {
       showErr(err.message);
     } finally {
@@ -1457,16 +1461,16 @@ export function initPlaneacion(root, { getToken }) {
     gruposWrap.querySelectorAll('[data-eliminar-grupo]').forEach((btn) => {
       btn.addEventListener('click', () => {
         if (!window.confirm('Eliminar este grupo. Si todavía tiene puntos asignados, la eliminación será rechazada.')) return;
-        runGrupoAction({ action: 'eliminarGrupo', grupo_id: btn.dataset.eliminarGrupo }, 'Grupo eliminado.');
+        runGrupoAction({ action: 'eliminarGrupo', grupo_id: btn.dataset.eliminarGrupo }, 'Grupo eliminado.', reloadGruposVehiculos);
       });
     });
     gruposWrap.querySelectorAll('[data-vehiculo-select-grupo]').forEach((sel) => {
       sel.addEventListener('change', () => {
         const grupoId = sel.dataset.vehiculoSelectGrupo;
         if (sel.value) {
-          runGrupoAction({ action: 'asignarVehiculoAGrupo', grupo_id: grupoId, vehiculo_id: sel.value }, 'Vehículo asignado al grupo.');
+          runGrupoAction({ action: 'asignarVehiculoAGrupo', grupo_id: grupoId, vehiculo_id: sel.value }, 'Vehículo asignado al grupo.', reloadGruposVehiculos);
         } else {
-          runGrupoAction({ action: 'desasignarVehiculo', grupo_id: grupoId }, 'Vehículo desasignado del grupo.');
+          runGrupoAction({ action: 'desasignarVehiculo', grupo_id: grupoId }, 'Vehículo desasignado del grupo.', reloadGruposVehiculos);
         }
       });
     });
@@ -1481,13 +1485,15 @@ export function initPlaneacion(root, { getToken }) {
   }
 
   // ---- vehículos section (`grupos-inspectores` follow-up, 2026-08-26) -----
-  async function runVehiculoAction(body, okMsg) {
+  // Same `reloadFn` default as `runGrupoAction` — vehiculo-only mutations
+  // pass `reloadGruposVehiculos` (hotfix A3/C4).
+  async function runVehiculoAction(body, okMsg, reloadFn = reload) {
     if (busy) return;
     busy = true;
     try {
       await callApi(getToken, body);
       showOk(okMsg);
-      await reload();
+      await reloadFn();
     } catch (err) {
       showErr(err.message);
     } finally {
@@ -1503,7 +1509,7 @@ export function initPlaneacion(root, { getToken }) {
     vehiculosWrap.querySelectorAll('[data-eliminar-vehiculo]').forEach((btn) => {
       btn.addEventListener('click', () => {
         if (!window.confirm('Eliminar este vehículo. Si todavía está asignado a un grupo, la eliminación será rechazada.')) return;
-        runVehiculoAction({ action: 'eliminarVehiculo', vehiculo_id: btn.dataset.eliminarVehiculo }, 'Vehículo eliminado.');
+        runVehiculoAction({ action: 'eliminarVehiculo', vehiculo_id: btn.dataset.eliminarVehiculo }, 'Vehículo eliminado.', reloadGruposVehiculos);
       });
     });
   }
@@ -1677,7 +1683,7 @@ export function initPlaneacion(root, { getToken }) {
       await callApi(getToken, buildVehiculoPayload({ vehiculoId, placa, diaPicoPlaca, empresa, activo, conductorId }));
       showOk(vehiculoId ? 'Vehículo actualizado.' : 'Vehículo creado.');
       closeVehiculoModal();
-      await reload();
+      await reloadGruposVehiculos();
     } catch (err) {
       vehiculoErr.textContent = err.message;
       vehiculoErr.hidden = false;
@@ -1794,7 +1800,7 @@ export function initPlaneacion(root, { getToken }) {
         showOk('Grupo creado.');
       }
       closeGrupoModal();
-      await reload();
+      await reloadGruposVehiculos();
     } catch (err) {
       grupoErr.textContent = err.message;
       grupoErr.hidden = false;
@@ -1852,6 +1858,28 @@ export function initPlaneacion(root, { getToken }) {
     inspectoresLoaded = true;
   }
 
+  // Targeted refresh for grupo/vehiculo/conductor mutations (hotfix A3/C4):
+  // the Grupos/Vehículos subtab only needs these three lists, not the full
+  // 7-call `reload()` — cheaper, and a failure here can't get buried in the
+  // hidden Puntos `tableWrap` while the admin is on a different subtab.
+  async function reloadGruposVehiculos() {
+    showErr('');
+    try {
+      const [gruposResp, vehiculosResp, conductoresResp] = await Promise.all([
+        callApi(getToken, { action: 'listGrupos' }),
+        callApi(getToken, { action: 'listVehiculos' }),
+        callApi(getToken, { action: 'listConductores' }),
+      ]);
+      grupos = gruposResp.grupos || [];
+      vehiculos = vehiculosResp.vehiculos || [];
+      conductores = conductoresResp.conductores || [];
+      renderGruposSection();
+      renderVehiculosSection();
+    } catch (err) {
+      showErr(err.message);
+    }
+  }
+
   async function reload() {
     showOk('');
     showErr('');
@@ -1859,7 +1887,7 @@ export function initPlaneacion(root, { getToken }) {
     try {
       await ensureInspectores();
       const incluirLevantados = !!root.querySelector('#planeacion-incluir-levantados')?.checked;
-      const [listResp, cuadrillasResp, resumenResp, gruposResp, vehiculosResp, metricasResp, conductoresResp] = await Promise.all([
+      const results = await Promise.allSettled([
         callApi(getToken, { action: 'listPuntos', incluirLevantados }),
         callApi(getToken, { action: 'listCuadrillas' }),
         callApi(getToken, { action: 'resumen' }),
@@ -1868,12 +1896,23 @@ export function initPlaneacion(root, { getToken }) {
         callApi(getToken, { action: 'metricasProgreso' }),
         callApi(getToken, { action: 'listConductores' }),
       ]);
-      cuadrillas = cuadrillasResp.cuadrillas || [];
-      grupos = gruposResp.grupos || [];
-      vehiculos = vehiculosResp.vehiculos || [];
-      conductores = conductoresResp.conductores || [];
-      metricasData = metricasResp.metricas || null;
-      resumenData = resumenResp.resumen || null;
+      const [listResult, cuadrillasResult, resumenResult, gruposResult, vehiculosResult, metricasResult, conductoresResult] = results;
+
+      if (listResult.status === 'rejected') {
+        // listPuntos itself failed: the puntos table has nothing to show,
+        // so this is the one case that still reports into `tableWrap`.
+        teardownMap();
+        tableWrap.innerHTML = `<p class="sticker-error" role="alert">${escapeHtml(listResult.reason.message)}</p>`;
+        return;
+      }
+
+      const listResp = listResult.value;
+      cuadrillas = cuadrillasResult.status === 'fulfilled' ? (cuadrillasResult.value.cuadrillas || []) : cuadrillas;
+      grupos = gruposResult.status === 'fulfilled' ? (gruposResult.value.grupos || []) : grupos;
+      vehiculos = vehiculosResult.status === 'fulfilled' ? (vehiculosResult.value.vehiculos || []) : vehiculos;
+      conductores = conductoresResult.status === 'fulfilled' ? (conductoresResult.value.conductores || []) : conductores;
+      metricasData = metricasResult.status === 'fulfilled' ? (metricasResult.value.metricas || null) : metricasData;
+      resumenData = resumenResult.status === 'fulfilled' ? (resumenResult.value.resumen || null) : resumenData;
       rows = buildRows(listResp.puntos, cuadrillas, getInspectores());
       selected.clear();
       crearBtn.disabled = true;
@@ -1888,6 +1927,11 @@ export function initPlaneacion(root, { getToken }) {
       renderMetricasSection();
       renderMapSection();
       renderInspectorRoster();
+
+      const firstFailure = results.find((r) => r.status === 'rejected');
+      if (firstFailure) {
+        showErr('No se pudo actualizar parte de la información: ' + firstFailure.reason.message);
+      }
     } catch (err) {
       teardownMap();
       tableWrap.innerHTML = `<p class="sticker-error" role="alert">${escapeHtml(err.message)}</p>`;
