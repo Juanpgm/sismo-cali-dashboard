@@ -693,6 +693,45 @@ def test_auto_agrupar_router_caps_working_set_to_top_n_by_score(monkeypatch):
     assert stores[PLANEACION_PUNTOS]["lo"]["cuadrilla_id"] is None
 
 
+def test_auto_agrupar_scoped_run_stays_within_global_top_n(monkeypatch):
+    """"Auto-agrupar solo dentro del 2500" (user decision 2026-08-27): a
+    SCOPED run must only cluster points that also belong to the CITY-WIDE
+    top-`limite` set the Puntos table shows. Without the intersection a
+    low-priority barrio yields clusters whose points fall outside the
+    focalized working set and are invisible in the table."""
+    stores = _stores()
+    close_a = {"lat": 3.4000, "lon": -76.5000}
+    close_b = {"lat": 3.4001, "lon": -76.5001}
+    stores[PLANEACION_PUNTOS] = {
+        # In the target zone AND in the global top-3 (scores 100/95): clustered.
+        "zone_hi1": {"estado_asignacion": "pendiente", "cuadrilla_id": None, "tiene_survey": False,
+                     "prioridad_score": 100, "comuna": "Comuna 12", "barrio": "Asturias", "coords": close_a},
+        "zone_hi2": {"estado_asignacion": "pendiente", "cuadrilla_id": None, "tiene_survey": False,
+                     "prioridad_score": 95, "comuna": "Comuna 12", "barrio": "Asturias", "coords": close_b},
+        # In the target zone but BELOW the global top-3 (scores 10/5): must be
+        # excluded — before the fix these would cluster (top-3 within the zone).
+        "zone_lo1": {"estado_asignacion": "pendiente", "cuadrilla_id": None, "tiene_survey": False,
+                     "prioridad_score": 10, "comuna": "Comuna 12", "barrio": "Asturias", "coords": close_a},
+        "zone_lo2": {"estado_asignacion": "pendiente", "cuadrilla_id": None, "tiene_survey": False,
+                     "prioridad_score": 5, "comuna": "Comuna 12", "barrio": "Asturias", "coords": close_b},
+        # Higher-priority points elsewhere that occupy the global top-N but are
+        # out of scope, pushing the low-score zone points below the cutoff.
+        "other_hi": {"estado_asignacion": "pendiente", "cuadrilla_id": None, "tiene_survey": False,
+                     "prioridad_score": 90, "comuna": "Comuna 19", "barrio": "Cuarto de Legua",
+                     "coords": {"lat": 3.42, "lon": -76.52}},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones",
+                       json={"action": "autoAgrupar", "comuna": "Comuna 12", "barrio": "Asturias", "limite": 3})
+
+    assert resp.status_code == 200
+    assigned = {pid for c in resp.json()["cuadrillas"] for pid in c["puntos"]}
+    assert assigned == {"zone_hi1", "zone_hi2"}
+    assert stores[PLANEACION_PUNTOS]["zone_lo1"]["cuadrilla_id"] is None
+    assert stores[PLANEACION_PUNTOS]["zone_lo2"]["cuadrilla_id"] is None
+
+
 def test_auto_agrupar_router_excludes_surveyed_at_the_query_not_just_in_code(monkeypatch):
     """Item 3a (2026-08-27) root cause: fuzzy-matched top-scored pendientes
     are often ALREADY surveyed (tiene_survey True, but the pipeline keeps

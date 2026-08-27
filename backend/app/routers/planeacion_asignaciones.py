@@ -749,6 +749,31 @@ def run_auto_agrupar(db: Any, body: dict[str, Any]) -> list[dict[str, Any]]:
     all_puntos = [_doc_to_dict(d) for d in docs]
     excluded_ids = set(points_with_survey(all_puntos)) | set(points_excluded(all_puntos))
     puntos = [p for p in all_puntos if p["id"] not in excluded_ids]
+
+    # "Auto-agrupar solo dentro del 2500" (user decision 2026-08-27): a SCOPED
+    # run (comuna/barrio) must only cluster points that ALSO belong to the
+    # global top-`limite` focalized working set the Puntos table shows —
+    # otherwise a low-priority zone yields clusters whose points fall outside
+    # the top-2500 and are INVISIBLE in the table (assigned work that seems to
+    # vanish). The scoped query above takes the top-`limite` WITHIN the zone,
+    # which for a low-priority barrio reaches globally-low points. Intersect it
+    # with the city-wide top-`limite` (same base filters, no comuna/barrio) to
+    # keep both universes identical. An UNSCOPED run already IS that global
+    # set, so this extra read only happens when scoped.
+    if comuna or barrio:
+        global_docs = (
+            db.collection(PLANEACION_PUNTOS_COLLECTION)
+            .where("estado_asignacion", "==", "pendiente")
+            .where("cuadrilla_id", "==", None)
+            .where("tiene_survey", "==", False)
+            .order_by("prioridad_score", direction=_fs.Query.DESCENDING)
+            .limit(limite)
+            .select(["prioridad_score"])
+            .get()
+        )
+        global_ids = {d.id for d in global_docs}
+        puntos = [p for p in puntos if p["id"] in global_ids]
+
     if not puntos:
         return []
 
