@@ -187,6 +187,20 @@ export function formatTruncacion(shown, totalPendientes) {
   return `Mostrando los ${shown} puntos de mayor prioridad de ${totalPendientes} pendientes.`;
 }
 
+/** Item 6 (2026-08-27): appends the sticker-twin propagation count, when
+ *  any, to an asignarGrupoAPuntos/desasignarGrupo success message. `null`/
+ *  `0`/missing all render as no suffix (nothing propagated is not worth
+ *  mentioning). */
+export function stickersAsignadosSuffix(resp) {
+  const n = resp && resp.stickers_asignados;
+  return n ? ` Y ${n} punto${n === 1 ? '' : 's'} de sticker asignado${n === 1 ? '' : 's'} al mismo grupo.` : '';
+}
+
+export function stickersDesasignadosSuffix(resp) {
+  const n = resp && resp.stickers_desasignados;
+  return n ? ` Y ${n} punto${n === 1 ? '' : 's'} de sticker quitado${n === 1 ? '' : 's'} del mismo grupo.` : '';
+}
+
 /** Filter the roster by a free-text query over nombre/código/cédula — same
  *  pattern as stickers-asignacion.js:filterInspectores. */
 // `planeacion-auditoria` change, Phase 5 — pure formatter (entry -> display
@@ -367,6 +381,7 @@ function shellHtml() {
       <button type="button" class="asignacion-segment is-active" data-subtab-btn="puntos" id="planeacion-tab-puntos" role="tab" aria-selected="true" aria-controls="planeacion-panel-puntos">Puntos</button>
       <button type="button" class="asignacion-segment" data-subtab-btn="grupos" id="planeacion-tab-grupos" role="tab" aria-selected="false" aria-controls="planeacion-panel-grupos">Grupos</button>
       <button type="button" class="asignacion-segment" data-subtab-btn="vehiculos" id="planeacion-tab-vehiculos" role="tab" aria-selected="false" aria-controls="planeacion-panel-vehiculos">Vehículos</button>
+      <button type="button" class="asignacion-segment" data-subtab-btn="conductores" id="planeacion-tab-conductores" role="tab" aria-selected="false" aria-controls="planeacion-panel-conductores">Conductores</button>
       <button type="button" class="asignacion-segment" data-subtab-btn="historial" id="planeacion-tab-historial" role="tab" aria-selected="false" aria-controls="planeacion-panel-historial">Historial</button>
       <button type="button" class="asignacion-segment" data-subtab-btn="inspectores" id="planeacion-tab-inspectores" role="tab" aria-selected="false" aria-controls="planeacion-panel-inspectores">Inspectores</button>
     </nav>
@@ -449,6 +464,13 @@ function shellHtml() {
       <div class="card">
         ${cardHead('Vehículos', 'Vehículos disponibles para asignar a un grupo — un vehículo solo puede estar en un grupo a la vez.', '<button type="button" class="btn-primary" id="planeacion-vehiculo-crear">Crear vehículo</button>')}
         <div class="asignacion-cuadrillas-scroll" id="planeacion-vehiculos"></div>
+      </div>
+    </section>
+
+    <section class="planeacion-subpanel" data-subtab="conductores" id="planeacion-panel-conductores" role="tabpanel" aria-labelledby="planeacion-tab-conductores" hidden>
+      <div class="card">
+        ${cardHead('Conductores', 'Los conductores se crean desde la pestaña Usuarios.')}
+        <div class="asignacion-cuadrillas-scroll" id="planeacion-conductores"></div>
       </div>
     </section>
 
@@ -634,13 +656,55 @@ function shellHtml() {
           </div>
         </div>
       </div>
+    </div>
+
+    <div class="modal" id="planeacion-conductor-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="planeacion-conductor-title">
+      <div class="modal-backdrop" data-conductor-close></div>
+      <div class="modal-panel sticker-modal-panel">
+        <div class="modal-header">
+          <h2 id="planeacion-conductor-title">Editar conductor</h2>
+          <button type="button" class="btn-icon" data-conductor-close aria-label="Cerrar">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="planeacion-conductor-id">
+          <div class="sticker-form-grid">
+            <label class="sticker-field"><span>Nombre completo</span>
+              <input type="text" id="planeacion-conductor-nombre" placeholder="Andrés Torres">
+            </label>
+            <label class="sticker-field"><span>Cédula</span>
+              <input type="text" id="planeacion-conductor-cedula" inputmode="numeric" placeholder="1020735324">
+            </label>
+            <label class="sticker-field"><span>Email</span>
+              <input type="email" id="planeacion-conductor-email" placeholder="correo@ejemplo.com">
+            </label>
+            <label class="sticker-field"><span>Teléfono</span>
+              <input type="tel" id="planeacion-conductor-telefono" placeholder="3001234567">
+            </label>
+          </div>
+          <p class="sticker-error" id="planeacion-conductor-error" role="alert" hidden></p>
+          <div class="sticker-form-actions">
+            <button type="button" class="btn-secondary" data-conductor-close>Cancelar</button>
+            <button type="button" class="btn-primary" id="planeacion-conductor-save">Guardar</button>
+          </div>
+        </div>
+      </div>
     </div>`;
 }
 
 function kpiTile(label, value, wide = false) {
+  // Typography fix (2026-08-27): `wide` tiles (currently only "Coincidencias
+  // por vía") carry a joined meta STRING ("cercania: 3062 · direccion: 374
+  // · ..."), not a headline number — rendering it in `.kpi-value` (the
+  // dashboard's own big-number scale, clamp 1.3-1.7rem) made it look
+  // display-size/broken. `.sticker-meta` (~0.82rem) is the existing small
+  // meta-line class already used pervasively elsewhere in this same file —
+  // reused as-is rather than adding a bespoke class.
+  const valueClass = wide ? 'sticker-meta' : 'kpi-value';
   return `<div class="kpi-tile${wide ? ' kpi-tile-wide' : ''}">
     <span class="kpi-label">${escapeHtml(label)}</span>
-    <span class="kpi-value">${escapeHtml(String(value))}</span>
+    <span class="${valueClass}">${escapeHtml(String(value))}</span>
   </div>`;
 }
 
@@ -702,10 +766,20 @@ function tableHtml(rows, selected) {
   return `<table><thead><tr><th></th>${head}<th>Acciones</th></tr></thead><tbody>${body}</tbody></table>`;
 }
 
-function cuadrillasHtml(cuadrillas, inspectorById) {
+/** Item 1 (2026-08-27): each cuadrilla row gets its OWN "Grupo de
+ *  inspectores" select + "Asignar grupo"/"Quitar grupo" — the blocking gap
+ *  left when individual-inspector assignment was hidden from the UI
+ *  (group-only policy). Same select-plus-button pattern the top-level
+ *  Paso-1 toolbar already uses for the checkbox-selection version. No
+ *  pre-selection: cuadrilla docs carry `puntos` (ids), not each point's
+ *  own `grupo_id`, so there is nothing here to derive a "current grupo"
+ *  from — the control starts on "— Elegir grupo —" every render. */
+function cuadrillasHtml(cuadrillas, inspectorById, gruposActivos) {
   if (!cuadrillas.length) {
     return '<p class="sticker-empty">Todavía no hay cuadrillas. Usar «Auto-agrupar» o crear una manualmente desde la tabla.</p>';
   }
+  const grupoOptions = (gruposActivos || [])
+    .map((g) => `<option value="${escapeHtml(g.id)}">${escapeHtml(g.nombre || g.id)}</option>`).join('');
   return `<ul class="sticker-list">
     ${cuadrillas.map((c) => {
       const n = (c.puntos || []).length;
@@ -718,7 +792,16 @@ function cuadrillasHtml(cuadrillas, inspectorById) {
           <span class="sticker-name" title="ID: ${escapeHtml(c.id)}">${escapeHtml(c.nombre || c.id)}</span>
           <span class="sticker-meta">${n} punto${n === 1 ? '' : 's'} · ${metaInsp}</span>
         </div>
+        <label class="sticker-field asignacion-inline-field" title="Asignar un grupo de inspectores a todos los puntos de esta cuadrilla.">
+          <span>Grupo de inspectores</span>
+          <select data-grupo-select-cuadrilla>
+            <option value="">— Elegir grupo —</option>
+            ${grupoOptions}
+          </select>
+        </label>
         <div class="asignacion-cuadrilla-actions">
+          <button type="button" class="sticker-action" data-asignar-grupo-cuadrilla="${escapeHtml(c.id)}">Asignar grupo</button>
+          <button type="button" class="sticker-action sticker-action-off" data-quitar-grupo-cuadrilla="${escapeHtml(c.id)}">Quitar grupo</button>
           <button type="button" class="sticker-action sticker-action-off asignacion-eliminar" data-eliminar="${escapeHtml(c.id)}">Eliminar</button>
         </div>
       </li>`;
@@ -867,6 +950,27 @@ function vehiculosHtml(vehiculos) {
         <div class="asignacion-cuadrilla-actions">
           <button type="button" class="sticker-action" data-editar-vehiculo="${escapeHtml(v.id)}">Editar</button>
           <button type="button" class="sticker-action sticker-action-off" data-eliminar-vehiculo="${escapeHtml(v.id)}">Eliminar</button>
+        </div>
+      </li>`).join('')}
+  </ul>`;
+}
+
+/** Conductores (feature H) — management-only list; ALTA lives in the
+ *  Usuarios tab by design (intro line below), matching `vehiculosHtml`'s
+ *  own shape minus the create button. */
+function conductoresHtml(conductoresList) {
+  if (!conductoresList.length) {
+    return '<p class="sticker-empty">Todavía no hay conductores. Se crean desde la pestaña Usuarios.</p>';
+  }
+  return `<ul class="sticker-list">
+    ${conductoresList.map((c) => `<li class="sticker-row" data-conductor-row="${escapeHtml(c.id)}">
+        <div class="sticker-identity">
+          <span class="sticker-name" title="ID: ${escapeHtml(c.id)}">${escapeHtml(c.nombre_completo || c.id)} — ${escapeHtml(c.cedula || '—')}</span>
+          <span class="sticker-meta">${escapeHtml(c.email || 'Sin email')} · ${escapeHtml(c.telefono || 'Sin teléfono')}</span>
+        </div>
+        <div class="asignacion-cuadrilla-actions">
+          <button type="button" class="sticker-action" data-editar-conductor="${escapeHtml(c.id)}">Editar</button>
+          <button type="button" class="sticker-action sticker-action-off" data-eliminar-conductor="${escapeHtml(c.id)}">Eliminar</button>
         </div>
       </li>`).join('')}
   </ul>`;
@@ -1120,6 +1224,11 @@ export function initPlaneacion(root, { getToken }) {
   let resumenData = null;
   let inspectoresCache = [];
   let inspectoresLoaded = false;
+  // Item 5 (2026-08-27): no prioridad preselected — the top-4500 points BY
+  // SCORE (see reload()'s own `limit: 4500`) already ARE the critical
+  // working material, so narrowing to 'alta' by default would hide the
+  // rest of that same top-4500 set instead of widening it. The
+  // "Alta"/Media/Baja chips still narrow client-side + re-fetch.
   let filters = { prioridad: '', comuna: '' };
   const selected = new Set();
   let busy = false;
@@ -1146,6 +1255,7 @@ export function initPlaneacion(root, { getToken }) {
   const grupoCrearBtn = root.querySelector('#planeacion-grupo-crear');
   const vehiculosWrap = root.querySelector('#planeacion-vehiculos');
   const vehiculoCrearBtn = root.querySelector('#planeacion-vehiculo-crear');
+  const conductoresWrap = root.querySelector('#planeacion-conductores');
   const historialWrap = root.querySelector('#planeacion-historial-wrap');
   const historialTipoSelect = root.querySelector('#planeacion-historial-tipo');
   const historialUsuarioSelect = root.querySelector('#planeacion-historial-usuario');
@@ -1441,8 +1551,11 @@ export function initPlaneacion(root, { getToken }) {
     if (busy) return;
     busy = true;
     try {
-      await callApi(getToken, body);
-      showOk(okMsg);
+      const resp = await callApi(getToken, body);
+      // `okMsg` may be a function of the response (item 6: surfaces
+      // stickers_asignados/stickers_desasignados counts) — existing plain-
+      // string callers are unaffected.
+      showOk(typeof okMsg === 'function' ? okMsg(resp) : okMsg);
       await reloadFn();
     } catch (err) {
       showErr(err.message);
@@ -1455,7 +1568,8 @@ export function initPlaneacion(root, { getToken }) {
   function renderCuadrillasSection() {
     const inspectores = getInspectores();
     const inspectorById = new Map(inspectores.map((i) => [i.uid, i]));
-    cuadrillasWrap.innerHTML = cuadrillasHtml(cuadrillas, inspectorById);
+    const gruposActivos = grupos.filter((g) => g.activo !== false);
+    cuadrillasWrap.innerHTML = cuadrillasHtml(cuadrillas, inspectorById, gruposActivos);
 
     cuadrillasWrap.querySelectorAll('[data-eliminar]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -1463,6 +1577,37 @@ export function initPlaneacion(root, { getToken }) {
         runAction(
           { action: 'eliminarCuadrilla', cuadrilla_id: btn.dataset.eliminar },
           'Cuadrilla eliminada.',
+        );
+      });
+    });
+
+    // Item 1 (2026-08-27): per-cuadrilla grupo assignment — reuses this
+    // cuadrilla's own `puntos` list (not the table's checkbox selection).
+    // Backend rejects the WHOLE op if any point is locked (hecho/surveyed);
+    // that message is already actionable Spanish, surfaced as-is via
+    // runAction's showErr(err.message).
+    cuadrillasWrap.querySelectorAll('[data-asignar-grupo-cuadrilla]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const row = btn.closest('[data-cuadrilla-row]');
+        const grupoId = row?.querySelector('[data-grupo-select-cuadrilla]')?.value;
+        if (!grupoId) return;
+        const cuadrilla = cuadrillas.find((c) => c.id === btn.dataset.asignarGrupoCuadrilla);
+        const puntos = (cuadrilla && cuadrilla.puntos) || [];
+        if (!puntos.length) return;
+        runAction(
+          { action: 'asignarGrupoAPuntos', grupo_id: grupoId, puntos },
+          (resp) => `Grupo asignado a ${puntos.length} punto${puntos.length === 1 ? '' : 's'} de la cuadrilla.${stickersAsignadosSuffix(resp)}`,
+        );
+      });
+    });
+    cuadrillasWrap.querySelectorAll('[data-quitar-grupo-cuadrilla]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const cuadrilla = cuadrillas.find((c) => c.id === btn.dataset.quitarGrupoCuadrilla);
+        const puntos = (cuadrilla && cuadrilla.puntos) || [];
+        if (!puntos.length) return;
+        runAction(
+          { action: 'desasignarGrupo', puntos },
+          (resp) => `Grupo quitado de ${puntos.length} punto${puntos.length === 1 ? '' : 's'} de la cuadrilla.${stickersDesasignadosSuffix(resp)}`,
         );
       });
     });
@@ -1528,6 +1673,22 @@ export function initPlaneacion(root, { getToken }) {
       btn.addEventListener('click', () => {
         if (!window.confirm('Eliminar este vehículo. Si todavía está asignado a un grupo, la eliminación será rechazada.')) return;
         runAction({ action: 'eliminarVehiculo', vehiculo_id: btn.dataset.eliminarVehiculo }, 'Vehículo eliminado.', reloadGruposVehiculos);
+      });
+    });
+  }
+
+  // ---- conductores section (feature H) — management only, no creation
+  // here (alta lives in Usuarios by design, see the tab's own intro line).
+  // Same shared `runAction`/`reloadGruposVehiculos` pattern as vehículos.
+  function renderConductoresSection() {
+    conductoresWrap.innerHTML = conductoresHtml(conductores);
+    conductoresWrap.querySelectorAll('[data-editar-conductor]').forEach((btn) => {
+      btn.addEventListener('click', () => openConductorModal(btn.dataset.editarConductor));
+    });
+    conductoresWrap.querySelectorAll('[data-eliminar-conductor]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (!window.confirm('Eliminar este conductor. Si todavía está asignado a un vehículo, la eliminación será rechazada.')) return;
+        runAction({ action: 'eliminarConductor', conductor_id: btn.dataset.eliminarConductor }, 'Conductor eliminado.', reloadGruposVehiculos);
       });
     });
   }
@@ -1710,6 +1871,57 @@ export function initPlaneacion(root, { getToken }) {
     }
   });
 
+  // ---- Conductor (edit-only, feature H) modal — mirrors the vehículo
+  // modal's field/save pattern above; no create here (alta lives in
+  // Usuarios). --------------------------------------------------------------
+  const conductorModal = root.querySelector('#planeacion-conductor-modal');
+  const conductorErr = root.querySelector('#planeacion-conductor-error');
+  function openConductorModal(conductorId) {
+    const conductor = conductores.find((c) => c.id === conductorId);
+    if (!conductor) return;
+    conductorErr.hidden = true;
+    root.querySelector('#planeacion-conductor-id').value = conductor.id;
+    root.querySelector('#planeacion-conductor-nombre').value = conductor.nombre_completo || '';
+    root.querySelector('#planeacion-conductor-cedula').value = conductor.cedula || '';
+    root.querySelector('#planeacion-conductor-email').value = conductor.email || '';
+    root.querySelector('#planeacion-conductor-telefono').value = conductor.telefono || '';
+    conductorModal.classList.add('is-open');
+    conductorModal.setAttribute('aria-hidden', 'false');
+  }
+  function closeConductorModal() {
+    conductorModal.classList.remove('is-open');
+    conductorModal.setAttribute('aria-hidden', 'true');
+  }
+  conductorModal.querySelectorAll('[data-conductor-close]').forEach((el) => el.addEventListener('click', closeConductorModal));
+
+  root.querySelector('#planeacion-conductor-save').addEventListener('click', async () => {
+    if (busy) return;
+    const conductorId = root.querySelector('#planeacion-conductor-id').value;
+    const nombreCompleto = root.querySelector('#planeacion-conductor-nombre').value.trim();
+    const cedula = root.querySelector('#planeacion-conductor-cedula').value.trim();
+    const email = root.querySelector('#planeacion-conductor-email').value.trim();
+    const telefono = root.querySelector('#planeacion-conductor-telefono').value.trim();
+    busy = true;
+    try {
+      await callApi(getToken, {
+        action: 'editarConductor',
+        conductor_id: conductorId,
+        nombre_completo: nombreCompleto,
+        cedula,
+        email,
+        telefono,
+      });
+      showOk('Conductor actualizado.');
+      closeConductorModal();
+      await reloadGruposVehiculos();
+    } catch (err) {
+      conductorErr.textContent = err.message;
+      conductorErr.hidden = false;
+    } finally {
+      busy = false;
+    }
+  });
+
   // ---- Grupo (create/edit) modal — a checkbox list over the SAME cached
   // roster the cuadrillas combobox already uses (design constraint: reuse
   // the existing inspector roster, no separate member picker data source).
@@ -1837,7 +2049,7 @@ export function initPlaneacion(root, { getToken }) {
     const puntos = [...selected];
     await runAction(
       { action: 'asignarGrupoAPuntos', grupo_id: grupoSelect.value, puntos },
-      `Grupo asignado a ${puntos.length} punto${puntos.length === 1 ? '' : 's'}.`,
+      (resp) => `Grupo asignado a ${puntos.length} punto${puntos.length === 1 ? '' : 's'}.${stickersAsignadosSuffix(resp)}`,
     );
   });
   quitarGrupoBtn.addEventListener('click', async () => {
@@ -1845,7 +2057,7 @@ export function initPlaneacion(root, { getToken }) {
     const puntos = [...selected];
     await runAction(
       { action: 'desasignarGrupo', puntos },
-      `Grupo quitado de ${puntos.length} punto${puntos.length === 1 ? '' : 's'}.`,
+      (resp) => `Grupo quitado de ${puntos.length} punto${puntos.length === 1 ? '' : 's'}.${stickersDesasignadosSuffix(resp)}`,
     );
   });
 
@@ -1860,7 +2072,16 @@ export function initPlaneacion(root, { getToken }) {
   filtersEl.addEventListener('click', (ev) => {
     const btn = ev.target.closest('[data-filter-group]');
     if (!btn) return;
-    filters = { ...filters, [btn.dataset.filterGroup]: btn.dataset.filterValue };
+    const group = btn.dataset.filterGroup;
+    filters = { ...filters, [group]: btn.dataset.filterValue };
+    if (group === 'prioridad') {
+      // The backend page is now prioridad-scoped too (perf fix) — a chip
+      // change here must re-fetch, or widening (e.g. alta -> todas) would
+      // show nothing beyond whatever prioridad the last fetch already
+      // narrowed to. `comuna` stays client-side-only, same as before.
+      reload();
+      return;
+    }
     renderTable();
     renderMapSection();
   });
@@ -1897,6 +2118,7 @@ export function initPlaneacion(root, { getToken }) {
       conductores = conductoresResp.conductores || [];
       renderGruposSection();
       renderVehiculosSection();
+      renderConductoresSection();
     } catch (err) {
       showErr(err.message);
       // Never leave the "Cargando…" placeholder stuck on a failed reload —
@@ -1904,6 +2126,7 @@ export function initPlaneacion(root, { getToken }) {
       // reload()'s own non-critical-section fallback.
       renderGruposSection();
       renderVehiculosSection();
+      renderConductoresSection();
     }
   }
 
@@ -1914,8 +2137,14 @@ export function initPlaneacion(root, { getToken }) {
     try {
       await ensureInspectores();
       const incluirLevantados = !!root.querySelector('#planeacion-incluir-levantados')?.checked;
+      // Item 5 (2026-08-27): top-4500 critical working set, ranked by score
+      // (backend's own listPuntos ordering). `prioridad` is sent only when
+      // a chip actually narrows it — an empty value would just be ignored
+      // server-side, but omitting it keeps the request body honest.
+      const listPuntosBody = { action: 'listPuntos', incluirLevantados, limit: 4500 };
+      if (filters.prioridad) listPuntosBody.prioridad = filters.prioridad;
       const results = await Promise.allSettled([
-        callApi(getToken, { action: 'listPuntos', incluirLevantados }),
+        callApi(getToken, listPuntosBody),
         callApi(getToken, { action: 'listCuadrillas' }),
         callApi(getToken, { action: 'resumen' }),
         callApi(getToken, { action: 'listGrupos' }),
@@ -1951,6 +2180,7 @@ export function initPlaneacion(root, { getToken }) {
       renderCuadrillasSection();
       renderGruposSection();
       renderVehiculosSection();
+      renderConductoresSection();
       renderMetricasSection();
       renderMapSection();
       renderInspectorRoster();

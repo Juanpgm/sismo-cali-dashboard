@@ -7,6 +7,7 @@ import {
   buildVehiculoPayload, buildConductorPayload,
   rowHtml, filterRosterInspectores, filterInspectores,
   diaPicoPlacaHoy, autoAgruparMensaje,
+  stickersAsignadosSuffix, stickersDesasignadosSuffix,
 } from './planeacion.js';
 
 // ---- colorForPunto — design.md ADR-10 map legend, 5 states -----------------
@@ -96,6 +97,20 @@ assert.equal(
 );
 assert.equal(formatTruncacion(50, 50), null, 'not truncated -> no message');
 assert.equal(formatTruncacion(0, 0), null);
+// Item 5 (2026-08-27): still reads correctly with the new 4500 default.
+assert.equal(
+  formatTruncacion(4500, 11000),
+  'Mostrando los 4500 puntos de mayor prioridad de 11000 pendientes.',
+);
+
+// ---- stickersAsignadosSuffix / stickersDesasignadosSuffix — item 6 --------
+assert.equal(stickersAsignadosSuffix({ stickers_asignados: 3 }), ' Y 3 puntos de sticker asignados al mismo grupo.');
+assert.equal(stickersAsignadosSuffix({ stickers_asignados: 1 }), ' Y 1 punto de sticker asignado al mismo grupo.');
+assert.equal(stickersAsignadosSuffix({ stickers_asignados: 0 }), '');
+assert.equal(stickersAsignadosSuffix({}), '');
+assert.equal(stickersAsignadosSuffix(null), '');
+assert.equal(stickersDesasignadosSuffix({ stickers_desasignados: 2 }), ' Y 2 puntos de sticker quitados del mismo grupo.');
+assert.equal(stickersDesasignadosSuffix({}), '');
 
 // ---- metricasHtml — `metricasProgreso` change (`puntos-disponibles`, 2026-08-26)
 
