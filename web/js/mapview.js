@@ -357,6 +357,59 @@ async function ensureGeo(level) {
   }
 }
 
+// Standard ray-casting point-in-polygon over one ring (array of [lng, lat]
+// vertices). Odd number of edge crossings to the right of the point = inside.
+function pointInRing(lat, lng, ring) {
+  let inside = false;
+  // j must trail i by one vertex (wrapping from the last back to 0) so every
+  // edge gets tested exactly once. `j = i++` reads i BEFORE incrementing it;
+  // `j = i += 1` (the previous bug here) reads i AFTER, so j and i landed on
+  // the same vertex from the second iteration on — a zero-length "edge" that
+  // never crosses anything, which silently broke every ring except the one
+  // real edge tested on iteration 0. That's why every point resolved to null.
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    const crosses = (yi > lat) !== (yj > lat)
+      && lng < ((xj - xi) * (lat - yi)) / (yj - yi) + xi;
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
+// coordinates = [outerRing, ...holeRings]; inside the outer ring AND outside
+// every hole, same convention as GeoJSON Polygon.coordinates.
+function pointInPolygon(lat, lng, coordinates) {
+  if (!pointInRing(lat, lng, coordinates[0])) return false;
+  return coordinates.slice(1).every((hole) => !pointInRing(lat, lng, hole));
+}
+
+function pointInGeometry(lat, lng, geometry) {
+  if (!geometry) return false;
+  if (geometry.type === 'Polygon') return pointInPolygon(lat, lng, geometry.coordinates);
+  if (geometry.type === 'MultiPolygon') return geometry.coordinates.some((poly) => pointInPolygon(lat, lng, poly));
+  return false;
+}
+
+/** Name of the first feature of a FeatureCollection containing (lat, lng), or
+ *  null when the point lands outside every polygon. */
+function nameAt(lat, lng, geo) {
+  const feature = geo && geo.features.find((f) => pointInGeometry(lat, lng, f.geometry));
+  return feature ? feature.properties.name : null;
+}
+
+/**
+ * Comuna/barrio containing (lat, lng), resolved against the SAME cached
+ * boundaries the choropleth mode uses (ensureGeo) — a name lookup for
+ * Evaluaciones (Stickers tab) to filter/export by comuna/barrio, not a
+ * rendered layer, so it costs no extra fetch beyond what the choropleth
+ * already lazily loads once.
+ */
+export async function resolveBarrioComuna(lat, lng) {
+  await Promise.all([ensureGeo('comuna'), ensureGeo('barrio')]);
+  return { comuna: nameAt(lat, lng, comunasGeo), barrio: nameAt(lat, lng, barriosGeo) };
+}
+
 function metricValue(records, metric) {
   if (metric === 'no_habitables') {
     return records.filter(isNoHabitableBinary).length;

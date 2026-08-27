@@ -14,8 +14,10 @@
 // (integracion_F1/firestore.rules) and a dashboard admin is deliberately not
 // one. The serverless function reads it with the admin SDK behind the same
 // admin gate the rest of this tab already uses.
-import { COLORS, escapeHtml, basemapTileUrl } from './utils.js';
-import { buildMiniMap } from './mapview.js';
+import {
+  COLORS, escapeHtml, basemapTileUrl, normalize, loadXlsx, downloadStamp, showToast,
+} from './utils.js';
+import { buildMiniMap, resolveBarrioComuna } from './mapview.js';
 import { openLightbox } from './table.js';
 import { store } from './data.js';
 import { coverageGaugeHtml } from './coverage-gauge.js';
@@ -64,6 +66,104 @@ function formatFecha(iso) {
 
 const tituloDe = (e) => e.descripcion.nombre || e.descripcion.direccion || e.codigo_edificacion;
 
+// ---- Filters -------------------------------------------------------------
+
+/** Chip group for the ATC-20 classification filter — same shape as
+ *  planeacion.js's filtersHtml() chips (data-filter-group/-value, delegated
+ *  click), one group instead of two. */
+function claseChipsHtml(activeKey) {
+  const chip = (value, label, active) => `<button type="button" class="asignacion-chip${active ? ' is-active' : ''}" data-filter-group="clase" data-filter-value="${value}">${escapeHtml(label)}</button>`;
+  return [
+    chip('', 'Todas', !activeKey),
+    ...CLASES.map((c) => chip(c.key, c.label, activeKey === c.key)),
+    chip(SIN_CLASE.key, SIN_CLASE.label, activeKey === SIN_CLASE.key),
+  ].join('');
+}
+
+/** Filtered view of `list`: clasificación ATC-20, comuna/barrio (resolved
+ *  client-side, see resolveBarrioComuna) and a free-text search across
+ *  inspector + edificación fields. Case/accent-insensitive (normalize() strips
+ *  both), same as the rest of the dashboard's search boxes. Exported so a
+ *  pure self-check can exercise it without the DOM. */
+export function applyFilters(list, filters) {
+  const q = filters.search ? normalize(filters.search) : '';
+  return list.filter((e) => {
+    if (filters.clase && claseDe(e).key !== filters.clase) return false;
+    if (filters.comuna && e._comuna !== filters.comuna) return false;
+    if (filters.barrio && e._barrio !== filters.barrio) return false;
+    if (q) {
+      const hay = normalize([
+        e.inspector.nombre_completo, e.inspector.codigo,
+        e.descripcion.nombre, e.descripcion.direccion, e.codigo_edificacion,
+      ].filter(Boolean).join(' '));
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+/** Human-readable summary of the active filters, for the xlsx header block. */
+function describeFilters(f) {
+  const parts = [];
+  if (f.clase) parts.push(`Clasificación: ${(CLASE_BY_KEY.get(f.clase) || SIN_CLASE).label}`);
+  if (f.comuna) parts.push(`Comuna: ${f.comuna}`);
+  if (f.barrio) parts.push(`Barrio: ${f.barrio}`);
+  if (f.search) parts.push(`Búsqueda: "${f.search}"`);
+  return parts.length ? parts.join(' · ') : 'Todos los registros';
+}
+
+// No barrio/comuna field exists on evaluaciones — resolved client-side per
+// point against the same comunas/barrios boundaries the Panel's choropleth
+// uses (mapview.resolveBarrioComuna). Memoized by rounded coordinate: several
+// evaluaciones of the same building share the exact same point, and caching
+// the in-flight PROMISE (not just its result) means duplicate coords issued
+// in the same load() share one point-in-polygon resolution instead of racing
+// separate ones.
+const geoCache = new Map();
+function resolveGeoFor(coords) {
+  if (!coords) return Promise.resolve({ _comuna: null, _barrio: null });
+  const key = `${coords.lat.toFixed(5)},${coords.lng.toFixed(5)}`;
+  if (!geoCache.has(key)) {
+    geoCache.set(key, resolveBarrioComuna(coords.lat, coords.lng)
+      .then(({ comuna, barrio }) => ({ _comuna: comuna, _barrio: barrio })));
+  }
+  return geoCache.get(key);
+}
+
+/** comuna -> Set(barrio) across evaluaciones with a resolved comuna. Records
+ *  without coords (or that fell outside every polygon) don't offer a comuna/
+ *  barrio to filter by — they still export under "Sin dato". */
+function comunaBarrioMap(list) {
+  const map = new Map();
+  for (const e of list) {
+    if (!e._comuna) continue;
+    if (!map.has(e._comuna)) map.set(e._comuna, new Set());
+    if (e._barrio) map.get(e._comuna).add(e._barrio);
+  }
+  return map;
+}
+
+/** Repopulate the comuna <select>, preserving the current selection when it
+ *  is still a valid option — same pattern as planeacion.js's renderAutoScopeSelects. */
+function renderComunaSelect(selectEl, comunaMap) {
+  const comunas = [...comunaMap.keys()].sort();
+  const prev = selectEl.value;
+  selectEl.innerHTML = '<option value="">— Todas las comunas —</option>'
+    + comunas.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+  selectEl.value = comunas.includes(prev) ? prev : '';
+}
+
+/** Repopulate the barrio <select>, dependent on the chosen comuna — disabled
+ *  until one is picked, same pattern as planeacion.js's renderAutoBarrioSelect. */
+function renderBarrioSelect(selectEl, comunaMap, comuna) {
+  const barrios = comuna ? [...(comunaMap.get(comuna) || [])].sort() : [];
+  const prev = selectEl.value;
+  selectEl.innerHTML = '<option value="">— Todos los barrios —</option>'
+    + barrios.map((b) => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join('');
+  selectEl.disabled = !comuna;
+  selectEl.value = barrios.includes(prev) ? prev : '';
+}
+
 // ---- Static markup -----------------------------------------------------------
 
 /** The section's skeleton. Contents are filled in by render() once the data
@@ -82,6 +182,25 @@ export function sectionHtml() {
 
       <div class="kpi-row eval-kpis" id="eval-kpis"></div>
       <div class="eval-bar" id="eval-bar"></div>
+
+      <div class="eval-filters" id="eval-filters">
+        <div class="asignacion-search">
+          <input type="search" id="eval-search" class="sticker-search-input"
+            placeholder="Buscar por inspector, dirección, nombre o código…" aria-label="Buscar evaluaciones">
+        </div>
+        <div class="card-toolbar asignacion-filters">
+          <div class="asignacion-filters-group" id="eval-clase-chips">${claseChipsHtml('')}</div>
+          <label class="sticker-field asignacion-inline-field">
+            <span>Comuna</span>
+            <select id="eval-comuna-select" aria-label="Filtrar por comuna"><option value="">— Todas las comunas —</option></select>
+          </label>
+          <label class="sticker-field asignacion-inline-field">
+            <span>Barrio</span>
+            <select id="eval-barrio-select" aria-label="Filtrar por barrio" disabled><option value="">— Todos los barrios —</option></select>
+          </label>
+          <button type="button" class="sticker-action" id="eval-download">Descargar .xlsx</button>
+        </div>
+      </div>
 
       <div class="card eval-workspace-card">
         <div class="card-toolbar">
@@ -409,7 +528,17 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   const modalBody = section.querySelector('#eval-modal-body');
   const modalTitle = section.querySelector('#eval-modal-title');
   const reloadBtn = section.querySelector('#eval-reload');
+  const searchEl = section.querySelector('#eval-search');
+  const chipsEl = section.querySelector('#eval-clase-chips');
+  const comunaSelect = section.querySelector('#eval-comuna-select');
+  const barrioSelect = section.querySelector('#eval-barrio-select');
+  const downloadBtn = section.querySelector('#eval-download');
   let byId = new Map();
+  // Full, geo-resolved dataset from the last successful fetch — filters below
+  // read/write these without ever re-fetching or re-resolving geo.
+  let allEvaluaciones = [];
+  let comunaMap = new Map(); // comuna -> Set(barrio), rebuilt alongside allEvaluaciones
+  let filters = { search: '', clase: '', comuna: '', barrio: '' };
 
   // Panel-wide sticker coverage (same figure as the Panel gauge), from the store
   // that main.js populates via /api/sticker-status. Lives on the map itself
@@ -477,6 +606,33 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   // the server returned exactly what is already on screen.
   let lastFingerprint = null;
 
+  // Renders KPIs/bar/list/map from applyFilters(allEvaluaciones, filters).
+  // Never fetches, never touches geo — every filter control below calls only
+  // this, so changing a filter is a synchronous in-memory re-render.
+  function renderFiltered() {
+    const filtered = applyFilters(allEvaluaciones, filters);
+    chipsEl.innerHTML = claseChipsHtml(filters.clase);
+    kpis.innerHTML = kpisHtml(filtered);
+    barEl.innerHTML = barHtml(filtered);
+
+    if (!filtered.length) {
+      listEl.innerHTML = allEvaluaciones.length
+        ? '<li class="eval-empty">Ningún registro coincide con los filtros aplicados.</li>'
+        : '<li class="eval-empty">Todavía no hay evaluaciones registradas desde el formulario.</li>';
+      listMeta.textContent = '';
+    } else {
+      listEl.innerHTML = filtered.map(listItemHtml).join('');
+      listMeta.textContent = `${filtered.length} · más reciente primero`;
+    }
+
+    const conCoords = renderMap('eval-map', filtered, openDetail);
+    renderCoverage(); // after renderMap: it rebuilds the control this writes into
+    const sinCoords = filtered.length - conCoords;
+    mapMeta.textContent = sinCoords
+      ? `${conCoords} en el mapa · ${sinCoords} sin coordenadas`
+      : `${conCoords} en el mapa`;
+  }
+
   async function load({ silent = false } = {}) {
     if (!silent) {
       kpis.innerHTML = '<p class="sticker-loading">Cargando evaluaciones…</p>';
@@ -487,26 +643,28 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
     }
     try {
       const evaluaciones = await fetchEvaluaciones();
+      // Fingerprint from the RAW fetch, before geo resolution: an unchanged
+      // silent poll must short-circuit here, before paying for a single
+      // point-in-polygon lookup — and without touching the user's filters.
       const fingerprint = JSON.stringify(evaluaciones.map((e) => [e.id, e.clasificacion, e.fotos.length]));
       if (silent && fingerprint === lastFingerprint) return;
       lastFingerprint = fingerprint;
-      byId = new Map(evaluaciones.map((e) => [e.id, e]));
-      kpis.innerHTML = kpisHtml(evaluaciones);
-      barEl.innerHTML = barHtml(evaluaciones);
 
-      if (!evaluaciones.length) {
-        listEl.innerHTML = '<li class="eval-empty">Todavía no hay evaluaciones registradas desde el formulario.</li>';
-      } else {
-        listEl.innerHTML = evaluaciones.map(listItemHtml).join('');
-        listMeta.textContent = `${evaluaciones.length} · más reciente primero`;
-      }
+      allEvaluaciones = await Promise.all(
+        evaluaciones.map(async (e) => ({ ...e, ...(await resolveGeoFor(e.coords)) })),
+      );
+      byId = new Map(allEvaluaciones.map((e) => [e.id, e]));
 
-      const conCoords = renderMap('eval-map', evaluaciones, openDetail);
-      renderCoverage(); // after renderMap: it rebuilds the control this writes into
-      const sinCoords = evaluaciones.length - conCoords;
-      mapMeta.textContent = sinCoords
-        ? `${conCoords} en el mapa · ${sinCoords} sin coordenadas`
-        : `${conCoords} en el mapa`;
+      comunaMap = comunaBarrioMap(allEvaluaciones);
+      renderComunaSelect(comunaSelect, comunaMap);
+      renderBarrioSelect(barrioSelect, comunaMap, comunaSelect.value);
+      // The selects may have dropped the previous value (comuna/barrio no
+      // longer present in the refreshed data) — keep `filters` in sync with
+      // what's actually selected instead of filtering by a stale value.
+      filters.comuna = comunaSelect.value;
+      filters.barrio = barrioSelect.value;
+
+      renderFiltered();
     } catch (err) {
       // A failed silent poll keeps the last good render on screen; the next
       // tick (or the manual button) retries.
@@ -518,6 +676,85 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   }
 
   reloadBtn.addEventListener('click', () => load());
+
+  // ---- filter wiring: each control only updates `filters` and re-renders
+  // from the already-loaded, already-geo-resolved allEvaluaciones. ----------
+  searchEl.addEventListener('input', () => {
+    filters = { ...filters, search: searchEl.value };
+    renderFiltered();
+  });
+
+  // Delegated click on the chip group — same shape as planeacion.js's filter
+  // chip wiring, one group ('clase') instead of two.
+  chipsEl.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-filter-group="clase"]');
+    if (!btn) return;
+    filters = { ...filters, clase: btn.dataset.filterValue };
+    renderFiltered();
+  });
+
+  comunaSelect.addEventListener('change', () => {
+    filters = { ...filters, comuna: comunaSelect.value, barrio: '' };
+    renderBarrioSelect(barrioSelect, comunaMap, comunaSelect.value);
+    renderFiltered();
+  });
+
+  barrioSelect.addEventListener('change', () => {
+    filters = { ...filters, barrio: barrioSelect.value };
+    renderFiltered();
+  });
+
+  // Same header-block convention as main.js's #transito-download (title,
+  // filtro aplicado, fecha de generación, registros, blank row) but built
+  // from Stickers data and the currently active filters.
+  downloadBtn.addEventListener('click', async () => {
+    let XLSX;
+    try { XLSX = await loadXlsx(); } catch { showToast('No se pudo cargar el generador de Excel.', 'error'); return; }
+    const rows = applyFilters(allEvaluaciones, filters).map((e) => ({
+      id: e.id,
+      codigo_edificacion: e.codigo_edificacion,
+      consecutivo: e.consecutivo,
+      municipio: e.municipio,
+      area: e.area,
+      area_nombre: e.area_nombre,
+      clasificacion: e.clasificacion,
+      alcance: e.alcance,
+      inspector_nombre_completo: e.inspector.nombre_completo,
+      inspector_codigo: e.inspector.codigo,
+      inspector_identificacion: e.inspector.identificacion,
+      inspector_entidad: e.inspector.entidad,
+      nombre: e.descripcion.nombre,
+      direccion: e.descripcion.direccion,
+      comuna: e._comuna || 'Sin dato',
+      barrio: e._barrio || 'Sin dato',
+      barricadas: siNo(e.acciones_posteriores.barricadas),
+      evaluacion_detallada: siNo(e.acciones_posteriores.evaluacion_detallada),
+      restricciones: e.restricciones,
+      comentarios: e.comentarios,
+      lat: e.coords ? e.coords.lat : '',
+      lng: e.coords ? e.coords.lng : '',
+      accuracy: e.coords ? e.coords.accuracy : '',
+      fecha: e.fecha,
+      num_fotos: e.fotos.length,
+    }));
+    if (!rows.length) {
+      showToast('No hay evaluaciones con los filtros aplicados.', 'error');
+      return;
+    }
+    const { legible, slug } = downloadStamp();
+    const ws = XLSX.utils.aoa_to_sheet([
+      ['Evaluaciones ATC-20 — Stickers'],
+      ['Filtro aplicado:', describeFilters(filters)],
+      ['Fecha de generación:', legible],
+      ['Registros:', rows.length],
+      [],
+    ]);
+    XLSX.utils.sheet_add_json(ws, rows, { origin: 'A6' });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'stickers');
+    XLSX.writeFile(wb, `stickers_${slug}.xlsx`);
+  });
+
   load();
 
   // Keep the tab fresh on its own while it stays open: silent poll every 5

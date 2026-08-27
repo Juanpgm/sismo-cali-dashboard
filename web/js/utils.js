@@ -656,3 +656,52 @@ export function themeColor(varName, fallback = '') {
   const val = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
   return val || fallback;
 }
+
+/* ------------------------------------------------------------------ */
+/* Toast + xlsx export helpers — shared by main.js (Panel) and          */
+/* evaluaciones.js (Stickers), moved here to stop the duplication.      */
+/* ------------------------------------------------------------------ */
+
+/** Fire a transient toast. #toast-stack is static markup outside any tab
+ *  (present in index.html regardless of which tab is active), so it is
+ *  looked up per-call instead of cached at module load — any caller can
+ *  toast without holding its own reference to the element. */
+export function showToast(message, variant = 'success') {
+  const toastStack = document.querySelector('#toast-stack');
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${variant}`;
+  toast.textContent = message;
+  toastStack.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('is-visible'));
+  setTimeout(() => {
+    toast.classList.remove('is-visible');
+    setTimeout(() => toast.remove(), 300);
+  }, 3800);
+}
+
+// Fecha de generación del Excel = momento del clic (fecha de descarga). Devuelve
+// dos formas: `legible` para una celda dentro del archivo y `slug` para el nombre.
+export function downloadStamp() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return {
+    legible: d.toLocaleString('es-CO', { dateStyle: 'long', timeStyle: 'short' }),
+    slug: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}`,
+  };
+}
+
+// xlsx (SheetJS, ~1MB) is only needed by the download buttons — load it on
+// first click instead of blocking every page load with it.
+let xlsxPromise = null;
+export function loadXlsx() {
+  if (!xlsxPromise) {
+    xlsxPromise = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+      s.onload = () => resolve(window.XLSX);
+      s.onerror = () => reject(new Error('No se pudo cargar xlsx'));
+      document.head.appendChild(s);
+    });
+  }
+  return xlsxPromise;
+}

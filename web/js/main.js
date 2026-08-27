@@ -17,7 +17,10 @@ import { initUsuarios } from './usuarios.js';
 import { initAnalista } from './analista.js';
 import { initTheme } from './theme.js';
 import { initAuth, getIdToken, isAdmin } from './auth.js';
-import { debounce, setSourceLabels, sourceLabel, habBinary, labelForCode } from './utils.js';
+import {
+  debounce, setSourceLabels, sourceLabel, habBinary, labelForCode,
+  loadXlsx, downloadStamp, showToast,
+} from './utils.js';
 import { apiUrl } from './api-config.js';
 
 const el = (sel) => document.querySelector(sel);
@@ -34,7 +37,6 @@ const refreshStatusPct = refreshStatus.querySelector('.pct');
 const retryBtn = el('#retry-btn');
 const errorOverlay = el('#error-overlay');
 const errorMessage = el('[data-error-message]');
-const toastStack = el('#toast-stack');
 const lastUpdateEl = el('[data-last-update]');
 const filtersPanel = el('#filters-panel');
 const filtersOpenBtn = el('#filters-open-btn');
@@ -55,18 +57,6 @@ let initialLoadPromise = store.load();
 // the fetch fails before loadAndRender gets a chance to await it.
 initialLoadPromise.catch(() => {});
 
-function showToast(message, variant = 'success') {
-  const toast = document.createElement('div');
-  toast.className = `toast toast-${variant}`;
-  toast.textContent = message;
-  toastStack.appendChild(toast);
-  requestAnimationFrame(() => toast.classList.add('is-visible'));
-  setTimeout(() => {
-    toast.classList.remove('is-visible');
-    setTimeout(() => toast.remove(), 300);
-  }, 3800);
-}
-
 function formatGeneratedAt(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -79,17 +69,6 @@ function formatGeneratedAt(iso) {
 function renderHeaderMeta() {
   if (!store.meta) return;
   lastUpdateEl.textContent = `Última actualización: ${formatGeneratedAt(store.meta.generated_at)}`;
-}
-
-// Fecha de generación del Excel = momento del clic (fecha de descarga). Devuelve
-// dos formas: `legible` para una celda dentro del archivo y `slug` para el nombre.
-function downloadStamp() {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  return {
-    legible: d.toLocaleString('es-CO', { dateStyle: 'long', timeStyle: 'short' }),
-    slug: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}`,
-  };
 }
 
 // "Colorear por" options that map to a real EDAN-F3 variable get the original
@@ -520,22 +499,6 @@ async function triggerRefresh() {
       setTimeout(clearProgress, 2200);
     }
   }
-}
-
-// xlsx (SheetJS, ~1MB) is only needed by the two download buttons below —
-// load it on first click instead of blocking every page load with it.
-let xlsxPromise = null;
-function loadXlsx() {
-  if (!xlsxPromise) {
-    xlsxPromise = new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
-      s.onload = () => resolve(window.XLSX);
-      s.onerror = () => reject(new Error('No se pudo cargar xlsx'));
-      document.head.appendChild(s);
-    });
-  }
-  return xlsxPromise;
 }
 
 /** Build the .xlsx client-side from store.filtered so active filters apply.
