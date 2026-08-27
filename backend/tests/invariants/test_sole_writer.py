@@ -108,7 +108,19 @@ ALLOWED_MODULES = {
     # honest resolution for a genuine non-collection use is an annotated
     # entry — the same precedent `sticker_status.py` (read-only) and
     # `main.py` (import/mount) already set above.
-    APP_ROOT / "routers" / "planeacion_asignaciones.py",  # JSON key only, see note
+    #
+    # UPDATE (2026-08-27, binding user decision — "Item 6" twin propagation):
+    # this entry is no longer JSON-key-only. `asignarGrupoAPuntos` now ALSO
+    # writes `grupo_id`/`clave_integracion`/`planeacion_punto_id` onto the
+    # matching `sticker_matches` TWIN doc (best-effort, fail-soft — see this
+    # router's own module docstring "REVERSAL" section for the full
+    # reasoning), and `desasignarGrupo` symmetrically clears `grupo_id` on
+    # that twin. This makes `planeacion_asignaciones.py` a REAL, FIFTH
+    # writer of `sticker_matches` — the "FOURTH and FINAL WRITE module"
+    # framing at the top of this file (Slice 8/task 8.4) is superseded by
+    # this later, explicit user decision. Flagged honestly here rather than
+    # worked around, same precedent this whole file already follows.
+    APP_ROOT / "routers" / "planeacion_asignaciones.py",  # JSON key + twin-propagation writer, see note
     # `planeacion-auditoria` change (2026-08-26): same JSON-key-only reason as
     # the entry directly above — `planeacion_audit.py`'s `MUTATING_ACTIONS`
     # table reads the `cuadrillas` key off `autoAgrupar`'s own resultado dict

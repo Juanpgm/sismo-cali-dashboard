@@ -456,6 +456,73 @@ def test_list_puntos_limit_above_hard_max_is_clamped_not_failed(monkeypatch):
     assert resp.json()["ok"] is True
 
 
+def _capture_fake_query_limits(monkeypatch) -> list[int]:
+    """Instruments `_FakeQuery.limit()` for this test only (monkeypatch
+    auto-restores) so `list_puntos`'s dynamic over-fetch (2026-08-27 speed
+    follow-up) can be asserted on directly, instead of inferring it from doc
+    counts."""
+    captured: list[int] = []
+    original_limit = _FakeQuery.limit
+
+    def _tracking_limit(self, n):
+        captured.append(n)
+        return original_limit(self, n)
+
+    monkeypatch.setattr(_FakeQuery, "limit", _tracking_limit)
+    return captured
+
+
+def test_list_puntos_default_call_does_not_overfetch_the_hard_max(monkeypatch):
+    """2026-08-27 speed follow-up: the default call (no estado/prioridad/
+    comuna/soloPendientes) has no in-code narrowing filter left besides the
+    rare `no_aplica` exclusion, so it must NOT pay the full LIMIT_MAX+1
+    (5001-doc) read every time."""
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {"p1": _punto()}
+    client = _admin_client(monkeypatch, stores)
+    captured = _capture_fake_query_limits(monkeypatch)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "listPuntos"})
+
+    assert resp.status_code == 200
+    assert captured, "expected .limit() to be called"
+    assert captured[-1] <= pa.LIMIT_DEFAULT * 2 + 1
+    assert captured[-1] < pa.LIMIT_MAX + 1
+
+
+def test_list_puntos_with_prioridad_filter_keeps_the_large_overfetch(monkeypatch):
+    """A narrowing in-code filter (prioridad here) can drop an arbitrary
+    fraction of the over-fetched page, so it must keep the original
+    LIMIT_MAX+1 over-fetch for correctness."""
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {"p1": _punto(prioridad="alta")}
+    client = _admin_client(monkeypatch, stores)
+    captured = _capture_fake_query_limits(monkeypatch)
+
+    resp = client.post(
+        "/planeacion-asignaciones", json={"action": "listPuntos", "prioridad": "alta"}
+    )
+
+    assert resp.status_code == 200
+    assert captured[-1] == pa.LIMIT_MAX + 1
+
+
+def test_list_puntos_large_limit_caps_overfetch_at_the_hard_max(monkeypatch):
+    """Item 5 (2026-08-27): the frontend now requests `limit: 4500` (top-4500
+    critical working set). `effective_limit * 2 + 1` for 4500 would be 9001 --
+    over LIMIT_MAX+1 (5001). The dynamic over-fetch must be CAPPED at
+    LIMIT_MAX+1, never exceed it, regardless of how large `limit` is."""
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {"p1": _punto()}
+    client = _admin_client(monkeypatch, stores)
+    captured = _capture_fake_query_limits(monkeypatch)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "listPuntos", "limit": 4500})
+
+    assert resp.status_code == 200
+    assert captured[-1] == pa.LIMIT_MAX + 1
+
+
 # ── resumen (task 3.5/3.6) ───────────────────────────────────────────────
 
 
@@ -556,6 +623,32 @@ def test_auto_agrupar_router_caps_working_set_to_top_n_by_score(monkeypatch):
     assigned = {pid for c in resp.json()["cuadrillas"] for pid in c["puntos"]}
     assert assigned == {"hi1", "hi2"}
     assert stores[PLANEACION_PUNTOS]["lo"]["cuadrilla_id"] is None
+
+
+def test_auto_agrupar_router_excludes_surveyed_at_the_query_not_just_in_code(monkeypatch):
+    """Item 3a (2026-08-27) root cause: fuzzy-matched top-scored pendientes
+    are often ALREADY surveyed (tiene_survey True, but the pipeline keeps
+    them 'pendiente'). If the query only excludes them AFTER the fetch (the
+    old in-code-only filter), a small `limite` batch can come back 100%
+    already-surveyed -> 0 groups, even though real pending points exist
+    further down. The `tiene_survey == False` filter belongs at the QUERY
+    so a small `limite` still finds real candidates."""
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "surveyed_hi": {"estado_asignacion": "pendiente", "cuadrilla_id": None, "tiene_survey": True,
+                        "prioridad_score": 99, "coords": {"lat": 3.40, "lon": -76.50}},
+        "surveyed_mid": {"estado_asignacion": "pendiente", "cuadrilla_id": None, "tiene_survey": True,
+                         "prioridad_score": 90, "coords": {"lat": 3.40, "lon": -76.50}},
+        "real_pendiente": {"estado_asignacion": "pendiente", "cuadrilla_id": None, "tiene_survey": False,
+                           "prioridad_score": 10, "coords": {"lat": 3.41, "lon": -76.51}},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "autoAgrupar", "limite": 2})
+
+    assert resp.status_code == 200
+    assigned = {pid for c in resp.json()["cuadrillas"] for pid in c["puntos"]}
+    assert assigned == {"real_pendiente"}
 
 
 def test_auto_agrupar_router_orders_cuadrillas_by_density_desc(monkeypatch):
@@ -1603,6 +1696,174 @@ def test_asignar_grupo_a_puntos_coleccion_and_desasignar_are_planeacion_only(mon
     assert stores[STICKER_MATCHES]["s1"] == {}
 
 
+# ── Item 6 (2026-08-26, reversed 2026-08-27): grupo assignment propagates
+# to the matching `sticker_matches` TWIN, best-effort. See the module
+# docstring's dated reversal note of its own earlier "never reach into
+# sticker_matches" decision. ────────────────────────────────────────────
+
+
+def test_asignar_grupo_propagates_to_free_sticker_twin_and_persists_linkage(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1", "clave_integracion": "PLN-1-ABC"},
+    }
+    stores[STICKER_MATCHES] = {"s1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1"}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["p1"]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["stickers_asignados"] == 1
+    assert stores[STICKER_MATCHES]["s1"]["grupo_id"] == "g1"
+    assert stores[STICKER_MATCHES]["s1"]["clave_integracion"] == "PLN-1-ABC"
+    assert stores[STICKER_MATCHES]["s1"]["planeacion_punto_id"] == "p1"
+
+
+def test_asignar_grupo_does_not_steal_a_twin_already_in_another_grupo(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {"p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1"}}
+    stores[STICKER_MATCHES] = {
+        "s1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1", "grupo_id": "g-otro"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["p1"]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["stickers_asignados"] == 0
+    assert stores[STICKER_MATCHES]["s1"]["grupo_id"] == "g-otro"
+
+
+def test_asignar_grupo_skips_a_completed_twin(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {"p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1"}}
+    stores[STICKER_MATCHES] = {
+        "s1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1", "estado_asignacion": "hecho"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["p1"]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["stickers_asignados"] == 0
+    assert "grupo_id" not in stores[STICKER_MATCHES]["s1"]
+
+
+def test_asignar_grupo_no_twin_in_range_is_a_no_op_not_an_error(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {"p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1"}}
+    stores[STICKER_MATCHES] = {"s1": {"coords": {"lat": 3.60, "lon": -76.70}, "direccion": "Otra calle lejana"}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["p1"]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["stickers_asignados"] == 0
+    assert stores[PLANEACION_PUNTOS]["p1"]["grupo_id"] == "g1"
+
+
+def test_asignar_grupo_survey_assignment_succeeds_even_if_sticker_propagation_raises(monkeypatch):
+    """FAIL-SOFT: a sticker-side failure must NEVER fail the survey
+    assignment that already committed."""
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {"p1": {"coords": {"lat": 3.40, "lon": -76.50}}}
+    stores[STICKER_MATCHES] = {"s1": {"coords": {"lat": 3.40, "lon": -76.50}}}
+    client = _admin_client(monkeypatch, stores)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("sticker store unavailable")
+
+    monkeypatch.setattr(pa, "_doc_to_dict", _boom)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["p1"]},
+    )
+
+    assert resp.status_code == 200
+    assert stores[PLANEACION_PUNTOS]["p1"]["grupo_id"] == "g1"
+    assert resp.json()["stickers_asignados"] == 0
+
+
+def test_asignar_grupo_does_not_overwrite_a_twin_linked_to_a_different_clave(monkeypatch):
+    """First-link-wins: a twin already carrying a DIFFERENT clave_integracion
+    is a different planeacion point's pairing -- never overwritten."""
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1", "clave_integracion": "PLN-NEW"},
+    }
+    stores[STICKER_MATCHES] = {
+        "s1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1", "clave_integracion": "PLN-OLD"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["p1"]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["stickers_asignados"] == 0
+    assert stores[STICKER_MATCHES]["s1"].get("grupo_id") is None
+    assert stores[STICKER_MATCHES]["s1"]["clave_integracion"] == "PLN-OLD"
+
+
+def test_desasignar_grupo_clears_only_grupo_id_keeps_linkage_on_twin(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1", "grupo_id": "g1"},
+    }
+    stores[STICKER_MATCHES] = {
+        "s1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1",
+               "grupo_id": "g1", "clave_integracion": "PLN-1-ABC", "planeacion_punto_id": "p1"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "desasignarGrupo", "puntos": ["p1"]})
+
+    assert resp.status_code == 200
+    assert resp.json()["stickers_desasignados"] == 1
+    assert stores[STICKER_MATCHES]["s1"]["grupo_id"] is None
+    # linkage keys STAY -- the physical pairing remains true regardless of assignment
+    assert stores[STICKER_MATCHES]["s1"]["clave_integracion"] == "PLN-1-ABC"
+    assert stores[STICKER_MATCHES]["s1"]["planeacion_punto_id"] == "p1"
+
+
+def test_desasignar_grupo_does_not_clear_a_twin_from_a_different_grupo(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1", "grupo_id": "g1"},
+    }
+    stores[STICKER_MATCHES] = {
+        "s1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1", "grupo_id": "g-otro"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "desasignarGrupo", "puntos": ["p1"]})
+
+    assert resp.status_code == 200
+    assert resp.json()["stickers_desasignados"] == 0
+    assert stores[STICKER_MATCHES]["s1"]["grupo_id"] == "g-otro"
+
+
 # ── `grupos-inspectores` follow-up (2026-08-26): vehículos — "cada grupo
 # sale en un vehículo". CRUD lives here (same single-owner reasoning as
 # `grupos_inspectores` itself); the load-bearing invariant is "one vehicle
@@ -2403,12 +2664,35 @@ def test_dispatch_maps_missing_index_error_to_actionable_503(monkeypatch, caplog
         resp = client.post("/planeacion-asignaciones", json={"action": "listGrupos"})
 
     assert resp.status_code == 503
+    # Item 3b (2026-08-27): this is an admin-only endpoint, so surfacing the
+    # index-creation URL directly in the 503 detail is correct and saves the
+    # admin a hop to the server logs.
+    detail = resp.json()["detail"]
+    assert "https://console.firebase.google.com/project/x/firestore/indexes?create_composite=abc" in detail
+    assert "Falta un índice de la base de datos" in detail
+    # the original error (with the console creation link) must still be logged
+    assert "console.firebase.google.com" in caplog.text
+
+
+def test_dispatch_missing_index_error_without_a_link_falls_back_to_generic_message(monkeypatch):
+    """Item 3b: the link is surfaced WHEN PRESENT in the error text -- a
+    missing-index error without one (unlikely in practice, but the regex
+    must not crash) still gets the actionable 503, just without a link."""
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    def _boom(*args, **kwargs):
+        raise Exception("400 The query requires an index, but no url this time.")
+
+    monkeypatch.setattr(pa, "list_grupos", _boom)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "listGrupos"})
+
+    assert resp.status_code == 503
     assert resp.json()["detail"] == (
         "Falta un índice de la base de datos para esta consulta. Avisar al "
         "administrador (el enlace de creación está en los logs del servidor)."
     )
-    # the original error (with the console creation link) must still be logged
-    assert "console.firebase.google.com" in caplog.text
 
 
 def test_dispatch_keeps_generic_502_for_other_errors(monkeypatch):

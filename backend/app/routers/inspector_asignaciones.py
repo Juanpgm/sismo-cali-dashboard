@@ -327,6 +327,10 @@ def _mis_puntos(db: Any, uid: str) -> list[dict[str, Any]]:
                 "criterio_habitabilidad": data.get("criterio_habitabilidad"),
                 "colapso": data.get("colapso") or "no",
                 "estado_asignacion": data.get("estado_asignacion") or "pendiente",
+                # Item 6 follow-up (2026-08-27): rides along for free once
+                # `planeacion_asignaciones.py`'s twin propagation persists it
+                # onto this same doc — null on a twin never linked yet.
+                "clave_integracion": data.get("clave_integracion"),
             }
         )
     return puntos

@@ -120,6 +120,43 @@ collection, because the ADMIN UI (Planeación tab, `web/js/planeacion.js`)
 always calls the same-router action for the points it is already looking
 at.
 
+### REVERSAL (2026-08-27, binding user decision) — twin propagation onto
+### `sticker_matches` after all
+
+The "deliberately do NOT also reach into `sticker_matches`" sentence two
+paragraphs up is now OVERRIDDEN for one specific, narrow case: when a
+survey point gets a `grupo_id` via `asignarGrupoAPuntos`, its matching
+STICKER twin (same building, found via the SAME geo-then-address cascade
+`inspector_asignaciones.py`'s own `_buscar_gemelo` already uses — `nearest`
+<= `MAX_MATCH_M`=40m, then `addr_key` fuzzy match >= `ADDR_MATCH_RATIO`,
+never a new matching rule) gets the SAME `grupo_id`, so ONE grupo assignment
+now covers both campaigns for the same building. `desasignar_grupo` is
+symmetric (clears the twin's `grupo_id` too).
+
+Beyond the grupo_id, the write PERSISTS THE PAIRING: `clave_integracion`
+(the planeacion point's own `PLN-...` key) and `planeacion_punto_id` land on
+the sticker twin too. `sticker_matches` and `planeacion_puntos` share NO key
+namespace — at twin-match time the pairing is KNOWN (geo+address already
+agreed), so it is stored rather than re-inferred every time, turning a
+previously inference-only points<->sticker tie into a durable integration
+key — symmetric with how the survey side already carries `codigoapp`/
+`clave_integracion`. `desasignar_grupo` clears ONLY `grupo_id` on the twin;
+the linkage keys STAY (the physical pairing remains true regardless of
+assignment). First-link-wins: a twin that already carries a DIFFERENT
+`clave_integracion` (linked to another planeacion point) is never
+overwritten — that twin is simply excluded from THIS call's candidates.
+
+Both writes are BEST-EFFORT/FAIL-SOFT (`_propagar_grupo_a_stickers`/
+`_desasignar_grupo_de_stickers`, `try/except` + `logging.exception`): a
+sticker-side failure must NEVER fail the survey-side assignment that
+already committed. Sticker candidates are loaded ONCE per call (the whole
+`sticker_matches` collection — bounded, ~1.2k docs, the same "aggregate in
+Python" scale tradeoff `resumen()`'s own docstring already documents for a
+bounded collection), not per point. `planeacion_asignaciones.py` is
+therefore now a REAL (not just JSON-key) allowlisted WRITER of
+`sticker_matches` in `tests/invariants/test_sole_writer.py` — see that
+file's own dated annotation for this entry.
+
 `eliminarGrupo`'s orphan-prevention guard (decision: REFUSE deletion while
 ANY point still references the group, rather than silently clearing
 `grupo_id` — see the function's own docstring for why) must check BOTH
@@ -206,7 +243,9 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -217,6 +256,7 @@ from app.auth.deps import require_role
 from app.config import Settings
 from app.credentials import clients as credentials
 from app.integracion.config import BOGOTA_TZ
+from app.integracion.cruce_gestor import ADDR_MATCH_RATIO, MAX_MATCH_M, addr_key, nearest
 from app.services import planeacion_audit
 from app.services.survey_link import build_survey_urls
 
@@ -465,7 +505,27 @@ def list_puntos(db: Any, params: dict[str, Any]) -> dict[str, Any]:
     conditions in code" tradeoff `autoAgrupar`/the sticker dispatcher's own
     `run_auto_agrupar` already documents (Firestore permits only one
     inequality field per query, and `estado_asignacion != 'no_aplica'`
-    would conflict with ordering by `prioridad_score`)."""
+    would conflict with ordering by `prioridad_score`).
+
+    Speed follow-up (2026-08-27): that `LIMIT_MAX + 1` over-fetch (5001 docs)
+    used to run on EVERY call, including the plain default call with none of
+    the in-code narrowing filters below -- paying a ~5000-doc read for a
+    300-row page. When `estado`/`prioridad`/`comuna`/`soloPendientes` are ALL
+    absent, the only in-code exclusion left is the rare `estado_asignacion !=
+    'no_aplica'` one, so `effective_limit * 2 + 1` is enough headroom to
+    absorb that exclusion AND still detect `truncado` -- no need for the full
+    `LIMIT_MAX` ceiling. The moment any of those filters IS present, the
+    in-code filtering can drop an arbitrary fraction of the page, so the
+    over-fetch falls back to the original `LIMIT_MAX + 1` for correctness.
+    `truncado` semantics are unchanged in both paths: it is set whenever the
+    over-fetch yields more than `effective_limit` rows after in-code
+    filtering.
+
+    Item 5 (2026-08-27): the frontend now requests `limit: 4500` (top-4500
+    critical working set) by default, not the previous smaller default.
+    `effective_limit * 2 + 1` for 4500 would be 9001 -- over LIMIT_MAX+1
+    (5001). The dynamic over-fetch is therefore capped at LIMIT_MAX+1 no
+    matter how large `limit` gets."""
     from google.cloud import firestore as _fs  # deferred import, credentials/clients.py's own convention
 
     effective_limit = _clamp_limit(params.get("limit"))
@@ -478,12 +538,20 @@ def list_puntos(db: Any, params: dict[str, Any]) -> dict[str, Any]:
     # fact, so it needs the `estado` filter to surface.
     incluir_levantados = bool(params.get("incluirLevantados"))
 
+    # Speed follow-up (2026-08-27): only over-fetch the full LIMIT_MAX+1 when
+    # an in-code narrowing filter can actually drop an arbitrary fraction of
+    # the page; the plain default call has no such filter (see docstring).
+    narrowing_filters_present = bool(
+        estado or params.get("prioridad") or params.get("comuna") or params.get("soloPendientes")
+    )
+    over_fetch_limit = (LIMIT_MAX + 1) if narrowing_filters_present else min(effective_limit * 2 + 1, LIMIT_MAX + 1)
+
     query = db.collection(PLANEACION_PUNTOS_COLLECTION)
     if not incluir_levantados:
         query = query.where("tiene_survey", "==", False)
     query = (
         query.order_by("prioridad_score", direction=_fs.Query.DESCENDING)
-        .limit(LIMIT_MAX + 1)
+        .limit(over_fetch_limit)
     )
     puntos = [_doc_to_dict(d) for d in query.get()]
 
@@ -573,15 +641,23 @@ def run_auto_agrupar(db: Any, body: dict[str, Any]) -> list[dict[str, Any]]:
 
     # Cap the working set to the top-N most-critical pending/ungrouped points
     # (by prioridad_score) instead of fetching the full ~11k pending set — this
-    # is the fluidity fix. Excludes surveyed/`no_aplica` points defensively in
-    # code below (Firestore allows only one inequality field, already spent on
-    # ordering by prioridad_score). Needs a composite index on
-    # (estado_asignacion, cuadrilla_id, prioridad_score DESC) — operator step.
+    # is the fluidity fix. Item 3a (2026-08-27) root cause fix: `tiene_survey
+    # == False` moved INTO the query (not just the in-code
+    # points_with_survey/points_excluded filters below) — fuzzy-matched
+    # top-scored pendientes are often ALREADY surveyed while staying
+    # 'pendiente', so a small `limite` batch that only excluded them AFTER
+    # the fetch could come back 100% excluded -> 0 groups even though real
+    # pending points exist further down. `no_aplica` still can't join this
+    # query (Firestore allows only one inequality field, already spent on
+    # ordering by prioridad_score) so it stays an in-code-only exclusion.
+    # Needs a composite index on (estado_asignacion, cuadrilla_id,
+    # tiene_survey, prioridad_score DESC) — operator step.
     limite = int(_positive_number(body.get("limite"), AUTOAGRUPAR_LIMIT))
     docs = (
         db.collection(PLANEACION_PUNTOS_COLLECTION)
         .where("estado_asignacion", "==", "pendiente")
         .where("cuadrilla_id", "==", None)
+        .where("tiene_survey", "==", False)
         .order_by("prioridad_score", direction=_fs.Query.DESCENDING)
         .limit(limite)
         .get()
@@ -1169,6 +1245,117 @@ def eliminar_grupo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     return {"id": grupo_id}
 
 
+def _twin_latlon(item: dict[str, Any]):
+    coords = item.get("coords") or {}
+    lat, lon = coords.get("lat"), coords.get("lon")
+    return (lat, lon) if lat is not None and lon is not None else None
+
+
+def _encontrar_twin_sticker(punto_data: dict[str, Any], candidatos: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Geo-then-address cascade for the SAME building's `sticker_matches`
+    twin — the SAME primitives/thresholds `inspector_asignaciones.py`'s own
+    `_buscar_gemelo` already uses (module docstring's 2026-08-27 reversal
+    note): `nearest` (<= MAX_MATCH_M=40m haversine) then `addr_key` fuzzy
+    match (>= ADDR_MATCH_RATIO), never a new matching rule. Pure matching
+    over an in-memory candidate list the caller has already narrowed by
+    eligibility — reusable by both the assign and unassign directions."""
+    coords = punto_data.get("coords") or {}
+    lat, lon = coords.get("lat"), coords.get("lon")
+    if lat is None or lon is None:
+        return None
+    best, _dist = nearest(lat, lon, candidatos, _twin_latlon, max_m=MAX_MATCH_M)
+    if best is not None:
+        return best
+    key_p = addr_key(punto_data.get("direccion"))
+    if key_p:
+        for c in candidatos:
+            key_c = addr_key(c.get("direccion"))
+            if key_c and (key_c == key_p or SequenceMatcher(None, key_p, key_c).ratio() >= ADDR_MATCH_RATIO):
+                return c
+    return None
+
+
+def _sticker_twin_libre(data: dict[str, Any], punto_clave: Any) -> bool:
+    """Eligible for a NEW twin-propagation link: no `grupo_id` yet (never
+    steal another grupo's assignment), not completed (mirrors the sticker
+    campaign's own locked semantics: `estado_asignacion != 'hecho'` and
+    `tiene_sticker` not True), AND — first-link-wins — no
+    `clave_integracion` already persisted for a DIFFERENT planeacion
+    point."""
+    if data.get("grupo_id"):
+        return False
+    if data.get("estado_asignacion") == "hecho":
+        return False
+    if data.get("tiene_sticker") is True:
+        return False
+    existing_clave = data.get("clave_integracion")
+    if existing_clave and existing_clave != punto_clave:
+        return False
+    return True
+
+
+def _propagar_grupo_a_stickers(db: Any, grupo_id: str, puntos_data: list[dict[str, Any]]) -> int:
+    """Best-effort twin propagation onto `sticker_matches` — module
+    docstring's "REVERSAL" section. Persists the pairing, not just the
+    grupo: `grupo_id` + `clave_integracion` + `planeacion_punto_id`.
+    FAIL-SOFT: any error here (including the initial read) must NEVER fail
+    the survey-side assignment that already committed."""
+    try:
+        candidatos = [_doc_to_dict(d) for d in db.collection(STICKER_MATCHES_COLLECTION).get()]
+        consumidos: set[str] = set()
+        batch = db.batch()
+        count = 0
+        for p in puntos_data:
+            clave = p.get("clave_integracion")
+            libres = [c for c in candidatos if c["id"] not in consumidos and _sticker_twin_libre(c, clave)]
+            twin = _encontrar_twin_sticker(p, libres)
+            if twin is None:
+                continue
+            consumidos.add(twin["id"])
+            fields: dict[str, Any] = {"grupo_id": grupo_id, "planeacion_punto_id": p["id"]}
+            if clave:
+                fields["clave_integracion"] = clave
+            batch.set(db.collection(STICKER_MATCHES_COLLECTION).document(twin["id"]), fields, merge=True)
+            count += 1
+        if count:
+            batch.commit()
+        return count
+    except Exception:
+        logging.exception(
+            "Fallo propagando grupo_id/clave_integracion a sticker_matches (best-effort, no bloquea la asignación)"
+        )
+        return 0
+
+
+def _desasignar_grupo_de_stickers(db: Any, puntos_data: list[dict[str, Any]]) -> int:
+    """Symmetric best-effort clear: only `grupo_id` is cleared on a twin —
+    the persisted `clave_integracion`/`planeacion_punto_id` linkage STAYS
+    (the physical pairing remains true regardless of assignment). FAIL-SOFT
+    same as `_propagar_grupo_a_stickers`."""
+    try:
+        candidatos = [_doc_to_dict(d) for d in db.collection(STICKER_MATCHES_COLLECTION).get()]
+        cleared: set[str] = set()
+        batch = db.batch()
+        count = 0
+        for p in puntos_data:
+            grupo_id = p.get("grupo_id")
+            if not grupo_id:
+                continue
+            restantes = [c for c in candidatos if c["id"] not in cleared]
+            twin = _encontrar_twin_sticker(p, restantes)
+            if twin is None or twin.get("grupo_id") != grupo_id:
+                continue
+            cleared.add(twin["id"])
+            batch.set(db.collection(STICKER_MATCHES_COLLECTION).document(twin["id"]), {"grupo_id": None}, merge=True)
+            count += 1
+        if count:
+            batch.commit()
+        return count
+    except Exception:
+        logging.exception("Fallo limpiando grupo_id en sticker_matches gemelos (best-effort)")
+        return 0
+
+
 def asignar_grupo_a_puntos(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     """Sets `grupo_id` on the given `planeacion_puntos` docs — COEXISTS with
     any existing `inspector_uid` (never touched here, binding decision 2).
@@ -1213,23 +1400,57 @@ def asignar_grupo_a_puntos(db: Any, body: dict[str, Any]) -> dict[str, Any]:
         batch.set(db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id), {"grupo_id": grupo_id}, merge=True)
 
     commit_in_chunks(db, puntos, _apply)
-    return {"grupo_id": grupo_id, "puntos": puntos}
+
+    # Item 6 (2026-08-27 reversal, module docstring): best-effort twin
+    # propagation onto sticker_matches — never fails this survey-side write.
+    puntos_twin_data = [
+        {
+            "id": s.id,
+            "coords": (s.to_dict() or {}).get("coords"),
+            "direccion": (s.to_dict() or {}).get("direccion"),
+            "clave_integracion": (s.to_dict() or {}).get("clave_integracion"),
+        }
+        for s in punto_snaps
+    ]
+    stickers_asignados = _propagar_grupo_a_stickers(db, grupo_id, puntos_twin_data)
+    return {"grupo_id": grupo_id, "puntos": puntos, "stickers_asignados": stickers_asignados}
 
 
 def desasignar_grupo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     """Clears `grupo_id` (back to unassigned) on the given `planeacion_puntos`
     docs. Does not touch `inspector_uid` — the two assignment mechanisms
-    are independent (binding decision 2)."""
+    are independent (binding decision 2). Item 6 (2026-08-27 reversal):
+    symmetric best-effort clear of the SAME grupo's twin `sticker_matches`
+    docs (see module docstring's "REVERSAL" section) — the linkage keys
+    (`clave_integracion`/`planeacion_punto_id`) stay, only `grupo_id` is
+    cleared."""
     raw_puntos = body.get("puntos")
     puntos = [str(p) for p in raw_puntos] if isinstance(raw_puntos, list) else []
     if not puntos:
         raise bad_request("desasignarGrupo necesita al menos un punto.")
 
+    # Read each point's CURRENT grupo_id/coords/direccion BEFORE clearing —
+    # needed to find its twin and confirm it belongs to the SAME grupo.
+    punto_refs = [db.collection(PLANEACION_PUNTOS_COLLECTION).document(pid) for pid in puntos]
+    punto_snaps = db.get_all(punto_refs)
+    puntos_twin_data = [
+        {
+            "id": s.id,
+            "coords": (s.to_dict() or {}).get("coords"),
+            "direccion": (s.to_dict() or {}).get("direccion"),
+            "grupo_id": (s.to_dict() or {}).get("grupo_id"),
+        }
+        for s in punto_snaps
+        if s.exists
+    ]
+
     def _apply(batch: Any, punto_id: str) -> None:
         batch.set(db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id), {"grupo_id": None}, merge=True)
 
     commit_in_chunks(db, puntos, _apply)
-    return {"puntos": puntos}
+
+    stickers_desasignados = _desasignar_grupo_de_stickers(db, puntos_twin_data)
+    return {"puntos": puntos, "stickers_desasignados": stickers_desasignados}
 
 
 # ---- vehiculos actions (`grupos-inspectores` follow-up, 2026-08-26) --------
@@ -1789,22 +2010,30 @@ def _dispatch(
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - legacy fail-open surface
-        if "requires an index" in str(exc).lower():
+        message = str(exc)
+        if "requires an index" in message.lower():
             # Firestore's FailedPrecondition for a missing composite index:
-            # the raw message carries a console link to create it, useful
-            # only to whoever reads server logs, not the admin staring at a
-            # 502. Log the original (with the link) and surface an
-            # actionable message instead.
+            # the raw message carries a console link to create it. Log the
+            # original (with the link) regardless. Item 3b (2026-08-27):
+            # this is an admin-only endpoint, so extracting that link and
+            # putting it directly in the 503 detail is correct and removes
+            # the "go check the server logs" hop for the admin -- falls back
+            # to the generic actionable message when no link is present in
+            # the error text.
             logging.exception("Firestore query requires a composite index")
-            raise HTTPException(
-                status_code=503,
-                detail=(
+            link_match = re.search(r"https://console\.firebase\.google\.com\S+", message)
+            detail = (
+                "Falta un índice de la base de datos para esta consulta. "
+                "Avisar al administrador (el enlace de creación está en "
+                "los logs del servidor)."
+            )
+            if link_match:
+                detail = (
                     "Falta un índice de la base de datos para esta consulta. "
-                    "Avisar al administrador (el enlace de creación está en "
-                    "los logs del servidor)."
-                ),
-            ) from exc
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+                    f"Crear el índice aquí: {link_match.group(0)}"
+                )
+            raise HTTPException(status_code=503, detail=detail) from exc
+        raise HTTPException(status_code=502, detail=message) from exc
 
 
 @router.post("/planeacion-asignaciones")
