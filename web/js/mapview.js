@@ -293,6 +293,17 @@ function renderPointsLegend(records) {
     entries.push({ label: 'Sin dato', color: COLORS.unknown });
   }
   if (state.sizeBy !== 'none') title += ` · tamaño ∝ ${NUM_FIELDS[state.sizeBy]}`;
+  // Total por categoría: mismo pointColor() que pinta cada punto, así que el
+  // conteo siempre cuadra 1:1 con lo que se ve en el mapa (mismo `records` ya
+  // filtrado a los que tienen coordenadas). Si dos categorías compartieran
+  // color se sumarían juntas, pero cada escala de color de este archivo ya
+  // asigna un color único por categoría — eso es lo que hace la leyenda legible.
+  const countByColor = new Map();
+  for (const r of records) {
+    const c = pointColor(r);
+    countByColor.set(c, (countByColor.get(c) || 0) + 1);
+  }
+  entries = entries.map((e) => ({ ...e, label: `${e.label} · ${countByColor.get(e.color) || 0}` }));
   setLegend(title, entries.map((e) => ({ ...e, shape: 'circle' })));
 }
 
