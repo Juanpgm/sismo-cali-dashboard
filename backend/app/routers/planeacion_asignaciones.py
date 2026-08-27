@@ -465,6 +465,34 @@ def points_excluded(points: list[dict[str, Any]]) -> list[str]:
     return [p["id"] for p in (points or []) if p and p.get("estado_asignacion") == "no_aplica"]
 
 
+# `afectacion` values this router treats as excluded from the assignable
+# pool (user decision 2026-08-27) — a point already carrying one of these
+# categories from the atencionsismo cruce is assumed to already have a
+# sufficient specialized evaluation and does not need an EDAN field visit.
+# Compared case/accent-insensitively (`_normalize_afectacion`) so a stray
+# casing difference from `web/data/reportes.json` never silently slips a
+# point past the guard. Keep this in sync with the raw category strings
+# `app.jobs.planeacion_cruce.PESOS_AFECTACION_RAW` scores against.
+_AFECTACIONES_EXCLUIDAS = {"daño estructural"}
+
+
+def _normalize_afectacion(value: object) -> str:
+    return str(value or "").strip().casefold()
+
+
+def points_dano_estructural(points: list[dict[str, Any]]) -> list[str]:
+    """`afectacion` guard: a point whose atencionsismo report already carries
+    an excluded severity category (today: DAÑO ESTRUCTURAL) is not
+    assignable — same "not assignable" shape as `points_excluded`, just
+    driven by the cruce's own data instead of an admin-set
+    `estado_asignacion`."""
+    return [
+        p["id"]
+        for p in (points or [])
+        if p and _normalize_afectacion(p.get("afectacion")) in _AFECTACIONES_EXCLUIDAS
+    ]
+
+
 def points_locked(points: list[dict[str, Any]]) -> list[str]:
     """Assignment lock (feature F): a point already **levantado**
     (`tiene_survey` — EDAN survey or israel) or **done**
@@ -861,7 +889,11 @@ def run_auto_agrupar(db: Any, body: dict[str, Any]) -> list[dict[str, Any]]:
         query = query.where("barrio", "==", barrio)
     docs = query.order_by("prioridad_score", direction=_fs.Query.DESCENDING).limit(limite).get()
     all_puntos = [_doc_to_dict(d) for d in docs]
-    excluded_ids = set(points_with_survey(all_puntos)) | set(points_excluded(all_puntos))
+    excluded_ids = (
+        set(points_with_survey(all_puntos))
+        | set(points_excluded(all_puntos))
+        | set(points_dano_estructural(all_puntos))
+    )
     puntos = [p for p in all_puntos if p["id"] not in excluded_ids]
 
     # "Auto-agrupar solo dentro del 2500" (user decision 2026-08-27): a SCOPED
@@ -940,6 +972,7 @@ def crear_cuadrilla(db: Any, body: dict[str, Any]) -> dict[str, Any]:
                 "cuadrilla_id": (data or {}).get("cuadrilla_id"),
                 "tiene_survey": (data or {}).get("tiene_survey") is True,
                 "estado_asignacion": (data or {}).get("estado_asignacion"),
+                "afectacion": (data or {}).get("afectacion"),
             }
         )
 
@@ -954,6 +987,11 @@ def crear_cuadrilla(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     if excluded:
         raise bad_request(
             f"{len(excluded)} punto(s) están marcados como no aplica; quitar esos puntos de la selección."
+        )
+    dano_estructural = points_dano_estructural(current)
+    if dano_estructural:
+        raise bad_request(
+            f"{len(dano_estructural)} punto(s) tienen afectación DAÑO ESTRUCTURAL y no son asignables; quitar esos puntos de la selección."
         )
     # feature F parity gap fix: a point manually marked 'hecho' WITHOUT a
     # survey (tiene_survey stays False, so the `surveyed` guard above never

@@ -926,6 +926,30 @@ def test_auto_agrupar_router_excludes_surveyed_at_the_query_not_just_in_code(mon
     assert assigned == {"real_pendiente"}
 
 
+def test_auto_agrupar_router_excludes_dano_estructural_points(monkeypatch):
+    # User decision 2026-08-27: a point whose atencionsismo report already
+    # carries afectacion=DAÑO ESTRUCTURAL is assumed to have a sufficient
+    # specialized evaluation and must never enter the auto-agrupar pool —
+    # same in-code exclusion shape `points_excluded`/`points_with_survey`
+    # already apply post-fetch.
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "dano_estructural": {"estado_asignacion": "pendiente", "cuadrilla_id": None, "tiene_survey": False,
+                             "prioridad_score": 99, "coords": {"lat": 3.40, "lon": -76.50},
+                             "afectacion": "DAÑO ESTRUCTURAL"},
+        "real_pendiente": {"estado_asignacion": "pendiente", "cuadrilla_id": None, "tiene_survey": False,
+                           "prioridad_score": 10, "coords": {"lat": 3.41, "lon": -76.51},
+                           "afectacion": "RIESGO COLAPSO"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "autoAgrupar"})
+
+    assert resp.status_code == 200
+    assigned = {pid for c in resp.json()["cuadrillas"] for pid in c["puntos"]}
+    assert assigned == {"real_pendiente"}
+
+
 def test_auto_agrupar_router_creates_only_the_densest_cluster(monkeypatch):
     # "Agrupar" now creates exactly ONE cuadrilla per click — the densest
     # cluster — not one cuadrilla per cluster. A tight trio + a lone
@@ -1151,6 +1175,25 @@ def test_crear_cuadrilla_rejects_a_hecho_point_without_a_survey(monkeypatch):
     stores = _stores()
     stores[PLANEACION_PUNTOS] = {
         "p1": {"cuadrilla_id": None, "tiene_survey": False, "estado_asignacion": "hecho"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "crearCuadrilla", "puntos": ["p1"]})
+
+    assert resp.status_code == 400
+    assert stores[PLANEACION_CUADRILLAS] == {}
+    assert stores[PLANEACION_PUNTOS]["p1"].get("cuadrilla_id") is None
+
+
+def test_crear_cuadrilla_rejects_dano_estructural_points_naming_them(monkeypatch):
+    # User decision 2026-08-27: a point whose atencionsismo report already
+    # carries afectacion=DAÑO ESTRUCTURAL is assumed to have a sufficient
+    # specialized evaluation and must not be assignable — same "not
+    # assignable" shape as no_aplica, just data-driven from the cruce.
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"cuadrilla_id": None, "tiene_survey": False, "estado_asignacion": "pendiente",
+               "afectacion": "DAÑO ESTRUCTURAL"},
     }
     client = _admin_client(monkeypatch, stores)
 
