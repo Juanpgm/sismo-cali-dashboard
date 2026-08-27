@@ -600,13 +600,32 @@ def list_puntos(db: Any, params: dict[str, Any]) -> dict[str, Any]:
     # by this flag — that is an explicit operator exclusion, not a survey-state
     # fact, so it needs the `estado` filter to surface.
     incluir_levantados = bool(params.get("incluirLevantados"))
+    prioridad = params.get("prioridad")
+    comuna = params.get("comuna")
+    solo_pendientes = params.get("soloPendientes")
+
+    # In-code narrowing shared by the priority page AND the always-included
+    # assigned set below, so both honor the same active filters.
+    def _passes(p: dict[str, Any]) -> bool:
+        if not incluir_levantados and p.get("tiene_survey"):
+            return False
+        if estado:
+            if p.get("estado_asignacion") != estado:
+                return False
+        elif p.get("estado_asignacion") == "no_aplica":
+            return False
+        if prioridad and _effective_prioridad(p) != prioridad:
+            return False
+        if comuna and p.get("comuna") != comuna:
+            return False
+        if solo_pendientes and p.get("estado_asignacion") != "pendiente":
+            return False
+        return True
 
     # Speed follow-up (2026-08-27): only over-fetch the full LIMIT_MAX+1 when
     # an in-code narrowing filter can actually drop an arbitrary fraction of
     # the page; the plain default call has no such filter (see docstring).
-    narrowing_filters_present = bool(
-        estado or params.get("prioridad") or params.get("comuna") or params.get("soloPendientes")
-    )
+    narrowing_filters_present = bool(estado or prioridad or comuna or solo_pendientes)
     over_fetch_limit = (LIMIT_MAX + 1) if narrowing_filters_present else min(effective_limit * 2 + 1, LIMIT_MAX + 1)
 
     query = db.collection(PLANEACION_PUNTOS_COLLECTION)
@@ -617,22 +636,32 @@ def list_puntos(db: Any, params: dict[str, Any]) -> dict[str, Any]:
         .order_by("prioridad_score", direction=_fs.Query.DESCENDING)
         .limit(over_fetch_limit)
     )
-    puntos = [_doc_to_dict(d) for d in query.get()]
-
-    if estado:
-        puntos = [p for p in puntos if p.get("estado_asignacion") == estado]
-    else:
-        puntos = [p for p in puntos if p.get("estado_asignacion") != "no_aplica"]
-    if params.get("prioridad"):
-        puntos = [p for p in puntos if _effective_prioridad(p) == params["prioridad"]]
-    if params.get("comuna"):
-        puntos = [p for p in puntos if p.get("comuna") == params["comuna"]]
-    if params.get("soloPendientes"):
-        puntos = [p for p in puntos if p.get("estado_asignacion") == "pendiente"]
+    puntos = [p for p in (_doc_to_dict(d) for d in query.get()) if _passes(p)]
 
     puntos.sort(key=_sort_key)
     truncado = len(puntos) > effective_limit
-    return {"puntos": puntos[:effective_limit], "truncado": truncado}
+    page = puntos[:effective_limit]
+    page_ids = {p["id"] for p in page}
+
+    # "Always include assigned points" (user decision 2026-08-27): a point with
+    # a grupo/inspector/cuadrilla assignment MUST appear even when it ranks
+    # below the top-N priority page — otherwise a low-priority assigned point
+    # is invisible in the table and unmanageable (can't desasignar it, it
+    # blocks its group's deletion, and it is missing from the Grupo column).
+    # The assigned set is bounded by real field capacity (small), so three
+    # single-field-inequality reads (each auto-indexed, no composite index)
+    # are cheap. They still honor the active narrowing filters via `_passes`.
+    assigned: dict[str, dict[str, Any]] = {}
+    for field in ("grupo_id", "inspector_uid", "cuadrilla_id"):
+        for d in db.collection(PLANEACION_PUNTOS_COLLECTION).where(field, "!=", None).select(list(PUNTOS_LIST_FIELDS)).get():
+            if d.id not in assigned:
+                assigned[d.id] = _doc_to_dict(d)
+    extra = [p for pid, p in assigned.items() if pid not in page_ids and _passes(p)]
+    if extra:
+        page = page + extra
+        page.sort(key=_sort_key)
+
+    return {"puntos": page, "truncado": truncado}
 
 
 def resumen(db: Any) -> dict[str, Any]:

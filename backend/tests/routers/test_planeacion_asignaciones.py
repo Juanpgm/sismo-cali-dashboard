@@ -492,6 +492,47 @@ def test_list_puntos_truncado_true_when_more_than_limit(monkeypatch):
     assert body["truncado"] is True
 
 
+def test_list_puntos_always_includes_assigned_points_beyond_top_n(monkeypatch):
+    """"Always include assigned" (user decision 2026-08-27): a point with a
+    grupo/inspector/cuadrilla assignment appears even when it ranks BELOW the
+    top-N priority page — otherwise a low-priority assigned point is invisible
+    and unmanageable (can't desasignar it, it blocks its group's deletion)."""
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "hi1": _punto(prioridad_score=90),
+        "hi2": _punto(prioridad_score=80),
+        # Low priority (score 1) so it falls outside the top-2 page, but it is
+        # assigned to a group → must still be returned.
+        "assigned_lo": {**_punto(estado_asignacion="asignado", prioridad_score=1), "grupo_id": "g1"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "listPuntos", "limit": 2})
+
+    body = resp.json()
+    ids = {p["id"] for p in body["puntos"]}
+    assert ids == {"hi1", "hi2", "assigned_lo"}
+    # No duplicate even though the assigned point is also in the raw score query.
+    assert len(body["puntos"]) == 3
+
+
+def test_list_puntos_assigned_point_still_honors_active_comuna_filter(monkeypatch):
+    """The always-included assigned set is still narrowed by the active
+    filters — an assigned point in another comuna does not leak into a
+    comuna-filtered view."""
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "hi1": _punto(prioridad_score=90, comuna="Comuna 1"),
+        "assigned_other": {**_punto(estado_asignacion="asignado", prioridad_score=1, comuna="Comuna 2"), "grupo_id": "g1"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "listPuntos", "comuna": "Comuna 1"})
+
+    ids = {p["id"] for p in resp.json()["puntos"]}
+    assert ids == {"hi1"}
+
+
 def test_list_puntos_limit_above_hard_max_is_clamped_not_failed(monkeypatch):
     stores = _stores()
     stores[PLANEACION_PUNTOS] = {"p1": _punto()}
