@@ -225,10 +225,10 @@ export function buildHistorialFiltro({ tipo, usuario, fecha } = {}) {
 // Two pure builders so the modal's two-step "create driver then vehicle" flow
 // is testable without the DOM. The handler resolves conductor_id at runtime
 // (an existing id, or the one crearConductor returns) and passes it in here.
-export function buildVehiculoPayload({ vehiculoId, placa, tipo, empresa, activo, conductorId } = {}) {
+export function buildVehiculoPayload({ vehiculoId, placa, diaPicoPlaca, empresa, activo, conductorId } = {}) {
   const base = {
     placa: (placa || '').trim(),
-    tipo: (tipo || '').trim(),
+    dia_pico_placa: diaPicoPlaca || '',
     empresa: (empresa || '').trim(),
     conductor_id: conductorId || '',
   };
@@ -323,6 +323,10 @@ function cardHead(title, subtitle, extra = '') {
 
 function shellHtml() {
   return `
+    <header class="sticker-page-head">
+      <h2 class="sticker-h1">Planeación</h2>
+      <p class="sticker-lead">Agrupación, asignación y seguimiento de los puntos de inspección.</p>
+    </header>
     <div class="section-bar">
       <h3 class="section-bar-title">Planeación</h3>
       <span class="eval-toolbar-meta" id="planeacion-map-meta"></span>
@@ -364,7 +368,7 @@ function shellHtml() {
               <input type="number" id="planeacion-max-size" min="2" step="1" placeholder="${DEFAULT_MAX_SIZE}">
             </label>
             <button type="button" class="sticker-action" id="planeacion-crear" disabled>Crear cuadrilla de la selección</button>
-            <label class="asignacion-inline-field planeacion-toggle-field" title="Muestra también los puntos que ya tienen encuesta, para revisar o corregir un cierre automático equivocado.">
+            <label class="asignacion-inline-field" title="Muestra también los puntos que ya tienen encuesta, para revisar o corregir un cierre automático equivocado.">
               <input type="checkbox" id="planeacion-incluir-levantados">
               <span>Incluir levantados</span>
             </label>
@@ -569,18 +573,27 @@ function shellHtml() {
         </div>
         <div class="modal-body">
           <input type="hidden" id="planeacion-vehiculo-id">
-          <label class="sticker-field"><span>Placa</span>
-            <input type="text" id="planeacion-vehiculo-placa" placeholder="ABC123">
-          </label>
-          <label class="sticker-field"><span>Tipo</span>
-            <input type="text" id="planeacion-vehiculo-tipo" placeholder="Camioneta">
-          </label>
-          <label class="sticker-field"><span>Empresa</span>
-            <input type="text" id="planeacion-vehiculo-empresa" placeholder="Empresa">
-          </label>
-          <label class="sticker-field"><span>Conductor</span>
-            <select id="planeacion-vehiculo-conductor"></select>
-          </label>
+          <div class="sticker-form-grid">
+            <label class="sticker-field"><span>Placa</span>
+              <input type="text" id="planeacion-vehiculo-placa" placeholder="ABC123">
+            </label>
+            <label class="sticker-field"><span>Empresa</span>
+              <input type="text" id="planeacion-vehiculo-empresa" placeholder="Empresa">
+            </label>
+            <label class="sticker-field"><span>Día de pico y placa</span>
+              <select id="planeacion-vehiculo-dia-pico-placa">
+                <option value="">— Sin restricción —</option>
+                <option value="lunes">Lunes</option>
+                <option value="martes">Martes</option>
+                <option value="miercoles">Miércoles</option>
+                <option value="jueves">Jueves</option>
+                <option value="viernes">Viernes</option>
+              </select>
+            </label>
+            <label class="sticker-field"><span>Conductor</span>
+              <select id="planeacion-vehiculo-conductor"></select>
+            </label>
+          </div>
           <label class="sticker-field asignacion-inline-field" id="planeacion-vehiculo-activo-field" hidden>
             <input type="checkbox" id="planeacion-vehiculo-activo">
             <span>Activo</span>
@@ -709,7 +722,7 @@ function gruposHtml(grupos, inspectorById, vehiculosDisponibles) {
       // active, currently-unassigned vehicle.
       const opciones = [vehiculo, ...vehiculosDisponibles.filter((v) => !vehiculo || v.id !== vehiculo.id)]
         .filter(Boolean);
-      const vehiculoSelect = `<select class="asignacion-vehiculo-select" data-vehiculo-select-grupo="${escapeHtml(g.id)}">
+      const vehiculoSelect = `<select data-vehiculo-select-grupo="${escapeHtml(g.id)}">
         <option value="">— Sin vehículo —</option>
         ${opciones.map((v) => `<option value="${escapeHtml(v.id)}" ${vehiculo && vehiculo.id === v.id ? 'selected' : ''}>${escapeHtml(v.placa)}${v.tipo ? ` (${escapeHtml(v.tipo)})` : ''}</option>`).join('')}
       </select>`;
@@ -738,8 +751,8 @@ function progresoBarraHtml(tally, inline = false) {
   const t = tally || { asignados: 0, hechos: 0, pendientes: 0, completado_pct: 0 };
   const cls = inline ? 'planeacion-progreso-cell planeacion-progreso-cell-inline' : 'planeacion-progreso-cell';
   return `<div class="${cls}">
-    <div class="planeacion-progreso-barra" title="${t.hechos}/${t.asignados} hecho(s)">
-      <div class="planeacion-progreso-relleno" style="width:${Math.min(100, t.completado_pct)}%"></div>
+    <div class="asig-progress" title="${t.hechos}/${t.asignados} hecho(s)">
+      <div class="asig-progress-fill" style="width:${Math.min(100, t.completado_pct)}%"></div>
     </div>
     <span class="planeacion-progreso-pct">${t.completado_pct}% · ${t.hechos}/${t.asignados}</span>
   </div>`;
@@ -786,12 +799,12 @@ export function metricasHtml(metricas, inspectorById) {
       <span>Survey: ${progresoBarraHtml(metricas.survey, true)}</span>
     </div>
     <h4 class="planeacion-metricas-subtitulo">Por grupo</h4>
-    <div class="table-scroll"><table class="sticker-table">
+    <div class="table-scroll"><table>
       <thead><tr><th>Grupo</th><th>Miembros</th><th>Combinado</th><th>Stickers</th><th>Survey</th></tr></thead>
       <tbody>${gruposFilas}</tbody>
     </table></div>
     <h4 class="planeacion-metricas-subtitulo">Por inspector</h4>
-    <div class="table-scroll"><table class="sticker-table">
+    <div class="table-scroll"><table>
       <thead><tr><th>Inspector</th><th>Grupos</th><th>Combinado</th><th>Stickers</th><th>Survey</th></tr></thead>
       <tbody>${inspectoresFilas}</tbody>
     </table></div>`;
@@ -1631,7 +1644,7 @@ export function initPlaneacion(root, { getToken }) {
     const vehiculo = vehiculoId ? vehiculos.find((v) => v.id === vehiculoId) : null;
     root.querySelector('#planeacion-vehiculo-id').value = vehiculoId || '';
     root.querySelector('#planeacion-vehiculo-placa').value = vehiculo ? (vehiculo.placa || '') : '';
-    root.querySelector('#planeacion-vehiculo-tipo').value = vehiculo ? (vehiculo.tipo || '') : '';
+    root.querySelector('#planeacion-vehiculo-dia-pico-placa').value = vehiculo ? (vehiculo.dia_pico_placa || '') : '';
     root.querySelector('#planeacion-vehiculo-empresa').value = vehiculo ? (vehiculo.empresa || '') : '';
     fillConductorSelect(vehiculo ? (vehiculo.conductor_id || '') : '');
     root.querySelector('#planeacion-vehiculo-activo').checked = vehiculo ? vehiculo.activo !== false : true;
@@ -1650,7 +1663,7 @@ export function initPlaneacion(root, { getToken }) {
     if (busy) return;
     const vehiculoId = root.querySelector('#planeacion-vehiculo-id').value;
     const placa = root.querySelector('#planeacion-vehiculo-placa').value.trim();
-    const tipo = root.querySelector('#planeacion-vehiculo-tipo').value.trim();
+    const diaPicoPlaca = root.querySelector('#planeacion-vehiculo-dia-pico-placa').value;
     const empresa = root.querySelector('#planeacion-vehiculo-empresa').value.trim();
     const activo = root.querySelector('#planeacion-vehiculo-activo').checked;
     if (!placa) {
@@ -1661,7 +1674,7 @@ export function initPlaneacion(root, { getToken }) {
     const conductorId = conductorSelect.value;
     busy = true;
     try {
-      await callApi(getToken, buildVehiculoPayload({ vehiculoId, placa, tipo, empresa, activo, conductorId }));
+      await callApi(getToken, buildVehiculoPayload({ vehiculoId, placa, diaPicoPlaca, empresa, activo, conductorId }));
       showOk(vehiculoId ? 'Vehículo actualizado.' : 'Vehículo creado.');
       closeVehiculoModal();
       await reload();

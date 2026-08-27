@@ -173,13 +173,13 @@ assert.deepEqual(
 // ---- buildVehiculoPayload / buildConductorPayload — feature H frontend -----
 // Existing-conductor branch: one crearVehiculo with the chosen conductor_id.
 assert.deepEqual(
-  buildVehiculoPayload({ placa: ' abc123 ', tipo: ' Moto ', empresa: ' Acme ', conductorId: 'c1' }),
-  { action: 'crearVehiculo', placa: 'abc123', tipo: 'Moto', empresa: 'Acme', conductor_id: 'c1' },
+  buildVehiculoPayload({ placa: ' abc123 ', diaPicoPlaca: 'lunes', empresa: ' Acme ', conductorId: 'c1' }),
+  { action: 'crearVehiculo', placa: 'abc123', dia_pico_placa: 'lunes', empresa: 'Acme', conductor_id: 'c1' },
 );
 // Edit branch keeps vehiculo_id + activo, still carries empresa/conductor_id.
 assert.deepEqual(
-  buildVehiculoPayload({ vehiculoId: 'v1', placa: 'XYZ', tipo: '', empresa: 'Co', activo: false, conductorId: 'c2' }),
-  { action: 'editarVehiculo', vehiculo_id: 'v1', placa: 'XYZ', tipo: '', empresa: 'Co', conductor_id: 'c2', activo: false },
+  buildVehiculoPayload({ vehiculoId: 'v1', placa: 'XYZ', diaPicoPlaca: '', empresa: 'Co', activo: false, conductorId: 'c2' }),
+  { action: 'editarVehiculo', vehiculo_id: 'v1', placa: 'XYZ', dia_pico_placa: '', empresa: 'Co', conductor_id: 'c2', activo: false },
 );
 // No conductor chosen → empty conductor_id (backend reads "" as no driver).
 assert.equal(buildVehiculoPayload({ placa: 'A' }).conductor_id, '');
