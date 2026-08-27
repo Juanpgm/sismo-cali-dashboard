@@ -21,6 +21,7 @@ from app.routers import (
     panel_representante,
     planeacion_asignaciones,
     planeacion_cruce,
+    puntos_solicitados,
     refresh,
     reportados,
     sign,
@@ -53,6 +54,7 @@ _ROUTERS = (
     usuarios,
     panel_representante,
     integracion,
+    puntos_solicitados,
 )
 
 
