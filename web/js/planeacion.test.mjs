@@ -6,6 +6,7 @@ import {
   buildHistorialRows, buildHistorialFiltro,
   buildVehiculoPayload, buildConductorPayload,
   rowHtml, filterRosterInspectores, filterInspectores,
+  diaPicoPlacaHoy, autoAgruparMensaje,
 } from './planeacion.js';
 
 // ---- colorForPunto — design.md ADR-10 map legend, 5 states -----------------
@@ -239,5 +240,25 @@ assert.equal(filterRosterInspectores(roster, 'nomatch').length, 0);
 // planeacion.js's OWN filterInspectores (narrower, nombre/código/cédula-only)
 // stays a separate function — this is not a rename, both coexist.
 assert.notEqual(filterInspectores, filterRosterInspectores);
+
+// ---- diaPicoPlacaHoy — planeacion-flujo-confiable, design.md ADR-4 --------
+// Bogotá weekday (no DST), mapped to the backend's unaccented Spanish set.
+// 2026-08-24T15:00:00Z is a Monday in Bogotá (UTC-5); 2026-08-25T03:00:00Z
+// is still Monday in Bogotá even though it's already Tuesday in UTC.
+assert.equal(diaPicoPlacaHoy(new Date('2026-08-24T15:00:00Z')), 'lunes');
+assert.equal(diaPicoPlacaHoy(new Date('2026-08-25T15:00:00Z')), 'martes');
+assert.equal(diaPicoPlacaHoy(new Date('2026-08-25T03:00:00Z')), 'lunes');
+
+// ---- autoAgruparMensaje — `Auto-agrupar returns actionable created-count
+// feedback` (planeacion-asignaciones spec) ----------------------------------
+assert.equal(
+  autoAgruparMensaje(4),
+  '4 cuadrillas creadas. Volver a ejecutar agrupa el siguiente lote.',
+);
+assert.equal(
+  autoAgruparMensaje(1),
+  '1 cuadrilla creada. Volver a ejecutar agrupa el siguiente lote.',
+);
+assert.equal(autoAgruparMensaje(0), 'No hay puntos pendientes sin agrupar.');
 
 console.log('ok — planeacion.js pure table/map/filter logic');

@@ -221,6 +221,32 @@ export function buildHistorialFiltro({ tipo, usuario, fecha } = {}) {
   return body;
 }
 
+// ---- diaPicoPlacaHoy — planeacion-flujo-confiable, design.md ADR-4 --------
+// Bogotá's weekday (no reliance on the browser/host TZ), mapped to the
+// backend's own unaccented Spanish set (`_WEEKDAY_A_DIA` in
+// planeacion_asignaciones.py) so `v.dia_pico_placa === diaPicoPlacaHoy()`
+// compares directly. Backend stays the real barrier (`asignarVehiculoAGrupo`
+// still 400s a restricted vehicle) — this is UI-only surfacing.
+const _WEEKDAY_EN_A_ES = {
+  Monday: 'lunes', Tuesday: 'martes', Wednesday: 'miercoles', Thursday: 'jueves',
+  Friday: 'viernes', Saturday: 'sabado', Sunday: 'domingo',
+};
+export function diaPicoPlacaHoy(date = new Date()) {
+  const weekdayEn = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Bogota', weekday: 'long' }).format(date);
+  return _WEEKDAY_EN_A_ES[weekdayEn] || null;
+}
+
+// ---- autoAgruparMensaje — actionable created-count feedback (design.md
+// ADR-5; planeacion-asignaciones spec "Auto-agrupar returns actionable
+// created-count feedback"). No backend change: run_auto_agrupar already
+// returns the created-cuadrillas list. -------------------------------------
+export function autoAgruparMensaje(n) {
+  if (n > 0) {
+    return `${n} cuadrilla${n === 1 ? '' : 's'} creada${n === 1 ? '' : 's'}. Volver a ejecutar agrupa el siguiente lote.`;
+  }
+  return 'No hay puntos pendientes sin agrupar.';
+}
+
 // ---- vehiculo save payloads (feature H frontend) --------------------------
 // Two pure builders so the modal's two-step "create driver then vehicle" flow
 // is testable without the DOM. The handler resolves conductor_id at runtime
@@ -257,15 +283,17 @@ export function filterInspectores(inspectores, query) {
 }
 
 // ---- Inspectores roster (Slice B — moved from stickers.js, `usuarios-
-// personas-unificadas` change, Phase 3). Ported verbatim from
-// stickers.js:33-76 except the search helper's name — see
-// `filterRosterInspectores`'s own comment for why. --------------------------
+// personas-unificadas` change, Phase 3). Ported verbatim from stickers.js's
+// former roster section (since removed from that file entirely — the
+// roster now lives exclusively here) except the search helper's name —
+// see `filterRosterInspectores`'s own comment for why. ----------------------
 
 const rosterInitials = (name) => (name || '').trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '—';
 
 /** One roster row: brigade code, avatar initials, name/cédula/entidad meta,
  *  active/inhabilitado pill, and the enable/disable toggle button — ported
- *  verbatim from stickers.js:35-57 (rowHtml). */
+ *  verbatim from stickers.js's former `rowHtml` (removed from that file
+ *  when the roster moved here). */
 export function rowHtml(i) {
   const activo = !i.disabled && i.activo;
   const estado = activo
@@ -295,7 +323,8 @@ function normalizeRosterSearch(s) {
 }
 
 /** Roster search over nombre/cédula/código/entidad, accent/case-insensitive —
- *  ported from stickers.js:64-76 (filterInspectores + normalizeSearch).
+ *  ported from stickers.js's former `filterInspectores`/`normalizeSearch`
+ *  (removed from that file when the roster moved here).
  *  Named DIFFERENTLY from this module's OWN `filterInspectores` above (the
  *  narrower nombre/código/cédula-only match used by the assign-inspector
  *  combobox) so porting the richer roster search never shadows or collides
@@ -722,9 +751,20 @@ function gruposHtml(grupos, inspectorById, vehiculosDisponibles) {
       // active, currently-unassigned vehicle.
       const opciones = [vehiculo, ...vehiculosDisponibles.filter((v) => !vehiculo || v.id !== vehiculo.id)]
         .filter(Boolean);
+      // design.md ADR-4: TODAY-restricted vehicles are disabled+labeled in
+      // this selector — backend (`asignarVehiculoAGrupo`) stays the real
+      // barrier, this is UI-only surfacing so the admin doesn't discover
+      // the 400 after already picking one.
+      const diaHoy = diaPicoPlacaHoy();
       const vehiculoSelect = `<select data-vehiculo-select-grupo="${escapeHtml(g.id)}">
         <option value="">— Sin vehículo —</option>
-        ${opciones.map((v) => `<option value="${escapeHtml(v.id)}" ${vehiculo && vehiculo.id === v.id ? 'selected' : ''}>${escapeHtml(v.placa)}${v.empresa ? ` (${escapeHtml(v.empresa)})` : ''}</option>`).join('')}
+        ${opciones.map((v) => {
+          const restringidoHoy = v.dia_pico_placa === diaHoy;
+          const label = `${escapeHtml(v.placa)}${v.empresa ? ` (${escapeHtml(v.empresa)})` : ''}${restringidoHoy ? ' (pico y placa hoy)' : ''}`;
+          const selected = vehiculo && vehiculo.id === v.id ? 'selected' : '';
+          const disabled = restringidoHoy && !selected ? 'disabled' : '';
+          return `<option value="${escapeHtml(v.id)}" ${selected} ${disabled}>${label}</option>`;
+        }).join('')}
       </select>`;
       return `<li class="sticker-row" data-grupo-row="${escapeHtml(g.id)}">
         <div class="sticker-identity">
@@ -848,7 +888,8 @@ function historialHtml(rows) {
 
 /** Just the list — re-rendered on every keystroke of the search box, so it
  *  lives apart from the search input (whose focus must survive a filter).
- *  Ported from stickers.js:78-88 (rosterListHtml). */
+ *  Ported from stickers.js's former `rosterListHtml` (removed from that
+ *  file when the roster moved here). */
 function inspectorRosterListHtml(inspectores, filtered) {
   if (!inspectores.length) {
     return '<p class="sticker-empty">Todavía no hay inspectores. Crear el primero con «Nuevo inspector».</p>';
@@ -1391,14 +1432,18 @@ export function initPlaneacion(root, { getToken }) {
     }
   }
 
-  // ---- cuadrillas section ---------------------------------------------------
-  async function runCuadrillaAction(body, okMsg) {
+  // ---- shared action runner (C5: consolidates the 3 formerly-identical
+  // runCuadrillaAction/runGrupoAction/runVehiculoAction helpers — all three
+  // already shared this exact shape, `reloadFn` included, since hotfix
+  // dc4ae77/071b40f parameterized it). Behavior-preserving: same
+  // busy-guard, same showOk/showErr, same reloadFn default. ----------------
+  async function runAction(body, okMsg, reloadFn = reload) {
     if (busy) return;
     busy = true;
     try {
       await callApi(getToken, body);
       showOk(okMsg);
-      await reload();
+      await reloadFn();
     } catch (err) {
       showErr(err.message);
     } finally {
@@ -1406,6 +1451,7 @@ export function initPlaneacion(root, { getToken }) {
     }
   }
 
+  // ---- cuadrillas section ---------------------------------------------------
   function renderCuadrillasSection() {
     const inspectores = getInspectores();
     const inspectorById = new Map(inspectores.map((i) => [i.uid, i]));
@@ -1414,7 +1460,7 @@ export function initPlaneacion(root, { getToken }) {
     cuadrillasWrap.querySelectorAll('[data-eliminar]').forEach((btn) => {
       btn.addEventListener('click', () => {
         if (!window.confirm('Eliminar esta cuadrilla y liberar sus puntos a pendiente. ¿Continuar?')) return;
-        runCuadrillaAction(
+        runAction(
           { action: 'eliminarCuadrilla', cuadrilla_id: btn.dataset.eliminar },
           'Cuadrilla eliminada.',
         );
@@ -1429,20 +1475,6 @@ export function initPlaneacion(root, { getToken }) {
   // asignarGrupoAPuntos/desasignarGrupo) but grupo/vehiculo-only mutations
   // pass `reloadGruposVehiculos` (hotfix A3/C4) so they don't wait on — or
   // get hidden behind a failure in — the unrelated puntos/cuadrillas fetch.
-  async function runGrupoAction(body, okMsg, reloadFn = reload) {
-    if (busy) return;
-    busy = true;
-    try {
-      await callApi(getToken, body);
-      showOk(okMsg);
-      await reloadFn();
-    } catch (err) {
-      showErr(err.message);
-    } finally {
-      busy = false;
-    }
-  }
-
   function renderGruposSection() {
     const inspectores = getInspectores();
     const inspectorById = new Map(inspectores.map((i) => [i.uid, i]));
@@ -1461,16 +1493,16 @@ export function initPlaneacion(root, { getToken }) {
     gruposWrap.querySelectorAll('[data-eliminar-grupo]').forEach((btn) => {
       btn.addEventListener('click', () => {
         if (!window.confirm('Eliminar este grupo. Si todavía tiene puntos asignados, la eliminación será rechazada.')) return;
-        runGrupoAction({ action: 'eliminarGrupo', grupo_id: btn.dataset.eliminarGrupo }, 'Grupo eliminado.', reloadGruposVehiculos);
+        runAction({ action: 'eliminarGrupo', grupo_id: btn.dataset.eliminarGrupo }, 'Grupo eliminado.', reloadGruposVehiculos);
       });
     });
     gruposWrap.querySelectorAll('[data-vehiculo-select-grupo]').forEach((sel) => {
       sel.addEventListener('change', () => {
         const grupoId = sel.dataset.vehiculoSelectGrupo;
         if (sel.value) {
-          runGrupoAction({ action: 'asignarVehiculoAGrupo', grupo_id: grupoId, vehiculo_id: sel.value }, 'Vehículo asignado al grupo.', reloadGruposVehiculos);
+          runAction({ action: 'asignarVehiculoAGrupo', grupo_id: grupoId, vehiculo_id: sel.value }, 'Vehículo asignado al grupo.', reloadGruposVehiculos);
         } else {
-          runGrupoAction({ action: 'desasignarVehiculo', grupo_id: grupoId }, 'Vehículo desasignado del grupo.', reloadGruposVehiculos);
+          runAction({ action: 'desasignarVehiculo', grupo_id: grupoId }, 'Vehículo desasignado del grupo.', reloadGruposVehiculos);
         }
       });
     });
@@ -1485,22 +1517,8 @@ export function initPlaneacion(root, { getToken }) {
   }
 
   // ---- vehículos section (`grupos-inspectores` follow-up, 2026-08-26) -----
-  // Same `reloadFn` default as `runGrupoAction` — vehiculo-only mutations
-  // pass `reloadGruposVehiculos` (hotfix A3/C4).
-  async function runVehiculoAction(body, okMsg, reloadFn = reload) {
-    if (busy) return;
-    busy = true;
-    try {
-      await callApi(getToken, body);
-      showOk(okMsg);
-      await reloadFn();
-    } catch (err) {
-      showErr(err.message);
-    } finally {
-      busy = false;
-    }
-  }
-
+  // Same shared `runAction` as the grupos section above — vehiculo-only
+  // mutations pass `reloadGruposVehiculos` (hotfix A3/C4).
   function renderVehiculosSection() {
     vehiculosWrap.innerHTML = vehiculosHtml(vehiculos);
     vehiculosWrap.querySelectorAll('[data-editar-vehiculo]').forEach((btn) => {
@@ -1509,7 +1527,7 @@ export function initPlaneacion(root, { getToken }) {
     vehiculosWrap.querySelectorAll('[data-eliminar-vehiculo]').forEach((btn) => {
       btn.addEventListener('click', () => {
         if (!window.confirm('Eliminar este vehículo. Si todavía está asignado a un grupo, la eliminación será rechazada.')) return;
-        runVehiculoAction({ action: 'eliminarVehiculo', vehiculo_id: btn.dataset.eliminarVehiculo }, 'Vehículo eliminado.', reloadGruposVehiculos);
+        runAction({ action: 'eliminarVehiculo', vehiculo_id: btn.dataset.eliminarVehiculo }, 'Vehículo eliminado.', reloadGruposVehiculos);
       });
     });
   }
@@ -1596,8 +1614,8 @@ export function initPlaneacion(root, { getToken }) {
           } catch (err) {
             alert(err.message); // rare path (network/permission); surface it plainly
           } finally {
-            // CRITICAL — carried over VERBATIM from stickers.js:308-313 (the
-            // F5-toggle fix, commit 7977fb7): reset on BOTH success and error,
+            // CRITICAL — carried over VERBATIM from stickers.js's own
+            // F5-toggle fix (commit 7977fb7): reset on BOTH success and error,
             // otherwise a successful toggle leaves `busy` stuck true and every
             // later toggle no-ops until F5. `btn` is a detached node by the
             // time this runs (refreshInspectoresAfterWrite replaced the DOM),
@@ -1744,7 +1762,7 @@ export function initPlaneacion(root, { getToken }) {
     // Roster loads lazily (once per init). The grupo modal may be the FIRST
     // thing an admin opens, so ensure it here — otherwise the picker renders
     // empty ("Sin inspectores habilitados") and there's nobody to search.
-    grupoMiembrosList.innerHTML = '<p class="sticker-empty">Cargando inspectores…</p>';
+    grupoMiembrosList.innerHTML = '<p class="sticker-loading">Cargando inspectores…</p>';
     try {
       await ensureInspectores();
     } catch {
@@ -1817,7 +1835,7 @@ export function initPlaneacion(root, { getToken }) {
   asignarGrupoBtn.addEventListener('click', async () => {
     if (busy || !selected.size || !grupoSelect.value) return;
     const puntos = [...selected];
-    await runGrupoAction(
+    await runAction(
       { action: 'asignarGrupoAPuntos', grupo_id: grupoSelect.value, puntos },
       `Grupo asignado a ${puntos.length} punto${puntos.length === 1 ? '' : 's'}.`,
     );
@@ -1825,7 +1843,7 @@ export function initPlaneacion(root, { getToken }) {
   quitarGrupoBtn.addEventListener('click', async () => {
     if (busy || !selected.size) return;
     const puntos = [...selected];
-    await runGrupoAction(
+    await runAction(
       { action: 'desasignarGrupo', puntos },
       `Grupo quitado de ${puntos.length} punto${puntos.length === 1 ? '' : 's'}.`,
     );
@@ -1864,6 +1882,10 @@ export function initPlaneacion(root, { getToken }) {
   // hidden Puntos `tableWrap` while the admin is on a different subtab.
   async function reloadGruposVehiculos() {
     showErr('');
+    // C8: uniform loading state across every subtab — same
+    // `.sticker-loading` pattern `reload()`/the historial subtab already use.
+    gruposWrap.innerHTML = '<p class="sticker-loading">Cargando grupos…</p>';
+    vehiculosWrap.innerHTML = '<p class="sticker-loading">Cargando vehículos…</p>';
     try {
       const [gruposResp, vehiculosResp, conductoresResp] = await Promise.all([
         callApi(getToken, { action: 'listGrupos' }),
@@ -1877,6 +1899,11 @@ export function initPlaneacion(root, { getToken }) {
       renderVehiculosSection();
     } catch (err) {
       showErr(err.message);
+      // Never leave the "Cargando…" placeholder stuck on a failed reload —
+      // fall back to re-rendering whatever data is still cached, same as
+      // reload()'s own non-critical-section fallback.
+      renderGruposSection();
+      renderVehiculosSection();
     }
   }
 
@@ -1949,7 +1976,7 @@ export function initPlaneacion(root, { getToken }) {
       if (radiusInput.value) body.maxRadiusM = Number(radiusInput.value);
       if (sizeInput.value) body.maxSize = Number(sizeInput.value);
       const { cuadrillas: nuevas } = await callApi(getToken, body);
-      showOk(nuevas.length ? `${nuevas.length} cuadrilla${nuevas.length === 1 ? '' : 's'} nueva${nuevas.length === 1 ? '' : 's'} creada${nuevas.length === 1 ? '' : 's'}.` : 'No había puntos pendientes para agrupar.');
+      showOk(autoAgruparMensaje(nuevas.length));
       await reload();
     } catch (err) {
       showErr(err.message);

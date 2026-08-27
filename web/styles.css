@@ -1668,11 +1668,13 @@ body:not([data-role="admin"]) .view-tab[data-view="analista"] { display: none !i
 .sticker-form { display: flex; flex-direction: column; gap: 14px; }
 .sticker-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .sticker-field { display: flex; flex-direction: column; gap: 5px; font-size: .82rem; color: var(--text-secondary); }
-.sticker-field input {
+.sticker-field input, .sticker-field select, .sticker-field textarea {
   padding: 9px 11px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   background: var(--surface-2); color: var(--text-primary); font-size: .95rem;
 }
-.sticker-field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.sticker-field input:focus-visible, .sticker-field select:focus-visible, .sticker-field textarea:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent);
+}
 .sticker-search { margin: 0 0 14px; }
 .sticker-search-input {
   width: 100%; padding: 9px 12px; border: 1px solid var(--border-strong);
