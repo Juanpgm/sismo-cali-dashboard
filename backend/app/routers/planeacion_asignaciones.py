@@ -1616,12 +1616,35 @@ def _sticker_twin_libre(data: dict[str, Any], punto_clave: Any) -> bool:
     return True
 
 
+def _sticker_radius_libre(data: dict[str, Any]) -> bool:
+    """Eligible for a radius-swept `grupo_id`-only link (survey-sticker-sync)
+    — SAME eligibility as `_sticker_twin_libre` MINUS the "does this clave
+    match MINE" comparison (a radius neighbour never receives `grupo_id`'s
+    own clave, so that comparison is meaningless here). A candidate that
+    ALREADY carries a `clave_integracion` (from a prior exact-twin match,
+    this point's own or another point's) is still someone's confirmed
+    physical pairing and stays protected — first-link-wins applies to the
+    whole doc, not just the linkage fields."""
+    if data.get("grupo_id"):
+        return False
+    if data.get("estado_asignacion") == "hecho":
+        return False
+    if data.get("tiene_sticker") is True:
+        return False
+    if data.get("clave_integracion"):
+        return False
+    return True
+
+
 def _propagar_grupo_a_stickers(db: Any, grupo_id: str, puntos_data: list[dict[str, Any]]) -> int:
     """Best-effort twin propagation onto `sticker_matches` — module
     docstring's "REVERSAL" section. Persists the pairing, not just the
     grupo: `grupo_id` + `clave_integracion` + `planeacion_punto_id`.
-    FAIL-SOFT: any error here (including the initial read) must NEVER fail
-    the survey-side assignment that already committed."""
+    Additionally sweeps every ELIGIBLE `sticker_matches` doc within
+    `DEFAULT_MAX_RADIUS_M` of the point (survey-sticker-sync) — `grupo_id`
+    ONLY, no capacity cap, first-link-wins shared with the exact twin via
+    `consumidos`. FAIL-SOFT: any error here (including the initial read)
+    must NEVER fail the survey-side assignment that already committed."""
     try:
         candidatos = [_doc_to_dict(d) for d in db.collection(STICKER_MATCHES_COLLECTION).get()]
         consumidos: set[str] = set()
@@ -1631,14 +1654,30 @@ def _propagar_grupo_a_stickers(db: Any, grupo_id: str, puntos_data: list[dict[st
             clave = p.get("clave_integracion")
             libres = [c for c in candidatos if c["id"] not in consumidos and _sticker_twin_libre(c, clave)]
             twin = _encontrar_twin_sticker(p, libres)
-            if twin is None:
+            if twin is not None:
+                consumidos.add(twin["id"])
+                fields: dict[str, Any] = {"grupo_id": grupo_id, "planeacion_punto_id": p["id"]}
+                if clave:
+                    fields["clave_integracion"] = clave
+                batch.set(db.collection(STICKER_MATCHES_COLLECTION).document(twin["id"]), fields, merge=True)
+                count += 1
+
+            coords_p = p.get("coords")
+            if not coords_p:
                 continue
-            consumidos.add(twin["id"])
-            fields: dict[str, Any] = {"grupo_id": grupo_id, "planeacion_punto_id": p["id"]}
-            if clave:
-                fields["clave_integracion"] = clave
-            batch.set(db.collection(STICKER_MATCHES_COLLECTION).document(twin["id"]), fields, merge=True)
-            count += 1
+            for c in candidatos:
+                if c["id"] in consumidos or not _sticker_radius_libre(c):
+                    continue
+                coords_c = c.get("coords")
+                if not coords_c or haversine_m(coords_p, coords_c) > DEFAULT_MAX_RADIUS_M:
+                    continue
+                consumidos.add(c["id"])
+                batch.set(
+                    db.collection(STICKER_MATCHES_COLLECTION).document(c["id"]),
+                    {"grupo_id": grupo_id},
+                    merge=True,
+                )
+                count += 1
         if count:
             batch.commit()
         return count
@@ -1650,10 +1689,15 @@ def _propagar_grupo_a_stickers(db: Any, grupo_id: str, puntos_data: list[dict[st
 
 
 def _desasignar_grupo_de_stickers(db: Any, puntos_data: list[dict[str, Any]]) -> int:
-    """Symmetric best-effort clear: only `grupo_id` is cleared on a twin —
-    the persisted `clave_integracion`/`planeacion_punto_id` linkage STAYS
-    (the physical pairing remains true regardless of assignment). FAIL-SOFT
-    same as `_propagar_grupo_a_stickers`."""
+    """Symmetric best-effort clear (survey-sticker-sync): retracts
+    `grupo_id` from every `sticker_matches` doc within `DEFAULT_MAX_RADIUS_M`
+    of the point whose CURRENT `grupo_id` equals the one being desassigned
+    — the exact twin is always <= MAX_MATCH_M <= DEFAULT_MAX_RADIUS_M, so
+    ONE distance+grupo_id sweep covers both the twin and any radius sibling
+    from `_propagar_grupo_a_stickers`, no separate twin lookup needed. Only
+    `grupo_id` is cleared — the persisted `clave_integracion`/
+    `planeacion_punto_id` linkage STAYS (the physical pairing remains true
+    regardless of assignment). FAIL-SOFT same as `_propagar_grupo_a_stickers`."""
     try:
         candidatos = [_doc_to_dict(d) for d in db.collection(STICKER_MATCHES_COLLECTION).get()]
         cleared: set[str] = set()
@@ -1661,15 +1705,18 @@ def _desasignar_grupo_de_stickers(db: Any, puntos_data: list[dict[str, Any]]) ->
         count = 0
         for p in puntos_data:
             grupo_id = p.get("grupo_id")
-            if not grupo_id:
+            coords_p = p.get("coords")
+            if not grupo_id or not coords_p:
                 continue
-            restantes = [c for c in candidatos if c["id"] not in cleared]
-            twin = _encontrar_twin_sticker(p, restantes)
-            if twin is None or twin.get("grupo_id") != grupo_id:
-                continue
-            cleared.add(twin["id"])
-            batch.set(db.collection(STICKER_MATCHES_COLLECTION).document(twin["id"]), {"grupo_id": None}, merge=True)
-            count += 1
+            for c in candidatos:
+                if c["id"] in cleared or c.get("grupo_id") != grupo_id:
+                    continue
+                coords_c = c.get("coords")
+                if not coords_c or haversine_m(coords_p, coords_c) > DEFAULT_MAX_RADIUS_M:
+                    continue
+                cleared.add(c["id"])
+                batch.set(db.collection(STICKER_MATCHES_COLLECTION).document(c["id"]), {"grupo_id": None}, merge=True)
+                count += 1
         if count:
             batch.commit()
         return count

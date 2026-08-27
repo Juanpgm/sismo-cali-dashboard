@@ -2380,6 +2380,195 @@ def test_asignar_grupo_does_not_overwrite_a_twin_linked_to_a_different_clave(mon
     assert stores[STICKER_MATCHES]["s1"]["clave_integracion"] == "PLN-OLD"
 
 
+# ── `survey-sticker-sync` (2026-08-27): radius sweep on top of the exact
+# twin — every ELIGIBLE `sticker_matches` doc within `DEFAULT_MAX_RADIUS_M`
+# of an assigned point gets `grupo_id` only (never the twin linkage
+# fields), no capacity cap. ─────────────────────────────────────────────
+
+
+def test_asignar_grupo_radius_sweep_assigns_unassigned_sticker_within_800m(monkeypatch):
+    """A sticker that is NOT the exact twin (>40m, no address match) but
+    within DEFAULT_MAX_RADIUS_M still gets grupo_id, best-effort."""
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1"},
+    }
+    stores[STICKER_MATCHES] = {
+        "s1": {"coords": {"lat": 3.4045, "lon": -76.50}, "direccion": "Otra calle sin relacion"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["p1"]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["stickers_asignados"] == 1
+    assert stores[STICKER_MATCHES]["s1"]["grupo_id"] == "g1"
+
+
+def test_asignar_grupo_radius_sweep_leaves_a_sticker_beyond_800m_untouched(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1"},
+    }
+    stores[STICKER_MATCHES] = {
+        "s1": {"coords": {"lat": 3.4081, "lon": -76.50}, "direccion": "Otra calle sin relacion"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["p1"]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["stickers_asignados"] == 0
+    assert "grupo_id" not in stores[STICKER_MATCHES]["s1"]
+
+
+def test_asignar_grupo_radius_sweep_skips_a_sticker_already_in_another_grupo(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1"},
+    }
+    stores[STICKER_MATCHES] = {
+        "s1": {"coords": {"lat": 3.4045, "lon": -76.50}, "direccion": "Otra calle sin relacion", "grupo_id": "g0"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["p1"]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["stickers_asignados"] == 0
+    assert stores[STICKER_MATCHES]["s1"]["grupo_id"] == "g0"
+
+
+def test_asignar_grupo_radius_sweep_skips_a_hecho_sticker(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1"},
+    }
+    stores[STICKER_MATCHES] = {
+        "s1": {"coords": {"lat": 3.4045, "lon": -76.50}, "direccion": "Otra calle sin relacion",
+               "estado_asignacion": "hecho"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["p1"]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["stickers_asignados"] == 0
+    assert "grupo_id" not in stores[STICKER_MATCHES]["s1"]
+
+
+def test_asignar_grupo_radius_sweep_skips_a_tiene_sticker_true_document(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1"},
+    }
+    stores[STICKER_MATCHES] = {
+        "s1": {"coords": {"lat": 3.4045, "lon": -76.50}, "direccion": "Otra calle sin relacion",
+               "tiene_sticker": True},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["p1"]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["stickers_asignados"] == 0
+    assert "grupo_id" not in stores[STICKER_MATCHES]["s1"]
+
+
+def test_asignar_grupo_radius_sweep_never_writes_twin_linkage_fields(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1", "clave_integracion": "PLN-1-ABC"},
+    }
+    stores[STICKER_MATCHES] = {
+        "s1": {"coords": {"lat": 3.4045, "lon": -76.50}, "direccion": "Otra calle sin relacion"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["p1"]},
+    )
+
+    assert resp.status_code == 200
+    assert stores[STICKER_MATCHES]["s1"]["grupo_id"] == "g1"
+    assert "clave_integracion" not in stores[STICKER_MATCHES]["s1"]
+    assert "planeacion_punto_id" not in stores[STICKER_MATCHES]["s1"]
+
+
+def test_asignar_grupo_radius_sweep_first_link_wins_across_two_points_in_one_batch(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1"},
+        "p2": {"coords": {"lat": 3.4001, "lon": -76.50}, "direccion": "Calle 2"},
+    }
+    stores[STICKER_MATCHES] = {
+        "s1": {"coords": {"lat": 3.4045, "lon": -76.50}, "direccion": "Otra calle sin relacion"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["p1", "p2"]},
+    )
+
+    assert resp.status_code == 200
+    # S is within radius of BOTH points but must be claimed only once.
+    assert resp.json()["stickers_asignados"] == 1
+    assert stores[STICKER_MATCHES]["s1"]["grupo_id"] == "g1"
+
+
+def test_asignar_grupo_radius_sweep_failure_never_fails_the_survey_side_write(monkeypatch):
+    """FAIL-SOFT: the radius sweep itself failing (distinct from a total
+    sticker-store read failure, already covered above) must not fail the
+    survey-side grupo_id write either."""
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1"},
+    }
+    stores[STICKER_MATCHES] = {
+        "s1": {"coords": {"lat": 3.4045, "lon": -76.50}, "direccion": "Otra calle sin relacion"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("radius math unavailable")
+
+    monkeypatch.setattr(pa, "haversine_m", _boom)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["p1"]},
+    )
+
+    assert resp.status_code == 200
+    assert stores[PLANEACION_PUNTOS]["p1"]["grupo_id"] == "g1"
+    assert resp.json()["stickers_asignados"] == 0
+
+
 def test_desasignar_grupo_clears_only_grupo_id_keeps_linkage_on_twin(monkeypatch):
     stores = _stores()
     stores[PLANEACION_PUNTOS] = {
@@ -2416,6 +2605,53 @@ def test_desasignar_grupo_does_not_clear_a_twin_from_a_different_grupo(monkeypat
     assert resp.status_code == 200
     assert resp.json()["stickers_desasignados"] == 0
     assert stores[STICKER_MATCHES]["s1"]["grupo_id"] == "g-otro"
+
+
+# ── `survey-sticker-sync` (2026-08-27): symmetric radius retract — clears
+# grupo_id on the exact twin AND any radius-swept sibling in one sweep. ───
+
+
+def test_desasignar_grupo_clears_both_exact_twin_and_radius_sibling(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1", "grupo_id": "g1"},
+    }
+    stores[STICKER_MATCHES] = {
+        "s1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1",
+               "grupo_id": "g1", "clave_integracion": "PLN-1-ABC", "planeacion_punto_id": "p1"},
+        "s2": {"coords": {"lat": 3.4045, "lon": -76.50}, "direccion": "Otra calle sin relacion",
+               "grupo_id": "g1"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "desasignarGrupo", "puntos": ["p1"]})
+
+    assert resp.status_code == 200
+    assert resp.json()["stickers_desasignados"] == 2
+    assert stores[STICKER_MATCHES]["s1"]["grupo_id"] is None
+    assert stores[STICKER_MATCHES]["s2"]["grupo_id"] is None
+
+
+def test_desasignar_grupo_radius_retract_failure_never_fails_the_survey_side_clear(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1", "grupo_id": "g1"},
+    }
+    stores[STICKER_MATCHES] = {
+        "s1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1", "grupo_id": "g1"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("radius math unavailable")
+
+    monkeypatch.setattr(pa, "haversine_m", _boom)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "desasignarGrupo", "puntos": ["p1"]})
+
+    assert resp.status_code == 200
+    assert stores[PLANEACION_PUNTOS]["p1"]["grupo_id"] is None
+    assert resp.json()["stickers_desasignados"] == 0
 
 
 # ── `grupos-inspectores` follow-up (2026-08-26): vehículos — "cada grupo
