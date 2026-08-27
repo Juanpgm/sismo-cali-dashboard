@@ -18,6 +18,7 @@ sticker template).
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -1612,16 +1613,33 @@ def test_crear_vehiculo_succeeds(monkeypatch):
     stores = _stores()
     client = _admin_client(monkeypatch, stores)
 
-    resp = client.post("/planeacion-asignaciones", json={"action": "crearVehiculo", "placa": "abc123", "tipo": "camioneta"})
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "crearVehiculo", "placa": "abc123", "dia_pico_placa": "lunes"},
+    )
 
     assert resp.status_code == 201
     vehiculo_id = resp.json()["id"]
     doc = stores[VEHICULOS][vehiculo_id]
     assert doc["placa"] == "ABC123"  # normalized uppercase
-    assert doc["tipo"] == "camioneta"
+    assert "tipo" not in doc  # tipo removed from the model entirely (2026-08-26)
+    assert doc["dia_pico_placa"] == "lunes"
     assert doc["activo"] is True
     assert doc["creado_por"] == UID_ADMIN
     assert "creado_en" in doc
+
+
+def test_crear_vehiculo_rejects_invalid_dia_pico_placa(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "crearVehiculo", "placa": "abc123", "dia_pico_placa": "sabado"},
+    )
+
+    assert resp.status_code == 400
+    assert stores.get(VEHICULOS, {}) == {}
 
 
 def test_crear_vehiculo_requires_placa(monkeypatch):
@@ -1663,18 +1681,153 @@ def test_list_vehiculos_returns_every_vehiculo(monkeypatch):
 
 def test_editar_vehiculo_updates_fields(monkeypatch):
     stores = _stores()
-    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "tipo": "camioneta", "activo": True}}
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "activo": True}}
     client = _admin_client(monkeypatch, stores)
 
     resp = client.post(
         "/planeacion-asignaciones",
-        json={"action": "editarVehiculo", "vehiculo_id": "v1", "tipo": "moto", "activo": False},
+        json={"action": "editarVehiculo", "vehiculo_id": "v1", "dia_pico_placa": "martes", "activo": False},
     )
 
     assert resp.status_code == 200
-    assert stores[VEHICULOS]["v1"]["tipo"] == "moto"
+    assert stores[VEHICULOS]["v1"]["dia_pico_placa"] == "martes"
     assert stores[VEHICULOS]["v1"]["activo"] is False
     assert stores[VEHICULOS]["v1"]["placa"] == "ABC123"  # untouched
+
+
+# ── Pico y placa: blocks conductor-assignment and grupo-assignment on the
+# vehicle's restricted weekday (binding user decision 2026-08-26) ───────────
+
+
+def _hoy_bogota_es(dia: str) -> bool:
+    """True iff `dia` (e.g. 'lunes') is Bogota-local today — used to build a
+    deterministic test around whatever day the suite actually runs on."""
+    from app.integracion.config import BOGOTA_TZ
+    from app.routers.planeacion_asignaciones import _WEEKDAY_A_DIA
+    return _WEEKDAY_A_DIA.get(datetime.now(BOGOTA_TZ).weekday()) == dia
+
+
+def _dia_pico_placa_de_hoy() -> str:
+    from app.integracion.config import BOGOTA_TZ
+    from app.routers.planeacion_asignaciones import _WEEKDAY_A_DIA
+    return _WEEKDAY_A_DIA[datetime.now(BOGOTA_TZ).weekday()]
+
+
+def test_crear_vehiculo_rejects_conductor_when_today_is_pico_placa(monkeypatch):
+    stores = _stores()
+    stores[CONDUCTORES] = {"c1": {"cedula": "123", "nombre_completo": "Pedro"}}
+    client = _admin_client(monkeypatch, stores)
+    hoy = _dia_pico_placa_de_hoy()
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "crearVehiculo", "placa": "abc123", "dia_pico_placa": hoy, "conductor_id": "c1"},
+    )
+
+    assert resp.status_code == 400
+    assert stores.get(VEHICULOS, {}) == {}
+
+
+def test_crear_vehiculo_allows_conductor_on_a_non_restricted_day(monkeypatch):
+    stores = _stores()
+    stores[CONDUCTORES] = {"c1": {"cedula": "123", "nombre_completo": "Pedro"}}
+    client = _admin_client(monkeypatch, stores)
+    hoy = _dia_pico_placa_de_hoy()
+    otro_dia = next(d for d in ["lunes", "martes", "miercoles", "jueves", "viernes"] if d != hoy)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "crearVehiculo", "placa": "abc123", "dia_pico_placa": otro_dia, "conductor_id": "c1"},
+    )
+
+    assert resp.status_code == 201
+    vehiculo_id = resp.json()["id"]
+    assert stores[VEHICULOS][vehiculo_id]["conductor_id"] == "c1"
+
+
+def test_editar_vehiculo_rejects_conductor_change_when_todays_own_pico_placa(monkeypatch):
+    hoy = _dia_pico_placa_de_hoy()
+    stores = _stores()
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "activo": True, "dia_pico_placa": hoy, "conductor_id": None}}
+    stores[CONDUCTORES] = {"c1": {"cedula": "123", "nombre_completo": "Pedro"}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "editarVehiculo", "vehiculo_id": "v1", "conductor_id": "c1"},
+    )
+
+    assert resp.status_code == 400
+    assert stores[VEHICULOS]["v1"]["conductor_id"] is None
+
+
+def test_editar_vehiculo_rejects_conductor_when_setting_pico_placa_in_same_call(monkeypatch):
+    hoy = _dia_pico_placa_de_hoy()
+    stores = _stores()
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "activo": True, "conductor_id": None}}
+    stores[CONDUCTORES] = {"c1": {"cedula": "123", "nombre_completo": "Pedro"}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "editarVehiculo", "vehiculo_id": "v1", "dia_pico_placa": hoy, "conductor_id": "c1"},
+    )
+
+    assert resp.status_code == 400
+    assert stores[VEHICULOS]["v1"].get("dia_pico_placa") is None
+    assert stores[VEHICULOS]["v1"]["conductor_id"] is None
+
+
+def test_editar_vehiculo_allows_unrelated_field_when_conductor_untouched_on_pico_placa_day(monkeypatch):
+    # Only a conductor CHANGE is blocked — editing another field (e.g. activo)
+    # on a vehicle that already has a conductor + is pico-y-placa today must
+    # still succeed (the gate only fires when conductor_id is IN the body).
+    hoy = _dia_pico_placa_de_hoy()
+    stores = _stores()
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "activo": True, "dia_pico_placa": hoy, "conductor_id": "c1"}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "editarVehiculo", "vehiculo_id": "v1", "activo": False},
+    )
+
+    assert resp.status_code == 200
+    assert stores[VEHICULOS]["v1"]["activo"] is False
+    assert stores[VEHICULOS]["v1"]["conductor_id"] == "c1"  # untouched
+
+
+def test_asignar_vehiculo_a_grupo_rejects_on_pico_placa_day(monkeypatch):
+    hoy = _dia_pico_placa_de_hoy()
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "G1", "miembros": ["u1"], "activo": True}}
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "activo": True, "dia_pico_placa": hoy}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarVehiculoAGrupo", "grupo_id": "g1", "vehiculo_id": "v1"},
+    )
+
+    assert resp.status_code == 400
+    assert stores[GRUPOS_INSPECTORES]["g1"].get("vehiculo_id") is None
+
+
+def test_asignar_vehiculo_a_grupo_succeeds_on_a_non_restricted_day(monkeypatch):
+    hoy = _dia_pico_placa_de_hoy()
+    otro_dia = next(d for d in ["lunes", "martes", "miercoles", "jueves", "viernes"] if d != hoy)
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "G1", "miembros": ["u1"], "activo": True}}
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "activo": True, "dia_pico_placa": otro_dia}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarVehiculoAGrupo", "grupo_id": "g1", "vehiculo_id": "v1"},
+    )
+
+    assert resp.status_code == 200
+    assert stores[GRUPOS_INSPECTORES]["g1"]["vehiculo_id"] == "v1"
 
 
 def test_editar_vehiculo_rejects_duplicate_placa(monkeypatch):

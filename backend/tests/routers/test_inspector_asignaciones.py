@@ -645,6 +645,31 @@ def test_mis_puntos_planeacion_includes_group_assigned_points(monkeypatch):
     assert ids == {"pln-a", "pln-group"}
 
 
+def test_mis_puntos_planeacion_hides_a_hecho_point_from_every_group_member(monkeypatch):
+    """The guarantee the user asked for: once a group-assigned point is
+    completed (estado_asignacion='hecho' — whether via the pipeline's own
+    exact-key auto-close after a survey submission, or via
+    marcarHechoPlaneacion), it disappears from misPuntosPlaneacion for EVERY
+    member of the group, not just whoever completed it — nobody in the group
+    keeps seeing it as pending work."""
+    store = _store()
+    planeacion = _planeacion_store()
+    planeacion["pln-done"] = {
+        "inspector_uid": None,
+        "grupo_id": "g1",
+        "estado_asignacion": "hecho",  # already completed (auto-close or manual)
+        "clave_integracion": "PLN-DDDDDD-11111111",
+    }
+    grupos = {"g1": _grupo(miembros=[UID_A, UID_C])}
+    claims_c = {"sub": UID_C, "email": "c@sismocali.gov.co"}
+
+    for claims in (FAKE_CLAIMS_A, claims_c):
+        client = _authed_client(monkeypatch, store, claims, planeacion, grupos)
+        resp = client.post("/inspector-asignaciones", json={"action": "misPuntosPlaneacion"})
+        ids = {p["id"] for p in resp.json()["puntos"]}
+        assert "pln-done" not in ids, f"{claims['sub']} should not see the completed group point"
+
+
 def test_group_member_can_complete_group_assigned_point(monkeypatch):
     """The core capability this change exists for: a member of a point's
     group who is NOT the point's own inspector_uid can still marcarHecho

@@ -146,8 +146,9 @@ change already owns, not a separate slice:
    unchanged — no partial `add`. De-duplication also means re-adding an
    already-current member never counts twice toward the cap.
 
-2. **`vehiculos/{id}`** (`{placa, tipo, activo, creado_en, creado_por}`,
-   `placa` unique) — "cada grupo sale en un vehículo". CRUD
+2. **`vehiculos/{id}`** (`{placa, empresa, dia_pico_placa, activo, creado_en,
+   creado_por}`, `placa` unique; `tipo` removed 2026-08-26) — "cada grupo
+   sale en un vehículo". CRUD
    (`listVehiculos`/`crearVehiculo`/`editarVehiculo`/`eliminarVehiculo`)
    plus `asignarVehiculoAGrupo`/`desasignarVehiculo` live HERE, same
    single-owner reasoning as `grupos_inspectores` itself (campaign-
@@ -169,8 +170,8 @@ change already owns, not a separate slice:
    the SAME group it is already on is idempotent (no conflict with
    itself).
 
-   `list_grupos` embeds each group's resolved `vehiculo` (`{id, placa,
-   tipo}` or `null`) directly in its response — a `get_all` batch read
+   `list_grupos` embeds each group's resolved `vehiculo` (its full doc, or
+   `null`) directly in its response — a `get_all` batch read
    over the distinct `vehiculo_id`s already present in the page, not a
    second round trip the admin UI has to make.
 
@@ -214,6 +215,7 @@ from pydantic import BaseModel
 from app.auth.deps import require_role
 from app.config import Settings
 from app.credentials import clients as credentials
+from app.integracion.config import BOGOTA_TZ
 from app.services import planeacion_audit
 from app.services.survey_link import build_survey_urls
 
@@ -1036,7 +1038,7 @@ def list_grupos(db: Any) -> list[dict[str, Any]]:
     UI resolves uid -> display name via the SAME inspector roster it
     already caches for cuadrillas' own `inspectorLabel`, `/api/stickers`
     `{action:'list'}`, no duplicated roster fetch here), PLUS each group's
-    resolved `vehiculo` (`{id, placa, tipo}` or `null`) embedded directly —
+    resolved `vehiculo` (its full doc, or `null`) embedded directly —
     one `get_all` batch read over the distinct `vehiculo_id`s already
     present in this page, not a second round trip the admin UI has to make
     (2026-08-26 follow-up requirement)."""
@@ -1326,6 +1328,45 @@ def eliminar_conductor(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     return {"id": conductor_id, "eliminado": True}
 
 
+# Pico y placa (binding user decision 2026-08-26): one FIXED weekday per
+# vehicle (not a computed schedule — plate-ending tables change and go
+# stale; the admin sets it directly). On that weekday the vehicle cannot be
+# put into service: neither assigned/changed a conductor nor assigned to a
+# group. This is a point-in-time gate at the moment of the write, evaluated
+# against Bogota-local "today" (not UTC — Cali is UTC-5 year-round, so a
+# naive UTC weekday would be wrong in the evening) — it does NOT retroactively
+# unassign an existing assignment when the restricted day arrives.
+DIAS_PICO_PLACA = {"lunes", "martes", "miercoles", "jueves", "viernes"}
+_WEEKDAY_A_DIA = {0: "lunes", 1: "martes", 2: "miercoles", 3: "jueves", 4: "viernes",
+                  5: "sabado", 6: "domingo"}
+
+
+def _validar_dia_pico_placa(raw: Any) -> str | None:
+    dia = str(raw or "").strip().lower()
+    if not dia:
+        return None
+    if dia not in DIAS_PICO_PLACA:
+        raise bad_request(
+            f"dia_pico_placa inválido: {dia!r}. Debe ser uno de {sorted(DIAS_PICO_PLACA)}."
+        )
+    return dia
+
+
+def _hoy_es_dia_pico_placa(dia_pico_placa: Any) -> bool:
+    if not dia_pico_placa:
+        return False
+    hoy = _WEEKDAY_A_DIA.get(datetime.now(BOGOTA_TZ).weekday())
+    return hoy == dia_pico_placa
+
+
+def _rechazar_si_pico_placa_bloquea_conductor(dia_pico_placa: Any, conductor_id: Any) -> None:
+    if conductor_id and _hoy_es_dia_pico_placa(dia_pico_placa):
+        raise bad_request(
+            f"El vehículo tiene pico y placa hoy ({dia_pico_placa}); "
+            "no se le puede asignar conductor hoy."
+        )
+
+
 def _validate_conductor(db: Any, raw_conductor_id: Any) -> str | None:
     """Normalize + existence-check a vehicle's optional `conductor_id`. Empty
     → None (no driver); a non-existent id → 400. Feature H."""
@@ -1349,20 +1390,21 @@ def list_vehiculos(db: Any) -> list[dict[str, Any]]:
 
 def crear_vehiculo(db: Any, body: dict[str, Any], claims: dict[str, Any]) -> dict[str, Any]:
     placa = str(body.get("placa") or "").strip().upper()
-    tipo = body.get("tipo")
     empresa = str(body.get("empresa") or "").strip()
     if not placa:
         raise bad_request("crearVehiculo necesita una placa.")
     if _placa_conflict(db, placa):
         raise bad_request(f"Ya existe un vehículo con la placa {placa}.")
+    dia_pico_placa = _validar_dia_pico_placa(body.get("dia_pico_placa"))
     conductor_id = _validate_conductor(db, body.get("conductor_id"))
+    _rechazar_si_pico_placa_bloquea_conductor(dia_pico_placa, conductor_id)
 
     ref = db.collection(VEHICULOS_COLLECTION).document()
     data = {
         "placa": placa,
-        "tipo": str(tipo).strip() if tipo else None,
         "empresa": empresa or None,
         "conductor_id": conductor_id,
+        "dia_pico_placa": dia_pico_placa,
         "activo": True,
         "creado_en": _now(),
         "creado_por": claims.get("sub"),
@@ -1381,6 +1423,7 @@ def editar_vehiculo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     if not snap.exists:
         raise bad_request(f"No existe el vehículo {vehiculo_id}.")
 
+    existing = snap.to_dict() or {}
     fields: dict[str, Any] = {}
     raw_placa = body.get("placa")
     if raw_placa:
@@ -1388,19 +1431,25 @@ def editar_vehiculo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
         if _placa_conflict(db, nueva_placa, exclude_id=vehiculo_id):
             raise bad_request(f"Ya existe un vehículo con la placa {nueva_placa}.")
         fields["placa"] = nueva_placa
-    raw_tipo = body.get("tipo")
-    if raw_tipo is not None:
-        fields["tipo"] = str(raw_tipo).strip()
     raw_empresa = body.get("empresa")
     if raw_empresa is not None:
         fields["empresa"] = str(raw_empresa).strip() or None
     raw_activo = body.get("activo")
     if raw_activo is not None:
         fields["activo"] = bool(raw_activo)
+    if body.get("dia_pico_placa") is not None:
+        fields["dia_pico_placa"] = _validar_dia_pico_placa(body.get("dia_pico_placa"))
     raw_conductor = body.get("conductor_id")
     if raw_conductor is not None:
         # explicit "" clears the driver; a non-existent id is a 400
-        fields["conductor_id"] = _validate_conductor(db, raw_conductor)
+        nuevo_conductor_id = _validate_conductor(db, raw_conductor)
+        # Effective dia_pico_placa: the one being set in THIS call if present,
+        # else the vehicle's already-persisted value — a bare conductor
+        # change on a vehicle already flagged pico-y-placa today must still
+        # be blocked, not just when both fields change together.
+        dia_efectivo = fields.get("dia_pico_placa", existing.get("dia_pico_placa"))
+        _rechazar_si_pico_placa_bloquea_conductor(dia_efectivo, nuevo_conductor_id)
+        fields["conductor_id"] = nuevo_conductor_id
 
     ref.set(fields, merge=True)
     return {"id": vehiculo_id, **fields}
@@ -1458,6 +1507,13 @@ def asignar_vehiculo_a_grupo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     vehiculo_snap = db.collection(VEHICULOS_COLLECTION).document(vehiculo_id).get()
     if not vehiculo_snap.exists:
         raise bad_request(f"No existe el vehículo {vehiculo_id}.")
+
+    dia_pico_placa = (vehiculo_snap.to_dict() or {}).get("dia_pico_placa")
+    if _hoy_es_dia_pico_placa(dia_pico_placa):
+        raise bad_request(
+            f"El vehículo {vehiculo_id} tiene pico y placa hoy ({dia_pico_placa}); "
+            "no se le puede asignar a un grupo hoy."
+        )
 
     otros = db.collection(GRUPOS_INSPECTORES_COLLECTION).where("vehiculo_id", "==", vehiculo_id).get()
     conflicto = [d for d in otros if d.id != grupo_id]
@@ -1608,9 +1664,18 @@ class PlaneacionAsignacionesRequest(BaseModel):
     # _UNSET needed — unlike editarAsignacion's nullable string fields.
     vehiculo_id: str | None = None
     placa: str | None = None
-    tipo: str | None = None
     empresa: str | None = None
     activo: bool | None = None
+    # Pico y placa: one fixed weekday a vehicle cannot be put into service.
+    dia_pico_placa: str | None = None
+    # `tipo` (vehicle type) was removed from crearVehiculo/editarVehiculo
+    # entirely (2026-08-26, binding user decision) — vehiculo no longer reads
+    # or stores it. The field DECLARATION stays on this shared flat model
+    # only because `listAuditoria` reuses the same name for its OWN,
+    # unrelated `tipo` filter (audit entidad: grupo|vehiculo|conductor|
+    # asignacion|cuadrilla) — see that action's own field block below. Do
+    # not read `tipo` in vehiculo code.
+    tipo: str | None = None
 
     # Feature H (conductores): driver CRUD + link vehiculo->conductor.
     conductor_id: str | None = None
@@ -1619,10 +1684,8 @@ class PlaneacionAsignacionesRequest(BaseModel):
     email: str | None = None
     nombre_completo: str | None = None
 
-    # `planeacion-auditoria` change: listAuditoria filters. `tipo` is already
-    # declared above (reused verbatim — vehiculo's own type field and this
-    # action's entidad filter never collide, since they belong to different
-    # actions on the same dispatcher).
+    # `planeacion-auditoria` change: listAuditoria filters. `tipo` is
+    # declared above (reused verbatim — see that field's own comment).
     usuario: str | None = None
     desde: Any = None
     antes_de: Any = None
