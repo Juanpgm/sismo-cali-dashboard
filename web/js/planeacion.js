@@ -119,12 +119,14 @@ export function colorForPunto(punto) {
 
 /** Joins raw planeacion_puntos points with their cuadrilla/inspector for the
  *  table — computed once per load so client-side sort/filter never re-look-up. */
-export function buildRows(puntos, cuadrillas, inspectores) {
+export function buildRows(puntos, cuadrillas, inspectores, grupos) {
   const cuadrillaById = new Map((cuadrillas || []).map((c) => [c.id, c]));
   const inspectorById = new Map((inspectores || []).map((i) => [i.uid, i]));
+  const grupoById = new Map((grupos || []).map((g) => [g.id, g]));
   return (puntos || []).map((p) => {
     const cuadrilla = p.cuadrilla_id ? cuadrillaById.get(p.cuadrilla_id) : null;
     const inspector = p.inspector_uid ? inspectorById.get(p.inspector_uid) : null;
+    const grupo = p.grupo_id ? grupoById.get(p.grupo_id) : null;
     return {
       id: p.id,
       direccion: p.direccion || '',
@@ -143,6 +145,16 @@ export function buildRows(puntos, cuadrillas, inspectores) {
       cuadrillaLabel: cuadrilla ? (cuadrilla.nombre || cuadrilla.id) : '—',
       inspector_uid: p.inspector_uid || null,
       inspectorLabel: inspector ? (inspector.nombre_completo || inspector.codigo || inspector.uid) : '—',
+      grupo_id: p.grupo_id || null,
+      // Which inspector GROUP this point is assigned to (asignar_grupo_a_puntos
+      // writes `grupo_id` onto the point doc — the authoritative source, not
+      // the cuadrilla). '—' when unassigned. Backs the new Grupo column and
+      // the search-by-group box.
+      grupoLabel: grupo ? (grupo.nombre || grupo.id) : '—',
+      // Collection progress, derived (2026-08-27): a point is "recolectado"
+      // once it has an EDAN survey OR its assignment is marked hecho. All from
+      // `listPuntos` (uncached), so it never lags a group assignment.
+      recolectado: !!p.tiene_survey || p.estado_asignacion === 'hecho',
       tier: p.tier || null,
       match_via: p.match_via || null,
       tiene_survey: !!p.tiene_survey,
@@ -170,13 +182,31 @@ export function sortRows(rows) {
 /** Filter chip logic (spec.md "Filtering narrows the working set"):
  *  `prioridad` narrows by the EFFECTIVE priority, `comuna`/`afectacion` by
  *  exact match. A falsy/missing filter key does not narrow that dimension. */
-export function filterRows(rows, { prioridad, comuna, afectacion } = {}) {
+export function filterRows(rows, { prioridad, comuna, afectacion, search } = {}) {
+  const needle = (search || '').trim().toLowerCase();
   return (rows || []).filter((r) => {
     if (prioridad && r.prioridadEfectiva !== prioridad) return false;
     if (comuna && r.comuna !== comuna) return false;
     if (afectacion && r.afectacion !== afectacion) return false;
+    // Free-text search across the fields an operator looks a point up by:
+    // its address, its inspector GROUP (the "a qué grupo está asociado un
+    // punto" ask), its comuna/barrio and its cuadrilla. Case-insensitive
+    // substring; an empty query never narrows.
+    if (needle) {
+      const hay = [r.direccion, r.grupoLabel, r.comuna, r.barrio, r.cuadrillaLabel, r.inspectorLabel]
+        .filter(Boolean).join(' ').toLowerCase();
+      if (!hay.includes(needle)) return false;
+    }
     return true;
   });
+}
+
+/** "Avance en la recolección" over a row set: how many are recolectados
+ *  (EDAN survey present or assignment marked hecho) out of the total. Pure,
+ *  derived from `rows` (uncached listPuntos), so it is always fresh. */
+export function recoleccionResumen(rows) {
+  const list = rows || [];
+  return { recolectados: list.filter((r) => r.recolectado).length, total: list.length };
 }
 
 /** design.md ADR-9's "truncation is shown, never hidden" message. `null`
@@ -488,7 +518,12 @@ function shellHtml() {
         </div>
 
         <div class="card">
-          ${cardHead('Paso 3 · Puntos', 'Filtrar, ordenar, corregir, excluir o abrir el enlace de Survey123.')}
+          ${cardHead('Paso 3 · Puntos', 'Buscar un punto por dirección o grupo, filtrar, ordenar, corregir, excluir o abrir el enlace de Survey123.')}
+          <div class="asignacion-search">
+            <input type="search" id="planeacion-search" class="asignacion-search-input"
+              placeholder="Buscar por dirección, grupo, comuna, cuadrilla o inspector…"
+              aria-label="Buscar un punto por dirección o grupo">
+          </div>
           <div class="card-toolbar asignacion-filters" id="planeacion-filters"></div>
           <div class="table-scroll asignacion-table-scroll" id="planeacion-table-wrap"></div>
         </div>
@@ -779,24 +814,39 @@ function filtersHtml(state) {
 const SORTABLE = [
   ['direccion', 'Dirección'],
   ['comuna', 'Comuna'],
+  ['grupoLabel', 'Grupo'],
   ['afectacion', 'Afectación'],
   ['prioridadEfectiva', 'Prioridad'],
   ['estado_asignacion', 'Estado'],
+  ['recolectado', 'Recolección'],
   ['inspectorLabel', 'Inspector'],
 ];
 
 const PRIORIDAD_PILL_COLOR = { alta: COLORS.status.i2, media: COLORS.status.r2, baja: COLORS.unknown };
 
+// "Recolección" cell: a green pill once the point has an EDAN survey or is
+// marked hecho, an em dash otherwise. Kept visually consistent with the
+// estado/prioridad pills already in the row.
+function recoleccionCell(r) {
+  return r.recolectado
+    ? `<span class="eval-pill" style="--eval-pill:${MARKER_HEX.green}">Recolectado</span>`
+    : '<span class="sticker-meta">Pendiente</span>';
+}
+
 function tableHtml(rows, selected) {
   const head = SORTABLE.map(([key, label]) => `<th data-sort-field="${key}"><button type="button" class="th-sort-btn">${escapeHtml(label)}</button></th>`).join('');
+  const { recolectados, total } = recoleccionResumen(rows);
+  const caption = `<p class="asignacion-recoleccion-caption" role="status">Recolección en la vista: <strong>${recolectados}</strong> de <strong>${total}</strong> punto${total === 1 ? '' : 's'}.</p>`;
   const body = rows.length
     ? rows.map((r) => `<tr>
         <td><input type="checkbox" class="asignacion-check" data-punto-check="${escapeHtml(r.id)}" ${selected.has(r.id) ? 'checked' : ''} ${r.tiene_survey ? 'disabled title="Ya tiene survey; no requiere visita"' : (r.estado_asignacion === 'no_aplica' ? 'disabled title="No aplica"' : (r.cuadrilla_id ? 'disabled title="Ya pertenece a una cuadrilla"' : ''))}></td>
         <td>${escapeHtml(r.direccion || 'Sin dato')}</td>
         <td>${escapeHtml(r.comuna || 'Sin dato')}</td>
+        <td>${escapeHtml(r.grupoLabel)}</td>
         <td>${escapeHtml(r.afectacion || 'Sin dato')}</td>
         <td><span class="eval-pill" style="--eval-pill:${PRIORIDAD_PILL_COLOR[r.prioridadEfectiva] || COLORS.unknown}">${escapeHtml(PRIORIDAD_LABELS[r.prioridadEfectiva] || r.prioridadEfectiva)}${r.prioridad_override ? ' *' : ''}</span></td>
         <td><span class="eval-pill" style="--eval-pill:${MARKER_HEX[colorForPunto(r)]}">${escapeHtml(ESTADO_LABELS[r.estado_asignacion] || r.estado_asignacion)}</span></td>
+        <td>${recoleccionCell(r)}</td>
         <td>${escapeHtml(r.inspectorLabel)}</td>
         <td class="planeacion-row-actions">
           <button type="button" class="sticker-action" data-editar-asignacion="${escapeHtml(r.id)}">Editar</button>
@@ -807,8 +857,8 @@ function tableHtml(rows, selected) {
           <button type="button" class="sticker-action" data-abrir-survey="${escapeHtml(r.id)}">Survey123</button>
         </td>
       </tr>`).join('')
-    : `<tr><td colspan="8" class="sticker-empty">Sin puntos para este filtro.</td></tr>`;
-  return `<table><thead><tr><th></th>${head}<th>Acciones</th></tr></thead><tbody>${body}</tbody></table>`;
+    : `<tr><td colspan="10" class="sticker-empty">Sin puntos para este filtro.</td></tr>`;
+  return `${caption}<table><thead><tr><th></th>${head}<th>Acciones</th></tr></thead><tbody>${body}</tbody></table>`;
 }
 
 /** Item 1 (2026-08-27): each cuadrilla row gets its OWN "Grupo de
@@ -1273,7 +1323,7 @@ export function initPlaneacion(root, { getToken }) {
   // working material, so narrowing to 'alta' by default would hide the
   // rest of that same top-4500 set instead of widening it. The
   // "Alta"/Media/Baja chips still narrow client-side + re-fetch.
-  let filters = { prioridad: '', comuna: '' };
+  let filters = { prioridad: '', comuna: '', search: '' };
   const selected = new Set();
   let busy = false;
 
@@ -2146,6 +2196,18 @@ export function initPlaneacion(root, { getToken }) {
     mapMeta.textContent = sinCoords ? `${n} en el mapa · ${sinCoords} sin coordenadas` : `${n} en el mapa`;
   }
 
+  // ---- search box wiring (client-side only, like the comuna chip): filters
+  // the already-loaded working set by dirección/grupo/comuna/cuadrilla. The
+  // input lives in the static shell (NOT inside filtersEl, which renderTable
+  // rebuilds), so typing never loses focus. Also re-renders the map so the
+  // globe matches the visible rows.
+  const searchInput = root.querySelector('#planeacion-search');
+  searchInput.addEventListener('input', () => {
+    filters = { ...filters, search: searchInput.value };
+    renderTable();
+    renderMapSection();
+  });
+
   // ---- filter chip wiring (delegated once; re-attached on every renderTable) --
   filtersEl.addEventListener('click', (ev) => {
     const btn = ev.target.closest('[data-filter-group]');
@@ -2262,7 +2324,7 @@ export function initPlaneacion(root, { getToken }) {
       // banner's "de N pendientes" number is inherently a full-collection
       // count `rows` (a bounded page) cannot derive on its own.
       resumenData = resumenResult.status === 'fulfilled' ? (resumenResult.value.resumen || null) : resumenData;
-      rows = buildRows(listResp.puntos, cuadrillas, getInspectores());
+      rows = buildRows(listResp.puntos, cuadrillas, getInspectores(), grupos);
       renderAutoScopeSelects();
       selected.clear();
       crearBtn.disabled = true;

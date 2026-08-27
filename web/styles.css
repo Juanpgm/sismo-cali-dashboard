@@ -1951,6 +1951,16 @@ body:not([data-role="admin"]) .view-tab[data-view="analista"] { display: none !i
 .asignacion-chip:hover { border-color: var(--border-strong); }
 .asignacion-chip.is-active { color: var(--accent); background: var(--accent-dim); border-color: var(--accent); }
 
+.asignacion-search { margin: 0 0 10px; }
+.asignacion-search-input {
+  width: 100%; box-sizing: border-box; padding: 9px 14px; border-radius: 10px;
+  font-size: .9rem; color: var(--text-primary); background: var(--surface-2);
+  border: 1px solid var(--border); transition: border-color .12s ease;
+}
+.asignacion-search-input:focus { outline: none; border-color: var(--accent); }
+.asignacion-recoleccion-caption { margin: 0 0 10px; font-size: .82rem; color: var(--text-secondary); }
+.asignacion-recoleccion-caption strong { color: var(--text-primary); }
+
 .asignacion-inline-field { flex-direction: row !important; align-items: center; gap: 6px !important; width: auto; }
 .asignacion-inline-field input { width: 76px; }
 .asignacion-check { width: 18px; height: 18px; cursor: pointer; accent-color: var(--accent); }

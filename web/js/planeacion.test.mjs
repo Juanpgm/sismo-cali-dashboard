@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import {
   colorForPunto, buildRows, sortRows, filterRows, formatTruncacion, metricasHtml,
-  kpisFromRows, barriosPorComunaFromRows,
+  kpisFromRows, barriosPorComunaFromRows, recoleccionResumen,
   buildHistorialRows, buildHistorialFiltro,
   buildVehiculoPayload, buildConductorPayload,
   rowHtml, filterRosterInspectores, filterInspectores,
@@ -36,7 +36,7 @@ const puntos = [
     id: 'atencionsismo_1', direccion: 'Cra 1', comuna: 'COMUNA 1', barrio: 'Barrio 1',
     afectacion: 'COLAPSO PARCIAL', estado_verificacion: 'Visitado', tipo_inmueble: 'Casa',
     habitabilidad: 'I', prioridad_score: 72, prioridad: 'alta', prioridad_override: null,
-    estado_asignacion: 'asignado', cuadrilla_id: 'c1', inspector_uid: 'u1', tier: 'alta',
+    estado_asignacion: 'asignado', cuadrilla_id: 'c1', inspector_uid: 'u1', grupo_id: 'g1', tier: 'alta',
     match_via: null, tiene_survey: false, coords: { lat: 3.4, lon: -76.5 },
     notas: null, motivo_exclusion: null, clave_integracion: 'PLN-1-ABCDEF01',
   },
@@ -51,17 +51,26 @@ const puntos = [
 ];
 const cuadrillas = [{ id: 'c1', nombre: 'Cuadrilla 1', puntos: ['atencionsismo_1'], inspector_uid: 'u1', origen: 'manual' }];
 const inspectores = [{ uid: 'u1', nombre_completo: 'Ana Torres', codigo: '001' }];
+const grupos = [{ id: 'g1', nombre: 'Grupo Norte' }];
 
-const rows = buildRows(puntos, cuadrillas, inspectores);
+const rows = buildRows(puntos, cuadrillas, inspectores, grupos);
 assert.equal(rows.length, 2);
 assert.equal(rows[0].cuadrillaLabel, 'Cuadrilla 1');
 assert.equal(rows[0].inspectorLabel, 'Ana Torres');
 assert.equal(rows[0].color, 'blue');
 assert.equal(rows[0].prioridadEfectiva, 'alta');
+// New: the point's inspector GROUP, resolved from its grupo_id.
+assert.equal(rows[0].grupoLabel, 'Grupo Norte');
+assert.equal(rows[0].recolectado, false); // no survey, not hecho
 assert.equal(rows[1].cuadrillaLabel, '—');
 assert.equal(rows[1].inspectorLabel, '—');
+assert.equal(rows[1].grupoLabel, '—'); // no grupo_id -> em dash
 assert.equal(rows[1].color, 'amber');
 assert.equal(rows[1].prioridadEfectiva, 'media');
+// recolectado is true once a survey exists or the assignment is marked hecho.
+assert.equal(buildRows([{ id: 'x', tiene_survey: true }])[0].recolectado, true);
+assert.equal(buildRows([{ id: 'y', estado_asignacion: 'hecho' }])[0].recolectado, true);
+assert.equal(buildRows([{ id: 'z', estado_asignacion: 'asignado' }])[0].recolectado, false);
 
 // ---- sortRows — effective priority DESC, prioridad_override wins -----------
 const unordered = [
@@ -90,6 +99,23 @@ assert.deepEqual(filterRows(rows, { prioridad: 'alta' }).map((r) => r.id), ['ate
 assert.deepEqual(filterRows(rows, { comuna: 'COMUNA 2' }).map((r) => r.id), ['atencionsismo_2']);
 assert.equal(filterRows(rows, { prioridad: 'alta', comuna: 'COMUNA 2' }).length, 0);
 assert.equal(filterRows(rows, { afectacion: 'DAÑO ESTRUCTURAL' }).length, 1);
+
+// ---- filterRows search — dirección / grupo / comuna, case-insensitive ------
+assert.equal(filterRows(rows, { search: '' }).length, 2, 'empty search never narrows');
+assert.deepEqual(filterRows(rows, { search: 'cra 1' }).map((r) => r.id), ['atencionsismo_1']);
+assert.deepEqual(filterRows(rows, { search: 'grupo norte' }).map((r) => r.id), ['atencionsismo_1'], 'search by group name finds its points');
+assert.deepEqual(filterRows(rows, { search: 'COMUNA 2' }).map((r) => r.id), ['atencionsismo_2']);
+assert.equal(filterRows(rows, { search: 'no-existe' }).length, 0);
+// Search composes with the other narrowers (AND).
+assert.equal(filterRows(rows, { prioridad: 'media', search: 'grupo norte' }).length, 0);
+
+// ---- recoleccionResumen — recolectados / total over a row set --------------
+assert.deepEqual(recoleccionResumen(rows), { recolectados: 0, total: 2 });
+assert.deepEqual(
+  recoleccionResumen([{ recolectado: true }, { recolectado: false }, { recolectado: true }]),
+  { recolectados: 2, total: 3 },
+);
+assert.deepEqual(recoleccionResumen([]), { recolectados: 0, total: 0 });
 
 // ---- formatTruncacion — spec.md "Truncation is surfaced to the operator" ---
 assert.equal(
