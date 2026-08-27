@@ -1678,11 +1678,18 @@ export function initPlaneacion(root, { getToken }) {
     busy = true;
     try {
       const resp = await callApi(getToken, body);
+      // Confirmation race fix (2026-08-27): shown AFTER the reload, not
+      // before. `reload()`'s own first act is `showOk('')` (clearing any
+      // stale banner) with no `await` ahead of it, so a `showOk(msg)` called
+      // BEFORE `reloadFn()` gets set and wiped in the same synchronous
+      // stretch — the browser never gets a chance to paint it, so the
+      // confirmation was never actually visible. Awaiting the reload first
+      // means this is the LAST write and reaches the screen.
+      await reloadFn();
       // `okMsg` may be a function of the response (item 6: surfaces
       // stickers_asignados/stickers_desasignados counts) — existing plain-
       // string callers are unaffected.
       showOk(typeof okMsg === 'function' ? okMsg(resp) : okMsg);
-      await reloadFn();
     } catch (err) {
       showErr(err.message);
     } finally {
@@ -2395,8 +2402,9 @@ export function initPlaneacion(root, { getToken }) {
       if (comuna) body.comuna = comuna;
       if (barrio) body.barrio = barrio;
       const { cuadrillas: nuevas } = await callApi(getToken, body);
-      showOk(autoAgruparMensaje(nuevas.length, { comuna, barrio }));
+      // Confirmation race fix (2026-08-27) — see runAction's own comment.
       await reload();
+      showOk(autoAgruparMensaje(nuevas.length, { comuna, barrio }));
     } catch (err) {
       showErr(err.message);
     } finally {
@@ -2413,10 +2421,11 @@ export function initPlaneacion(root, { getToken }) {
     reiniciarBtn.disabled = true;
     try {
       const { eliminadas, puntosLiberados } = await callApi(getToken, { action: 'reiniciarAgrupacion' });
+      // Confirmation race fix (2026-08-27) — see runAction's own comment.
+      await reload();
       showOk(eliminadas
         ? `${eliminadas} cuadrilla${eliminadas === 1 ? '' : 's'} automática${eliminadas === 1 ? '' : 's'} eliminada${eliminadas === 1 ? '' : 's'}; ${puntosLiberados} punto${puntosLiberados === 1 ? '' : 's'} liberado${puntosLiberados === 1 ? '' : 's'} a pendiente.`
         : 'No había cuadrillas automáticas para reiniciar.');
-      await reload();
     } catch (err) {
       showErr(err.message);
     } finally {
@@ -2433,9 +2442,10 @@ export function initPlaneacion(root, { getToken }) {
     crearBtn.disabled = true;
     try {
       await callApi(getToken, { action: 'crearCuadrilla', nombre: nombre.trim(), puntos: [...selected] });
-      showOk('Cuadrilla creada.');
       selected.clear();
+      // Confirmation race fix (2026-08-27) — see runAction's own comment.
       await reload();
+      showOk('Cuadrilla creada.');
     } catch (err) {
       showErr(err.message);
     } finally {
