@@ -1,75 +1,61 @@
-"""POST /refresh — admin-triggered redeploy of the `dashboard-refresh`
-Railway cron service (design.md ADR-6; backend-platform spec
-"Admin-gated route rejects non-admin" (`/refresh` row); "Route Parity
-Across Consolidated Endpoints" (`/refresh` row)).
+"""POST /refresh — admin-triggered manual data refresh.
 
-Ports `api/refresh.js:134-181`'s dual-header Railway GraphQL auth fallback
-(`railway()`, `api/refresh.js:107-132`) to trigger a `serviceInstanceRedeploy`
-mutation — this is the server hop the dashboard's "Actualizar datos" button
-calls to kick off `scripts/refresh_data.py` on Railway. Absorbing
-`dashboard-refresh`'s job code into `backend/app/jobs/` is a SEPARATE
-concern (slice 7, not started) — this router only triggers the redeploy.
+Runs `app.jobs.dashboard_refresh.run_refresh()` IN-PROCESS as a background
+task, instead of the old approach this router used to port from
+`api/refresh.js` (a Railway `serviceInstanceRedeploy` of the
+`dashboard-refresh` cron container). The pipeline code already lives in
+THIS image (`app/jobs/dashboard_refresh.py`, absorbed per design.md ADR-6 /
+task 7.1-7.9), so re-running it here needs no Railway round-trip and no
+dependency on that cron service's OWN deploy config being healthy — which
+has twice broken `dashboard-refresh`'s SCHEDULED runs in production (a
+half-finished Railway git-cutover repeatedly overwriting a manual fix with
+a build that can't find `app.jobs.dashboard_refresh`, 2026-08-27). The
+manual-trigger path no longer shares that failure mode.
 
-The "Actualizar datos" button force-runs the WHOLE 15-min cron fleet, not
-just `dashboard-refresh`: this route redeploys all three 15-minute crons —
-`dashboard-refresh` (primary), `cruce-sticker`, and `cruce-gestion`. The
-primary redeploy IS the data refresh; a primary failure is fatal (502). The
-two cross jobs are best-effort adjuncts, redeployed after the primary with a
-per-service fail-soft branch (a `cruce-sticker`/`cruce-gestion` hiccup is
-surfaced in `errors` but never blocks the response). This revives the legacy
-handler's fail-soft `cruce-gestion` second redeploy (`api/refresh.js:166-174`,
-previously cut per proposal.md Scope Exclusion Addendum Extension 2 item 5)
-and adds `cruce-sticker` alongside it. The response keeps `{ok, deploymentId}`
-(deploymentId = the primary's, for frontend backward-compat) and adds a
-`deployments` (name → deployment id | null) and `errors` (name → message)
-map.
+A module-level lock keeps two overlapping runs from racing on the same
+`web/data/` files: a second click while one is in flight gets 409 — exactly
+what the frontend (`main.js`'s `triggerRefresh()`) already treats as
+"already running, keep polling the published data" (that branch existed
+before this change but the old endpoint never actually returned 409; it
+does now, no frontend change needed for this part).
 
-Railway service/environment id (tasks.md 6.2: "confirm exact id before
-hardcoding"): `dashboard-refresh`'s job code has NOT been absorbed into
-`backend/app/jobs/` yet (slice 7, not started), so there is no NEW
-consolidated Railway service for it yet. This router therefore targets the
-SAME service/environment `api/refresh.js` itself currently references (the
-already-provisioned `dashboard-refresh` service in the `normalizador-sismo-
-cali` Railway project — `deploy/refresh.sh` already runs there today) rather
-than fabricate a different id. Values are read from env vars at REQUEST
-time (not import time, so a redeploy/test can change them without an app
-restart), mirroring `api/refresh.js`'s own env var names verbatim
-(`RAILWAY_API_TOKEN`, `RAILWAY_SERVICE_ID`, `RAILWAY_ENVIRONMENT_ID`), each
-defaulting to the exact literal `api/refresh.js:96,100` already hardcodes —
-this is an env-var-with-fallback approach, not a bare hardcoded id, so slice
-7 can repoint it to a new consolidated service by simply setting
-`RAILWAY_SERVICE_ID` on the Railway "web" service, no code change required.
+`cruce-sticker`/`cruce-gestion` are NOT absorbed into this backend yet (see
+`app/jobs/dashboard_refresh.py`'s own docstring) — they're still triggered
+the old Railway-redeploy way, best-effort and fail-soft: a hiccup there is
+surfaced in `errors` but never blocks the 202, because the in-process
+primary run is the thing the "Actualizar datos" button is actually waiting
+on (it polls `meta.json`, which only the primary run publishes).
+
+Frontend wiring: `web/js/api-config.js`'s `refresh` entry points here
+(`${RAILWAY_BASE_URL}/refresh`) per the per-endpoint parity-flip pattern
+(design.md ADR-7) every other consolidated route already used. The legacy
+`api/refresh.js` Vercel function is left in place, untouched, as the
+one-line rollback (flip `api-config.js` back to `/api/refresh`) — same
+convention ADR-7 documents for `reportados`/`sticker-status`/etc.
 """
 from __future__ import annotations
 
 import os
+import threading
+import traceback
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from app.auth.deps import require_role
-
-# Never touches Firestore/S3 — RAILWAY_API_TOKEN is a "plain secret" read
-# directly by this router (design.md ADR-4 table), not part of the
-# named-client union; it fails lazily at request time (matching
-# api/refresh.js:157-162), not at web startup — same pattern
-# `routers/source_status.py` uses for VISITADOS_API_PASS.
-REQUIRED_CLIENTS: tuple[str, ...] = ()
+from app.jobs.dashboard_refresh import run_refresh
 
 RAILWAY_API = "https://backboard.railway.com/graphql/v2"
 
-# The three 15-min cron services in the `normalizador-sismo-cali` Railway
-# project (confirmed live 2026-08-26). `dashboard-refresh` verbatim from
-# api/refresh.js:96; the other two resolved from the Railway project.
-DEFAULT_SERVICE_ID = "156e97a2-596b-4861-95f4-4060dab408e2"          # dashboard-refresh
+# The two NOT-YET-absorbed 15-min cron adjuncts in the `normalizador-sismo-
+# cali` Railway project (confirmed live 2026-08-26). `dashboard-refresh`
+# itself is no longer redeployed here — it runs in-process (see module
+# docstring).
 DEFAULT_STICKER_SERVICE_ID = "b18c74c8-0b7a-459c-ada5-5e5df6db8050"  # cruce-sticker
 DEFAULT_CRUCE_SERVICE_ID = "b4c8fd15-aa3b-4157-b787-2034c89a108b"    # cruce-gestion
 DEFAULT_ENVIRONMENT_ID = "4418f451-bd97-4d96-ba6e-b5ecbbd49c9b"
 
-# serviceInstanceRedeploy redeploys the service's latest deployment (i.e.
-# runs the cron container now) and returns the new deployment id. Verbatim
-# from api/refresh.js:104-105.
 REDEPLOY_MUTATION = """
 mutation($s: String!, $e: String!) {
   serviceInstanceRedeploy(serviceId: $s, environmentId: $e)
@@ -78,16 +64,19 @@ mutation($s: String!, $e: String!) {
 
 router = APIRouter()
 
+# Non-blocking check-and-set: acquired in the request handler (so two rapid
+# clicks can't both slip past the 409 guard before either background task
+# starts), released by the background task once run_refresh() returns.
+_refresh_lock = threading.Lock()
+
 
 async def _railway_graphql(token: str, query: str, variables: dict[str, Any]) -> dict[str, Any]:
-    """Dual-header auth fallback, ported verbatim from
-    `api/refresh.js:107-132`'s `railway()` helper: Railway authenticates
-    account/team tokens via `Authorization: Bearer` and project tokens via
-    the `Project-Access-Token` header. Try Bearer first, fall back to the
-    project header so either token type works transparently — same
-    convention `integracion_F1/scripts/railway_setup.py`'s `gql()` uses
-    (Project-Access-Token + a descriptive User-Agent, since Cloudflare
-    answers 403 to requests without one)."""
+    """Dual-header auth fallback, ported verbatim from `api/refresh.js`'s
+    `railway()` helper: Railway authenticates account/team tokens via
+    `Authorization: Bearer` and project tokens via the `Project-Access-Token`
+    header. Try Bearer first, fall back to the project header so either
+    token type works transparently — same convention
+    `integracion_F1/scripts/railway_setup.py`'s `gql()` uses."""
     auth_headers = (
         {"Authorization": f"Bearer {token}"},
         {"Project-Access-Token": token},
@@ -100,7 +89,6 @@ async def _railway_graphql(token: str, query: str, variables: dict[str, Any]) ->
                 json={"query": query, "variables": variables},
                 headers={
                     "Content-Type": "application/json",
-                    # Cloudflare answers 403 to requests without a User-Agent.
                     "User-Agent": "sismo-cali-dashboard/1.0",
                     **auth,
                 },
@@ -115,17 +103,11 @@ async def _railway_graphql(token: str, query: str, variables: dict[str, Any]) ->
     raise RuntimeError(last_error or "Railway API request failed")
 
 
-def _cron_services() -> list[tuple[str, str]]:
-    """(name, service_id) for the three 15-min crons the "Actualizar datos"
-    button force-runs. Order matters: `dashboard-refresh` is the PRIMARY (its
-    redeploy is the data refresh itself); the two cross jobs are best-effort
-    adjuncts. Each id is env-overridable, same fallback pattern as the legacy
-    RAILWAY_SERVICE_ID."""
+def _cron_adjuncts() -> list[tuple[str, str]]:
+    """(name, service_id) for the two 15-min crons NOT yet absorbed into this
+    backend. Each id is env-overridable, same fallback pattern the legacy
+    RAILWAY_*_SERVICE_ID vars used."""
     return [
-        (
-            "dashboard-refresh",
-            os.environ.get("RAILWAY_SERVICE_ID", "").strip() or DEFAULT_SERVICE_ID,
-        ),
         (
             "cruce-sticker",
             os.environ.get("RAILWAY_STICKER_SERVICE_ID", "").strip()
@@ -139,61 +121,51 @@ def _cron_services() -> list[tuple[str, str]]:
     ]
 
 
-async def _redeploy_one(token: str, service_id: str, environment_id: str) -> str:
-    data = await _railway_graphql(
-        token, REDEPLOY_MUTATION, {"s": service_id, "e": environment_id}
-    )
-    return data["serviceInstanceRedeploy"]
-
-
-async def _redeploy_all() -> dict[str, Any]:
-    """Force-run all three 15-min crons. The primary (`dashboard-refresh`)
-    failure propagates (→ 502); secondary failures are caught and reported in
-    ``errors`` (fail-soft). Env vars read at REQUEST time, mirroring
-    api/refresh.js's RAILWAY_API_TOKEN/RAILWAY_SERVICE_ID/RAILWAY_ENVIRONMENT_ID
-    names."""
+async def _redeploy_adjuncts() -> dict[str, str]:
+    """Best-effort redeploy of the two not-yet-absorbed crons. Returns a
+    name -> error-message map (empty when everything succeeded); never
+    raises — a Railway hiccup here must not affect the in-process primary
+    run this endpoint already dispatched."""
     token = os.environ.get("RAILWAY_API_TOKEN", "").strip()
     if not token:
-        raise HTTPException(
-            status_code=500, detail="RAILWAY_API_TOKEN no está configurado."
-        )
+        return {"railway": "RAILWAY_API_TOKEN no configurado; cruce-sticker/cruce-gestion no se dispararon."}
     environment_id = (
         os.environ.get("RAILWAY_ENVIRONMENT_ID", "").strip() or DEFAULT_ENVIRONMENT_ID
     )
-    services = _cron_services()
-    deployments: dict[str, str | None] = {}
     errors: dict[str, str] = {}
-
-    # Primary: its failure is fatal (the data refresh itself) — let it
-    # propagate to trigger_refresh's 502, matching the legacy catch branch.
-    primary_name, primary_id = services[0]
-    deployments[primary_name] = await _redeploy_one(token, primary_id, environment_id)
-
-    # Secondary crosses: best-effort. A stickers/gestion hiccup is surfaced in
-    # `errors` but must not tumble the primary data refresh's response.
-    for name, service_id in services[1:]:
+    for name, service_id in _cron_adjuncts():
         try:
-            deployments[name] = await _redeploy_one(token, service_id, environment_id)
-        except Exception as exc:  # noqa: BLE001 — fail-soft adjunct
-            deployments[name] = None
+            await _railway_graphql(token, REDEPLOY_MUTATION, {"s": service_id, "e": environment_id})
+        except Exception as exc:  # noqa: BLE001 - fail-soft adjunct
             errors[name] = str(exc)
+    return errors
 
-    return {
-        "deploymentId": deployments[primary_name],
-        "deployments": deployments,
-        "errors": errors,
-    }
+
+def _run_refresh_and_release() -> None:
+    """Background-task body. Starlette runs sync `BackgroundTasks.add_task`
+    callables in a threadpool (`run_in_threadpool`), so `run_refresh()`'s
+    blocking subprocess/network calls never block this service's event loop
+    — other requests (map data, KPIs, other routes) keep being served while
+    a refresh runs. `run_refresh()` already reports its own outcome to Blob
+    (`_status.json`, its own `finally`); the try/except here is only a
+    last-resort net so a bug in that reporting itself can't leak silently
+    into an unreleased lock."""
+    try:
+        run_refresh()
+    except Exception:  # noqa: BLE001 - see docstring
+        traceback.print_exc()
+    finally:
+        _refresh_lock.release()
 
 
 @router.post("/refresh", status_code=202)
 async def trigger_refresh(
+    background_tasks: BackgroundTasks,
     claims: dict[str, Any] = Depends(require_role("admin")),
 ) -> dict[str, Any]:
-    try:
-        result = await _redeploy_all()
-    except HTTPException:
-        raise
-    except RuntimeError as exc:
-        # Verbatim status from api/refresh.js:178-179's catch branch.
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"ok": True, **result}
+    if not _refresh_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Ya hay una actualización en curso.")
+    background_tasks.add_task(_run_refresh_and_release)
+
+    errors = await _redeploy_adjuncts()
+    return {"ok": True, "errors": errors}
