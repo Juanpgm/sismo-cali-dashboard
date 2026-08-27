@@ -1778,6 +1778,45 @@ def test_editar_vehiculo_rejects_conductor_when_setting_pico_placa_in_same_call(
     assert stores[VEHICULOS]["v1"]["conductor_id"] is None
 
 
+def test_editar_vehiculo_resending_same_conductor_on_pico_placa_day_is_allowed(monkeypatch):
+    # Hotfix A2 (2026-08-26): the frontend re-sends the CURRENT conductor_id on
+    # EVERY save (buildVehiculoPayload always includes it), so an unrelated
+    # edit (empresa/activo) of a vehicle restricted TODAY used to 400 all day.
+    # An unchanged driver must never trip the gate.
+    hoy = _dia_pico_placa_de_hoy()
+    stores = _stores()
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "activo": True, "dia_pico_placa": hoy, "conductor_id": "c1"}}
+    stores[CONDUCTORES] = {"c1": {"cedula": "123", "nombre_completo": "Pedro"}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "editarVehiculo", "vehiculo_id": "v1",
+              "empresa": "Acme", "conductor_id": "c1", "dia_pico_placa": hoy},
+    )
+
+    assert resp.status_code == 200
+    assert stores[VEHICULOS]["v1"]["empresa"] == "Acme"
+    assert stores[VEHICULOS]["v1"]["conductor_id"] == "c1"  # unchanged, not blocked
+
+
+def test_editar_vehiculo_clearing_conductor_on_pico_placa_day_is_allowed(monkeypatch):
+    # Removing the driver ("" -> None) is never "putting into service" — allowed
+    # even on the restricted day.
+    hoy = _dia_pico_placa_de_hoy()
+    stores = _stores()
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "activo": True, "dia_pico_placa": hoy, "conductor_id": "c1"}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "editarVehiculo", "vehiculo_id": "v1", "conductor_id": ""},
+    )
+
+    assert resp.status_code == 200
+    assert stores[VEHICULOS]["v1"]["conductor_id"] is None
+
+
 def test_editar_vehiculo_allows_unrelated_field_when_conductor_untouched_on_pico_placa_day(monkeypatch):
     # Only a conductor CHANGE is blocked — editing another field (e.g. activo)
     # on a vehicle that already has a conductor + is pico-y-placa today must
@@ -2323,3 +2362,45 @@ def test_audit_write_failure_does_not_alter_the_mutation_response(monkeypatch):
     assert "id" in resp.json()
     # no exception surfaced; the audit write is best-effort and swallowed
     assert stores[PLANEACION_AUDITORIA] == {}
+
+
+# ── Dispatcher error mapping: missing-index vs generic (hotfix B1) ──────────
+
+
+def test_dispatch_maps_missing_index_error_to_actionable_503(monkeypatch, caplog):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    def _boom(*args, **kwargs):
+        raise Exception(
+            "400 The query requires an index. You can create it here: "
+            "https://console.firebase.google.com/project/x/firestore/indexes?create_composite=abc"
+        )
+
+    monkeypatch.setattr(pa, "list_grupos", _boom)
+
+    with caplog.at_level("ERROR"):
+        resp = client.post("/planeacion-asignaciones", json={"action": "listGrupos"})
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == (
+        "Falta un índice de la base de datos para esta consulta. Avisar al "
+        "administrador (el enlace de creación está en los logs del servidor)."
+    )
+    # the original error (with the console creation link) must still be logged
+    assert "console.firebase.google.com" in caplog.text
+
+
+def test_dispatch_keeps_generic_502_for_other_errors(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    def _boom(*args, **kwargs):
+        raise Exception("boom: something unrelated broke")
+
+    monkeypatch.setattr(pa, "list_grupos", _boom)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "listGrupos"})
+
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "boom: something unrelated broke"

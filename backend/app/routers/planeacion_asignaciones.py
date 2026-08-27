@@ -204,6 +204,7 @@ duplicated roster fetch on the backend.
 from __future__ import annotations
 
 import json
+import logging
 import math
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -1443,12 +1444,17 @@ def editar_vehiculo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     if raw_conductor is not None:
         # explicit "" clears the driver; a non-existent id is a 400
         nuevo_conductor_id = _validate_conductor(db, raw_conductor)
-        # Effective dia_pico_placa: the one being set in THIS call if present,
-        # else the vehicle's already-persisted value — a bare conductor
-        # change on a vehicle already flagged pico-y-placa today must still
-        # be blocked, not just when both fields change together.
-        dia_efectivo = fields.get("dia_pico_placa", existing.get("dia_pico_placa"))
-        _rechazar_si_pico_placa_bloquea_conductor(dia_efectivo, nuevo_conductor_id)
+        # Production bug fix (2026-08-26, hotfix A2): the frontend re-sends the
+        # CURRENT conductor_id on every save, so gating on "conductor truthy"
+        # alone made any vehicle whose dia_pico_placa == today un-editable all
+        # day (placa/empresa/activo edits included). The gate now fires ONLY
+        # when the driver actually CHANGES; clearing ("" -> None) and re-saving
+        # the same driver always pass. Effective dia_pico_placa: the one being
+        # set in THIS call if present, else the persisted value — a bare
+        # driver change on a vehicle restricted today is still blocked.
+        if nuevo_conductor_id and nuevo_conductor_id != existing.get("conductor_id"):
+            dia_efectivo = fields.get("dia_pico_placa", existing.get("dia_pico_placa"))
+            _rechazar_si_pico_placa_bloquea_conductor(dia_efectivo, nuevo_conductor_id)
         fields["conductor_id"] = nuevo_conductor_id
 
     ref.set(fields, merge=True)
@@ -1783,6 +1789,21 @@ def _dispatch(
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - legacy fail-open surface
+        if "requires an index" in str(exc).lower():
+            # Firestore's FailedPrecondition for a missing composite index:
+            # the raw message carries a console link to create it, useful
+            # only to whoever reads server logs, not the admin staring at a
+            # 502. Log the original (with the link) and surface an
+            # actionable message instead.
+            logging.exception("Firestore query requires a composite index")
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Falta un índice de la base de datos para esta consulta. "
+                    "Avisar al administrador (el enlace de creación está en "
+                    "los logs del servidor)."
+                ),
+            ) from exc
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
