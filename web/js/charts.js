@@ -2,7 +2,7 @@
 // Chart.js 4 (UMD global via CDN, same pattern as Leaflet's `L`) — "Estadísticas" charts.
 import {
   COLORS, themeColor, labelForCode, labelForField, splitMultiValue, habCode, habBinary, normalize, formatDate,
-  buildCategoricalScale, interpolateRamp,
+  buildCategoricalScale, interpolateRamp, colapsoResuelto,
 } from './utils.js';
 
 /** Colores de un set de valores por INTENSIDAD de un mismo hue (el acento):
@@ -734,11 +734,12 @@ export function colapsoHabCounts(records) {
     const unid = Number.isNaN(u) ? 0 : u;
     const bin = habBinary(r); // 'habitable' | 'no_habitable' | '' (sin dato)
     if (bin) { cell[bin].reg += 1; cell[bin].unid += unid; }
-    const ct = normalize(r.colapso_total) === 'si';
-    const cp = normalize(r.colapso_parcial) === 'si';
-    if (ct) { cell.colapso_total.reg += 1; cell.colapso_total.unid += unid; }
-    if (cp) { cell.colapso_parcial.reg += 1; cell.colapso_parcial.unid += unid; }
-    if (!ct && !cp) { cell.no_colapso.reg += 1; cell.no_colapso.unid += unid; }
+    // colapso_resuelto (see utils.js) resolves the colapso_total/colapso_parcial
+    // "both si" contradiction so a record lands in exactly one bucket here.
+    const resuelto = r.colapso_resuelto || colapsoResuelto(r);
+    if (resuelto === 'total') { cell.colapso_total.reg += 1; cell.colapso_total.unid += unid; }
+    else if (resuelto === 'parcial') { cell.colapso_parcial.reg += 1; cell.colapso_parcial.unid += unid; }
+    else { cell.no_colapso.reg += 1; cell.no_colapso.unid += unid; }
   }
   return acc;
 }

@@ -1,7 +1,7 @@
 // KPI tile row — recomputed from the currently filtered record set.
 // Habitability uses the granular criterio_habitabilidad scale (H · R1 · R2 ·
 // I1 · I2 · I3): green for H, yellow shades for R, red shades for I.
-import { COLORS, isNoHabitableBinary, habCode, labelForCode, normalize, splitMultiValue, escapeHtml } from './utils.js';
+import { COLORS, isNoHabitableBinary, habCode, labelForCode, splitMultiValue, escapeHtml, normalize } from './utils.js';
 
 function sumField(records, field) {
   let total = 0;
@@ -23,10 +23,6 @@ function avgField(records, field, max = Infinity) {
     if (!Number.isNaN(v) && v >= 0 && v <= max) { total += v; n += 1; }
   }
   return n ? Math.round((total / n) * 10) / 10 : 0;
-}
-
-function isYes(v) {
-  return normalize(v) === 'si' || normalize(v) === 'sí';
 }
 
 // Granular habitability codes in severity order (drives tiles + distribution bar).
@@ -87,8 +83,16 @@ export function computeKpis(records) {
     hab_h_res: resByCode.h,
     hab_r_res: resByCode.r1 + resByCode.r2,
     hab_i_res: resByCode.i1 + resByCode.i2 + resByCode.i3,
-    colapso_total: records.filter((r) => isYes(r.colapso_total)).length,
-    colapso_parcial: records.filter((r) => isYes(r.colapso_parcial)).length,
+    // colapso_resuelto (see utils.js) resolves the colapso_total/colapso_parcial
+    // "both si" contradiction so a record counts as collapsed exactly once,
+    // never in both cards at the same time.
+    colapso_total: records.filter((r) => r.colapso_resuelto === 'total').length,
+    colapso_parcial: records.filter((r) => r.colapso_resuelto === 'parcial').length,
+    // Raw, PRE-resolution read of colapso_total — a record with both si (the
+    // contradiction) counts here too, unlike the resolved value above. Only
+    // used for Colapso total's "sin depurar" reference (see kpiLabelTag for
+    // why colapso_parcial doesn't get an equivalent).
+    colapso_total_raw: records.filter((r) => normalize(r.colapso_total) === 'si').length,
     ocupantes_riesgo: sumField(noHab, 'n_ocupantes'),
     ocupantes_total: sumField(records, 'n_ocupantes'),
     u_residenciales: sumField(records, 'n_residenciales'),
@@ -110,6 +114,19 @@ function habDistribution(records) {
 
 function subLine(html) {
   return html ? `<div class="kpi-sub-row">${html}</div>` : '';
+}
+
+// Small inline qualifier next to a headline label: "procesado" for Total
+// registros (agrupado por edificio, ver soloRepresentantes) and
+// "recategorizado" SOLO para Colapso total — es la única tarjeta donde
+// colapso_resuelto cambia la cifra de forma visible (34→~15 en producción).
+// Colapso parcial se queda prácticamente igual (la mayoría de los conflictos
+// ya caían ahí bajo el conteo OR anterior), así que la referencia cruda ahí
+// es ruido, no señal — no lleva tag ni línea "sin depurar".
+function kpiLabelTag(key) {
+  if (key === 'total') return ' <span class="kpi-label-tag">procesado</span>';
+  if (key === 'colapso_total') return ' <span class="kpi-label-tag">recategorizado</span>';
+  return '';
 }
 
 /** Cards for the "Por uso de la edificación" section, sorted by count.
@@ -137,8 +154,12 @@ function usoTilesHtml(records, total) {
   `).join('');
 }
 
-/** @param {HTMLElement} container @param {object[]} filteredRecords @param {object[]} allRecords */
-export function renderKpis(container, filteredRecords, allRecords) {
+/** @param {HTMLElement} container @param {object[]} filteredRecords @param {object[]} allRecords
+ *  @param {{recolectados?: number}} [raw] - inspecciones sin agrupar bajo el
+ *  mismo filtro que `filteredRecords`, para contrastar contra la tarjeta
+ *  Total registros (que ya cuenta edificios, no envíos — ver soloRepresentantes
+ *  en data.js). Opcional: si no llega, la tarjeta no muestra la referencia. */
+export function renderKpis(container, filteredRecords, allRecords, raw = {}) {
   const values = computeKpis(filteredRecords);
   const total = filteredRecords.length;
   // Cifras de colapso: la tarjeta sigue siendo reactiva (se recalcula con los
@@ -148,8 +169,8 @@ export function renderKpis(container, filteredRecords, allRecords) {
   // que es colapso parcial) no lea como si la cifra oficial hubiera bajado.
   const filtersActive = filteredRecords.length !== allRecords.length;
   const globalColapso = {
-    colapso_total: allRecords.filter((r) => isYes(r.colapso_total)).length,
-    colapso_parcial: allRecords.filter((r) => isYes(r.colapso_parcial)).length,
+    colapso_total: allRecords.filter((r) => r.colapso_resuelto === 'total').length,
+    colapso_parcial: allRecords.filter((r) => r.colapso_resuelto === 'parcial').length,
   };
 
   const ocupantesTotalFiltrados = sumField(filteredRecords, 'n_ocupantes');
@@ -162,12 +183,30 @@ export function renderKpis(container, filteredRecords, allRecords) {
       sub = subLine(`<span class="kpi-sub">${pct(values[def.key], total)}% del filtrado</span>`);
     } else if (def.key === 'ocupantes_riesgo') {
       sub = subLine(`<span class="kpi-sub">${pct(values.ocupantes_riesgo, ocupantesTotalFiltrados)}% de ocupantes totales</span>`);
-    } else if ((def.key === 'colapso_total' || def.key === 'colapso_parcial') && filtersActive) {
-      sub = subLine(`<span class="kpi-sub">Refleja los filtros activos · ${globalColapso[def.key]} sin filtrar</span>`);
+    } else if (def.key === 'colapso_total') {
+      // Igual idea que la tarjeta Total registros: el valor grande ya está
+      // RECATEGORIZADO (colapso_resuelto — sin doble conteo por el conflicto
+      // total+parcial simultáneos), y esta línea deja explícita la cifra
+      // cruda de la que sale, para que no lea como un dato perdido. Solo
+      // aquí — colapso_parcial no cambia lo suficiente como para justificarlo
+      // (ver kpiLabelTag).
+      const spans = [`<span class="kpi-sub kpi-sub-raw">de ${values.colapso_total_raw} sin depurar</span>`];
+      if (filtersActive) {
+        spans.push(`<span class="kpi-sub">${globalColapso.colapso_total} sin filtrar</span>`);
+      }
+      sub = subLine(spans.join(''));
+    } else if (def.key === 'colapso_parcial' && filtersActive) {
+      sub = subLine(`<span class="kpi-sub">Refleja los filtros activos · ${globalColapso.colapso_parcial} sin filtrar</span>`);
+    } else if (def.key === 'total' && Number.isFinite(raw.recolectados)) {
+      // El valor grande ya es la cifra SANITIZADA (un edificio = un registro,
+      // ver soloRepresentantes/es_representante). Esta línea, en tono
+      // secundario, deja explícito de cuántos envíos crudos sale ese número —
+      // para que "menos registros que antes" no lea como pérdida de datos.
+      sub = subLine(`<span class="kpi-sub kpi-sub-raw">de ${raw.recolectados} recolectados (sin agrupar)</span>`);
     }
     return `
       <div class="kpi-tile" style="${def.accent ? `--kpi-accent:${def.accent}` : ''}">
-        <span class="kpi-label">${def.label}</span>
+        <span class="kpi-label">${def.label}${kpiLabelTag(def.key)}</span>
         <span class="kpi-value">${values[def.key]}</span>
         ${sub}
       </div>

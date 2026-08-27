@@ -1,7 +1,7 @@
 // Data loading + global filter state (tiny pub/sub store, no framework).
 import {
   normalizeAddressText, buildSearchIndex, splitMultiValue, labelForField,
-  bucketNpisos, suspensionServicios, bustParams, AFECTACION_ORDER, resolveBarrioVereda,
+  bucketNpisos, suspensionServicios, colapsoResuelto, bustParams, AFECTACION_ORDER, resolveBarrioVereda,
 } from './utils.js';
 import { fetchIsraelRecords } from './israel-source.js';
 import { apiUrl } from './api-config.js';
@@ -9,7 +9,7 @@ import { apiUrl } from './api-config.js';
 // Re-exported so existing/potential external import sites (`import { bucketNpisos } from './data.js'`)
 // keep working; the actual implementation lives in utils.js (see comment there
 // for why — data.js can't be loaded standalone by Node's ESM loader for testing).
-export { bucketNpisos, suspensionServicios, bustParams };
+export { bucketNpisos, suspensionServicios, colapsoResuelto, bustParams };
 
 // The refresh-generated data (meta/inspections/reportes) lives in Vercel Blob,
 // updated by the pipeline every cron run WITHOUT a Vercel deploy. Reads are
@@ -238,6 +238,9 @@ class Store {
       _search: buildSearchIndex(r),
       n_pisos_rango: bucketNpisos(r.n_pisos),
       suspension_servicios: suspensionServicios(r),
+      // Derived field (see colapsoResuelto): resolves the colapso_total/
+      // colapso_parcial "both si" contradiction so KPIs count once per record.
+      colapso_resuelto: colapsoResuelto(r),
       // Geo-first "Barrio / vereda". The pipeline resolves this too, but the
       // published data lags a deploy and the israel source never passes
       // through it at all — without this the barrio filter would be empty.

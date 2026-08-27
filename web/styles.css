@@ -452,6 +452,18 @@ a { color: var(--accent); }
   font-weight: 700;
   color: var(--text-primary);
 }
+/* "procesado" junto al label de Total registros: aclara que la cifra grande
+   ya está agrupada por edificio (sanitizada), no es el conteo de envíos. */
+.kpi-label-tag {
+  text-transform: lowercase;
+  letter-spacing: normal;
+  font-weight: 500;
+  color: var(--text-muted);
+  opacity: 0.75;
+}
+/* Referencia al dato crudo (recolectado, sin agrupar) bajo el valor grande —
+   mismo tono que .kpi-sub, un pelín más tenue para no competir con el valor. */
+.kpi-sub-raw { opacity: 0.8; }
 
 .kpi-section-title {
   grid-column: 1 / -1;

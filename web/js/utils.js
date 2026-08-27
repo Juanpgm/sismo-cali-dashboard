@@ -618,6 +618,18 @@ export function suspensionServicios(r) {
   return colapso && isNoHabitable(r) ? 'si' : 'no';
 }
 
+// Resuelve la contradicción "colapso_total Y colapso_parcial = sí" (22/1142
+// registros en vivo, revisar_casos del pipeline la marca como "Colapso total y
+// parcial simultáneos"). Regla acordada con el producto: ambos sí -> parcial.
+// Misma regla que el pipeline (refresh_data.add_colapso_resuelto); los campos
+// crudos colapso_total/colapso_parcial no se tocan, esto solo da a las tarjetas
+// KPI/mapa un valor único para no contar un registro dos veces.
+export function colapsoResuelto(r) {
+  if (normalize(r.colapso_parcial) === 'si') return 'parcial';
+  if (normalize(r.colapso_total) === 'si') return 'total';
+  return 'ninguno';
+}
+
 // Cache-busting fetch params. `bust` MUST stay false on normal startup loads
 // (lets vercel.json's Cache-Control do its job); true only for retry/refresh/poll
 // paths that need a guaranteed-fresh fetch. See data.js load()'s comment for the why.

@@ -133,7 +133,11 @@ function onStoreChange() {
   // inspección — no se borra nada, solo se deja de contar dos veces.
   const unicos = soloRepresentantes(store.filtered);
   const unicosTodos = soloRepresentantes(store.records);
-  renderKpis(kpiRow, unicos, unicosTodos);
+  // Recolectados = cada envío del formulario, sin agrupar (lo que trae el
+  // cron). `unicos` ya es la cifra sanitizada (un edificio, no un envío) que
+  // consume el resto de renderKpis — este conteo solo alimenta la referencia
+  // "recolectados" de la tarjeta Total registros.
+  renderKpis(kpiRow, unicos, unicosTodos, { recolectados: store.filtered.length });
   setTotalRecords(store.records.length);
   renderTable(store.filtered);
   renderMap(soloRepresentantes(store.filtered)).catch((err) => {
