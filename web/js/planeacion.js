@@ -2273,77 +2273,83 @@ export function initPlaneacion(root, { getToken }) {
     }
   }
 
+  // Progressive load (2026-08-27 perf fix): the table blocked on ALL 7 calls
+  // via one Promise.allSettled, so the spinner sat until the SLOWEST settled.
+  // Measured cold (cache-cold, e.g. right after any admin mutation busts the
+  // TTL cache): `resumen` ~8s and `metricasProgreso` ~8s — each a full
+  // ~14.8k-doc scan — while every other call is <2s. So the table now renders
+  // off a FIRST wave of only the fast calls (~2s), drops the overlay, and the
+  // two heavy aggregates load in a SECOND wave in the background: `resumen`
+  // only refines the truncation banner's denominator (a fallback count shows
+  // first), and `metricasProgreso` only fills the "Progreso por grupo" section
+  // (a loading placeholder shows first). Neither blocks the usable table.
   async function reload() {
     showOk('');
     showErr('');
     tableWrap.innerHTML = '<p class="sticker-loading">Cargando planeación…</p>';
     showOverlay();
+    let ready = false;
+    let shownCount = 0;
+    let truncado = false;
     try {
       await ensureInspectores();
       const incluirLevantados = !!root.querySelector('#planeacion-incluir-levantados')?.checked;
-      // Item 5 (2026-08-27): top-4500 critical working set, ranked by score
-      // (backend's own listPuntos ordering). `prioridad` is sent only when
-      // a chip actually narrows it — an empty value would just be ignored
-      // server-side, but omitting it keeps the request body honest.
-      // Item 2A (2026-08-27, Planeación performance): 4500 -> 2500. Still the
-      // top-N critical working set by score; a smaller page renders faster
-      // without hiding work (formatTruncacion's own banner is unchanged).
+      // top-N critical working set by score (backend's own listPuntos
+      // ordering); `prioridad` only when a chip actually narrows it.
       const listPuntosBody = { action: 'listPuntos', incluirLevantados, limit: 2500 };
       if (filters.prioridad) listPuntosBody.prioridad = filters.prioridad;
+
+      // WAVE 1 — the table and everything cheap enough to render with it.
       const results = await Promise.allSettled([
         callApi(getToken, listPuntosBody),
         callApi(getToken, { action: 'listCuadrillas' }),
-        callApi(getToken, { action: 'resumen' }),
         callApi(getToken, { action: 'listGrupos' }),
         callApi(getToken, { action: 'listVehiculos' }),
-        callApi(getToken, { action: 'metricasProgreso' }),
         callApi(getToken, { action: 'listConductores' }),
       ]);
-      const [listResult, cuadrillasResult, resumenResult, gruposResult, vehiculosResult, metricasResult, conductoresResult] = results;
+      const [listResult, cuadrillasResult, gruposResult, vehiculosResult, conductoresResult] = results;
 
       if (listResult.status === 'rejected') {
         // listPuntos itself failed: the puntos table has nothing to show,
         // so this is the one case that still reports into `tableWrap`.
         teardownMap();
         tableWrap.innerHTML = `<p class="sticker-error" role="alert">${escapeHtml(listResult.reason.message)}</p>`;
-        return;
-      }
+      } else {
+        const listResp = listResult.value;
+        shownCount = (listResp.puntos || []).length;
+        truncado = !!listResp.truncado;
+        cuadrillas = cuadrillasResult.status === 'fulfilled' ? (cuadrillasResult.value.cuadrillas || []) : cuadrillas;
+        grupos = gruposResult.status === 'fulfilled' ? (gruposResult.value.grupos || []) : grupos;
+        vehiculos = vehiculosResult.status === 'fulfilled' ? (vehiculosResult.value.vehiculos || []) : vehiculos;
+        conductores = conductoresResult.status === 'fulfilled' ? (conductoresResult.value.conductores || []) : conductores;
+        rows = buildRows(listResp.puntos, cuadrillas, getInspectores(), grupos);
+        renderAutoScopeSelects();
+        selected.clear();
+        crearBtn.disabled = true;
+        asignarGrupoBtn.disabled = true;
+        quitarGrupoBtn.disabled = true;
+        // Banner shows the loaded-page count as the denominator until `resumen`
+        // (wave 2) refines it to the true full-collection `pendientes`.
+        renderTruncacion(truncado, shownCount, resumenData ? resumenData.pendientes : shownCount);
+        renderKpis();
+        renderTable();
+        renderCuadrillasSection();
+        renderGruposSection();
+        renderVehiculosSection();
+        renderConductoresSection();
+        renderMapSection();
+        renderInspectorRoster();
+        // The progress section's data (metricasProgreso) is a wave-2 call.
+        // First load: a loading placeholder; a reload: keep the stale table
+        // visible (no flicker) until wave 2 refreshes it.
+        if (metricasData) renderMetricasSection();
+        else metricasWrap.innerHTML = '<p class="sticker-loading">Cargando progreso…</p>';
+        ready = true;
 
-      const listResp = listResult.value;
-      cuadrillas = cuadrillasResult.status === 'fulfilled' ? (cuadrillasResult.value.cuadrillas || []) : cuadrillas;
-      grupos = gruposResult.status === 'fulfilled' ? (gruposResult.value.grupos || []) : grupos;
-      vehiculos = vehiculosResult.status === 'fulfilled' ? (vehiculosResult.value.vehiculos || []) : vehiculos;
-      conductores = conductoresResult.status === 'fulfilled' ? (conductoresResult.value.conductores || []) : conductores;
-      metricasData = metricasResult.status === 'fulfilled' ? (metricasResult.value.metricas || null) : metricasData;
-      // Working-set KPI decision (2026-08-27): `resumen` is now called ONLY
-      // for this one full-collection number — the truncation banner's
-      // denominator below. KPIs and the auto-agrupar comuna/barrio selects
-      // moved to `rows`-derived helpers (`kpisFromRows`/
-      // `barriosPorComunaFromRows`); with the backend's own TTL cache this
-      // remaining call is cheap, but it is not trivially droppable — the
-      // banner's "de N pendientes" number is inherently a full-collection
-      // count `rows` (a bounded page) cannot derive on its own.
-      resumenData = resumenResult.status === 'fulfilled' ? (resumenResult.value.resumen || null) : resumenData;
-      rows = buildRows(listResp.puntos, cuadrillas, getInspectores(), grupos);
-      renderAutoScopeSelects();
-      selected.clear();
-      crearBtn.disabled = true;
-      asignarGrupoBtn.disabled = true;
-      quitarGrupoBtn.disabled = true;
-      renderTruncacion(!!listResp.truncado, (listResp.puntos || []).length, resumenData ? resumenData.pendientes : (listResp.puntos || []).length);
-      renderKpis();
-      renderTable();
-      renderCuadrillasSection();
-      renderGruposSection();
-      renderVehiculosSection();
-      renderConductoresSection();
-      renderMetricasSection();
-      renderMapSection();
-      renderInspectorRoster();
-
-      const firstFailure = results.find((r) => r.status === 'rejected');
-      if (firstFailure) {
-        showErr('No se pudo actualizar parte de la información: ' + firstFailure.reason.message);
+        const firstFailure = results.find((r) => r.status === 'rejected');
+        if (firstFailure) {
+          showErr('No se pudo actualizar parte de la información: ' + firstFailure.reason.message);
+        }
       }
     } catch (err) {
       teardownMap();
@@ -2351,6 +2357,27 @@ export function initPlaneacion(root, { getToken }) {
     } finally {
       hideOverlay();
     }
+    if (!ready) return;
+
+    // WAVE 2 — the two heavy full-collection aggregates, in the background.
+    // Each updates only its own section; a failure never touches the table.
+    Promise.allSettled([
+      callApi(getToken, { action: 'resumen' }),
+      callApi(getToken, { action: 'metricasProgreso' }),
+    ]).then(([resumenResult, metricasResult]) => {
+      if (resumenResult.status === 'fulfilled') {
+        resumenData = resumenResult.value.resumen || resumenData;
+        renderTruncacion(truncado, shownCount, resumenData ? resumenData.pendientes : shownCount);
+      }
+      if (metricasResult.status === 'fulfilled') {
+        metricasData = metricasResult.value.metricas || null;
+        renderMetricasSection();
+      } else {
+        // Never leave the placeholder stuck: fall back to whatever is cached
+        // (or the empty state) instead of "Cargando progreso…" forever.
+        renderMetricasSection();
+      }
+    });
   }
 
   autoBtn.addEventListener('click', async () => {
