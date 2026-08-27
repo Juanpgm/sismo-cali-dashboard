@@ -533,6 +533,48 @@ def test_list_puntos_assigned_point_still_honors_active_comuna_filter(monkeypatc
     assert ids == {"hi1"}
 
 
+def test_list_puntos_reflects_a_new_assignment_after_the_widen_cache_was_warm(monkeypatch):
+    """Root-cause repro for "las asignaciones no se están persistiendo":
+    `efec5f1` routed the "always include assigned points" widen fetch
+    (`_fetch_assigned_puntos`) through `PlaneacionAggregatesCache` (5-minute
+    TTL). The UI's own `reload()` warms that cache on every tab open/reload
+    BEFORE an admin makes a change. If a low-priority point (outside the
+    top-N page) is then assigned via `asignarGrupoAPuntos`, the very next
+    `listPuntos` call — the reload the UI fires right after the write — MUST
+    see it, not the pre-assignment cached snapshot. `cache.clear()` in the
+    dispatcher's post-mutation block is what is supposed to guarantee this."""
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {
+        "hi1": _punto(prioridad_score=90),
+        # Low priority so it starts outside a limit=1 page.
+        "lo1": _punto(prioridad_score=1),
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    # Tab open / reload() warms the "assignedPuntos" cache while lo1 is still
+    # unassigned — the exact ordering the real UI performs.
+    warm = client.post("/planeacion-asignaciones", json={"action": "listPuntos", "limit": 1})
+    assert {p["id"] for p in warm.json()["puntos"]} == {"hi1"}
+
+    # Admin assigns the low-priority point to a grupo.
+    assign = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["lo1"]},
+    )
+    assert assign.status_code == 200
+
+    # The UI's own post-write reload() — must reflect the assignment, not the
+    # pre-assignment cached widen set.
+    after = client.post("/planeacion-asignaciones", json={"action": "listPuntos", "limit": 1})
+    ids = {p["id"] for p in after.json()["puntos"]}
+    assert "lo1" in ids, (
+        f"lo1 was just assigned to grupo g1 but is missing from listPuntos "
+        f"({ids}) — the assignedPuntos widen cache was not busted by the "
+        f"mutation."
+    )
+
+
 def test_list_puntos_limit_above_hard_max_is_clamped_not_failed(monkeypatch):
     stores = _stores()
     stores[PLANEACION_PUNTOS] = {"p1": _punto()}
