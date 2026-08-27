@@ -1122,8 +1122,13 @@ def editar_asignacion(db: Any, body: dict[str, Any], claims: dict[str, Any]) -> 
     fields["editado_por"] = claims.get("sub")
     ref.set(fields, merge=True)
 
-    punto = {**(snap.to_dict() or {}), **fields, "id": punto_id}
-    punto["editado_en"] = now.isoformat()  # JSON-serializable for the response only
+    # `_jsonable` the WHOLE response: the point doc can carry OTHER Firestore
+    # timestamps besides `editado_en` (e.g. `asignado_en` on any assigned
+    # point), and one un-serialized `DatetimeWithNanoseconds` 502s the
+    # JSONResponse — the exact bug `_doc_to_dict` was funneled to prevent,
+    # which this hand-built response bypassed.
+    punto = _jsonable({**(snap.to_dict() or {}), **fields})
+    punto["id"] = punto_id
     return punto
 
 
@@ -1160,8 +1165,10 @@ def marcar_no_aplica(db: Any, body: dict[str, Any], claims: dict[str, Any]) -> d
         }
 
     ref.set(fields, merge=True)
-    punto = {**(snap.to_dict() or {}), **fields, "id": punto_id}
-    punto["editado_en"] = now.isoformat()
+    # See editar_asignacion: `_jsonable` the whole response so a stray
+    # Firestore timestamp (asignado_en, ...) never 502s the JSONResponse.
+    punto = _jsonable({**(snap.to_dict() or {}), **fields})
+    punto["id"] = punto_id
     return punto
 
 
@@ -1191,8 +1198,10 @@ def reopen_punto(db: Any, body: dict[str, Any], claims: dict[str, Any]) -> dict[
         "editado_por": claims.get("sub"),
     }
     ref.set(fields, merge=True)
-    punto = {**current, **fields, "id": punto_id}
-    punto["editado_en"] = now.isoformat()
+    # See editar_asignacion: `_jsonable` the whole response so a stray
+    # Firestore timestamp (asignado_en, ...) never 502s the JSONResponse.
+    punto = _jsonable({**current, **fields})
+    punto["id"] = punto_id
     return punto
 
 

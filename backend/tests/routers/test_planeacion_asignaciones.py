@@ -1326,6 +1326,36 @@ def test_editar_asignacion_partial_leaves_untouched_fields_alone(monkeypatch):
     assert stores[PLANEACION_PUNTOS]["p1"]["notas"] == "porteria cerrada"
 
 
+def test_editar_asignacion_serializes_stray_timestamp_fields(monkeypatch):
+    """Regression: the point doc carries OTHER timestamp fields (e.g.
+    `asignado_en`, stamped by asignarInspector) besides `editado_en`. The
+    hand-built response only isoformat-converted `editado_en`, so a live
+    point with an `asignado_en` datetime 502'd the JSONResponse ("Object of
+    type DatetimeWithNanoseconds is not JSON serializable"). The whole
+    response must go through `_jsonable`."""
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {
+            "estado_asignacion": "asignado",
+            "inspector_uid": "insp-a",
+            "asignado_en": datetime(2026, 8, 27, 12, 0, 0),  # stray timestamp
+        }
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "editarAsignacion", "punto_id": "p1", "estado_asignacion": "pendiente", "inspector_uid": None},
+    )
+
+    assert resp.status_code == 200, resp.text
+    punto = resp.json()["punto"]
+    assert isinstance(punto["asignado_en"], str)  # serialized, not a raw datetime
+    assert punto["inspector_uid"] is None
+    assert stores[PLANEACION_PUNTOS]["p1"]["inspector_uid"] is None
+    assert stores[PLANEACION_PUNTOS]["p1"]["estado_asignacion"] == "pendiente"
+
+
 def test_editar_asignacion_explicit_null_clears_a_field(monkeypatch):
     stores = _stores()
     stores[PLANEACION_PUNTOS] = {"p1": {"notas": "porteria cerrada"}}
