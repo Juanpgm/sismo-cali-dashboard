@@ -125,26 +125,26 @@ written in parallel with Phase 1, must land before Phase 3's button is exercised
 Depends on: Phase 2 (button calls `marcarSurveyHecho`); CTA-label and SVG tasks are independent of
 Phase 1/2 and can land in the same PR without a backend dependency.
 
-- [ ] 3.1 (RED) Add `etiquetaAccionCercano` cases to `formulario/test/logic.test.mjs` (mirrors the
+- [x] 3.1 (RED) Add `etiquetaAccionCercano` cases to `formulario/test/logic.test.mjs` (mirrors the
       existing `etiquetaCampana` tests), MUST fail before 3.2: `'survey'` → `'Levantar survey'`;
       `'sticker'` → `'Pegar sticker'`; unknown/undefined → a safe fallback (reuse
       `etiquetaCampana`'s own unknown-value convention).
       — Satisfies: *survey-sticker-realtime-sync* "Cercanos CTA shows a per-campaign label" (both
       scenarios).
-- [ ] 3.2 (GREEN) Add pure `export function etiquetaAccionCercano(campana)` to `formulario/js/logic.js`
+- [x] 3.2 (GREEN) Add pure `export function etiquetaAccionCercano(campana)` to `formulario/js/logic.js`
       next to `etiquetaCampana` (~line 261). Run 3.1 and confirm it passes.
       — Satisfies: same requirement (implementation).
-- [ ] 3.3 Wire `buildCercanoCard` (`form.js:544`): replace the hard-coded `'Tomar este punto'` button
+- [x] 3.3 Wire `buildCercanoCard` (`form.js:544`): replace the hard-coded `'Tomar este punto'` button
       text with `etiquetaAccionCercano(p.campana)`.
       — Satisfies: *survey-sticker-realtime-sync* "Cercanos CTA..." scenarios, end to end.
-- [ ] 3.4 Add inline SVG helpers to `form.js` (Feather `map-pin`/`phone`, 24×24, `stroke=currentColor`,
+- [x] 3.4 Add inline SVG helpers to `form.js` (Feather `map-pin`/`phone`, 24×24, `stroke=currentColor`,
       no fill, `aria-hidden="true"`) and replace the 4 emoji-prefixed strings: `buildAsignacionCard`'s
       `'📍 Cómo llegar'` (~line 336), `buildPlaneacionCard`'s `'📍 Cómo llegar'` (~line 414) and
       `'📞 Llamar'` (~line 421), `buildCercanoCard`'s `'📍 Cómo llegar'` (~line 537) — each becomes a
       `<span class="icon">`+SVG prepended to the existing link, text node kept as plain
       `'Cómo llegar'`/`'Llamar'`.
       — Satisfies: *survey-sticker-realtime-sync* "No emoji chrome in form.js" (all 3 scenarios).
-- [ ] 3.5 Add the "Survey completado" button to `buildPlaneacionCard` (`form.js:365`), appended into
+- [x] 3.5 Add the "Survey completado" button to `buildPlaneacionCard` (`form.js:365`), appended into
       the same `acciones` div as the existing "Abrir encuesta" link, only when `p.campana ===
       'survey'` (guard against rendering it for a sticker-shaped `planeacion_puntos` card, if any
       reach this renderer). Add `async function onMarcarSurveyHecho(p, btn)` mirroring
@@ -155,10 +155,10 @@ Phase 1/2 and can land in the same PR without a backend dependency.
       near the button (reuse `mostrarErrorTomarPunto`'s box or a sibling one scoped to this card).
       — Satisfies: *survey-sticker-realtime-sync* "`marcarSurveyHecho` action contract" (end-to-end
       UI flow, all 3 scenarios).
-- [ ] 3.6 Grep `formulario/js/form.js` for emoji codepoints (Unicode ranges U+1F300-U+1FAFF,
+- [x] 3.6 Grep `formulario/js/form.js` for emoji codepoints (Unicode ranges U+1F300-U+1FAFF,
       U+2600-U+27BF) after 3.4/3.5 — MUST return zero matches.
       — Satisfies: *survey-sticker-realtime-sync* "No emoji codepoint remains in form.js" scenario.
-- [ ] 3.7 Run `node --test formulario/test/logic.test.mjs` green; manual browser check of the
+- [x] 3.7 Run `node --test formulario/test/logic.test.mjs` green; manual browser check of the
       Cercanos tab CTA labels, the "Survey completado" button, and the 4 SVG icons rendering
       (no automated e2e harness covers this surface, per `design.md`'s Testing Strategy row).
 

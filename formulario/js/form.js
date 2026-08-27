@@ -14,7 +14,7 @@ import {
   habitabilidadColor, colapsoLabel, mapsDirUrl,
   prioridadColor, elegirEnlaceEncuesta,
   ordenarPorCercania, distanciaM, formatDistancia,
-  etiquetaCampana, mensajeEstadoCercanos, cercanosMuestraLista,
+  etiquetaCampana, etiquetaAccionCercano, mensajeEstadoCercanos, cercanosMuestraLista,
   mensajeTomarPunto, mensajeErrorTomarPunto,
   CERCANOS_ESPERANDO, CERCANOS_SIN_GPS, CERCANOS_CARGANDO, CERCANOS_VACIO, CERCANOS_LISTO, CERCANOS_ERROR,
 } from './logic.js';
@@ -285,6 +285,21 @@ function activarTabAsignaciones(tab) {
   ocultarErrorTomarPunto(); // a stale claim rejection must not linger across tab switches
 }
 
+// Inline SVG chrome replacing the emoji this UI used to prefix "Cómo
+// llegar"/"Llamar" with (Feather `map-pin`/`phone`, 24x24, stroke=currentColor,
+// no fill, `aria-hidden` since the adjacent text already names the action).
+const ICONO_MAPA_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>';
+const ICONO_TELEFONO_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>';
+
+// Prepends an icon span + plain-text label onto a link, replacing whatever
+// emoji-prefixed textContent the 4 call sites used to set directly.
+function conIcono(link, svgMarkup, texto) {
+  const icono = document.createElement('span');
+  icono.className = 'icon';
+  icono.innerHTML = svgMarkup;
+  link.append(icono, document.createTextNode(texto));
+}
+
 // Prominent distance line shared by both card kinds — distance is the
 // primary sort key (proximity) and must read at a glance, not be buried
 // among the other pills.
@@ -333,7 +348,7 @@ function buildAsignacionCard(a, origen) {
     link.href = url;
     link.target = '_blank';
     link.rel = 'noopener';
-    link.textContent = '📍 Cómo llegar';
+    conIcono(link, ICONO_MAPA_SVG, 'Cómo llegar');
     acciones.append(link);
   }
 
@@ -411,14 +426,14 @@ function buildPlaneacionCard(p, origen) {
     link.href = mapsUrl;
     link.target = '_blank';
     link.rel = 'noopener';
-    link.textContent = '📍 Cómo llegar';
+    conIcono(link, ICONO_MAPA_SVG, 'Cómo llegar');
     acciones.append(link);
   }
   if (p.telefono_solicitante) {
     const llamar = document.createElement('a');
     llamar.className = 'btn-secondary asignacion-llamar';
     llamar.href = `tel:${p.telefono_solicitante}`;
-    llamar.textContent = '📞 Llamar';
+    conIcono(llamar, ICONO_TELEFONO_SVG, 'Llamar');
     acciones.append(llamar);
   }
 
@@ -439,8 +454,65 @@ function buildPlaneacionCard(p, origen) {
   }
   acciones.append(btn);
 
+  // survey-sticker-sync: lets the field crew close the survey from here
+  // instead of waiting on the next `cruce_sticker.py` cron run — see
+  // onMarcarSurveyHecho below. `_mis_puntos_planeacion` (the only source
+  // feeding this card) never stamps a `campana` field on its own points, so
+  // this guard is a defensive `!== 'sticker'` (not the narrower `===
+  // 'survey'`) — it still hides the button if a sticker-shaped point ever
+  // reaches this renderer, without silently hiding it for every real point
+  // today (which a literal `=== 'survey'` check would, since `p.campana` is
+  // always undefined here).
+  if (p.campana !== 'sticker') {
+    const completarBtn = document.createElement('button');
+    completarBtn.type = 'button';
+    completarBtn.className = 'btn-secondary';
+    completarBtn.textContent = 'Survey completado';
+    completarBtn.addEventListener('click', () => onMarcarSurveyHecho(p, card, completarBtn));
+    acciones.append(completarBtn);
+  }
+
   card.append(acciones);
   return card;
+}
+
+// Inline error line for onMarcarSurveyHecho, scoped to the offending card
+// (not the global #cercanos-claim-error box, which belongs to a different
+// tab) — created on demand so no index.html change is needed.
+function mostrarErrorMarcarSurveyHecho(card, msg) {
+  if (!card) return;
+  let box = card.querySelector('.marcar-survey-error');
+  if (!box) {
+    box = document.createElement('p');
+    box.className = 'field-error marcar-survey-error';
+    box.setAttribute('role', 'alert');
+    card.append(box);
+  }
+  box.textContent = msg;
+}
+
+// "Survey completado": mirrors onTomarPunto's disable/try/finally shape.
+// Success refreshes misPuntos/misPuntosPlaneacion (cargarMisPuntos) so the
+// completed point drops off this list; the backend best-effort pre-assigns
+// or creates its sticker twin, which then shows up on the next sticker-tab
+// load — no dependency on this call's own (deliberately minimal) response.
+async function onMarcarSurveyHecho(p, card, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const res = await asignacionesApi({ action: 'marcarSurveyHecho', punto_id: p.id });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      mostrarErrorMarcarSurveyHecho(card, (body && body.detail) || 'No se pudo marcar el survey como completado. Intenta de nuevo.');
+      if (btn) btn.disabled = false;
+      return;
+    }
+    await cargarMisPuntos();
+    renderAsignaciones();
+  } catch (err) {
+    console.warn('marcarSurveyHecho falló:', err);
+    mostrarErrorMarcarSurveyHecho(card, 'No se pudo marcar el survey como completado. Intenta de nuevo.');
+    if (btn) btn.disabled = false;
+  }
 }
 
 // Coarse device check for elegirEnlaceEncuesta's app-vs-web preference —
@@ -534,14 +606,14 @@ function buildCercanoCard(p, origen) {
     link.href = mapsUrl;
     link.target = '_blank';
     link.rel = 'noopener';
-    link.textContent = '📍 Cómo llegar';
+    conIcono(link, ICONO_MAPA_SVG, 'Cómo llegar');
     acciones.append(link);
   }
 
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'btn-primary';
-  btn.textContent = 'Tomar este punto';
+  btn.textContent = etiquetaAccionCercano(p.campana);
   btn.addEventListener('click', () => onTomarPunto(p, btn));
   acciones.append(btn);
 

@@ -264,6 +264,15 @@ export function etiquetaCampana(campana) {
   return '';
 }
 
+// Cercanos claim-button label per campaign — same one-lookup convention as
+// etiquetaCampana (unknown/undefined falls back to '', never a hand-picked
+// inline string in form.js).
+export function etiquetaAccionCercano(campana) {
+  if (campana === 'survey') return 'Levantar survey';
+  if (campana === 'sticker') return 'Pegar sticker';
+  return '';
+}
+
 // The "cercanos" tab's own small state machine, driving BOTH the status
 // message and whether the card list itself is shown. GPS is a HARD
 // requirement for this tab (binding requirement: "if GPS is denied, this

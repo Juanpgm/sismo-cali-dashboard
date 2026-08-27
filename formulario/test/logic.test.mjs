@@ -9,7 +9,7 @@ import {
   filtrarPendientes, habitabilidadColor, colapsoLabel, mapsDirUrl,
   elegirEnlaceEncuesta, prioridadColor,
   distanciaM, ordenarPorCercania, formatDistancia,
-  etiquetaCampana, mensajeEstadoCercanos, cercanosMuestraLista,
+  etiquetaCampana, etiquetaAccionCercano, mensajeEstadoCercanos, cercanosMuestraLista,
   mensajeTomarPunto, mensajeErrorTomarPunto,
   CERCANOS_ESPERANDO, CERCANOS_SIN_GPS, CERCANOS_CARGANDO, CERCANOS_VACIO, CERCANOS_LISTO, CERCANOS_ERROR,
 } from '../js/logic.js';
@@ -426,6 +426,16 @@ test('etiquetaCampana mapea sticker y survey a etiquetas legibles', () => {
 test('etiquetaCampana de un valor desconocido devuelve cadena vacia', () => {
   assert.equal(etiquetaCampana('otra-cosa'), '');
   assert.equal(etiquetaCampana(null), '');
+});
+
+test('etiquetaAccionCercano mapea survey y sticker a la etiqueta del boton de accion', () => {
+  assert.equal(etiquetaAccionCercano('survey'), 'Levantar survey');
+  assert.equal(etiquetaAccionCercano('sticker'), 'Pegar sticker');
+});
+
+test('etiquetaAccionCercano de un valor desconocido devuelve cadena vacia', () => {
+  assert.equal(etiquetaAccionCercano('otra-cosa'), '');
+  assert.equal(etiquetaAccionCercano(undefined), '');
 });
 
 test('mensajeEstadoCercanos cubre cada estado que muestra texto con un mensaje distinto y no vacio', () => {

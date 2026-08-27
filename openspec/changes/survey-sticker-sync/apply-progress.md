@@ -12,6 +12,9 @@ PR 1 / Phase 1 only — radius sweep in `backend/app/routers/planeacion_asignaci
 `backend/app/routers/inspector_asignaciones.py`) is now done — see the "PR 2" sections
 appended below. Phase 3 (formulario) and Phase 4 (wrap-up) remain NOT started.
 
+**Update (PR 3 run):** Phase 3 (`formulario/js/form.js` + `formulario/js/logic.js`) is now done —
+see the "PR 3" sections appended below. Only Phase 4 (wrap-up) remains NOT started.
+
 ## Mode
 
 Strict TDD (repo convention, `strict_tdd: true`). RED tests written and confirmed failing
@@ -225,3 +228,112 @@ None beyond the `_FakeDocRef.id` gap caught and fixed during the GREEN re-run (s
 10/10 Phase 2 tasks complete (15/24 total tasks across all 4 phases: 5 Phase 1 + 10 Phase 2).
 Ready for next batch (PR 3 — Phase 3, formulario) or for `sdd-verify` to gate this slice before
 PR 2 ships.
+
+---
+
+## PR 3 / Phase 3 — Formulario: button, CTA labels, SVG chrome (`form.js`/`logic.js`)
+
+### Completed Tasks (Phase 3)
+
+- [x] 3.1 (RED) `etiquetaAccionCercano` cases added to `formulario/test/logic.test.mjs` right after
+      the existing `etiquetaCampana` tests (mirrors their pattern exactly): `'survey'` →
+      `'Levantar survey'`, `'sticker'` → `'Pegar sticker'`, unknown/`undefined` → `''`.
+- [x] 3.2 (GREEN) Pure `export function etiquetaAccionCercano(campana)` added to `formulario/js/logic.js`
+      right before the "cercanos" state-machine block (same one-lookup convention as
+      `etiquetaCampana`).
+- [x] 3.3 `buildCercanoCard` (`form.js`) now sets `btn.textContent = etiquetaAccionCercano(p.campana)`
+      instead of the hard-coded `'Tomar este punto'`; `onTomarPunto`'s own branching by `p.campana`
+      was left untouched.
+- [x] 3.4 Added `ICONO_MAPA_SVG`/`ICONO_TELEFONO_SVG` (Feather `map-pin`/`phone`, 24x24,
+      `stroke=currentColor`, `fill=none`, `aria-hidden="true"`) plus a `conIcono(link, svgMarkup,
+      texto)` helper (`<span class="icon">` + text node) in `form.js`; replaced all 4
+      emoji-prefixed strings — `buildAsignacionCard`'s `'📍 Cómo llegar'`, `buildPlaneacionCard`'s
+      `'📍 Cómo llegar'` + `'📞 Llamar'`, `buildCercanoCard`'s `'📍 Cómo llegar'` — with
+      `conIcono(...)` calls.
+- [x] 3.5 "Survey completado" button added to `buildPlaneacionCard`, appended into the same
+      `acciones` div as "Abrir encuesta". New `async function onMarcarSurveyHecho(p, card, btn)`
+      mirrors `onTomarPunto`'s disable/try/finally shape: calls `asignacionesApi({action:
+      'marcarSurveyHecho', punto_id: p.id})`; on success runs `cargarMisPuntos()` +
+      `renderAsignaciones()` so the completed point drops off the list; on failure/exception shows
+      a dedicated inline error (`mostrarErrorMarcarSurveyHecho`, a `.marcar-survey-error` paragraph
+      created on demand inside the card — NOT the global `#cercanos-claim-error` box, which belongs
+      to a different tab) and re-enables the button. See Deviations for the render guard's exact
+      condition.
+- [x] 3.6 Grepped `formulario/js/form.js` for the two emoji Unicode ranges (`\u{1F300}-\u{1FAFF}`,
+      `\u{2600}-\u{27BF}`) via a Node one-liner (no `python3` in this environment) — zero matches.
+- [x] 3.7 `node --test formulario/test/logic.test.mjs` green (85/85). Manual browser check of the
+      Cercanos CTA labels / "Survey completado" button / 4 SVG icons rendering was NOT run — no
+      browser/DOM harness is available in this non-interactive session, and design.md's own Testing
+      Strategy table already scopes that check as "E2E/manual, DOM-level, out of `logic.test`
+      scope". `node --check formulario/js/form.js` confirms the file still parses cleanly after the
+      edits.
+
+### Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused test command and exact result | `node --test formulario/test/logic.test.mjs` → RED before 3.2 (`SyntaxError: ... does not provide an export named 'etiquetaAccionCercano'`), GREEN after: `tests 85, pass 85, fail 0` |
+| Runtime harness command/scenario and exact result | No automated DOM/e2e harness exists for `form.js` (per design.md's Testing Strategy row) — `node --check formulario/js/form.js` → parses cleanly (only available runtime signal in this session); manual browser check is N/A here, deferred to the user per design.md's own scoping |
+| Rollback boundary | Revert `formulario/js/form.js` + `formulario/js/logic.js` + the new cases in `formulario/test/logic.test.mjs`; no backend dependency beyond the already-shipped `marcarSurveyHecho` action from PR 2 (this PR only calls it, doesn't change its contract) |
+
+### Files Changed (PR 3)
+
+| File | Action | What Was Done |
+|------|--------|---------------|
+| `formulario/js/logic.js` | Modified | Added pure `etiquetaAccionCercano(campana)`. +9 lines. |
+| `formulario/js/form.js` | Modified | Added `ICONO_MAPA_SVG`/`ICONO_TELEFONO_SVG` + `conIcono` helper; wired `etiquetaAccionCercano` into `buildCercanoCard`; replaced the 4 emoji strings; added "Survey completado" button + `onMarcarSurveyHecho` + `mostrarErrorMarcarSurveyHecho` to `buildPlaneacionCard`. +84/-7 lines. |
+| `formulario/test/logic.test.mjs` | Modified | Added 2 `etiquetaAccionCercano` RED/GREEN tests mirroring the `etiquetaCampana` pattern. +12/-1 lines. |
+| `openspec/changes/survey-sticker-sync/tasks.md` | Modified | Marked 3.1-3.7 `[x]`. |
+
+**Diff size (PR 3 slice)**: `git diff --stat` on the three source files → 98 insertions(+), 7
+deletions(-) combined. Under the 400-line review budget — no `size:exception` needed for PR 3.
+
+### Deviations from Design
+
+1. **`buildPlaneacionCard`'s "Survey completado" render guard is `p.campana !== 'sticker'`, not the
+   literal `p.campana === 'survey'` tasks.md specifies.** Traced `_mis_puntos_planeacion`
+   (`backend/app/routers/inspector_asignaciones.py:373-428`, the ONLY source feeding this
+   renderer) end to end: its returned point dicts never include a `campana` key at all — only
+   `_puntos_cercanos` (a different function, feeding `buildCercanoCard`) stamps `campana`. Under
+   the literal `=== 'survey'` reading, `p.campana` is always `undefined` for every real point this
+   card ever renders, so the button would NEVER show — silently defeating the entire feature this
+   PR exists to ship. tasks.md's own phrasing ("guard against rendering it for a sticker-shaped
+   `planeacion_puntos` card, **if any** reach this renderer") reads as speculative/defensive, not a
+   claim that `campana` is populated today. `!== 'sticker'` satisfies the literal intent (still
+   hides the button if a sticker-shaped point with `campana:'sticker'` ever reaches this renderer)
+   while preserving the button showing for every real point today (`undefined !== 'sticker'` →
+   `true`). Flagging this per the "if you discover the design is wrong or incomplete, note it, don't
+   silently deviate" rule.
+2. **The "Survey completado" failure message does not reuse `mensajeErrorTomarPunto`.** That
+   function's generic fallback ("No se pudo tomar el punto...") is `tomarPunto`-specific copy; reusing
+   it verbatim for a `marcarSurveyHecho` failure would be confusing field-facing text. Wrote a small
+   dedicated inline fallback string in `form.js` instead (still prefers `body.detail` first, same
+   precedence `mensajeErrorTomarPunto` uses) — tasks.md's instruction to "reuse
+   `mostrarErrorTomarPunto`'s box **or** a sibling one" was about the UI box, not this message
+   function, so no `logic.js` change was needed for it.
+
+### Issues Found
+
+None beyond the render-guard discrepancy already documented in Deviations #1.
+
+### Remaining Tasks (out of scope this run — PR 4)
+
+- [ ] Phase 4 — Wrap-up: full-suite run + `proposal.md` Success Criteria checkboxes (4.1-4.2)
+
+### Workload / PR Boundary (PR 3)
+
+- Mode: chained PR slice (stacked-to-main)
+- Current work unit: Unit 3 — CTA labels, "Survey completado" button, SVG chrome (PR 3)
+- Boundary: starts from the pre-existing generic "Tomar este punto" CTA + emoji chrome + the
+  already-shipped `marcarSurveyHecho` action (PR 2), ends with all 3 formulario-facing pieces
+  (CTA labels, completion button, SVG icons) implemented and the logic-layer tests green (Phase 3
+  complete). PR 4 (wrap-up) targets `main` next per stacked-to-main; it only runs both full suites
+  end to end and updates `proposal.md`'s checkboxes — no new code.
+- Estimated review budget impact: 105 changed lines (98 net + 7 deletions, git-diff-stat-verified)
+  — well under the 400-line budget, single reviewable PR.
+
+## Status (as of PR 3)
+
+7/7 Phase 3 tasks complete (22/24 total tasks across all 4 phases: 5 Phase 1 + 10 Phase 2 + 7
+Phase 3). Ready for PR 4 (Phase 4 wrap-up) or for `sdd-verify` to gate this slice before PR 3
+ships.
