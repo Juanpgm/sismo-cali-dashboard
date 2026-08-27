@@ -2416,16 +2416,23 @@ export function initPlaneacion(root, { getToken }) {
 
   reiniciarBtn.addEventListener('click', async () => {
     if (busy) return;
-    if (!window.confirm('Esto borra las cuadrillas automáticas y libera sus puntos a pendiente. Las cuadrillas manuales se conservan. ¿Continuar?')) return;
+    // Grupo-protection (2026-08-27, user decision): cuadrillas with a grupo
+    // de inspectores already assigned on top are never touched by the
+    // backend — the confirm copy says so up front instead of surprising the
+    // admin with a lower "eliminadas" count than cuadrillas visible on screen.
+    if (!window.confirm('Esto borra las cuadrillas automáticas y libera sus puntos a pendiente. Las cuadrillas manuales, y las automáticas con un grupo de inspectores ya asignado, se conservan. ¿Continuar?')) return;
     busy = true;
     reiniciarBtn.disabled = true;
     try {
-      const { eliminadas, puntosLiberados } = await callApi(getToken, { action: 'reiniciarAgrupacion' });
+      const { eliminadas, puntosLiberados, conservadas } = await callApi(getToken, { action: 'reiniciarAgrupacion' });
       // Confirmation race fix (2026-08-27) — see runAction's own comment.
       await reload();
-      showOk(eliminadas
+      const conservadasMsg = conservadas
+        ? ` ${conservadas} cuadrilla${conservadas === 1 ? '' : 's'} con grupo ya asignado se conservó${conservadas === 1 ? '' : 'n'} sin cambios.`
+        : '';
+      showOk((eliminadas
         ? `${eliminadas} cuadrilla${eliminadas === 1 ? '' : 's'} automática${eliminadas === 1 ? '' : 's'} eliminada${eliminadas === 1 ? '' : 's'}; ${puntosLiberados} punto${puntosLiberados === 1 ? '' : 's'} liberado${puntosLiberados === 1 ? '' : 's'} a pendiente.`
-        : 'No había cuadrillas automáticas para reiniciar.');
+        : 'No había cuadrillas automáticas para reiniciar.') + conservadasMsg);
     } catch (err) {
       showErr(err.message);
     } finally {

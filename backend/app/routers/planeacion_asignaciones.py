@@ -1115,15 +1115,37 @@ def reiniciar_agrupacion(db: Any) -> dict[str, Any]:
     """Undoes every AUTO grouping: releases the member points of every
     `origen:'auto'` cuadrilla back to `pendiente`, then deletes those
     cuadrilla docs. MANUAL cuadrilla docs are left untouched. Adapted from
-    the sticker dispatcher's own `reiniciar_agrupacion`."""
+    the sticker dispatcher's own `reiniciar_agrupacion`.
+
+    Grupo-protection (2026-08-27, user decision): a cuadrilla whose points
+    already carry a `grupo_id` (grupo de inspectores assigned via
+    `asignarGrupoAPuntos`, which COEXISTS with `cuadrilla_id` — see that
+    function's own docstring) represents real assignment work done on top
+    of the auto-clustering. Wiping it here would silently discard that
+    work. Any auto cuadrilla with AT LEAST ONE such point is skipped
+    entirely — not released, not deleted — and counted in `conservadas`."""
     docs = list(db.collection(PLANEACION_CUADRILLAS_COLLECTION).where("origen", "==", "auto").get())
     if not docs:
-        return {"eliminadas": 0, "puntosLiberados": 0}
+        return {"eliminadas": 0, "puntosLiberados": 0, "conservadas": 0}
 
-    punto_ids: set[str] = set()
-    for d in docs:
-        for p in (d.to_dict() or {}).get("puntos") or []:
-            punto_ids.add(str(p))
+    cuadrilla_puntos: dict[str, list[str]] = {
+        d.id: [str(p) for p in (d.to_dict() or {}).get("puntos") or []] for d in docs
+    }
+    all_punto_ids = {pid for ids in cuadrilla_puntos.values() for pid in ids}
+
+    grupo_by_punto: dict[str, Any] = {}
+    if all_punto_ids:
+        refs = [db.collection(PLANEACION_PUNTOS_COLLECTION).document(pid) for pid in all_punto_ids]
+        for snap in db.get_all(refs):
+            if snap.exists:
+                grupo_by_punto[snap.id] = (snap.to_dict() or {}).get("grupo_id")
+
+    to_release = [d for d in docs if not any(grupo_by_punto.get(pid) for pid in cuadrilla_puntos[d.id])]
+    conservadas = len(docs) - len(to_release)
+    if not to_release:
+        return {"eliminadas": 0, "puntosLiberados": 0, "conservadas": conservadas}
+
+    punto_ids: set[str] = {pid for d in to_release for pid in cuadrilla_puntos[d.id]}
 
     def _clear_point(batch: Any, punto_id: str) -> None:
         batch.set(
@@ -1137,9 +1159,9 @@ def reiniciar_agrupacion(db: Any) -> dict[str, Any]:
     def _delete_doc(batch: Any, doc: Any) -> None:
         batch.delete(doc.reference)
 
-    commit_in_chunks(db, docs, _delete_doc)
+    commit_in_chunks(db, to_release, _delete_doc)
 
-    return {"eliminadas": len(docs), "puntosLiberados": len(punto_ids)}
+    return {"eliminadas": len(to_release), "puntosLiberados": len(punto_ids), "conservadas": conservadas}
 
 
 _EDITABLE_KEYS = ("estado_asignacion", "prioridad_override", "inspector_uid", "notas")

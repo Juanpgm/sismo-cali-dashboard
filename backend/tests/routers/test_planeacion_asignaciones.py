@@ -1342,11 +1342,46 @@ def test_reiniciar_agrupacion_releases_only_auto_cuadrillas(monkeypatch):
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body == {"ok": True, "eliminadas": 1, "puntosLiberados": 1}
+    assert body == {"ok": True, "eliminadas": 1, "puntosLiberados": 1, "conservadas": 0}
     assert "c-auto" not in stores[PLANEACION_CUADRILLAS]
     assert "c-manual" in stores[PLANEACION_CUADRILLAS]
     assert stores[PLANEACION_PUNTOS]["p1"]["estado_asignacion"] == "pendiente"
     assert stores[PLANEACION_PUNTOS]["p2"]["cuadrilla_id"] == "c-manual"
+
+
+def test_reiniciar_agrupacion_preserves_auto_cuadrilla_with_a_grupo_assigned(monkeypatch):
+    """Grupo-protection (2026-08-27, user decision): an auto cuadrilla with
+    real assignment work on top (a grupo de inspectores on at least one of
+    its points) must survive `reiniciarAgrupacion` untouched — releasing it
+    would silently discard that work. A sibling auto cuadrilla with no grupo
+    assigned is still reset normally."""
+    stores = _stores()
+    stores[PLANEACION_CUADRILLAS] = {
+        "c-protegida": {"puntos": ["p1", "p2"], "inspector_uid": "insp-1", "origen": "auto"},
+        "c-libre": {"puntos": ["p3"], "inspector_uid": "insp-2", "origen": "auto"},
+    }
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"cuadrilla_id": "c-protegida", "inspector_uid": "insp-1", "estado_asignacion": "asignado", "grupo_id": "g1"},
+        "p2": {"cuadrilla_id": "c-protegida", "inspector_uid": "insp-1", "estado_asignacion": "asignado"},
+        "p3": {"cuadrilla_id": "c-libre", "inspector_uid": "insp-2", "estado_asignacion": "asignado"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "reiniciarAgrupacion"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"ok": True, "eliminadas": 1, "puntosLiberados": 1, "conservadas": 1}
+    assert "c-protegida" in stores[PLANEACION_CUADRILLAS]
+    assert "c-libre" not in stores[PLANEACION_CUADRILLAS]
+    # Untouched: still points to its cuadrilla, still "asignado".
+    assert stores[PLANEACION_PUNTOS]["p1"]["cuadrilla_id"] == "c-protegida"
+    assert stores[PLANEACION_PUNTOS]["p1"]["estado_asignacion"] == "asignado"
+    assert stores[PLANEACION_PUNTOS]["p1"]["grupo_id"] == "g1"
+    assert stores[PLANEACION_PUNTOS]["p2"]["cuadrilla_id"] == "c-protegida"
+    # Released as usual: no grupo on any of its points.
+    assert stores[PLANEACION_PUNTOS]["p3"]["estado_asignacion"] == "pendiente"
+    assert stores[PLANEACION_PUNTOS]["p3"]["cuadrilla_id"] is None
 
 
 # ── editarAsignacion (task 3.9/3.10) ────────────────────────────────────
