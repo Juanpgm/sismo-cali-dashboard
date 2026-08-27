@@ -469,7 +469,7 @@ function shellHtml() {
 
     <section class="planeacion-subpanel" data-subtab="conductores" id="planeacion-panel-conductores" role="tabpanel" aria-labelledby="planeacion-tab-conductores" hidden>
       <div class="card">
-        ${cardHead('Conductores', 'Los conductores se crean desde la pestaña Usuarios.')}
+        ${cardHead('Conductores', 'Crear conductores aquí o desde la pestaña Usuarios.', '<button type="button" class="btn-primary" id="planeacion-conductor-crear">Crear conductor</button>')}
         <div class="asignacion-cuadrillas-scroll" id="planeacion-conductores"></div>
       </div>
     </section>
@@ -662,7 +662,7 @@ function shellHtml() {
       <div class="modal-backdrop" data-conductor-close></div>
       <div class="modal-panel sticker-modal-panel">
         <div class="modal-header">
-          <h2 id="planeacion-conductor-title">Editar conductor</h2>
+          <h2 id="planeacion-conductor-title">Conductor</h2>
           <button type="button" class="btn-icon" data-conductor-close aria-label="Cerrar">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
           </button>
@@ -955,12 +955,11 @@ function vehiculosHtml(vehiculos) {
   </ul>`;
 }
 
-/** Conductores (feature H) — management-only list; ALTA lives in the
- *  Usuarios tab by design (intro line below), matching `vehiculosHtml`'s
- *  own shape minus the create button. */
+/** Conductores (feature H) — creatable both here and from Usuarios,
+ *  matching `vehiculosHtml`'s own shape. */
 function conductoresHtml(conductoresList) {
   if (!conductoresList.length) {
-    return '<p class="sticker-empty">Todavía no hay conductores. Se crean desde la pestaña Usuarios.</p>';
+    return '<p class="sticker-empty">Todavía no hay conductores. Usar «Crear conductor».</p>';
   }
   return `<ul class="sticker-list">
     ${conductoresList.map((c) => `<li class="sticker-row" data-conductor-row="${escapeHtml(c.id)}">
@@ -1256,6 +1255,7 @@ export function initPlaneacion(root, { getToken }) {
   const vehiculosWrap = root.querySelector('#planeacion-vehiculos');
   const vehiculoCrearBtn = root.querySelector('#planeacion-vehiculo-crear');
   const conductoresWrap = root.querySelector('#planeacion-conductores');
+  const conductorCrearBtn = root.querySelector('#planeacion-conductor-crear');
   const historialWrap = root.querySelector('#planeacion-historial-wrap');
   const historialTipoSelect = root.querySelector('#planeacion-historial-tipo');
   const historialUsuarioSelect = root.querySelector('#planeacion-historial-usuario');
@@ -1871,20 +1871,20 @@ export function initPlaneacion(root, { getToken }) {
     }
   });
 
-  // ---- Conductor (edit-only, feature H) modal — mirrors the vehículo
-  // modal's field/save pattern above; no create here (alta lives in
-  // Usuarios). --------------------------------------------------------------
+  // ---- Conductor (create/edit) modal — mirrors the vehículo modal's
+  // openVehiculoModal(null)-is-create pattern above. Creation also lives
+  // in Usuarios; both routes hit the same backend crearConductor. --------
   const conductorModal = root.querySelector('#planeacion-conductor-modal');
   const conductorErr = root.querySelector('#planeacion-conductor-error');
   function openConductorModal(conductorId) {
-    const conductor = conductores.find((c) => c.id === conductorId);
-    if (!conductor) return;
+    const conductor = conductorId ? conductores.find((c) => c.id === conductorId) : null;
+    if (conductorId && !conductor) return;
     conductorErr.hidden = true;
-    root.querySelector('#planeacion-conductor-id').value = conductor.id;
-    root.querySelector('#planeacion-conductor-nombre').value = conductor.nombre_completo || '';
-    root.querySelector('#planeacion-conductor-cedula').value = conductor.cedula || '';
-    root.querySelector('#planeacion-conductor-email').value = conductor.email || '';
-    root.querySelector('#planeacion-conductor-telefono').value = conductor.telefono || '';
+    root.querySelector('#planeacion-conductor-id').value = conductor ? conductor.id : '';
+    root.querySelector('#planeacion-conductor-nombre').value = conductor ? (conductor.nombre_completo || '') : '';
+    root.querySelector('#planeacion-conductor-cedula').value = conductor ? (conductor.cedula || '') : '';
+    root.querySelector('#planeacion-conductor-email').value = conductor ? (conductor.email || '') : '';
+    root.querySelector('#planeacion-conductor-telefono').value = conductor ? (conductor.telefono || '') : '';
     conductorModal.classList.add('is-open');
     conductorModal.setAttribute('aria-hidden', 'false');
   }
@@ -1893,6 +1893,7 @@ export function initPlaneacion(root, { getToken }) {
     conductorModal.setAttribute('aria-hidden', 'true');
   }
   conductorModal.querySelectorAll('[data-conductor-close]').forEach((el) => el.addEventListener('click', closeConductorModal));
+  conductorCrearBtn.addEventListener('click', () => openConductorModal(null));
 
   root.querySelector('#planeacion-conductor-save').addEventListener('click', async () => {
     if (busy) return;
@@ -1901,17 +1902,18 @@ export function initPlaneacion(root, { getToken }) {
     const cedula = root.querySelector('#planeacion-conductor-cedula').value.trim();
     const email = root.querySelector('#planeacion-conductor-email').value.trim();
     const telefono = root.querySelector('#planeacion-conductor-telefono').value.trim();
+    if (!conductorId && (!nombreCompleto || !cedula)) {
+      conductorErr.textContent = 'Nombre completo y cédula son obligatorios.';
+      conductorErr.hidden = false;
+      return;
+    }
     busy = true;
     try {
-      await callApi(getToken, {
-        action: 'editarConductor',
-        conductor_id: conductorId,
-        nombre_completo: nombreCompleto,
-        cedula,
-        email,
-        telefono,
-      });
-      showOk('Conductor actualizado.');
+      const payload = conductorId
+        ? { action: 'editarConductor', conductor_id: conductorId, nombre_completo: nombreCompleto, cedula, email, telefono }
+        : buildConductorPayload({ nombre_completo: nombreCompleto, cedula, email, telefono });
+      await callApi(getToken, payload);
+      showOk(conductorId ? 'Conductor actualizado.' : 'Conductor creado.');
       closeConductorModal();
       await reloadGruposVehiculos();
     } catch (err) {
