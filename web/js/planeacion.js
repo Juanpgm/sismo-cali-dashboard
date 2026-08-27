@@ -869,29 +869,54 @@ function tableHtml(rows, selected) {
  *  pre-selection: cuadrilla docs carry `puntos` (ids), not each point's
  *  own `grupo_id`, so there is nothing here to derive a "current grupo"
  *  from — the control starts on "— Elegir grupo —" every render. */
-function cuadrillasHtml(cuadrillas, inspectorById, gruposActivos) {
+/** A cuadrilla's grupo isn't a field on the cuadrilla doc itself — it lives
+ *  on its member POINTS (`asignarGrupoAPuntos` writes `grupo_id` onto
+ *  `planeacion_puntos`, not the cuadrilla). Look it up from the first member
+ *  point that has one — `asignarGrupoAPuntos`/`desasignarGrupo` from THIS
+ *  row always act on ALL of a cuadrilla's points atomically, so in the
+ *  common case every member shares the same value; a partial/mixed state
+ *  (edited some other way) just shows whichever comes first rather than
+ *  nothing, which is still strictly better than the previous always-blank
+ *  dropdown. */
+function _cuadrillaGrupoId(cuadrilla, grupoIdByPunto) {
+  for (const pid of cuadrilla.puntos || []) {
+    const gid = grupoIdByPunto.get(pid);
+    if (gid) return gid;
+  }
+  return '';
+}
+
+export function cuadrillasHtml(cuadrillas, inspectorById, gruposActivos, grupoIdByPunto = new Map()) {
   if (!cuadrillas.length) {
     return '<p class="sticker-empty">Todavía no hay cuadrillas. Usar «Auto-agrupar» o crear una manualmente desde la tabla.</p>';
   }
-  const grupoOptions = (gruposActivos || [])
-    .map((g) => `<option value="${escapeHtml(g.id)}">${escapeHtml(g.nombre || g.id)}</option>`).join('');
+  const grupoById = new Map((gruposActivos || []).map((g) => [g.id, g]));
+  const grupoOptionsFor = (selectedId) => (gruposActivos || [])
+    .map((g) => `<option value="${escapeHtml(g.id)}"${g.id === selectedId ? ' selected' : ''}>${escapeHtml(g.nombre || g.id)}</option>`).join('');
   return `<ul class="sticker-list">
     ${cuadrillas.map((c) => {
       const n = (c.puntos || []).length;
       const insp = c.inspector_uid ? inspectorById.get(c.inspector_uid) : null;
       const inspName = insp ? (insp.nombre_completo || `Brigada ${insp.codigo || '—'}`) : '';
       const metaInsp = insp ? `Inspector: ${escapeHtml(inspName)}` : 'Sin asignar';
+      // Read-path fix (2026-08-27): the dropdown used to always render blank
+      // and there was no "Grupo: X" indicator anywhere on the row, so a
+      // SUCCESSFUL asignarGrupoAPuntos looked exactly like it hadn't
+      // persisted on the very next reload — nothing on screen confirmed it.
+      const grupoIdActual = _cuadrillaGrupoId(c, grupoIdByPunto);
+      const grupoActual = grupoIdActual ? grupoById.get(grupoIdActual) : null;
+      const metaGrupo = grupoIdActual ? `Grupo: ${escapeHtml(grupoActual ? (grupoActual.nombre || grupoActual.id) : grupoIdActual)}` : 'Sin grupo';
       return `<li class="sticker-row asignacion-cuadrilla-row" data-cuadrilla-row="${escapeHtml(c.id)}">
         <span class="sticker-code" title="Origen">${c.origen === 'auto' ? 'AUTO' : 'MAN'}</span>
         <div class="sticker-identity">
           <span class="sticker-name" title="ID: ${escapeHtml(c.id)}">${escapeHtml(c.nombre || c.id)}</span>
-          <span class="sticker-meta">${n} punto${n === 1 ? '' : 's'} · ${metaInsp}</span>
+          <span class="sticker-meta">${n} punto${n === 1 ? '' : 's'} · ${metaInsp} · ${metaGrupo}</span>
         </div>
         <label class="sticker-field asignacion-inline-field" title="Asignar un grupo de inspectores a todos los puntos de esta cuadrilla.">
           <span>Grupo de inspectores</span>
           <select data-grupo-select-cuadrilla>
             <option value="">— Elegir grupo —</option>
-            ${grupoOptions}
+            ${grupoOptionsFor(grupoIdActual)}
           </select>
         </label>
         <div class="asignacion-cuadrilla-actions">
@@ -1702,7 +1727,10 @@ export function initPlaneacion(root, { getToken }) {
     const inspectores = getInspectores();
     const inspectorById = new Map(inspectores.map((i) => [i.uid, i]));
     const gruposActivos = grupos.filter((g) => g.activo !== false);
-    cuadrillasWrap.innerHTML = cuadrillasHtml(cuadrillas, inspectorById, gruposActivos);
+    // `rows` (from the same-reload `listPuntos`) is the authoritative source
+    // for a point's CURRENT `grupo_id` — see `cuadrillasHtml`'s own comment.
+    const grupoIdByPunto = new Map(rows.map((r) => [r.id, r.grupo_id]));
+    cuadrillasWrap.innerHTML = cuadrillasHtml(cuadrillas, inspectorById, gruposActivos, grupoIdByPunto);
 
     cuadrillasWrap.querySelectorAll('[data-eliminar]').forEach((btn) => {
       btn.addEventListener('click', () => {

@@ -9,6 +9,7 @@ import {
   rowHtml, filterRosterInspectores, filterInspectores,
   diaPicoPlacaHoy, autoAgruparMensaje,
   stickersAsignadosSuffix, stickersDesasignadosSuffix,
+  cuadrillasHtml,
 } from './planeacion.js';
 
 // ---- colorForPunto — design.md ADR-10 map legend, 5 states -----------------
@@ -341,5 +342,29 @@ assert.equal(
   'No hay puntos pendientes sin agrupar en COMUNA 19 · barrio San Fernando.',
 );
 assert.equal(autoAgruparMensaje(2, {}), autoAgruparMensaje(2));
+
+// ---- cuadrillasHtml — the per-cuadrilla grupo indicator/dropdown must
+// reflect a REAL assignment (bugfix 2026-08-27: "Reiniciar agrupación" y
+// "Quitar grupo" no funcionan" report). `grupo_id` lives on the member
+// POINTS, not the cuadrilla doc, so this must be derived from
+// `grupoIdByPunto` (built from the same-reload `listPuntos` rows) — before
+// this fix the dropdown always rendered blank and there was no "Grupo: X"
+// label anywhere, so a successful `asignarGrupoAPuntos` looked exactly like
+// it hadn't persisted on the very next reload. --------------------------
+const cuadrillaAsignada = [{ id: 'cq1', nombre: 'Comuna 2 · La Flora 2', puntos: ['p1', 'p2'], inspector_uid: null, origen: 'auto' }];
+const gruposActivosFixture = [{ id: 'g1', nombre: 'Norte', activo: true }];
+const grupoIdByPuntoFixture = new Map([['p1', 'g1'], ['p2', 'g1']]);
+
+const asignadaHtml = cuadrillasHtml(cuadrillaAsignada, new Map(), gruposActivosFixture, grupoIdByPuntoFixture);
+assert.match(asignadaHtml, /Grupo: Norte/, 'assigned cuadrilla shows the current grupo, not "Sin grupo"');
+assert.match(asignadaHtml, /<option value="g1" selected>/, 'the dropdown must be pre-selected to the current grupo');
+
+// Unassigned cuadrilla: "Sin grupo" label, blank dropdown (unchanged behavior).
+const sinGrupoHtml = cuadrillasHtml(cuadrillaAsignada, new Map(), gruposActivosFixture, new Map());
+assert.match(sinGrupoHtml, /Sin grupo/);
+assert.ok(!sinGrupoHtml.includes('selected'), 'no option pre-selected when no point carries a grupo_id');
+
+// Missing 4th arg (call-site omission) fails open to "no grupo", never throws.
+assert.doesNotThrow(() => cuadrillasHtml(cuadrillaAsignada, new Map(), gruposActivosFixture));
 
 console.log('ok — planeacion.js pure table/map/filter logic');
