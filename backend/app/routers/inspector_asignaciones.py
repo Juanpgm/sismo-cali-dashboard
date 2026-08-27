@@ -166,7 +166,7 @@ from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from google.cloud.firestore import transactional
 from pydantic import BaseModel
 
@@ -779,9 +779,31 @@ def _tomar_punto(db: Any, uid: str, punto_id: str, campana: str) -> dict[str, An
     return {"asignados": asignados, "tambien_asignado": otra_campana in asignados}
 
 
+def _clear_planeacion_cache(request: Request) -> None:
+    """Bust `planeacion_asignaciones.py`'s `list_puntos` widening cache
+    (`app.state.planeacion_aggregates_cache`, 5-min TTL) after a write that
+    touches `planeacion_puntos` from THIS router. Without this, a point an
+    inspector self-claims or completes in the field is invisible in the
+    Planeación table/map (both driven by the same cached `assignedPuntos`
+    set) for up to 5 minutes — this router used to never invalidate it at
+    all, since only `routers/planeacion_asignaciones.py` and
+    `routers/planeacion_cruce.py` knew the cache existed. Best-effort, same
+    try/except-swallow shape `planeacion_cruce.py`'s own post-run clear
+    uses: a cache-clear failure must never surface as if the actual write
+    (already committed) had failed."""
+    cache = getattr(request.app.state, "planeacion_aggregates_cache", None)
+    if cache is None:
+        return
+    try:
+        cache.clear()
+    except Exception:  # noqa: BLE001 - best-effort, mirrors planeacion_cruce.py
+        pass
+
+
 @router.post("/inspector-asignaciones")
 def inspector_asignaciones(
     body: AsignacionesRequest,
+    request: Request,
     claims: dict[str, Any] = Depends(require_auth),
 ) -> dict[str, Any]:
     uid = claims.get("sub") or claims.get("uid")
@@ -798,9 +820,11 @@ def inspector_asignaciones(
         return {"ok": True, "puntos": _mis_puntos_planeacion(db, uid)}
     if body.action == "marcarHechoPlaneacion":
         result = _marcar_hecho_planeacion(db, uid, str(body.punto_id or ""))
+        _clear_planeacion_cache(request)
         return {"ok": True, **result}
     if body.action == "marcarSurveyHecho":
         result = _marcar_survey_hecho(db, uid, str(body.punto_id or ""))
+        _clear_planeacion_cache(request)
         return {"ok": True, **result}
     if body.action == "puntosCercanosDisponibles":
         if body.lat is None or body.lng is None:
@@ -808,5 +832,6 @@ def inspector_asignaciones(
         return {"ok": True, "puntos": _puntos_cercanos_disponibles(db, body.lat, body.lng)}
     if body.action == "tomarPunto":
         result = _tomar_punto(db, uid, str(body.punto_id or ""), str(body.campana or ""))
+        _clear_planeacion_cache(request)
         return {"ok": True, **result}
     raise HTTPException(status_code=400, detail="Acción no reconocida.")

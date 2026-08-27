@@ -454,65 +454,8 @@ function buildPlaneacionCard(p, origen) {
   }
   acciones.append(btn);
 
-  // survey-sticker-sync: lets the field crew close the survey from here
-  // instead of waiting on the next `cruce_sticker.py` cron run — see
-  // onMarcarSurveyHecho below. `_mis_puntos_planeacion` (the only source
-  // feeding this card) never stamps a `campana` field on its own points, so
-  // this guard is a defensive `!== 'sticker'` (not the narrower `===
-  // 'survey'`) — it still hides the button if a sticker-shaped point ever
-  // reaches this renderer, without silently hiding it for every real point
-  // today (which a literal `=== 'survey'` check would, since `p.campana` is
-  // always undefined here).
-  if (p.campana !== 'sticker') {
-    const completarBtn = document.createElement('button');
-    completarBtn.type = 'button';
-    completarBtn.className = 'btn-secondary';
-    completarBtn.textContent = 'Survey completado';
-    completarBtn.addEventListener('click', () => onMarcarSurveyHecho(p, card, completarBtn));
-    acciones.append(completarBtn);
-  }
-
   card.append(acciones);
   return card;
-}
-
-// Inline error line for onMarcarSurveyHecho, scoped to the offending card
-// (not the global #cercanos-claim-error box, which belongs to a different
-// tab) — created on demand so no index.html change is needed.
-function mostrarErrorMarcarSurveyHecho(card, msg) {
-  if (!card) return;
-  let box = card.querySelector('.marcar-survey-error');
-  if (!box) {
-    box = document.createElement('p');
-    box.className = 'field-error marcar-survey-error';
-    box.setAttribute('role', 'alert');
-    card.append(box);
-  }
-  box.textContent = msg;
-}
-
-// "Survey completado": mirrors onTomarPunto's disable/try/finally shape.
-// Success refreshes misPuntos/misPuntosPlaneacion (cargarMisPuntos) so the
-// completed point drops off this list; the backend best-effort pre-assigns
-// or creates its sticker twin, which then shows up on the next sticker-tab
-// load — no dependency on this call's own (deliberately minimal) response.
-async function onMarcarSurveyHecho(p, card, btn) {
-  if (btn) btn.disabled = true;
-  try {
-    const res = await asignacionesApi({ action: 'marcarSurveyHecho', punto_id: p.id });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      mostrarErrorMarcarSurveyHecho(card, (body && body.detail) || 'No se pudo marcar el survey como completado. Intenta de nuevo.');
-      if (btn) btn.disabled = false;
-      return;
-    }
-    await cargarMisPuntos();
-    renderAsignaciones();
-  } catch (err) {
-    console.warn('marcarSurveyHecho falló:', err);
-    mostrarErrorMarcarSurveyHecho(card, 'No se pudo marcar el survey como completado. Intenta de nuevo.');
-    if (btn) btn.disabled = false;
-  }
 }
 
 // Coarse device check for elegirEnlaceEncuesta's app-vs-web preference —
@@ -1284,13 +1227,22 @@ async function onSubmit(e) {
 
     // Best-effort: flip the assigned point to 'hecho' via the dashboard
     // endpoint and drop it from the pending list so the picker shows the next
-    // one. If the call fails, the evaluación still stands — the next
-    // cruce_sticker.py run picks up the flip from the new evaluación.
+    // one. The evaluación is already saved regardless of this call's outcome
+    // — but a failure here means the sticker case stays open with no other
+    // signal, so it's surfaced on the confirm screen (not just console.warn)
+    // instead of silently swallowed; the next cruce_sticker.py run will
+    // still pick up the flip from the new evaluación either way.
+    const warnEl = $('#confirm-sticker-warn');
+    if (warnEl) warnEl.hidden = true;
     if (state.asignacion) {
       try {
         await asignacionesApi({ action: 'marcarHecho', punto_id: state.asignacion.id });
       } catch (err) {
-        console.warn('No se pudo marcar el punto asignado como hecho (se continúa):', err);
+        console.warn('No se pudo marcar el punto asignado como hecho:', err);
+        if (warnEl) {
+          warnEl.textContent = 'La evaluación se guardó, pero no se pudo cerrar el caso del sticker automáticamente. Se cerrará solo en la próxima sincronización.';
+          warnEl.hidden = false;
+        }
       }
       state.asignaciones = state.asignaciones.filter((a) => a.id !== state.asignacion.id);
     }
