@@ -24,6 +24,12 @@ export function defaultSeed() {
       },
       evaluaciones: {},
     },
+    // Assigned-points endpoint (`/inspector-asignaciones`) responses, served by
+    // the Node-side route in mockFirebase (NOT the browser Firebase double, so
+    // these live outside `firestore`). Empty by default → the picker shows only
+    // its "Registrar sin punto asignado" escape hatch. A spec seeds
+    // `stickers`/`planeacion`/`cercanos` to exercise the assigned-points flow.
+    asignaciones: { stickers: [], planeacion: [], cercanos: [] },
     flags: {},
   };
 }
@@ -149,7 +155,22 @@ const MOCK_STORAGE = `
 
 // Register route interceptors for the gstatic module URLs plus the S3 photo
 // pipeline (signer + presigned PUT) on a page.
-export async function mockFirebase(page) {
+export async function mockFirebase(page, seed = defaultSeed()) {
+  // Dashboard assigned-points endpoint (`asignacionesApi` in form.js POSTs
+  // here with `{action}`). Ran on Node, NOT in the browser, so it reads the
+  // seed directly instead of `window.__fb`. Fails CLOSED on an unknown action
+  // (400) so a typo in a new action surfaces instead of silently passing.
+  const asig = seed.asignaciones || {};
+  await page.route('**/inspector-asignaciones', (route) => {
+    const { action } = route.request().postDataJSON() || {};
+    if (action === 'misPuntos') return route.fulfill({ json: { ok: true, puntos: asig.stickers || [] } });
+    if (action === 'misPuntosPlaneacion') return route.fulfill({ json: { ok: true, puntos: asig.planeacion || [] } });
+    if (action === 'puntosCercanosDisponibles') return route.fulfill({ json: { ok: true, puntos: asig.cercanos || [] } });
+    if (action === 'tomarPunto') return route.fulfill({ json: { ok: true, asignados: {}, tambien_asignado: false } });
+    if (action === 'marcarHecho' || action === 'marcarHechoPlaneacion') return route.fulfill({ json: { ok: true } });
+    return route.fulfill({ status: 400, json: { ok: false, detail: `unknown-action:${action}` } });
+  });
+
   const bodies = {
     'firebase-app.js': MOCK_APP,
     'firebase-auth.js': MOCK_AUTH,

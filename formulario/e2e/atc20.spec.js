@@ -5,7 +5,7 @@ const CREDS = { email: 'inspector@cali.gov.co', password: 'secret123' };
 
 // Boot the page with an in-memory Firebase backed by `seed`. Must run before goto.
 async function boot(page, seed = defaultSeed()) {
-  await mockFirebase(page);
+  await mockFirebase(page, seed);
   await page.addInitScript(initBackendScript(seed));
   await page.goto('/');
 }
@@ -16,8 +16,15 @@ async function login(page, creds = CREDS) {
   await page.click('#auth-submit');
 }
 
+// After login the app always lands on the assignments picker (the
+// `puntos-disponibles` change: even with zero assigned points the Cercanos
+// tab may still surface work). With the default empty-assignments seed, the
+// only way to the blank ATC-20 form is the "Registrar sin punto asignado"
+// escape hatch, so specs that test the form itself go through it here.
 async function loginAndWaitForm(page) {
   await login(page);
+  await expect(page.locator('#asignaciones')).toBeVisible();
+  await page.click('#btn-registro-libre');
   await expect(page.locator('#app')).toBeVisible();
   await expect(page.locator('#geo-display')).toContainText('Lat:');
 }
@@ -59,7 +66,9 @@ test.describe('Sesión: reintento del perfil ante fallas transitorias', () => {
     seed.flags.getDocFailQueue = ['unavailable', 'unavailable']; // falla 2 veces, la 3ª pasa
     await boot(page, seed);
     await login(page);
-    await expect(page.locator('#app')).toBeVisible({ timeout: 10000 });
+    // "Arranca" ahora significa que el picker de asignaciones se muestra
+    // (el formulario en blanco queda detrás del escape hatch).
+    await expect(page.locator('#asignaciones')).toBeVisible({ timeout: 10000 });
     await expect(page.locator('#auth-overlay')).toBeHidden();
   });
 
@@ -89,7 +98,7 @@ test.describe('Sesión: reintento del perfil ante fallas transitorias', () => {
 
     await page.click('#auth-retry');
 
-    await expect(page.locator('#app')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#asignaciones')).toBeVisible({ timeout: 10000 });
     await expect(page.locator('#auth-overlay')).toBeHidden();
   });
 });
@@ -593,6 +602,79 @@ test.describe('Recuperación ante código duplicado', () => {
     await expect(page.locator('#btn-codigo')).toBeDisabled();
     await expect(page.locator('#codigo-display')).toBeVisible();
     await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
+  });
+});
+
+test.describe('Puntos asignados: se muestran en el formulario del inspector', () => {
+  // A Planeación (EDAN survey) point, shaped exactly like the backend's
+  // `misPuntosPlaneacion` output that buildPlaneacionCard consumes.
+  const PUNTO_SURVEY = {
+    id: 'plan-1',
+    direccion: 'Carrera 10 #20-30',
+    coords: { lat: 3.4520, lon: -76.5325 },
+    prioridad: 'alta',
+    afectacion: 'Colapso parcial',
+    nombre_solicitante: 'Juan Pérez',
+    telefono_solicitante: '3001234567',
+    survey_web: 'https://survey123.example/web?p=plan-1',
+  };
+  // A sticker point, shaped like `misPuntos` for buildAsignacionCard.
+  const PUNTO_STICKER = {
+    id: 'stk-1',
+    direccion: 'Calle 5 #10-20',
+    coords: { lat: 3.4515, lon: -76.5315 },
+    criterio_habitabilidad: 'I2',
+    colapso: 'parcial',
+  };
+
+  test('un punto de Planeación asignado aparece como tarjeta con dirección, prioridad y enlace de encuesta', async ({ page }) => {
+    const seed = defaultSeed();
+    seed.asignaciones.planeacion = [PUNTO_SURVEY];
+    await boot(page, seed);
+    await login(page);
+
+    // Con trabajo en Survey, el picker abre en esa pestaña.
+    await expect(page.locator('#asignaciones')).toBeVisible();
+    await expect(page.locator('#asig-tab-survey-count')).toHaveText('1');
+    await expect(page.locator('#planeacion-asignaciones-section')).toBeVisible();
+
+    const card = page.locator('#planeacion-asignaciones-lista .asignacion-card');
+    await expect(card).toHaveCount(1);
+    await expect(card.locator('.asignacion-dir')).toHaveText('Carrera 10 #20-30');
+    await expect(card.getByText('Prioridad ALTA')).toBeVisible();
+    await expect(card.getByText('Colapso parcial')).toBeVisible();
+
+    const encuesta = card.getByText('Abrir encuesta');
+    await expect(encuesta).toHaveAttribute('href', PUNTO_SURVEY.survey_web);
+  });
+
+  test('un punto de sticker asignado se registra: "Registrar Sticker" abre el formulario con la dirección precargada', async ({ page }) => {
+    const seed = defaultSeed();
+    seed.asignaciones.stickers = [PUNTO_STICKER];
+    await boot(page, seed);
+    await login(page);
+
+    // Sin puntos de Survey pero con stickers, el picker abre en Stickers.
+    await expect(page.locator('#asignaciones')).toBeVisible();
+    await expect(page.locator('#asig-tab-stickers-count')).toHaveText('1');
+    await expect(page.locator('#asignaciones-stickers-section')).toBeVisible();
+
+    const card = page.locator('#asignaciones-lista .asignacion-card');
+    await expect(card).toHaveCount(1);
+    await expect(card.locator('.asignacion-dir')).toHaveText('Calle 5 #10-20');
+
+    await card.getByRole('button', { name: 'Registrar Sticker' }).click();
+    await expect(page.locator('#app')).toBeVisible();
+    await expect(page.locator('#direccion')).toHaveValue('Calle 5 #10-20');
+  });
+
+  test('sin puntos asignados, el picker sigue mostrando el escape hatch a registro libre', async ({ page }) => {
+    await boot(page); // seed por defecto: todo vacío
+    await login(page);
+    await expect(page.locator('#asignaciones')).toBeVisible();
+    await expect(page.locator('#asig-tab-survey-count')).toHaveText('0');
+    await expect(page.locator('#asig-tab-stickers-count')).toHaveText('0');
+    await expect(page.locator('#btn-registro-libre')).toBeVisible();
   });
 });
 
