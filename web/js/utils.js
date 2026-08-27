@@ -630,6 +630,18 @@ export function colapsoResuelto(r) {
   return 'ninguno';
 }
 
+// colapso_resuelto + its two filter-only si/no mirrors (see FILTER_FIELDS in
+// data.js), computed together so callers never pay for colapsoResuelto(r)
+// three times over the same record.
+export function colapsoResueltoFields(r) {
+  const resuelto = colapsoResuelto(r);
+  return {
+    colapso_resuelto: resuelto,
+    colapso_total_resuelto: resuelto === 'total' ? 'si' : 'no',
+    colapso_parcial_resuelto: resuelto === 'parcial' ? 'si' : 'no',
+  };
+}
+
 // Cache-busting fetch params. `bust` MUST stay false on normal startup loads
 // (lets vercel.json's Cache-Control do its job); true only for retry/refresh/poll
 // paths that need a guaranteed-fresh fetch. See data.js load()'s comment for the why.

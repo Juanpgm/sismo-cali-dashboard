@@ -1,7 +1,7 @@
 // Data loading + global filter state (tiny pub/sub store, no framework).
 import {
   normalizeAddressText, buildSearchIndex, splitMultiValue, labelForField,
-  bucketNpisos, suspensionServicios, colapsoResuelto, bustParams, AFECTACION_ORDER, resolveBarrioVereda,
+  bucketNpisos, suspensionServicios, colapsoResuelto, colapsoResueltoFields, bustParams, AFECTACION_ORDER, resolveBarrioVereda,
 } from './utils.js';
 import { fetchIsraelRecords } from './israel-source.js';
 import { apiUrl } from './api-config.js';
@@ -48,8 +48,12 @@ export const FILTER_FIELDS = [
   { field: 'criterio_habitabilidad', label: 'Habitabilidad', group: 'severidad' },
   // Derived field (see suspensionServicios): not in inspections.json.
   { field: 'suspension_servicios', label: 'Suspensión de servicios', group: 'severidad' },
-  { field: 'colapso_total', label: 'Colapso total', group: 'severidad' },
-  { field: 'colapso_parcial', label: 'Colapso parcial', group: 'severidad' },
+  // Filter on colapso_{total,parcial}_resuelto (see colapsoResueltoFields),
+  // NOT the raw colapso_total/colapso_parcial fields — a record with both
+  // si simultaneously is recategorized to parcial, same as the KPI cards, so
+  // checking "Colapso total" here can never disagree with what that card shows.
+  { field: 'colapso_total_resuelto', label: 'Colapso total', group: 'severidad' },
+  { field: 'colapso_parcial_resuelto', label: 'Colapso parcial', group: 'severidad' },
   // NOTE: adjacent-building external risk (41_a / 42_a / riesgo_caida) is no
   // longer a filter group — it's now colorable directly on the map points
   // ("Colorear por" → Riesgo externo). See mapview.js RISK_FIELDS.
@@ -238,9 +242,14 @@ class Store {
       _search: buildSearchIndex(r),
       n_pisos_rango: bucketNpisos(r.n_pisos),
       suspension_servicios: suspensionServicios(r),
-      // Derived field (see colapsoResuelto): resolves the colapso_total/
-      // colapso_parcial "both si" contradiction so KPIs count once per record.
-      colapso_resuelto: colapsoResuelto(r),
+      // colapso_resuelto (see utils.js) resolves the colapso_total/colapso_parcial
+      // "both si" contradiction; its two _resuelto mirrors back the "Colapso
+      // total"/"Colapso parcial" FILTER_FIELDS checkboxes below so they filter
+      // the SAME recategorized figure the KPI cards show — otherwise checking
+      // "Colapso total" still pulled in the 19 records recategorized to
+      // parcial. Raw colapso_total/colapso_parcial are untouched, still
+      // driving the detail/table display.
+      ...colapsoResueltoFields(r),
       // Geo-first "Barrio / vereda". The pipeline resolves this too, but the
       // published data lags a deploy and the israel source never passes
       // through it at all — without this the barrio filter would be empty.
