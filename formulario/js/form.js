@@ -391,6 +391,16 @@ function buildPlaneacionCard(p, origen) {
   }
   card.append(pills);
 
+  // planeacion-flujo-confiable, design.md ADR-3: reporter contact, when
+  // `misPuntosPlaneacion` included it (own/group points only — never a
+  // public surface). Null-safe: no contact data -> no block, no gap.
+  if (p.nombre_solicitante) {
+    const solicitante = document.createElement('p');
+    solicitante.className = 'asignacion-solicitante';
+    solicitante.textContent = `Solicitante: ${p.nombre_solicitante}`;
+    card.append(solicitante);
+  }
+
   const acciones = document.createElement('div');
   acciones.className = 'asignacion-acciones';
 
@@ -403,6 +413,13 @@ function buildPlaneacionCard(p, origen) {
     link.rel = 'noopener';
     link.textContent = '📍 Cómo llegar';
     acciones.append(link);
+  }
+  if (p.telefono_solicitante) {
+    const llamar = document.createElement('a');
+    llamar.className = 'btn-secondary asignacion-llamar';
+    llamar.href = `tel:${p.telefono_solicitante}`;
+    llamar.textContent = '📞 Llamar';
+    acciones.append(llamar);
   }
 
   const encuestaUrl = elegirEnlaceEncuesta(p, esDispositivoMovil());

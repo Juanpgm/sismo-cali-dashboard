@@ -531,9 +531,18 @@ button:focus-visible, summary:focus-visible, label:has(:focus-visible) {
 }
 .pill-colapso { background: var(--rojo); }
 
+/* planeacion-flujo-confiable, design.md ADR-3: reporter contact — a plain
+   text line above the action buttons, null-safe (absent when no contact
+   data came back from misPuntosPlaneacion). */
+.asignacion-solicitante {
+  margin: 0 0 0.6rem;
+  font-size: 0.95rem;
+  color: var(--muted, inherit);
+}
+
 .asignacion-acciones { display: grid; gap: 0.6rem; }
 
-.asignacion-maps {
+.asignacion-maps, .asignacion-llamar {
   display: flex;
   align-items: center;
   justify-content: center;
