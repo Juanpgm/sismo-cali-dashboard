@@ -84,6 +84,22 @@ body {
 }
 .btn-logout:hover { color: var(--rojo); border-color: var(--rojo); }
 
+/* Same icon-button shape as .btn-logout, neutral (non-destructive) hover —
+   for navigation actions like "volver a tus puntos asignados". */
+.btn-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.btn-icon:hover { color: var(--brand); border-color: var(--brand); }
+
 /* ---- Layout ---- */
 
 main, .confirm {
@@ -93,6 +109,8 @@ main, .confirm {
 }
 
 .page-title { font-size: 1.35rem; margin: 0.25rem 0 1rem; font-weight: 700; }
+.form-topbar { display: flex; align-items: center; gap: 0.6rem; }
+.form-topbar .page-title { margin: 0.25rem 0 1rem; flex: 1; }
 
 .card {
   background: var(--card);

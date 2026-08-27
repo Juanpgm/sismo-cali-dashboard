@@ -133,6 +133,10 @@ function boot(inspector) {
   $('#asig-tab-stickers').addEventListener('click', () => activarTabAsignaciones('stickers'));
   $('#asig-tab-cercanos').addEventListener('click', () => activarTabAsignaciones('cercanos'));
   $('#btn-registro-libre').addEventListener('click', () => mostrarFormulario());
+  // Back from the form to "Tus puntos asignados" without submitting —
+  // reuses renderAsignaciones(), the SAME function that lands here after
+  // boot/submit, so the list/tab/GPS-sort state is always consistent.
+  $('#btn-volver-asignaciones').addEventListener('click', () => renderAsignaciones());
 
   iniciarAsignaciones();
 }
