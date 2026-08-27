@@ -336,10 +336,18 @@ export function diaPicoPlacaHoy(date = new Date()) {
 // `auto-agrupar-comuna-barrio` change: optional `{comuna, barrio}` scope
 // suffix, e.g. "3 cuadrillas creadas en COMUNA 19 · barrio San Fernando."
 // Omitted/empty comuna keeps the message exactly as before (no suffix).
-export function autoAgruparMensaje(n, { comuna, barrio } = {}) {
+// `cluster-mas-denso` change (backend now creates exactly ONE cuadrilla per
+// run — the densest cluster, not a partition of the whole working set):
+// optional `puntos` appends the point count, e.g. "1 cuadrilla creada con
+// 8 puntos...", so the message still carries the actionable "how much did
+// this run get me" signal a bare "1 cuadrilla creada" would lose. Additive
+// only — `n` (created-cuadrillas count, still 0 or 1) and every existing
+// call keep working unchanged when `puntos` is omitted.
+export function autoAgruparMensaje(n, { comuna, barrio, puntos } = {}) {
   const alcance = comuna ? ` en ${comuna}${barrio ? ` · barrio ${barrio}` : ''}` : '';
   if (n > 0) {
-    return `${n} cuadrilla${n === 1 ? '' : 's'} creada${n === 1 ? '' : 's'}${alcance}. Volver a ejecutar agrupa el siguiente lote.`;
+    const detalle = puntos ? ` con ${puntos} punto${puntos === 1 ? '' : 's'}` : '';
+    return `${n} cuadrilla${n === 1 ? '' : 's'} creada${n === 1 ? '' : 's'}${detalle}${alcance}. Volver a ejecutar agrupa el siguiente lote.`;
   }
   return `No hay puntos pendientes sin agrupar${alcance}.`;
 }
@@ -2576,7 +2584,7 @@ export function initPlaneacion(root, { getToken }) {
       const { cuadrillas: nuevas } = await callApi(getToken, body);
       // Confirmation race fix (2026-08-27) — see runAction's own comment.
       await reload();
-      showOk(autoAgruparMensaje(nuevas.length, { comuna, barrio }));
+      showOk(autoAgruparMensaje(nuevas.length, { comuna, barrio, puntos: nuevas[0]?.puntos?.length }));
     } catch (err) {
       showErr(err.message);
     } finally {

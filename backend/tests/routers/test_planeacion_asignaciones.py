@@ -309,6 +309,51 @@ def test_auto_agrupar_empty_input_returns_empty_list():
     assert pa.auto_agrupar([], max_radius_m=800, max_size=10) == []
 
 
+# ── Pure cluster_mas_denso ("Agrupar" builds ONE cuadrilla: the densest
+# cluster, not a partition of the whole working set) ───────────────────────
+
+
+def test_cluster_mas_denso_picks_the_seed_with_the_most_neighbors():
+    # A tight trio plus a lone far-away point: the trio's seed has density 3
+    # (itself + 2 neighbors within radius), the solo point's density is 1.
+    dense = [_pt("d1", 3.4000, -76.5000), _pt("d2", 3.4001, -76.5001), _pt("d3", 3.4002, -76.5002)]
+    solo = [_pt("solo", 3.4600, -76.5600)]
+    grupo = pa.cluster_mas_denso(dense + solo, max_radius_m=800, max_size=3)
+    assert {p["id"] for p in grupo} == {"d1", "d2", "d3"}
+
+
+def test_cluster_mas_denso_caps_at_max_size_even_with_more_pending_points():
+    # 5 points within radius of each other; max_size=2 must still cap the
+    # group at 2 — max_size takes priority over how many points qualify.
+    puntos = [_pt(f"p{i}", 3.40 + i * 0.00001, -76.50) for i in range(5)]
+    grupo = pa.cluster_mas_denso(puntos, max_radius_m=800, max_size=2)
+    assert len(grupo) == 2
+
+
+def test_cluster_mas_denso_pulls_in_points_beyond_the_radius_to_reach_max_size():
+    # max_size takes PRIORITY over the radius: with only 2 points and one
+    # of them 5000m away (far outside max_radius_m), the group must still
+    # reach max_size=2 by pulling the distant point in.
+    near = _pt("near", 3.4000, -76.5000)
+    far = _pt("far", 3.4600, -76.5600)  # ~9.4 km away, well outside max_radius_m
+    grupo = pa.cluster_mas_denso([near, far], max_radius_m=100, max_size=2)
+    assert {p["id"] for p in grupo} == {"near", "far"}
+
+
+def test_cluster_mas_denso_tie_break_is_deterministic_by_score_then_id():
+    # Two seeds tie on density (1 neighbor each, far apart) — the one with
+    # the higher prioridad_score wins the seed, so its own neighborhood
+    # (itself only, here) is what gets returned.
+    a = {**_pt("a", 3.40, -76.50), "prioridad_score": 10}
+    b = {**_pt("b", 3.90, -76.90), "prioridad_score": 90}
+    grupo = pa.cluster_mas_denso([a, b], max_radius_m=10, max_size=1)
+    assert [p["id"] for p in grupo] == ["b"]
+
+
+def test_cluster_mas_denso_empty_input_returns_empty_list():
+    assert pa.cluster_mas_denso([], max_radius_m=800, max_size=10) == []
+
+
 def test_default_max_size_is_ten_not_eight():
     """Binding user decision: Planeación's DEFAULT_MAX_SIZE=10, NOT the
     sticker template's 8 (an EDAN survey is a longer visit)."""
@@ -711,6 +756,46 @@ def test_resumen_includes_barrios_por_comuna_sorted_distinct_pending_only(monkey
     }
 
 
+def test_resumen_dup_aware_building_counts_collapse_same_building_reports(monkeypatch):
+    # p1/p2 share a dup_grupo_id (tagged by planeacion_cruce.tag_duplicados as
+    # the same building) -- report-based `total`/`levantados` count them
+    # separately, but the dup-aware building counts must collapse them to one.
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {**_punto(), "dup_grupo_id": "dup-1", "registro_id": "1"},
+        "p2": {**_punto(tiene_survey=True), "dup_grupo_id": "dup-1", "registro_id": "2"},
+        "p3": {**_punto(), "dup_grupo_id": "dup-3", "registro_id": "3"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "resumen"})
+
+    resumen_body = resp.json()["resumen"]
+    assert resumen_body["total"] == 3  # unchanged: report-based count
+    assert resumen_body["total_edificios"] == 2  # dup-1 group + dup-3 group
+    # dup-1's group is "levantado" because p2 (a member) has a survey.
+    assert resumen_body["edificios_levantados"] == 1
+    assert resumen_body["edificios_pendientes"] == 1
+
+
+def test_resumen_dup_aware_falls_back_to_registro_id_for_untagged_docs(monkeypatch):
+    # A legacy doc with no dup_grupo_id (written before dedup tagging shipped)
+    # must still be tallied -- one building per report, same as today.
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {**_punto(), "registro_id": "10"},
+        "p2": {**_punto(tiene_survey=True), "registro_id": "20"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "resumen"})
+
+    resumen_body = resp.json()["resumen"]
+    assert resumen_body["total_edificios"] == 2
+    assert resumen_body["edificios_levantados"] == 1
+    assert resumen_body["edificios_pendientes"] == 1
+
+
 # ── listCuadrillas ───────────────────────────────────────────────────────
 
 
@@ -841,9 +926,11 @@ def test_auto_agrupar_router_excludes_surveyed_at_the_query_not_just_in_code(mon
     assert assigned == {"real_pendiente"}
 
 
-def test_auto_agrupar_router_orders_cuadrillas_by_density_desc(monkeypatch):
-    # Densest cluster first — teams get the fullest route. A tight trio + a lone
-    # far-away point must come back as [3-point cuadrilla, 1-point cuadrilla].
+def test_auto_agrupar_router_creates_only_the_densest_cluster(monkeypatch):
+    # "Agrupar" now creates exactly ONE cuadrilla per click — the densest
+    # cluster — not one cuadrilla per cluster. A tight trio + a lone
+    # far-away point, capped with maxSize=3, must come back as a single
+    # 3-point cuadrilla; "solo" is left ungrouped for a later run.
     stores = _stores()
     dense = {"estado_asignacion": "pendiente", "cuadrilla_id": None, "tiene_survey": False,
              "prioridad_score": 50}
@@ -855,10 +942,12 @@ def test_auto_agrupar_router_orders_cuadrillas_by_density_desc(monkeypatch):
     }
     client = _admin_client(monkeypatch, stores)
 
-    resp = client.post("/planeacion-asignaciones", json={"action": "autoAgrupar"})
+    resp = client.post("/planeacion-asignaciones", json={"action": "autoAgrupar", "maxSize": 3})
 
     cuadrillas = resp.json()["cuadrillas"]
-    assert [len(c["puntos"]) for c in cuadrillas] == [3, 1]
+    assert len(cuadrillas) == 1
+    assert set(cuadrillas[0]["puntos"]) == {"d1", "d2", "d3"}
+    assert stores[PLANEACION_PUNTOS]["solo"]["cuadrilla_id"] is None
 
 
 def test_auto_agrupar_router_empty_when_no_pending_points(monkeypatch):

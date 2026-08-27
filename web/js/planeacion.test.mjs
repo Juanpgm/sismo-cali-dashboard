@@ -343,6 +343,20 @@ assert.equal(
 );
 assert.equal(autoAgruparMensaje(2, {}), autoAgruparMensaje(2));
 
+// `cluster-mas-denso` change: optional `puntos` appends the point count —
+// backend now always creates 0 or 1 cuadrilla (the densest cluster), so the
+// message needs to carry how many points that ONE cuadrilla covers.
+assert.equal(
+  autoAgruparMensaje(1, { puntos: 8 }),
+  '1 cuadrilla creada con 8 puntos. Volver a ejecutar agrupa el siguiente lote.',
+);
+assert.equal(
+  autoAgruparMensaje(1, { puntos: 1 }),
+  '1 cuadrilla creada con 1 punto. Volver a ejecutar agrupa el siguiente lote.',
+);
+// Omitted `puntos` keeps the message exactly as before (no regression).
+assert.equal(autoAgruparMensaje(1), '1 cuadrilla creada. Volver a ejecutar agrupa el siguiente lote.');
+
 // ---- cuadrillasHtml — the per-cuadrilla grupo indicator/dropdown must
 // reflect a REAL assignment (bugfix 2026-08-27: "Reiniciar agrupación" y
 // "Quitar grupo" no funcionan" report). `grupo_id` lives on the member

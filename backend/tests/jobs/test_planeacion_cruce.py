@@ -532,6 +532,214 @@ def test_required_clients_declares_only_sismo():
     assert job.REQUIRED_CLIENTS == ("sismo",)
 
 
+# ── select_candidates(full=True) — the --full backfill path ────────────────
+
+
+def test_select_candidates_full_returns_everything_even_an_existing_match():
+    panel = [{"fuente": "atencionsismo", "registro_id": "A"},
+             {"fuente": "atencionsismo", "registro_id": "B"}]
+    state = {
+        "atencionsismo_A": {"exists": True, "tiene_survey": False},
+        "atencionsismo_B": {"exists": True, "tiene_survey": True},
+    }
+
+    cands = job.select_candidates(panel, state, full=True)
+
+    assert {p["registro_id"] for p in cands} == {"A", "B"}
+
+
+def test_select_candidates_full_false_is_the_default_incremental_behavior():
+    panel = [{"fuente": "atencionsismo", "registro_id": "A"}]
+    state = {"atencionsismo_A": {"exists": True, "tiene_survey": True}}
+
+    assert job.select_candidates(panel, state) == []
+    assert job.select_candidates(panel, state, full=False) == []
+
+
+# ── tag_duplicados — grouping, never collapsing (module docstring's "Dedup
+# tagging" section) ─────────────────────────────────────────────────────────
+
+
+def _dpt(registro_id, direccion=None, lat=None, lon=None):
+    return {"fuente": "atencionsismo", "registro_id": registro_id,
+            "direccion": direccion, "lat": lat, "lon": lon}
+
+
+def test_tag_duplicados_near_pair_sharing_an_address_is_one_group():
+    a = _dpt("10", "Calle 1 # 2-3", 3.42000, -76.53000)
+    b = _dpt("20", "Calle 1 # 2-3", 3.42005, -76.53005)  # a few meters away
+
+    tagged = {p["registro_id"]: p for p in job.tag_duplicados([a, b])}
+
+    assert tagged["10"]["dup_grupo_id"] == tagged["20"]["dup_grupo_id"] == "dup-10"
+    assert tagged["10"]["dup_n"] == 2 and tagged["20"]["dup_n"] == 2
+    assert tagged["10"]["es_representante"] is True
+    assert tagged["20"]["es_representante"] is False
+
+
+def test_tag_duplicados_far_apart_same_address_is_two_groups():
+    a = _dpt("10", "Calle 1 # 2-3", 3.4200, -76.5300)
+    b = _dpt("20", "Calle 1 # 2-3", 3.9000, -76.9000)  # far away, same address text
+
+    tagged = {p["registro_id"]: p for p in job.tag_duplicados([a, b], max_dist_m=30.0)}
+
+    assert tagged["10"]["dup_grupo_id"] != tagged["20"]["dup_grupo_id"]
+    assert tagged["10"]["dup_n"] == 1 and tagged["20"]["dup_n"] == 1
+    assert tagged["10"]["es_representante"] is True
+    assert tagged["20"]["es_representante"] is True
+
+
+def test_tag_duplicados_transitive_chain_of_three():
+    # a-b within max_dist_m, b-c within max_dist_m, a-c NOT directly within
+    # max_dist_m -- the chain must still join all three into one group.
+    a = _dpt("10", "Calle 1 # 2-3", 3.420000, -76.530000)
+    b = _dpt("20", "Calle 1 # 2-3", 3.420180, -76.530000)  # ~20m from a
+    c = _dpt("30", "Calle 1 # 2-3", 3.420360, -76.530000)  # ~20m from b, ~40m from a
+
+    tagged = {p["registro_id"]: p for p in job.tag_duplicados([a, b, c], max_dist_m=25.0)}
+
+    assert tagged["10"]["dup_grupo_id"] == tagged["20"]["dup_grupo_id"] == tagged["30"]["dup_grupo_id"]
+    assert tagged["10"]["dup_n"] == 3
+
+
+def test_tag_duplicados_dup_grupo_id_is_order_independent():
+    a = _dpt("10", "Calle 1 # 2-3", 3.42000, -76.53000)
+    b = _dpt("20", "Calle 1 # 2-3", 3.42005, -76.53005)
+
+    forward = {p["registro_id"]: p for p in job.tag_duplicados([a, b])}
+    shuffled = {p["registro_id"]: p for p in job.tag_duplicados([b, a])}
+
+    assert forward["10"]["dup_grupo_id"] == shuffled["10"]["dup_grupo_id"] == "dup-10"
+    assert forward["20"]["dup_grupo_id"] == shuffled["20"]["dup_grupo_id"] == "dup-10"
+
+
+def test_tag_duplicados_points_missing_coords_still_get_tagged_safely():
+    sin_coords = _dpt("40", direccion=None, lat=None, lon=None)
+
+    tagged = job.tag_duplicados([sin_coords])
+
+    assert tagged[0]["dup_grupo_id"] == "dup-40"
+    assert tagged[0]["dup_n"] == 1
+    assert tagged[0]["es_representante"] is True
+
+
+def test_tag_duplicados_missing_coords_joins_rather_than_splits_its_bucket():
+    # Same address bucket, one member has no coords -- can't be RULED OUT as
+    # the same building, so it must join rather than force a split.
+    known = _dpt("10", "Calle 1 # 2-3", 3.4200, -76.5300)
+    unknown = _dpt("20", "Calle 1 # 2-3", lat=None, lon=None)
+
+    tagged = {p["registro_id"]: p for p in job.tag_duplicados([known, unknown])}
+
+    assert tagged["10"]["dup_grupo_id"] == tagged["20"]["dup_grupo_id"]
+    assert tagged["10"]["dup_n"] == 2
+
+
+def test_pipeline_fields_includes_the_three_dedup_fields():
+    assert {"dup_grupo_id", "dup_n", "es_representante"} <= set(job.PIPELINE_FIELDS)
+
+
+def test_build_write_ops_passes_dedup_fields_through_untouched():
+    p = _pipeline_point()
+    p["dup_grupo_id"], p["dup_n"], p["es_representante"] = "dup-14832", 2, True
+    did = job.doc_id("atencionsismo", "14832")
+
+    ops = job.build_write_ops([p], existing_ids={did}, estado_actual={did: "pendiente"})
+    fields = dict(ops)[did]
+
+    assert fields["dup_grupo_id"] == "dup-14832"
+    assert fields["dup_n"] == 2
+    assert fields["es_representante"] is True
+
+
+# ── write_state / read_last_run — the last-run summary the status route reads ─
+
+
+class _FakeStateDoc:
+    def __init__(self, store, path):
+        self._store, self._path = store, path
+
+    def set(self, data, merge=False):
+        current = self._store.get(self._path, {})
+        if merge:
+            current = {**current, **data}
+        else:
+            current = data
+        self._store[self._path] = current
+
+    def get(self):
+        data = self._store.get(self._path)
+
+        class _Snap:
+            exists = data is not None
+
+            def to_dict(inner_self):
+                return dict(data) if data is not None else None
+
+        return _Snap()
+
+
+class _FakeStateDb:
+    """Minimal fake covering only `write_state`/`read_last_run`'s own calls:
+    `.collection(name).document(name)` and `.document('coll/name')`."""
+
+    def __init__(self):
+        self._store: dict[str, dict] = {}
+
+    def collection(self, name):
+        store, prefix = self._store, name
+
+        class _Col:
+            def document(self_inner, doc_name):
+                return _FakeStateDoc(store, f"{prefix}/{doc_name}")
+
+        return _Col()
+
+    def document(self, path):
+        return _FakeStateDoc(self._store, path)
+
+
+def test_write_state_then_read_last_run_round_trips_the_summary():
+    db = _FakeStateDb()
+    when = datetime(2026, 8, 27, tzinfo=timezone.utc)
+    summary = {"total_puntos": 10, "a_escribir": 3}
+
+    job.write_state(db, when, summary, full=True)
+    last_run = job.read_last_run(db)
+
+    assert last_run["total_puntos"] == 10
+    assert last_run["a_escribir"] == 3
+    assert last_run["full"] is True
+    assert last_run["finished_at"] == when
+
+
+def test_read_last_run_returns_none_when_no_run_has_ever_completed():
+    db = _FakeStateDb()
+
+    assert job.read_last_run(db) is None
+
+
+# ── main() argv shim — --top/--dry/--full forwarded as kwargs ──────────────
+
+
+def test_main_forwards_top_dry_full_from_argv(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["planeacion_cruce.py", "--top", "50", "--dry", "--full"])
+    calls = []
+    monkeypatch.setattr(job, "run_planeacion_cruce", lambda **kw: calls.append(kw) or {})
+
+    assert job.main() == 0
+    assert calls == [{"top": 50, "dry": True, "full": True}]
+
+
+def test_main_defaults_top_none_dry_false_full_false(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["planeacion_cruce.py"])
+    calls = []
+    monkeypatch.setattr(job, "run_planeacion_cruce", lambda **kw: calls.append(kw) or {})
+
+    assert job.main() == 0
+    assert calls == [{"top": None, "dry": False, "full": False}]
+
+
 # Real-UUID round trip (regression: ADR-3's worked example used a short id) ----
 # Every real atencionsismo `id` is a UUID, so the minted slug is ALWAYS lossy
 # (32 hex chars sanitized, truncated to 24). These lock the property that

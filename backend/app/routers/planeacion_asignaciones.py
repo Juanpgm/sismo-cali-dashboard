@@ -398,6 +398,50 @@ def auto_agrupar(
     return grupos
 
 
+def cluster_mas_denso(
+    puntos: list[dict[str, Any]], *, max_radius_m: float, max_size: int
+) -> list[dict[str, Any]]:
+    """The SINGLE densest cluster in `puntos` — a flat list of point
+    dicts, NOT a list of clusters (binding user decision: "Agrupar" builds
+    one cuadrilla per click, not `auto_agrupar`'s old greedy partition of
+    the whole working set into many).
+
+    `max_size` takes PRIORITY over `max_radius_m`: the radius only decides
+    WHERE the densest zone is (which seed has the most neighbors within
+    it); it never caps the group below `max_size` when more pending points
+    exist. Concretely: every point is scored as a candidate SEED by how
+    many other points (including itself) sit within `max_radius_m` of it —
+    that count is its density. The seed with the highest density wins,
+    tie-broken deterministically by `(-prioridad_score, id)` (higher
+    score first, then lowest id) so re-running on an unchanged point set
+    picks the exact same seed every time. The final group is then ALL of
+    `puntos` sorted by distance to that winning seed, ascending, truncated
+    to `max_size` — which naturally includes the seed itself first (distance
+    0) and, when the in-radius set is smaller than `max_size`, pulls in
+    points beyond `max_radius_m` rather than returning a short group.
+
+    Empty input returns `[]`. Pure — no Firestore access, no RNG, testable
+    offline, same convention `auto_agrupar` above already established."""
+    if not puntos:
+        return []
+
+    # ponytail: O(n^2) all-pairs haversine density scan — bounded upstream
+    # by AUTOAGRUPAR_LIMIT (~2500 points, the caller's own working-set cap),
+    # so this stays a deliberate ceiling rather than an oversight. Grid-
+    # bucketing (snap coords to a max_radius_m grid, only scan neighboring
+    # cells) is the upgrade path if that cap is ever raised enough to make
+    # this measurably slow.
+    def _densidad(seed: dict[str, Any]) -> int:
+        return sum(1 for p in puntos if haversine_m(seed["coords"], p["coords"]) <= max_radius_m)
+
+    mejor_seed = min(
+        puntos,
+        key=lambda p: (-_densidad(p), -(p.get("prioridad_score") or 0), p["id"]),
+    )
+    ordenados = sorted(puntos, key=lambda p: haversine_m(mejor_seed["coords"], p["coords"]))
+    return ordenados[:max_size]
+
+
 def points_already_assigned(points: list[dict[str, Any]], target_cuadrilla_id: str | None = None) -> list[str]:
     """Uniqueness guard (one point -> at most one cuadrilla). Ported from
     the sticker dispatcher's own `points_already_assigned`."""
@@ -725,6 +769,23 @@ def resumen(db: Any) -> dict[str, Any]:
             k = str(p.get("match_via") or "desconocido")
             por_match_via[k] = por_match_via.get(k, 0) + 1
 
+    # Dup-aware building counts (additive, `app/jobs/planeacion_cruce.py`'s
+    # `tag_duplicados`): `total`/`levantados`/`pendientes` above count
+    # DISTINCT REPORTS, which over-counts a building with several reports
+    # for the same address. Grouping by `dup_grupo_id` gives the operator
+    # the distinct-BUILDING figures alongside the existing report-based
+    # ones, without changing what those existing keys mean. `registro_id`
+    # is the fallback key for a legacy doc written before dedup tagging
+    # shipped (no `dup_grupo_id` yet) — it still degenerates to one group
+    # per report, same as today's untagged behavior, rather than crashing
+    # or silently dropping the doc from the tally.
+    edificios: dict[str, bool] = {}
+    for p in puntos:
+        clave = p.get("dup_grupo_id") or p.get("registro_id")
+        edificios[clave] = edificios.get(clave, False) or bool(p.get("tiene_survey"))
+    total_edificios = len(edificios)
+    edificios_levantados = sum(1 for tiene in edificios.values() if tiene)
+
     return {
         "total": total,
         "levantados": levantados,
@@ -734,6 +795,9 @@ def resumen(db: Any) -> dict[str, Any]:
         "por_estado_asignacion": por_estado_asignacion,
         "por_match_via": por_match_via,
         "barrios_por_comuna": barrios_por_comuna,
+        "total_edificios": total_edificios,
+        "edificios_levantados": edificios_levantados,
+        "edificios_pendientes": total_edificios - edificios_levantados,
     }
 
 
@@ -827,31 +891,31 @@ def run_auto_agrupar(db: Any, body: dict[str, Any]) -> list[dict[str, Any]]:
     if not puntos:
         return []
 
-    grupos = auto_agrupar(puntos, max_radius_m=max_radius_m, max_size=int(max_size))
-    # Densest clusters first: teams get the fullest routes (most points per
-    # field position) — proximity criterion, "aprovechar el terreno".
-    grupos.sort(key=len, reverse=True)
-    grupos_creados: list[dict[str, Any]] = []
-    batch = db.batch()
+    # "Agrupar" now builds exactly ONE cuadrilla per click — the single
+    # densest cluster in the working set — instead of partitioning the
+    # whole set into many (binding user decision). `cluster_mas_denso`
+    # returns a flat point list, not a list of clusters.
+    grupo = cluster_mas_denso(puntos, max_radius_m=max_radius_m, max_size=int(max_size))
+    ref = db.collection(PLANEACION_CUADRILLAS_COLLECTION).document()
+    punto_ids = [p["id"] for p in grupo]
+    data: dict[str, Any] = {"puntos": punto_ids, "inspector_uid": None, "origen": "auto"}
     # Zone-naming follow-up (2026-08-27): a SCOPED run (comuna, optionally
-    # barrio) stamps each created cuadrilla with a readable `nombre` —
-    # "COMUNA · BARRIO i" / "COMUNA i", 1-based index within THIS run —
-    # so the admin tab shows a zone name instead of a raw auto-* doc id
-    # (`cuadrillaLabel`/list rendering already fall back to `nombre || id`,
-    # web/js/planeacion.js). An UNSCOPED (city-wide) run keeps the prior
-    # behavior of no `nombre` at all — there is no single zone to name.
-    for i, grupo in enumerate(grupos, start=1):
-        ref = db.collection(PLANEACION_CUADRILLAS_COLLECTION).document()
-        punto_ids = [p["id"] for p in grupo]
-        data: dict[str, Any] = {"puntos": punto_ids, "inspector_uid": None, "origen": "auto"}
-        if comuna:
-            data["nombre"] = f"{comuna} · {barrio} {i}" if barrio else f"{comuna} {i}"
-        batch.set(ref, data)
-        for punto_id in punto_ids:
-            batch.set(db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id), {"cuadrilla_id": ref.id}, merge=True)
-        grupos_creados.append({"id": ref.id, **data})
+    # barrio) stamps the created cuadrilla with a readable `nombre` —
+    # "COMUNA · BARRIO 1" / "COMUNA 1" — so the admin tab shows a zone name
+    # instead of a raw auto-* doc id (`cuadrillaLabel`/list rendering
+    # already fall back to `nombre || id`, web/js/planeacion.js). The index
+    # stays a literal `1`: there is now only ever one cuadrilla per run, so
+    # there is nothing left to enumerate. An UNSCOPED (city-wide) run keeps
+    # the prior behavior of no `nombre` at all — there is no single zone to
+    # name.
+    if comuna:
+        data["nombre"] = f"{comuna} · {barrio} 1" if barrio else f"{comuna} 1"
+    batch = db.batch()
+    batch.set(ref, data)
+    for punto_id in punto_ids:
+        batch.set(db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id), {"cuadrilla_id": ref.id}, merge=True)
     batch.commit()
-    return grupos_creados
+    return [{"id": ref.id, **data}]
 
 
 def crear_cuadrilla(db: Any, body: dict[str, Any]) -> dict[str, Any]:

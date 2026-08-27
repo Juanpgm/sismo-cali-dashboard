@@ -115,6 +115,22 @@ exact-equality lookup layer instead, and hold unconditionally:
     python -m app.jobs.planeacion_cruce --dry       # real data, no Firestore write
     python -m app.jobs.planeacion_cruce             # real data, write planeacion_puntos
     python -m app.jobs.planeacion_cruce --top 50     # cap to the first N points (debug)
+    python -m app.jobs.planeacion_cruce --full       # re-scan EVERY point, ignore the watermark
+
+## Dedup tagging (`tag_duplicados`) — grouping, never collapsing
+
+Every run also tags each point with `dup_grupo_id`/`dup_n`/`es_representante`
+(`tag_duplicados`, called on `load_puntos()`'s output before anything else) so
+`routers/planeacion_asignaciones.py`'s `resumen` can report distinct-BUILDING
+counts alongside distinct-REPORT counts, the same "one address can carry
+several reports for the same building" correction `scripts/refresh_data.py`'s
+`add_dup_group`/`_claves_por_edificio` already applies to the EDAN side.
+Nothing is ever merged or dropped here — every `planeacion_puntos` doc still
+gets its own write; dedup is purely a label a reader can group by. `--full`
+doubles as the one-time backfill for this tagging over the ~14.8k docs that
+existed before it shipped (a full run re-selects and re-writes every point,
+`select_candidates(..., full=True)`, regardless of whether it already has a
+survey).
 """
 from __future__ import annotations
 
@@ -221,7 +237,8 @@ PIPELINE_FIELDS = ("fuente", "registro_id", "clave_integracion", "tiene_survey",
                    "survey_globalid", "match_via", "match_dist_m", "tier",
                    "direccion", "barrio", "comuna", "coords", "afectacion",
                    "estado_verificacion", "tipo_inmueble", "habitabilidad",
-                   "fecha_creacion", "prioridad_score", "prioridad", "matched_at")
+                   "fecha_creacion", "prioridad_score", "prioridad", "matched_at",
+                   "dup_grupo_id", "dup_n", "es_representante")
 ADMIN_DEFAULT_FIELDS = {"estado_asignacion": "pendiente", "cuadrilla_id": None,
                         "inspector_uid": None, "prioridad_override": None}
 
@@ -455,16 +472,122 @@ def cruce_punto(lat, lon, direccion, clave_integracion_pt: str, *,
 
 
 # ── Incremental candidate selection (ADR-5) ─────────────────────────────────
-def select_candidates(points: list[dict], state: dict) -> list[dict]:
+def select_candidates(points: list[dict], state: dict, full: bool = False) -> list[dict]:
     """Points that actually need a match attempt this run: brand new (no
     doc yet) or not yet matched. A point already `tiene_survey=True` is
-    never re-scanned. Pure — no Firestore access, testable offline."""
+    never re-scanned. Pure — no Firestore access, testable offline.
+
+    `full=True` short-circuits to "everything, unconditionally" — a
+    `--full` run re-selects and re-writes every point regardless of its
+    current `tiene_survey` state, which is what turns it into the one-time
+    dedup-tagging backfill for docs that already existed before
+    `tag_duplicados` shipped (module docstring)."""
+    if full:
+        return list(points)
     out = []
     for p in points:
         did = doc_id(p["fuente"], p["registro_id"])
         s = state.get(did, {"exists": False, "tiene_survey": False})
         if not s.get("tiene_survey"):
             out.append(p)
+    return out
+
+
+# ── Dedup tagging (module docstring's "Dedup tagging" section) ─────────────
+DUP_MAX_DIST_M = 30.0  # same order of magnitude as scripts/refresh_data.py's own _DIST_MISMO_EDIFICIO_M
+
+
+def _dedup_bucket_key(p: dict) -> str:
+    """Coarse bucket: everything that COULD be the same building. Mirrors
+    `scripts/refresh_data.py`'s `_clave_direccion` — address first, then
+    rounded coords, then the point's own id so it never silently joins an
+    unrelated bucket. `addr_key` (imported from `cruce_gestor`, same
+    normalization the matching cascade above already uses) is what makes
+    two differently-punctuated renderings of the same address collide into
+    one bucket."""
+    key = addr_key(p.get("direccion"))
+    if key:
+        return f"dir:{key}"
+    lat, lon = p.get("lat"), p.get("lon")
+    if lat is not None and lon is not None:
+        return f"geo:{round(float(lat), 5)},{round(float(lon), 5)}"
+    return f"id:{p.get('registro_id')}"
+
+
+def tag_duplicados(points: list[dict], max_dist_m: float = DUP_MAX_DIST_M) -> list[dict]:
+    """Tag every point with `dup_grupo_id`/`dup_n`/`es_representante` — pure,
+    returns a NEW list of dicts (each a shallow copy plus the three tags),
+    never mutates `points` in place. This is a PRESENTATION-layer grouping
+    for `routers/planeacion_asignaciones.py`'s `resumen` (distinct-building
+    counts alongside distinct-report counts); it never collapses, merges,
+    or drops a doc — every point still gets written on its own.
+
+    Conceptually mirrors `scripts/refresh_data.py`'s `_claves_por_edificio`/
+    `_misma_edificacion`/`_clave_direccion` (coarse address bucket, then a
+    transitive same-building chain inside each bucket), reimplemented here
+    without pandas — this job works with plain dict lists, not a
+    DataFrame — and without that helper's building-NAME similarity signal,
+    because `reportes.json` records carry no `nombre_edificacion` field;
+    address + proximity is the only signal available here.
+
+    Within a bucket (`_dedup_bucket_key`), members are sorted by
+    `registro_id` first so the chaining below is independent of the
+    caller's input order. A point joins an existing chain if it is within
+    `max_dist_m` of ANY member already in that chain (transitive, not
+    "agrees with every member" — a building shot from two ends can be
+    `max_dist_m` from the middle and further from the far end, and
+    requiring universal agreement would wrongly split it), OR if either
+    point is missing coords (a missing coordinate can never rule out the
+    same building, so it must never manufacture a split either).
+
+    `dup_grupo_id` is `"dup-" + min(registro_id in the chain)` — computed
+    from chain MEMBERSHIP, not scan order, so it is the same string
+    regardless of how `points` was shuffled going in. `es_representante`
+    is True for exactly the member whose `registro_id` equals that
+    minimum. A singleton still gets a group (`dup_n=1`,
+    `es_representante=True`) so every point always carries all three
+    fields."""
+    buckets: dict[str, list[dict]] = {}
+    for p in points:
+        buckets.setdefault(_dedup_bucket_key(p), []).append(p)
+
+    # ponytail: O(n^2) within-bucket chain scan — buckets are one address's
+    # worth of reports, not the whole ~14.8k set, so this stays small in
+    # practice; grid-bucketing is the upgrade path if a single address ever
+    # measurably grows large enough to matter.
+    chain_of: dict[int, list[dict]] = {}  # id(point) -> the chain list it belongs to
+    for miembros in buckets.values():
+        ordenados = sorted(miembros, key=lambda p: str(p.get("registro_id")))
+        chains: list[list[dict]] = []
+        for p in ordenados:
+            lat_p, lon_p = p.get("lat"), p.get("lon")
+            destino = None
+            for chain in chains:
+                for q in chain:
+                    lat_q, lon_q = q.get("lat"), q.get("lon")
+                    sin_coords = None in (lat_p, lon_p, lat_q, lon_q)
+                    if sin_coords or haversine_m((lat_p, lon_p), (lat_q, lon_q)) <= max_dist_m:
+                        destino = chain
+                        break
+                if destino is not None:
+                    break
+            if destino is not None:
+                destino.append(p)
+            else:
+                destino = [p]
+                chains.append(destino)
+            chain_of[id(p)] = destino
+
+    out = []
+    for p in points:
+        chain = chain_of[id(p)]
+        rep_id = min(str(q.get("registro_id")) for q in chain)
+        out.append({
+            **p,
+            "dup_grupo_id": f"dup-{rep_id}",
+            "dup_n": len(chain),
+            "es_representante": str(p.get("registro_id")) == rep_id,
+        })
     return out
 
 
@@ -671,9 +794,27 @@ def read_watermark(db):
     return (doc.to_dict() or {}).get("last_run_at")
 
 
-def write_watermark(db, when: datetime) -> None:
+def write_state(db, when: datetime, summary: dict, *, full: bool = False) -> None:
+    """Advances the incremental watermark AND persists a `last_run` summary
+    snapshot on the same doc (A4: the router's `GET /planeacion-cruce/
+    status` reads this back via `read_last_run` so an operator can see the
+    outcome of the last run without tailing Railway cron logs). `summary`
+    is the same dict `run_planeacion_cruce` already builds for its own
+    print/runlog output — `full` is passed separately because that dict
+    does not carry it. Dry runs never call this (their own early return in
+    `run_planeacion_cruce` happens before the write path)."""
     coll, name = STATE_DOC.split("/")
-    db.collection(coll).document(name).set({"last_run_at": when}, merge=True)
+    payload = {"last_run_at": when, "last_run": {**summary, "finished_at": when, "full": full}}
+    db.collection(coll).document(name).set(payload, merge=True)
+
+
+def read_last_run(db) -> dict | None:
+    """The `last_run` summary `write_state` persisted, or `None` if no run
+    has ever completed (or the doc predates this field)."""
+    doc = db.document(STATE_DOC).get()
+    if not doc.exists:
+        return None
+    return (doc.to_dict() or {}).get("last_run")
 
 
 def read_punto_state(db, doc_ids: list[str]) -> dict:
@@ -768,14 +909,44 @@ def _selfcheck() -> None:
     cands = select_candidates(points, state)
     assert {p["registro_id"] for p in cands} == {"2"}
 
+    # select_candidates(full=True): everything, even an already-matched point.
+    cands_full = select_candidates(points, state, full=True)
+    assert {p["registro_id"] for p in cands_full} == {"1", "2"}
+
+    # tag_duplicados: near pair sharing an address -> one group, one
+    # representative, order-independent (fed in shuffled/reverse order here).
+    dup_a = {"fuente": "atencionsismo", "registro_id": "20", "direccion": "Calle 1 # 2-3",
+            "lat": 3.42005, "lon": -76.53005}
+    dup_b = {"fuente": "atencionsismo", "registro_id": "10", "direccion": "Calle 1 # 2-3",
+            "lat": 3.42000, "lon": -76.53000}
+    tagged = tag_duplicados([dup_a, dup_b])
+    by_rid = {p["registro_id"]: p for p in tagged}
+    assert by_rid["10"]["dup_grupo_id"] == by_rid["20"]["dup_grupo_id"] == "dup-10"
+    assert by_rid["10"]["dup_n"] == 2 and by_rid["10"]["es_representante"] is True
+    assert by_rid["20"]["es_representante"] is False
+    # a lone point still gets a singleton group.
+    lone = tag_duplicados([{"fuente": "atencionsismo", "registro_id": "99",
+                            "direccion": "Otra direccion", "lat": 3.9, "lon": -76.9}])
+    assert lone[0]["dup_grupo_id"] == "dup-99" and lone[0]["dup_n"] == 1
+
     print("planeacion_cruce self-check OK")
 
 
 # ── Pipeline (mirrors cruce_sticker.py's run_cruce_sticker() shape) ────────
-def run_planeacion_cruce() -> dict:
-    top = int(sys.argv[sys.argv.index("--top") + 1]) if "--top" in sys.argv else None
+def run_planeacion_cruce(top: int | None = None, dry: bool = False, full: bool = False) -> dict:
+    """`top`/`dry`/`full` are plain kwargs now (not read from `sys.argv`
+    inside this function) so `routers/planeacion_cruce.py` can call this
+    directly as an in-process background task — same "the router calls the
+    job function, not a subprocess" shape `routers/refresh.py` established
+    for `dashboard_refresh.run_refresh`. `main()` below still parses argv
+    for the cron/CLI entrypoint and forwards the three values here.
 
-    puntos = load_puntos()
+    `full=True`: ignores the incremental watermark entirely (re-fetches
+    every survey, `fetch_surveys(db, None)`) and re-selects every point
+    regardless of its current match state (`select_candidates(...,
+    full=True)`), so a full run also re-tags dedup on the entire existing
+    set — see the module docstring's "Dedup tagging" section."""
+    puntos = tag_duplicados(load_puntos())
     if top is not None:
         puntos = puntos[:top]
 
@@ -784,12 +955,12 @@ def run_planeacion_cruce() -> dict:
     doc_ids = [doc_id(p["fuente"], p["registro_id"]) for p in puntos]
     state = read_punto_state(db, doc_ids)
     ya_con_survey = sum(1 for s in state.values() if s["tiene_survey"])
-    candidates = select_candidates(puntos, state)
+    candidates = select_candidates(puntos, state, full=full)
     print(f"Puntos: {len(puntos)} | ya con survey (sin re-escanear): {ya_con_survey} | "
           f"candidatos este run: {len(candidates)}")
 
-    watermark = read_watermark(db)
-    print(f"watermark: {watermark or '(ninguno — primera corrida, procesa todo survey_cali)'}")
+    watermark = None if full else read_watermark(db)
+    print(f"watermark: {watermark or '(ninguno — primera corrida o --full, procesa todo survey_cali)'}")
     surveys_cali = fetch_surveys(db, watermark)
     surveys_israel = fetch_israel(db)  # feature D: full-scan, no watermark (see fetch_israel)
     surveys = surveys_cali + surveys_israel
@@ -808,8 +979,8 @@ def run_planeacion_cruce() -> dict:
                         key_index=key_index, surveys=surveys, addr_index=addr_index)
         did = doc_id(p["fuente"], p["registro_id"])
         is_new = not state.get(did, {"exists": False})["exists"]
-        if not r["tiene_survey"] and not is_new:
-            continue  # unchanged pending point -> nothing changed, don't rewrite
+        if not full and not r["tiene_survey"] and not is_new:
+            continue  # unchanged pending point -> nothing changed, don't rewrite (skipped on --full: it rewrites everything, dedup tags included)
 
         score = prioridad_score(p, now)
         to_write.append({
@@ -831,7 +1002,7 @@ def run_planeacion_cruce() -> dict:
               "candidatos": len(candidates), "a_escribir": len(to_write),
               "nuevos_match": n_nuevos_match, "match_via": match_via_tally}
 
-    if "--dry" in sys.argv:
+    if dry:
         print(f"[dry] no Firestore write; {len(to_write)} docs listos para "
               f"{PLANEACION_PUNTOS_COLLECTION}")
         return summary
@@ -840,7 +1011,7 @@ def run_planeacion_cruce() -> dict:
     estado_actual = {did: s.get("estado_asignacion") for did, s in state.items()}
     ops = build_write_ops(to_write, existing_ids, estado_actual)
     n = write_planeacion_puntos(db, ops)
-    write_watermark(db, now)
+    write_state(db, now, summary, full=full)
     print(f"escritos {n} docs -> {db.project}/{PLANEACION_PUNTOS_COLLECTION}; "
           f"watermark avanzado a {now.isoformat()}")
     summary["escritos"] = n
@@ -860,7 +1031,8 @@ def main() -> int:
     print(f"Corrida planeacion_cruce · inicio {started_at:%Y-%m-%d %H:%M:%S} UTC")
     print(f"Logs: {log_dir or 'solo stdout (sin volumen escribible)'}")
     try:
-        summary = run_planeacion_cruce() or {}
+        top = int(sys.argv[sys.argv.index("--top") + 1]) if "--top" in sys.argv else None
+        summary = run_planeacion_cruce(top=top, dry="--dry" in sys.argv, full="--full" in sys.argv) or {}
         duracion = round((datetime.now(timezone.utc) - started_at).total_seconds(), 1)
         runlog.append_run(log_dir, {"estado": "ok", "duracion_seg": duracion,
                                     "archivo": RUNS_FILE, **summary})
