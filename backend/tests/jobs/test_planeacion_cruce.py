@@ -180,6 +180,61 @@ def test_exact_key_beats_a_nearer_fuzzy_candidate():
     assert r["survey_globalid"] == "S-LEJANO"
 
 
+def test_full_integration_key_loop_survey_link_to_triple_key():
+    """END-TO-END relationship (minus the external Survey123 submission + cron):
+    the `codigoapp` a crew receives in the prefill link is EXACTLY the key that
+    ties the survey back to its point and its atencionsismo `registro_id`.
+
+      registro_id (atencionsismo API)
+        -> clave_integracion  (minted, unique)
+        -> field:codigoapp=<clave> in the Survey123 URL   (build_survey_urls)
+        -> survey submitted carrying that codigoapp, GlobalID G   (ArcGIS)
+        -> planeacion_cruce rung-1 exact match -> point tiene_survey + survey_globalid=G
+
+    Proves the TRIPLE KEY is established: registro_id + clave/codigoapp + survey_globalid,
+    i.e. we can tell an assigned point was surveyed and by WHICH survey.
+    """
+    from urllib.parse import parse_qs, urlsplit
+
+    from app.services.survey_link import build_survey_urls
+
+    registro_id = "e7758d05-6671-4c98-a057-f8bdf8d7e2b3"  # atencionsismo report UUID
+    clave = job.clave_integracion("atencionsismo", registro_id)
+
+    # The codigoapp placed in the Survey123 prefill link IS the point's clave.
+    urls = build_survey_urls(clave, form_url="https://survey123.arcgis.com/share/FORMID",
+                             field_app_item_id=None)
+    codigoapp_en_link = parse_qs(urlsplit(urls["web"]).query)["field:codigoapp"][0]
+    assert codigoapp_en_link == clave
+
+    # A survey submitted with that codigoapp (GlobalID assigned by ArcGIS). Placed
+    # FAR from the point + a different address, so ONLY the exact key can match —
+    # this isolates the integration key as what establishes the relationship.
+    survey = _survey("SURVEY-GID-777", 3.9000, -76.9000, "Otra direccion",
+                     codigoapp=codigoapp_en_link)
+    surveys = [survey]
+    key_index = job.build_key_index(surveys)
+    addr_index = job.build_addr_index(surveys)
+
+    result = job.cruce_punto(3.4200, -76.5300, "Calle 1 # 2-3", clave,
+                             key_index=key_index, surveys=surveys, addr_index=addr_index)
+
+    # Triple key fully established:
+    assert result["tiene_survey"] is True                 # assigned point is now "levantado"
+    assert result["match_via"] == "clave"                 # by the integration key, not fuzzy geo
+    assert result["survey_globalid"] == "SURVEY-GID-777"  # survey side of the key
+    assert codigoapp_en_link == clave                     # atencionsismo id -> clave -> codigoapp: one key
+    assert job.clave_integracion("atencionsismo", registro_id) == clave  # deterministic/reproducible
+
+    # Uniqueness -> no false positives: a DIFFERENT point (different registro_id ->
+    # different clave) must NOT key-match this survey.
+    otro_clave = job.clave_integracion("atencionsismo", "9f2b1c44-0000-4aaa-bbbb-cccccccccccc")
+    assert otro_clave != clave
+    r2 = job.cruce_punto(3.4200, -76.5300, "Calle 1 # 2-3", otro_clave,
+                         key_index=key_index, surveys=surveys, addr_index=addr_index)
+    assert r2["match_via"] != "clave"
+
+
 def test_key_rung_matches_nothing_before_any_key_in_circulation():
     surveys = [_survey("S1", 3.4200, -76.5300, "Calle 1 # 2-3")]
     key_index = job.build_key_index(surveys)  # no codigoapp values at all
