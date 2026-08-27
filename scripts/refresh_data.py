@@ -1562,6 +1562,28 @@ def add_revisar_flags(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_colapso_resuelto(df: pd.DataFrame) -> pd.DataFrame:
+    """Derived `colapso_resuelto` ('total' | 'parcial' | 'ninguno'): resolves the
+    "colapso_total AND colapso_parcial both si" contradiction add_revisar_flags
+    flags as "Colapso total y parcial simultáneos" (22/1142 live records, product
+    owner call 2026-08-27: both si -> parcial). Purely additive — colapso_total
+    and colapso_parcial stay exactly as submitted for audit; this just gives the
+    panel one field to count collapse from without double-counting a record
+    across both KPI cards."""
+    def _si(v) -> bool:
+        return str(v).strip().lower() in ("si", "sí", "true", "1", "x")
+
+    def _resuelto(row) -> str:
+        if _si(row.get("colapso_parcial")):
+            return "parcial"
+        if _si(row.get("colapso_total")):
+            return "total"
+        return "ninguno"
+
+    df["colapso_resuelto"] = [_resuelto(r) for r in df.to_dict("records")]
+    return df
+
+
 # --- Orchestration ----------------------------------------------------------
 
 
@@ -1597,6 +1619,9 @@ def run_once(out_dir: Path) -> None:
     df = add_suspension_servicios(df)
     # Data-quality review flags for the Analista "Gestión de datos" grid.
     df = add_revisar_flags(df)
+    # Resolves the colapso_total/colapso_parcial contradiction add_revisar_flags
+    # above just flagged, so KPIs/map count collapse once per record.
+    df = add_colapso_resuelto(df)
 
     # Direct photo download URLs for the xlsx export.
     photo_urls = fetch_photo_urls(groups)
