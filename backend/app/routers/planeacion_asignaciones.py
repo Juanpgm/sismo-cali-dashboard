@@ -644,6 +644,17 @@ def crear_cuadrilla(db: Any, body: dict[str, Any]) -> dict[str, Any]:
         raise bad_request(
             f"{len(excluded)} punto(s) están marcados como no aplica; quitar esos puntos de la selección."
         )
+    # feature F parity gap fix: a point manually marked 'hecho' WITHOUT a
+    # survey (tiene_survey stays False, so the `surveyed` guard above never
+    # catches it) must still be refused here — every OTHER assignment path
+    # (editarCuadrilla add, asignarGrupoAPuntos, asignarInspector,
+    # reasignarPunto) already rejects it via `points_locked`; crearCuadrilla
+    # was the one write path missing this check.
+    hecho_sin_survey = [p["id"] for p in current if p.get("estado_asignacion") == "hecho"]
+    if hecho_sin_survey:
+        raise bad_request(
+            f"{len(hecho_sin_survey)} punto(s) ya están marcados como hechos; quitar esos puntos de la selección."
+        )
     conflicts = points_already_assigned(current, None)
     if conflicts:
         raise bad_request(

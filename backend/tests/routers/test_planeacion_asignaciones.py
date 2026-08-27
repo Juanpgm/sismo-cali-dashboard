@@ -648,6 +648,27 @@ def test_crear_cuadrilla_rejects_points_already_in_another_cuadrilla(monkeypatch
     assert stores[PLANEACION_CUADRILLAS] == {}
 
 
+def test_crear_cuadrilla_rejects_a_hecho_point_without_a_survey(monkeypatch):
+    # Bug found during review: a point manually marked 'hecho' (e.g. an
+    # inspector completed it in the field without a survey ever arriving)
+    # has tiene_survey=False, so the `surveyed` guard alone never catches
+    # it. Every OTHER assignment path (editarCuadrilla add,
+    # asignarGrupoAPuntos, asignarInspector, reasignarPunto) already rejects
+    # this via points_locked — crearCuadrilla was the one path that let it
+    # slip into a brand-new cuadrilla. This proves the fix closes that gap.
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"cuadrilla_id": None, "tiene_survey": False, "estado_asignacion": "hecho"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "crearCuadrilla", "puntos": ["p1"]})
+
+    assert resp.status_code == 400
+    assert stores[PLANEACION_CUADRILLAS] == {}
+    assert stores[PLANEACION_PUNTOS]["p1"].get("cuadrilla_id") is None
+
+
 # ── editarCuadrilla ───────────────────────────────────────────────────────
 
 
@@ -799,6 +820,22 @@ def test_editar_cuadrilla_add_rejects_levantado_points(monkeypatch):
     assert "p1" not in stores[PLANEACION_CUADRILLAS]["c1"]["puntos"]
 
 
+def test_editar_cuadrilla_add_rejects_hecho_points_without_a_survey(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_CUADRILLAS] = {"c1": {"puntos": [], "inspector_uid": None, "origen": "manual"}}
+    stores[PLANEACION_PUNTOS] = {"p1": {"cuadrilla_id": None, "tiene_survey": False, "estado_asignacion": "hecho"}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "editarCuadrilla", "cuadrilla_id": "c1", "add": ["p1"]},
+    )
+
+    assert resp.status_code == 400
+    assert stores[PLANEACION_PUNTOS]["p1"].get("cuadrilla_id") is None
+    assert "p1" not in stores[PLANEACION_CUADRILLAS]["c1"]["puntos"]
+
+
 def test_asignar_grupo_rejects_levantado_points(monkeypatch):
     stores = _stores()
     stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "G1", "miembros": ["u1"], "activo": True}}
@@ -815,6 +852,25 @@ def test_asignar_grupo_rejects_levantado_points(monkeypatch):
 
     assert resp.status_code == 400
     # whole op rejected — neither point got grupo_id
+    assert "grupo_id" not in stores[PLANEACION_PUNTOS]["p1"]
+    assert "grupo_id" not in stores[PLANEACION_PUNTOS]["p2"]
+
+
+def test_asignar_grupo_rejects_hecho_points_without_a_survey(monkeypatch):
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "G1", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"estado_asignacion": "pendiente", "tiene_survey": False},
+        "p2": {"estado_asignacion": "hecho", "tiene_survey": False},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarGrupoAPuntos", "grupo_id": "g1", "puntos": ["p1", "p2"]},
+    )
+
+    assert resp.status_code == 400
     assert "grupo_id" not in stores[PLANEACION_PUNTOS]["p1"]
     assert "grupo_id" not in stores[PLANEACION_PUNTOS]["p2"]
 
@@ -842,6 +898,51 @@ def test_asignar_inspector_skips_levantado_points_and_assigns_the_rest(monkeypat
     assert stores[PLANEACION_PUNTOS]["p2"]["estado_asignacion"] == "pendiente"
     # cuadrilla still records the inspector
     assert stores[PLANEACION_CUADRILLAS]["c1"]["inspector_uid"] == "insp-1"
+
+
+def test_asignar_inspector_skips_hecho_points_without_a_survey(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_CUADRILLAS] = {"c1": {"puntos": ["p1", "p2"], "inspector_uid": None, "origen": "manual"}}
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"estado_asignacion": "pendiente", "tiene_survey": False},
+        "p2": {"estado_asignacion": "hecho", "tiene_survey": False},  # completed manually, no survey
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarInspector", "cuadrilla_id": "c1", "inspector_uid": "insp-1"},
+    )
+
+    assert resp.status_code == 200
+    assert stores[PLANEACION_PUNTOS]["p1"]["inspector_uid"] == "insp-1"
+    assert stores[PLANEACION_PUNTOS]["p2"].get("inspector_uid") is None
+    assert stores[PLANEACION_PUNTOS]["p2"]["estado_asignacion"] == "hecho"  # untouched
+
+
+# ── points_locked: pure-function guarantee, generalizes to ANY point ────────
+# Every assignment write path (crearCuadrilla, editarCuadrilla add,
+# asignarGrupoAPuntos, asignarInspector, reasignarPunto) routes its
+# "already done, don't touch" decision through this ONE function. Proving it
+# correct here — independent of any route/fixture — is what makes the
+# guarantee hold for any point, not just the ones exercised above.
+
+
+def test_points_locked_true_for_surveyed_or_hecho_false_otherwise():
+    puntos = [
+        {"id": "surveyed", "tiene_survey": True, "estado_asignacion": "pendiente"},
+        {"id": "hecho_sin_survey", "tiene_survey": False, "estado_asignacion": "hecho"},
+        {"id": "surveyed_and_hecho", "tiene_survey": True, "estado_asignacion": "hecho"},
+        {"id": "pendiente", "tiene_survey": False, "estado_asignacion": "pendiente"},
+        {"id": "asignado", "tiene_survey": False, "estado_asignacion": "asignado"},
+        {"id": "en_proceso", "tiene_survey": False, "estado_asignacion": "en_proceso"},
+        {"id": "no_aplica", "tiene_survey": False, "estado_asignacion": "no_aplica"},  # excluded elsewhere, not "locked"
+        {"id": "sin_estado", "tiene_survey": False, "estado_asignacion": None},
+    ]
+
+    locked = set(pa.points_locked(puntos))
+
+    assert locked == {"surveyed", "hecho_sin_survey", "surveyed_and_hecho"}
 
 
 # ── eliminarCuadrilla / reiniciarAgrupacion ─────────────────────────────
