@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import {
   colorForPunto, buildRows, sortRows, filterRows, formatTruncacion, metricasHtml,
+  kpisFromRows, barriosPorComunaFromRows,
   buildHistorialRows, buildHistorialFiltro,
   buildVehiculoPayload, buildConductorPayload,
   rowHtml, filterRosterInspectores, filterInspectores,
@@ -97,6 +98,23 @@ assert.equal(
 );
 assert.equal(formatTruncacion(50, 50), null, 'not truncated -> no message');
 assert.equal(formatTruncacion(0, 0), null);
+
+// ---- kpisFromRows — working-set KPIs (2026-08-27), NOT resumen's
+// full-collection tallies (rows[0]: alta/asignado, rows[1]: media/pendiente) --
+const kpis = kpisFromRows(rows);
+assert.equal(kpis.total, 2);
+assert.deepEqual(kpis.porPrioridad, { alta: 1, media: 1, baja: 0 });
+assert.deepEqual(kpis.porEstado, { pendiente: 1, asignado: 1, en_proceso: 0, hecho: 0, no_aplica: 0 });
+assert.deepEqual(kpisFromRows([]), {
+  total: 0,
+  porPrioridad: { alta: 0, media: 0, baja: 0 },
+  porEstado: { pendiente: 0, asignado: 0, en_proceso: 0, hecho: 0, no_aplica: 0 },
+});
+
+// ---- barriosPorComunaFromRows — auto-agrupar scope selects derived from the
+// working set, not resumen's full-collection barrios_por_comuna ------------
+assert.deepEqual(barriosPorComunaFromRows(rows), { 'COMUNA 1': ['Barrio 1'], 'COMUNA 2': ['Barrio 2'] });
+assert.deepEqual(barriosPorComunaFromRows([{ comuna: 'C', barrio: '' }, { comuna: '', barrio: 'B' }]), {});
 // Item 5 (2026-08-27): still reads correctly with the new 4500 default.
 assert.equal(
   formatTruncacion(4500, 11000),

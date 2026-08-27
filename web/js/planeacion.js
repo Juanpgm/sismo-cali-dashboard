@@ -187,6 +187,38 @@ export function formatTruncacion(shown, totalPendientes) {
   return `Mostrando los ${shown} puntos de mayor prioridad de ${totalPendientes} pendientes.`;
 }
 
+/** Working-set KPIs (2026-08-27, binding user decision): the tab's KPI
+ *  tiles used to show `resumen`'s FULL-collection tallies (~14.8k docs) —
+ *  "contaminating" the view of what the depurated ~2500-point working plan
+ *  (the loaded `rows`) actually contains. Computed client-side from `rows`
+ *  instead: total in-plan + a breakdown by effective priority and by
+ *  assignment state. `resumen` itself is kept ONLY as the truncation
+ *  banner's denominator (see `reload()`'s own comment). */
+export function kpisFromRows(rows) {
+  const porPrioridad = { alta: 0, media: 0, baja: 0 };
+  const porEstado = { pendiente: 0, asignado: 0, en_proceso: 0, hecho: 0, no_aplica: 0 };
+  for (const r of rows || []) {
+    if (r.prioridadEfectiva in porPrioridad) porPrioridad[r.prioridadEfectiva] += 1;
+    const estado = r.estado_asignacion || 'pendiente';
+    if (estado in porEstado) porEstado[estado] += 1;
+  }
+  return { total: (rows || []).length, porPrioridad, porEstado };
+}
+
+/** Comuna -> distinct barrios, derived from the loaded working-set `rows`
+ *  instead of `resumen`'s full-collection `barrios_por_comuna` (same
+ *  2026-08-27 decision as `kpisFromRows` — the auto-agrupar scope selects
+ *  must only offer zones that exist in the prioritized plan). Points with
+ *  no comuna or no barrio are excluded, same as the backend's own tally. */
+export function barriosPorComunaFromRows(rows) {
+  const sets = {};
+  for (const r of rows || []) {
+    if (!r.comuna || !r.barrio) continue;
+    (sets[r.comuna] || (sets[r.comuna] = new Set())).add(r.barrio);
+  }
+  return Object.fromEntries(Object.entries(sets).map(([k, v]) => [k, [...v].sort()]));
+}
+
 /** Item 6 (2026-08-27): appends the sticker-twin propagation count, when
  *  any, to an asignarGrupoAPuntos/desasignarGrupo success message. `null`/
  *  `0`/missing all render as no suffix (nothing propagated is not worth
@@ -711,34 +743,29 @@ function shellHtml() {
     </div>`;
 }
 
-function kpiTile(label, value, wide = false) {
-  // Typography fix (2026-08-27): `wide` tiles (currently only "Coincidencias
-  // por vía") carry a joined meta STRING ("cercania: 3062 · direccion: 374
-  // · ..."), not a headline number — rendering it in `.kpi-value` (the
-  // dashboard's own big-number scale, clamp 1.3-1.7rem) made it look
-  // display-size/broken. `.sticker-meta` (~0.82rem) is the existing small
-  // meta-line class already used pervasively elsewhere in this same file —
-  // reused as-is rather than adding a bespoke class.
-  const valueClass = wide ? 'sticker-meta' : 'kpi-value';
-  return `<div class="kpi-tile${wide ? ' kpi-tile-wide' : ''}">
+function kpiTile(label, value) {
+  return `<div class="kpi-tile">
     <span class="kpi-label">${escapeHtml(label)}</span>
-    <span class="${valueClass}">${escapeHtml(String(value))}</span>
+    <span class="kpi-value">${escapeHtml(String(value))}</span>
   </div>`;
 }
 
-/** KPI tiles fed by `resumen`, including the `por_match_via` tally — this is
- *  what makes a silent codigoapp-prefill failure visible (proposal.md
- *  risk 2): if `clave` never appears there, rung 1 is not firing. */
-function kpisHtml(resumen) {
-  if (!resumen) return '';
-  const porMatch = Object.entries(resumen.por_match_via || {})
-    .map(([k, v]) => `${k}: ${v}`).join(' · ') || 'sin datos aún';
+/** KPI tiles fed by the WORKING SET (`kpisFromRows`, 2026-08-27), not
+ *  `resumen`'s full-collection tallies — see that function's own docstring.
+ *  The old "Coincidencias por vía" tile (`resumen.por_match_via`) is
+ *  dropped along with the raw-total tiles: it only meant something at
+ *  full-collection scale, and the truncation banner already gives the
+ *  operator the remaining global context they need. */
+function kpisHtml(kpis) {
+  if (!kpis) return '';
   return [
-    kpiTile('Total', resumen.total ?? 0),
-    kpiTile('Levantados', resumen.levantados ?? 0),
-    kpiTile('Pendientes', resumen.pendientes ?? 0),
-    kpiTile('Prioridad alta', (resumen.por_prioridad || {}).alta ?? 0),
-    kpiTile('Coincidencias por vía', porMatch, true),
+    kpiTile('En plan de trabajo', kpis.total),
+    kpiTile('Prioridad alta', kpis.porPrioridad.alta),
+    kpiTile('Prioridad media', kpis.porPrioridad.media),
+    kpiTile('Prioridad baja', kpis.porPrioridad.baja),
+    kpiTile('Pendientes', kpis.porEstado.pendiente),
+    kpiTile('Asignados', kpis.porEstado.asignado),
+    kpiTile('En proceso', kpis.porEstado.en_proceso),
   ].join('');
 }
 
@@ -1341,17 +1368,18 @@ export function initPlaneacion(root, { getToken }) {
   }
 
   function renderKpis() {
-    kpisEl.innerHTML = kpisHtml(resumenData);
+    kpisEl.innerHTML = kpisHtml(kpisFromRows(rows));
   }
 
-  // `auto-agrupar-comuna-barrio` change: comuna select from
-  // resumenData.barrios_por_comuna keys (pending-only); barrio select is
-  // DEPENDENT on the chosen comuna. Both preserve the current selection
-  // across reload() when it is still a valid option.
+  // `auto-agrupar-comuna-barrio` change, working-set follow-up (2026-08-27):
+  // comuna/barrio options now come from the loaded working-set `rows` (the
+  // depurated ~2500-point plan), NOT `resumen`'s full-collection
+  // `barrios_por_comuna` — see `barriosPorComunaFromRows`'s own docstring.
+  // Barrio select stays DEPENDENT on the chosen comuna; both preserve the
+  // current selection across reload() when it is still a valid option.
   function renderAutoBarrioSelect() {
     const comuna = autoComunaSelect.value;
-    const barrios = (comuna && resumenData && resumenData.barrios_por_comuna
-      && resumenData.barrios_por_comuna[comuna]) || [];
+    const barrios = (comuna && barriosPorComunaFromRows(rows)[comuna]) || [];
     const prevBarrio = autoBarrioSelect.value;
     autoBarrioSelect.innerHTML = '<option value="">— Todos —</option>'
       + barrios.map((b) => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join('');
@@ -1360,7 +1388,7 @@ export function initPlaneacion(root, { getToken }) {
   }
 
   function renderAutoScopeSelects() {
-    const comunas = Object.keys((resumenData && resumenData.barrios_por_comuna) || {}).sort();
+    const comunas = Object.keys(barriosPorComunaFromRows(rows)).sort();
     const prevComuna = autoComunaSelect.value;
     autoComunaSelect.innerHTML = '<option value="">— Todas —</option>'
       + comunas.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
@@ -2225,9 +2253,17 @@ export function initPlaneacion(root, { getToken }) {
       vehiculos = vehiculosResult.status === 'fulfilled' ? (vehiculosResult.value.vehiculos || []) : vehiculos;
       conductores = conductoresResult.status === 'fulfilled' ? (conductoresResult.value.conductores || []) : conductores;
       metricasData = metricasResult.status === 'fulfilled' ? (metricasResult.value.metricas || null) : metricasData;
+      // Working-set KPI decision (2026-08-27): `resumen` is now called ONLY
+      // for this one full-collection number — the truncation banner's
+      // denominator below. KPIs and the auto-agrupar comuna/barrio selects
+      // moved to `rows`-derived helpers (`kpisFromRows`/
+      // `barriosPorComunaFromRows`); with the backend's own TTL cache this
+      // remaining call is cheap, but it is not trivially droppable — the
+      // banner's "de N pendientes" number is inherently a full-collection
+      // count `rows` (a bounded page) cannot derive on its own.
       resumenData = resumenResult.status === 'fulfilled' ? (resumenResult.value.resumen || null) : resumenData;
-      renderAutoScopeSelects();
       rows = buildRows(listResp.puntos, cuadrillas, getInspectores());
+      renderAutoScopeSelects();
       selected.clear();
       crearBtn.disabled = true;
       asignarGrupoBtn.disabled = true;
