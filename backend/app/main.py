@@ -30,6 +30,7 @@ from app.routers import (
     survey_cali,
     usuarios,
 )
+from app.routers.planeacion_asignaciones import PlaneacionAggregatesCache
 from app.routers.sticker_status import StickerStatusCache
 from app.services.snapshot import ReportadosSnapshot, refresh_loop, seed_from_blob
 
@@ -104,6 +105,10 @@ def create_app() -> FastAPI:
     # `routers/sticker_status.py`'s module docstring for why this replaces
     # the legacy warm-lambda-only cache).
     app.state.sticker_status_cache = StickerStatusCache()
+
+    # Same convention, `planeacion_asignaciones.py`'s own `resumen`/
+    # `metricasProgreso` aggregate cache (speed follow-up, 2026-08-27).
+    app.state.planeacion_aggregates_cache = PlaneacionAggregatesCache()
 
     app.add_middleware(
         CORSMiddleware,

@@ -244,11 +244,12 @@ import json
 import logging
 import math
 import re
+import time
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -306,7 +307,12 @@ DEFAULT_MAX_SIZE = 10
 # geographically, so the top-N by score still captures dense hard-hit zones;
 # points beyond N are picked up on the NEXT run (once this batch is grouped),
 # so coverage stays complete across runs. Overridable per call via `limite`.
-AUTOAGRUPAR_LIMIT = 2000
+#
+# Raised 2000 -> 2500 (2026-08-27, binding user decision): matches
+# `web/js/planeacion.js`'s own `listPuntos` request (`limit: 2500`) — the
+# clustering batch now covers the SAME depurated working set the tab's KPIs
+# and map already operate on, not a smaller one.
+AUTOAGRUPAR_LIMIT = 2500
 
 # ADR-9: bounded, indexed listPuntos — never the full ~14.8k collection.
 #
@@ -503,6 +509,47 @@ def _doc_to_dict(doc: Any, *, with_id: bool = True) -> dict[str, Any]:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# ---- Aggregate cache (speed follow-up, 2026-08-27) -------------------------
+#
+# `resumen`/`metricasProgreso` each scan the full `planeacion_puntos`
+# collection (~14.8k docs) on EVERY call, and the Planeación tab calls BOTH
+# on every reload — same "load everything on every hit" shape
+# `routers/sticker_status.py`'s own module docstring already fixed once for
+# `/sticker-status`. Same fix, same precedent: a 5-minute TTL cache attached
+# to `app.state` (one instance per `create_app()` call — test isolation,
+# matches `StickerStatusCache`'s own convention instead of a bare
+# module-level global). ONE class, not two, because both actions share the
+# same TTL and the same invalidation trigger (any successful mutating
+# action busts BOTH) — a `key`-addressed cache is the smaller diff than a
+# second near-identical class.
+CACHE_TTL_SECONDS = 5 * 60
+
+
+class PlaneacionAggregatesCache:
+    """Process-lifetime TTL cache for `resumen()`/`metricas_progreso()`
+    payloads, keyed by action name. See module comment above for why this
+    mirrors `sticker_status.py`'s `StickerStatusCache` instead of a bare
+    module-level dict."""
+
+    def __init__(self) -> None:
+        self._entries: dict[str, tuple[float, dict[str, Any]]] = {}
+
+    def get_or_fetch(self, key: str, fetch: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        now = time.monotonic()
+        cached = self._entries.get(key)
+        if cached is not None and (now - cached[0]) <= CACHE_TTL_SECONDS:
+            return cached[1]
+        payload = fetch()
+        self._entries[key] = (now, payload)
+        return payload
+
+    def clear(self) -> None:
+        """Invalidation hook: called from the dispatcher's post-mutation
+        block after ANY successful mutating action, so an admin never sees
+        stale tallies after their own change."""
+        self._entries.clear()
 
 
 # ---- Firestore-backed actions ----------------------------------------------
@@ -711,10 +758,19 @@ def run_auto_agrupar(db: Any, body: dict[str, Any]) -> list[dict[str, Any]]:
     grupos.sort(key=len, reverse=True)
     grupos_creados: list[dict[str, Any]] = []
     batch = db.batch()
-    for grupo in grupos:
+    # Zone-naming follow-up (2026-08-27): a SCOPED run (comuna, optionally
+    # barrio) stamps each created cuadrilla with a readable `nombre` —
+    # "COMUNA · BARRIO i" / "COMUNA i", 1-based index within THIS run —
+    # so the admin tab shows a zone name instead of a raw auto-* doc id
+    # (`cuadrillaLabel`/list rendering already fall back to `nombre || id`,
+    # web/js/planeacion.js). An UNSCOPED (city-wide) run keeps the prior
+    # behavior of no `nombre` at all — there is no single zone to name.
+    for i, grupo in enumerate(grupos, start=1):
         ref = db.collection(PLANEACION_CUADRILLAS_COLLECTION).document()
         punto_ids = [p["id"] for p in grupo]
-        data = {"puntos": punto_ids, "inspector_uid": None, "origen": "auto"}
+        data: dict[str, Any] = {"puntos": punto_ids, "inspector_uid": None, "origen": "auto"}
+        if comuna:
+            data["nombre"] = f"{comuna} · {barrio} {i}" if barrio else f"{comuna} {i}"
         batch.set(ref, data)
         for punto_id in punto_ids:
             batch.set(db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id), {"cuadrilla_id": ref.id}, merge=True)
@@ -1963,6 +2019,7 @@ def _dispatch(
     payload: dict[str, Any],
     claims: dict[str, Any],
     db: Any,
+    cache: "PlaneacionAggregatesCache",
 ) -> JSONResponse:
     """The dispatcher's own `if body.action == ...` chain — extracted
     verbatim (mechanical move, no branch body changes) so
@@ -1972,7 +2029,7 @@ def _dispatch(
         if body.action == "listPuntos":
             return JSONResponse({"ok": True, **list_puntos(db, payload)})
         if body.action == "resumen":
-            return JSONResponse({"ok": True, "resumen": resumen(db)})
+            return JSONResponse({"ok": True, "resumen": cache.get_or_fetch("resumen", lambda: resumen(db))})
         if body.action == "listCuadrillas":
             return JSONResponse({"ok": True, _CUADRILLAS_KEY: list_cuadrilla_docs(db)})
         if body.action == "autoAgrupar":
@@ -2032,7 +2089,9 @@ def _dispatch(
         if body.action == "eliminarConductor":
             return JSONResponse({"ok": True, **eliminar_conductor(db, payload)})
         if body.action == "metricasProgreso":
-            return JSONResponse({"ok": True, "metricas": metricas_progreso(db)})
+            return JSONResponse(
+                {"ok": True, "metricas": cache.get_or_fetch("metricasProgreso", lambda: metricas_progreso(db))}
+            )
         if body.action == "listAuditoria":
             page_size = _positive_int(payload.get("limit"), planeacion_audit.PAGE_SIZE_DEFAULT)
             return JSONResponse({
@@ -2078,13 +2137,15 @@ def _dispatch(
 
 @router.post("/planeacion-asignaciones")
 def planeacion_asignaciones(
+    request: Request,
     body: PlaneacionAsignacionesRequest,
     claims: dict[str, Any] = Depends(require_role("admin")),
 ) -> JSONResponse:
     db = credentials.sismo().firestore
     payload = body.model_dump()
+    cache: PlaneacionAggregatesCache = request.app.state.planeacion_aggregates_cache
 
-    resp = _dispatch(body, payload, claims, db)
+    resp = _dispatch(body, payload, claims, db, cache)
 
     if body.action in planeacion_audit.MUTATING_ACTIONS:
         # ADR-1: best-effort, strictly AFTER the mutation already committed
@@ -2098,4 +2159,9 @@ def planeacion_asignaciones(
             params=payload,
             resultado=resultado,
         )
+        # Speed follow-up (2026-08-27): bust the resumen/metricasProgreso
+        # cache on ANY successful mutation — unconditional, outside the
+        # best-effort audit call above, so an admin never sees stale
+        # tallies after their own change even if audit logging itself fails.
+        cache.clear()
     return resp

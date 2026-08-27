@@ -89,6 +89,7 @@ class _FakeQuery:
         order_desc: bool = False,
         limit_n: int | None = None,
         select_fields: list[str] | None = None,
+        calls: dict[str, int] | None = None,
     ) -> None:
         self._collection = collection
         self._store = store
@@ -97,6 +98,10 @@ class _FakeQuery:
         self._order_desc = order_desc
         self._limit_n = limit_n
         self._select_fields = select_fields
+        # Call-count instrumentation (perf-cache tests): incremented once per
+        # `.get()`/`.stream()`, keyed by collection name. `None` when a test
+        # doesn't care (most of the suite) — see `_FakeFirestore.__init__`.
+        self._calls = calls
 
     def where(self, field: str, op: str, value: Any) -> "_FakeQuery":
         if op == "==":
@@ -113,16 +118,19 @@ class _FakeQuery:
             raise AssertionError(f"unsupported op {op!r} in fake Firestore")
         return _FakeQuery(
             self._collection, self._store, matched, self._order_field, self._order_desc,
-            self._limit_n, self._select_fields,
+            self._limit_n, self._select_fields, self._calls,
         )
 
     def order_by(self, field: str, direction: str | None = None) -> "_FakeQuery":
         desc = direction == "DESCENDING"
-        return _FakeQuery(self._collection, self._store, self._ids, field, desc, self._limit_n, self._select_fields)
+        return _FakeQuery(
+            self._collection, self._store, self._ids, field, desc, self._limit_n, self._select_fields, self._calls
+        )
 
     def limit(self, n: int) -> "_FakeQuery":
         return _FakeQuery(
-            self._collection, self._store, self._ids, self._order_field, self._order_desc, n, self._select_fields
+            self._collection, self._store, self._ids, self._order_field, self._order_desc, n,
+            self._select_fields, self._calls,
         )
 
     def select(self, field_paths: list[str]) -> "_FakeQuery":
@@ -131,7 +139,7 @@ class _FakeQuery:
         `get_all(field_paths=...)` below)."""
         return _FakeQuery(
             self._collection, self._store, self._ids, self._order_field, self._order_desc,
-            self._limit_n, list(field_paths),
+            self._limit_n, list(field_paths), self._calls,
         )
 
     def _ordered_ids(self) -> list[str]:
@@ -155,6 +163,8 @@ class _FakeQuery:
         return self.stream()
 
     def stream(self) -> list[_FakeSnapshot]:
+        if self._calls is not None:
+            self._calls[self._collection] = self._calls.get(self._collection, 0) + 1
         snaps = []
         for doc_id in self._ordered_ids():
             snap = _FakeSnapshot(self._collection, doc_id, self._projected(self._store.get(doc_id)))
@@ -164,8 +174,10 @@ class _FakeQuery:
 
 
 class _FakeCollection(_FakeQuery):
-    def __init__(self, collection: str, store: dict[str, dict[str, Any]]) -> None:
-        super().__init__(collection, store)
+    def __init__(
+        self, collection: str, store: dict[str, dict[str, Any]], calls: dict[str, int] | None = None
+    ) -> None:
+        super().__init__(collection, store, calls=calls)
         self._auto_seq = 0
 
     def document(self, doc_id: str | None = None) -> _FakeDocRef:
@@ -195,11 +207,14 @@ class _FakeBatch:
 
 
 class _FakeFirestore:
-    def __init__(self, stores: dict[str, dict[str, dict[str, Any]]]) -> None:
+    def __init__(
+        self, stores: dict[str, dict[str, dict[str, Any]]], calls: dict[str, int] | None = None
+    ) -> None:
         self._stores = stores
+        self._calls = calls
 
     def collection(self, name: str) -> _FakeCollection:
-        return _FakeCollection(name, self._stores.setdefault(name, {}))
+        return _FakeCollection(name, self._stores.setdefault(name, {}), calls=self._calls)
 
     def batch(self) -> _FakeBatch:
         return _FakeBatch()
@@ -209,8 +224,10 @@ class _FakeFirestore:
 
 
 class _FakeSismoClients:
-    def __init__(self, stores: dict[str, dict[str, dict[str, Any]]]) -> None:
-        self.firestore = _FakeFirestore(stores)
+    def __init__(
+        self, stores: dict[str, dict[str, dict[str, Any]]], calls: dict[str, int] | None = None
+    ) -> None:
+        self.firestore = _FakeFirestore(stores, calls=calls)
         self.app = object()
 
 
@@ -218,7 +235,9 @@ def _stores() -> dict[str, dict[str, dict[str, Any]]]:
     return {PLANEACION_PUNTOS: {}, PLANEACION_CUADRILLAS: {}, PLANEACION_AUDITORIA: {}}
 
 
-def _app(monkeypatch, stores: dict[str, dict[str, dict[str, Any]]]) -> FastAPI:
+def _app(
+    monkeypatch, stores: dict[str, dict[str, dict[str, Any]]], calls: dict[str, int] | None = None
+) -> FastAPI:
     monkeypatch.setenv("FIREBASE_SERVICE_ACCOUNT_JSON", '{"type": "service_account"}')
     monkeypatch.setenv("SIGNER_AWS_ACCESS_KEY_ID", "fake-access-key-id")
     monkeypatch.setenv("SIGNER_AWS_SECRET_ACCESS_KEY", "fake-secret-access-key")
@@ -226,7 +245,7 @@ def _app(monkeypatch, stores: dict[str, dict[str, dict[str, Any]]]) -> FastAPI:
     monkeypatch.setenv("SURVEY123_FORM_URL", "https://survey123.arcgis.com/share/abc123")
     monkeypatch.setenv("SURVEY123_FIELD_APP_ITEM_ID", "itemid123")
     credentials.s3.cache_clear()
-    monkeypatch.setattr(credentials, "sismo", lambda: _FakeSismoClients(stores))
+    monkeypatch.setattr(credentials, "sismo", lambda: _FakeSismoClients(stores, calls=calls))
     return create_app()
 
 
@@ -240,6 +259,15 @@ def _viewer_client(monkeypatch, stores) -> TestClient:
     app = _app(monkeypatch, stores)
     app.dependency_overrides[current_claims] = lambda: FAKE_CLAIMS_VIEWER
     return TestClient(app)
+
+
+def _admin_client_with_calls(monkeypatch, stores) -> tuple[TestClient, dict[str, int]]:
+    """Same as `_admin_client`, plus a `collection(name).get()` call-count
+    dict for the aggregate-cache tests below."""
+    calls: dict[str, int] = {}
+    app = _app(monkeypatch, stores, calls=calls)
+    app.dependency_overrides[current_claims] = lambda: FAKE_CLAIMS_ADMIN
+    return TestClient(app), calls
 
 
 # ── Pure autoAgrupar/haversineM (ported verbatim; same tests as the sticker
@@ -799,6 +827,61 @@ def test_auto_agrupar_router_without_comuna_or_barrio_is_unscoped(monkeypatch):
     assert resp.status_code == 200
     assigned = {pid for c in resp.json()["cuadrillas"] for pid in c["puntos"]}
     assert assigned == {"c19", "c2"}
+
+
+def test_auto_agrupar_router_with_comuna_only_names_cuadrillas_with_zone(monkeypatch):
+    """Zone-naming follow-up (2026-08-27): a comuna-scoped run stamps each
+    created cuadrilla with `nombre: "COMUNA i"` (1-based, per this run)."""
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "c19a": _scopeable("COMUNA 19", "San Fernando", 3.40, -76.50),
+        "c19b": _scopeable("COMUNA 19", "Tequendama", 3.4001, -76.5001),
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "autoAgrupar", "comuna": "COMUNA 19"})
+
+    cuadrillas = resp.json()["cuadrillas"]
+    assert cuadrillas
+    assert [c["nombre"] for c in cuadrillas] == [f"COMUNA 19 {i}" for i in range(1, len(cuadrillas) + 1)]
+
+
+def test_auto_agrupar_router_with_comuna_and_barrio_names_cuadrillas_with_zone(monkeypatch):
+    """Comuna+barrio scoped run: `nombre: "COMUNA · BARRIO i"`."""
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "sf1": _scopeable("COMUNA 19", "San Fernando", 3.40, -76.50),
+        "sf2": _scopeable("COMUNA 19", "San Fernando", 3.4001, -76.5001),
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "autoAgrupar", "comuna": "COMUNA 19", "barrio": "San Fernando"},
+    )
+
+    cuadrillas = resp.json()["cuadrillas"]
+    assert cuadrillas
+    assert [c["nombre"] for c in cuadrillas] == [
+        f"COMUNA 19 · San Fernando {i}" for i in range(1, len(cuadrillas) + 1)
+    ]
+
+
+def test_auto_agrupar_router_unscoped_run_has_no_nombre(monkeypatch):
+    """An UNSCOPED (city-wide) run keeps the prior behavior: no `nombre` —
+    there is no single zone to name."""
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "c19": _scopeable("COMUNA 19", "San Fernando", 3.40, -76.50),
+        "c2": _scopeable("COMUNA 2", "Otro Barrio", 3.4600, -76.5600),
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "autoAgrupar"})
+
+    cuadrillas = resp.json()["cuadrillas"]
+    assert cuadrillas
+    assert all("nombre" not in c for c in cuadrillas)
 
 
 # ── crearCuadrilla ────────────────────────────────────────────────────────
@@ -2468,6 +2551,90 @@ def test_metricas_progreso_totales_combinados(monkeypatch):
     assert metricas["combinado"] == {"asignados": 3, "hechos": 2, "pendientes": 1, "no_aplica": 0, "completado_pct": 66.7}
     assert metricas["stickers"]["asignados"] == 1
     assert metricas["survey"]["asignados"] == 2
+
+
+# ── aggregate cache: resumen/metricasProgreso perf fix (2026-08-27) ────────
+# Both actions used to scan the full `planeacion_puntos` collection on EVERY
+# call, and the Planeación tab calls BOTH on every reload. Same TTL-cache-
+# on-`app.state` fix `routers/sticker_status.py` already established for
+# `/sticker-status` — see `PlaneacionAggregatesCache`'s own docstring.
+
+
+def test_resumen_is_cached_across_consecutive_calls(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {"p1": _punto()}
+    client, calls = _admin_client_with_calls(monkeypatch, stores)
+
+    first = client.post("/planeacion-asignaciones", json={"action": "resumen"})
+    second = client.post("/planeacion-asignaciones", json={"action": "resumen"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json() == second.json()
+    assert calls[PLANEACION_PUNTOS] == 1
+
+
+def test_metricas_progreso_is_cached_across_consecutive_calls(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {"p1": {"estado_asignacion": "pendiente"}}
+    stores[STICKER_MATCHES] = {}
+    stores[GRUPOS_INSPECTORES] = {}
+    client, calls = _admin_client_with_calls(monkeypatch, stores)
+
+    first = client.post("/planeacion-asignaciones", json={"action": "metricasProgreso"})
+    second = client.post("/planeacion-asignaciones", json={"action": "metricasProgreso"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json() == second.json()
+    assert calls[PLANEACION_PUNTOS] == 1
+    assert calls[STICKER_MATCHES] == 1
+    assert calls[GRUPOS_INSPECTORES] == 1
+
+
+def test_mutating_action_busts_resumen_and_metricas_cache(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {"p1": _punto()}
+    stores[STICKER_MATCHES] = {}
+    stores[GRUPOS_INSPECTORES] = {}
+    client, calls = _admin_client_with_calls(monkeypatch, stores)
+
+    client.post("/planeacion-asignaciones", json={"action": "resumen"})
+    client.post("/planeacion-asignaciones", json={"action": "metricasProgreso"})
+    crear = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "crearGrupo", "nombre": "Grupo X", "miembros": ["u1"]},
+    )
+    client.post("/planeacion-asignaciones", json={"action": "resumen"})
+    client.post("/planeacion-asignaciones", json={"action": "metricasProgreso"})
+
+    assert crear.status_code == 201
+    # crearGrupo never touches these collections itself — the SECOND read of
+    # each (after the busting call) can only come from the cache having been
+    # cleared, not from crearGrupo's own writes. planeacion_puntos is read by
+    # BOTH resumen and metricasProgreso (2 distinct cache keys), so it gets
+    # 2 reads per round; sticker_matches/grupos_inspectores are read only by
+    # metricasProgreso, so 1 read per round.
+    assert calls[PLANEACION_PUNTOS] == 4
+    assert calls[STICKER_MATCHES] == 2
+    assert calls[GRUPOS_INSPECTORES] == 2
+
+
+def test_resumen_cache_expires_after_ttl(monkeypatch):
+    """Monkeypatches the named `pa.CACHE_TTL_SECONDS` constant to force
+    immediate staleness, NOT `time.monotonic` itself — that stdlib function
+    is shared process-wide with httpx/anyio's own transport-timeout clock,
+    and faking it out from under `TestClient` hangs the request instead of
+    the intended cache-miss behavior."""
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {"p1": _punto()}
+    client, calls = _admin_client_with_calls(monkeypatch, stores)
+    monkeypatch.setattr(pa, "CACHE_TTL_SECONDS", -1)
+
+    client.post("/planeacion-asignaciones", json={"action": "resumen"})
+    client.post("/planeacion-asignaciones", json={"action": "resumen"})
+
+    assert calls[PLANEACION_PUNTOS] == 2
 
 
 # ── feature H: conductores (drivers) CRUD + link vehiculo->conductor ─────────
