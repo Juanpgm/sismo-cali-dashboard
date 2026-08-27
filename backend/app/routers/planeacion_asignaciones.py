@@ -1187,10 +1187,17 @@ def reasignar_punto(db: Any, body: dict[str, Any]) -> dict[str, Any]:
 
 
 def eliminar_cuadrilla(db: Any, body: dict[str, Any]) -> dict[str, Any]:
-    """Clears cuadrilla_id/inspector_uid on every member point BEFORE
-    deleting the cuadrilla doc, so no point is left referencing a
+    """Clears cuadrilla_id/inspector_uid/grupo_id on every member point
+    BEFORE deleting the cuadrilla doc, so no point is left referencing a
     nonexistent cuadrilla even if the delete step fails partway. Adapted
-    from the sticker dispatcher's own `eliminar_cuadrilla`."""
+    from the sticker dispatcher's own `eliminar_cuadrilla`.
+
+    grupo_id is cleared too (2026-08-27, user decision): deleting the
+    cuadrilla is the only handle a point has back to its group in the UI
+    (chips are cuadrilla-scoped) — leaving grupo_id set after the cuadrilla
+    is gone orphans the point: invisible in every chip, but still counted
+    by grupo-wide readers (`_docs_por_grupo`, formulario, "Por grupo"
+    metrics). Symmetric with `desasignar_grupo`'s sticker-twin cleanup."""
     cuadrilla_id = str(body.get("cuadrilla_id") or "").strip()
     if not cuadrilla_id:
         raise bad_request("Falta cuadrilla_id.")
@@ -1201,14 +1208,28 @@ def eliminar_cuadrilla(db: Any, body: dict[str, Any]) -> dict[str, Any]:
         raise bad_request(f"No existe la cuadrilla {cuadrilla_id}.")
 
     puntos = [str(p) for p in (snap.to_dict() or {}).get("puntos") or []]
-    clear_batch = db.batch()
-    for punto_id in puntos:
-        clear_batch.set(
+    punto_refs = [db.collection(PLANEACION_PUNTOS_COLLECTION).document(pid) for pid in puntos]
+    punto_snaps = db.get_all(punto_refs) if punto_refs else []
+    puntos_twin_data = [
+        {
+            "id": s.id,
+            "coords": (s.to_dict() or {}).get("coords"),
+            "direccion": (s.to_dict() or {}).get("direccion"),
+            "grupo_id": (s.to_dict() or {}).get("grupo_id"),
+        }
+        for s in punto_snaps
+        if s.exists
+    ]
+
+    def _clear_point(batch: Any, punto_id: str) -> None:
+        batch.set(
             db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id),
-            {"cuadrilla_id": None, "inspector_uid": None},
+            {"cuadrilla_id": None, "inspector_uid": None, "grupo_id": None},
             merge=True,
         )
-    clear_batch.commit()
+
+    commit_in_chunks(db, puntos, _clear_point)
+    _desasignar_grupo_de_stickers(db, puntos_twin_data)
     ref.delete()
     return {"id": cuadrilla_id}
 

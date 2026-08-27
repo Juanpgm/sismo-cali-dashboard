@@ -1500,6 +1500,33 @@ def test_eliminar_cuadrilla_clears_membership_before_delete(monkeypatch):
     assert stores[PLANEACION_PUNTOS]["p1"]["inspector_uid"] is None
 
 
+def test_eliminar_cuadrilla_clears_grupo_id_and_sticker_twin(monkeypatch):
+    # Regression: deleting a cuadrilla used to leave grupo_id on its points,
+    # orphaning them -- invisible in every chip (no cuadrilla left to show
+    # them) but still summed by grupo-wide readers (formulario, "Por grupo").
+    stores = _stores()
+    stores[PLANEACION_CUADRILLAS] = {"c1": {"puntos": ["p1"], "inspector_uid": "insp-1", "origen": "auto"}}
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {
+            "cuadrilla_id": "c1",
+            "inspector_uid": "insp-1",
+            "grupo_id": "g1",
+            "coords": {"lat": 3.40, "lon": -76.50},
+            "direccion": "Calle 1",
+        },
+    }
+    stores[STICKER_MATCHES] = {
+        "s1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1", "grupo_id": "g1"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "eliminarCuadrilla", "cuadrilla_id": "c1"})
+
+    assert resp.status_code == 200
+    assert stores[PLANEACION_PUNTOS]["p1"]["grupo_id"] is None
+    assert stores[STICKER_MATCHES]["s1"]["grupo_id"] is None
+
+
 def test_reiniciar_agrupacion_releases_only_auto_cuadrillas(monkeypatch):
     stores = _stores()
     stores[PLANEACION_CUADRILLAS] = {
