@@ -1940,6 +1940,30 @@ body:not([data-role="admin"]) .view-tab[data-view="analista"] { display: none !i
    component, not two near-identical ones. */
 .planeacion-progreso-cell .asig-progress { width: 100px; height: 8px; }
 .planeacion-progreso-pct { font-size: 0.78rem; color: var(--text-secondary); white-space: nowrap; }
+/* `planeacion-grupo-filter` change — Paso-2 grupo resumen (progresoBarraHtml
+   reused as-is) needs only spacing, not new component CSS. */
+#planeacion-grupo-resumen { margin: 10px 0 4px; }
+/* Collapsible "Progreso por grupo e inspector" detail (native <details>),
+   same disclosure-triangle idiom as .kpi-secondary > summary (styles.css
+   ~510) reused for a summary/card-title pairing instead of a new pattern. */
+summary.card-title {
+  cursor: pointer;
+  list-style: none;
+  font-size: .82rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding: 4px 0;
+}
+summary.card-title::-webkit-details-marker { display: none; }
+summary.card-title::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 6px;
+  font-size: .7rem;
+  color: var(--text-muted);
+  transition: transform .15s ease;
+}
+details[open] > summary.card-title::before { transform: rotate(90deg); }
 @media (max-width: 900px) {
   .asignacion-workspace { grid-template-columns: 1fr; }
   .asignacion-aside { position: static; }

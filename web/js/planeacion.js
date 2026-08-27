@@ -182,9 +182,13 @@ export function sortRows(rows) {
 /** Filter chip logic (spec.md "Filtering narrows the working set"):
  *  `prioridad` narrows by the EFFECTIVE priority, `comuna`/`afectacion` by
  *  exact match. A falsy/missing filter key does not narrow that dimension. */
-export function filterRows(rows, { prioridad, comuna, afectacion, search } = {}) {
+export function filterRows(rows, { prioridad, comuna, afectacion, grupo, search } = {}) {
   const needle = (search || '').trim().toLowerCase();
   return (rows || []).filter((r) => {
+    // Paso-2 "grupo de inspectores" chip (planeacion-grupo-filter change):
+    // narrows to that grupo's own assigned points, same falsy-never-narrows
+    // rule as the other dimensions.
+    if (grupo && r.grupo_id !== grupo) return false;
     if (prioridad && r.prioridadEfectiva !== prioridad) return false;
     if (comuna && r.comuna !== comuna) return false;
     if (afectacion && r.afectacion !== afectacion) return false;
@@ -207,6 +211,19 @@ export function filterRows(rows, { prioridad, comuna, afectacion, search } = {})
 export function recoleccionResumen(rows) {
   const list = rows || [];
   return { recolectados: list.filter((r) => r.recolectado).length, total: list.length };
+}
+
+/** One grupo's asignados/hechos/pendientes tally, computed from the already-
+ *  loaded `rows` (never a separate fetch) — same shape as `metricasProgreso`'s
+ *  own `_tally()` (`{asignados, hechos, pendientes, completado_pct}`), so it
+ *  reuses `progresoBarraHtml` unchanged. Backs the Paso-2 grupo chips/resumen
+ *  (`planeacion-grupo-filter` change). */
+export function grupoTallyFromRows(rows, gid) {
+  const asignadosRows = (rows || []).filter((r) => r.grupo_id === gid);
+  const asignados = asignadosRows.length;
+  const hechos = asignadosRows.filter((r) => r.recolectado).length;
+  const pendientes = asignados - hechos;
+  return { asignados, hechos, pendientes, completado_pct: asignados ? Math.round((hechos / asignados) * 100) : 0 };
 }
 
 /** design.md ADR-9's "truncation is shown, never hidden" message. `null`
@@ -460,11 +477,6 @@ function shellHtml() {
 
     <section class="planeacion-subpanel" data-subtab="puntos" id="planeacion-panel-puntos" role="tabpanel" aria-labelledby="planeacion-tab-puntos">
     <p class="asignacion-intro">Reportes del API sin levantamiento EDAN todavía, priorizados. Agrupar en cuadrillas, asignar inspectores y abrir el enlace de Survey123 prellenado para cada punto.</p>
-    <ol class="asignacion-steps">
-      <li><span class="asignacion-step-n">1</span> Priorizar.</li>
-      <li><span class="asignacion-step-n">2</span> Cuadrillas e inspectores.</li>
-      <li><span class="asignacion-step-n">3</span> Puntos.</li>
-    </ol>
 
     <section class="kpi-row" id="planeacion-kpis" aria-label="Resumen de planeación"></section>
     <p class="planeacion-truncacion" id="planeacion-truncacion" role="status" hidden></p>
@@ -508,13 +520,18 @@ function shellHtml() {
         </div>
 
         <div class="card">
-          ${cardHead('Paso 2 · Cuadrillas e inspectores', 'Asignar un inspector a cada cuadrilla. «Reiniciar agrupación» borra solo las automáticas.', '<button type="button" class="sticker-action sticker-action-off" id="planeacion-reiniciar">Reiniciar agrupación</button>')}
+          ${cardHead('Paso 2 · Cuadrillas y grupos', 'Filtrar el mapa y la tabla por grupo de inspectores; asignar un grupo a cada cuadrilla.', '<button type="button" class="sticker-action sticker-action-off" id="planeacion-reiniciar">Reiniciar agrupación</button>')}
+          <div class="card-toolbar asignacion-filters" id="planeacion-grupo-chips"></div>
+          <div id="planeacion-grupo-resumen" hidden></div>
           <div class="asignacion-cuadrillas-scroll" id="planeacion-cuadrillas"></div>
         </div>
 
         <div class="card">
           ${cardHead('Progreso por grupo e inspector', 'Avance combinado de ambas campañas (stickers y encuesta EDAN), con el detalle de cada una.')}
-          <div id="planeacion-metricas"></div>
+          <details>
+            <summary class="card-title">Detalle de progreso por grupo e inspector</summary>
+            <div id="planeacion-metricas"></div>
+          </details>
         </div>
 
         <div class="card">
@@ -1281,16 +1298,42 @@ if (typeof document !== 'undefined') {
   });
 }
 
-function renderMap(rows, inspectores) {
-  teardownMap();
+// Persistent-map perf fix (`planeacion-grupo-filter` change): a grupo chip
+// click or a debounced search keystroke used to tear down and rebuild the
+// WHOLE Leaflet map (tiles, control, legend) on every render — visibly janky
+// and wasteful when only the marker set changed. Now the map/tile/legend
+// singletons are built ONCE (first call, `map` still null) and every later
+// call just clears+repopulates `pointsLayer`. `fit` controls whether the
+// viewport re-fits to the new marker set (grupo selection: yes: a search
+// keystroke: no — see renderMapSection's callers).
+function renderMap(rows, inspectores, { fit = true } = {}) {
   const conCoords = rows.filter((r) => r.coords && Number.isFinite(r.coords.lat) && Number.isFinite(r.coords.lon));
 
-  // preferCanvas: circleMarkers render on a single <canvas> instead of one
-  // SVG node each — the decisive perf win when the point set grows (no
-  // thousands of DOM nodes to lay out / repaint on pan/zoom).
-  map = L.map('planeacion-map', { zoomControl: true, minZoom: 10, maxZoom: 18, preferCanvas: true }).setView(CALI_CENTER, CALI_ZOOM);
-  baseTile = L.tileLayer(basemapTileUrl(), { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20 }).addTo(map);
-  pointsLayer = L.layerGroup().addTo(map);
+  if (!map) {
+    // preferCanvas: circleMarkers render on a single <canvas> instead of one
+    // SVG node each — the decisive perf win when the point set grows (no
+    // thousands of DOM nodes to lay out / repaint on pan/zoom).
+    map = L.map('planeacion-map', { zoomControl: true, minZoom: 10, maxZoom: 18, preferCanvas: true }).setView(CALI_CENTER, CALI_ZOOM);
+    baseTile = L.tileLayer(basemapTileUrl(), { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20 }).addTo(map);
+    pointsLayer = L.layerGroup().addTo(map);
+
+    const legend = L.control({ position: 'bottomright' });
+    legend.onAdd = () => {
+      legendEl = L.DomUtil.create('div', 'map-legend');
+      L.DomEvent.disableClickPropagation(legendEl);
+      legendEl.innerHTML = `
+        <div class="legend-title">Estado del punto</div>
+        <div class="legend-row"><span class="legend-swatch legend-circle" style="background:${MARKER_HEX.green}"></span><span>Levantado</span></div>
+        <div class="legend-row"><span class="legend-swatch legend-circle" style="background:${MARKER_HEX.red}"></span><span>Pendiente · alta</span></div>
+        <div class="legend-row"><span class="legend-swatch legend-circle" style="background:${MARKER_HEX.amber}"></span><span>Pendiente · media/baja</span></div>
+        <div class="legend-row"><span class="legend-swatch legend-circle" style="background:${MARKER_HEX.blue}"></span><span>Asignado / en proceso</span></div>
+        <div class="legend-row"><span class="legend-swatch legend-circle" style="background:${MARKER_HEX.grey}"></span><span>No aplica</span></div>`;
+      return legendEl;
+    };
+    legend.addTo(map);
+  } else {
+    pointsLayer.clearLayers();
+  }
 
   for (const r of conCoords) {
     const marker = L.circleMarker([r.coords.lat, r.coords.lon], {
@@ -1300,28 +1343,15 @@ function renderMap(rows, inspectores) {
     marker.addTo(pointsLayer);
   }
 
-  const legend = L.control({ position: 'bottomright' });
-  legend.onAdd = () => {
-    legendEl = L.DomUtil.create('div', 'map-legend');
-    L.DomEvent.disableClickPropagation(legendEl);
-    legendEl.innerHTML = `
-      <div class="legend-title">Estado del punto</div>
-      <div class="legend-row"><span class="legend-swatch legend-circle" style="background:${MARKER_HEX.green}"></span><span>Levantado</span></div>
-      <div class="legend-row"><span class="legend-swatch legend-circle" style="background:${MARKER_HEX.red}"></span><span>Pendiente · alta</span></div>
-      <div class="legend-row"><span class="legend-swatch legend-circle" style="background:${MARKER_HEX.amber}"></span><span>Pendiente · media/baja</span></div>
-      <div class="legend-row"><span class="legend-swatch legend-circle" style="background:${MARKER_HEX.blue}"></span><span>Asignado / en proceso</span></div>
-      <div class="legend-row"><span class="legend-swatch legend-circle" style="background:${MARKER_HEX.grey}"></span><span>No aplica</span></div>`;
-    return legendEl;
-  };
-  legend.addTo(map);
-
-  const inBox = conCoords.filter((r) =>
-    r.coords.lat >= CALI_BBOX.latMin && r.coords.lat <= CALI_BBOX.latMax
-    && r.coords.lon >= CALI_BBOX.lngMin && r.coords.lon <= CALI_BBOX.lngMax);
-  if (inBox.length) {
-    map.fitBounds(L.latLngBounds(inBox.map((r) => [r.coords.lat, r.coords.lon])), { padding: [40, 40], maxZoom: 16 });
-  } else {
-    map.setView(CALI_CENTER, CALI_ZOOM);
+  if (fit) {
+    const inBox = conCoords.filter((r) =>
+      r.coords.lat >= CALI_BBOX.latMin && r.coords.lat <= CALI_BBOX.latMax
+      && r.coords.lon >= CALI_BBOX.lngMin && r.coords.lon <= CALI_BBOX.lngMax);
+    if (inBox.length) {
+      map.fitBounds(L.latLngBounds(inBox.map((r) => [r.coords.lat, r.coords.lon])), { padding: [40, 40], maxZoom: 16 });
+    } else {
+      map.setView(CALI_CENTER, CALI_ZOOM);
+    }
   }
   setTimeout(() => { if (map) map.invalidateSize(); }, 80);
   return conCoords.length;
@@ -1342,17 +1372,27 @@ export function initPlaneacion(root, { getToken }) {
   let metricasData = null; // `metricasProgreso` — `puntos-disponibles` change (2026-08-26)
   let resumenData = null;
   let inspectoresCache = [];
+  // Shared roster lookup (step 7, `planeacion-grupo-filter` change): built
+  // once in ensureInspectores() and reused everywhere a section previously
+  // reconstructed its own `new Map(inspectores.map(...))` — one source of
+  // truth instead of N copies rebuilt on every render.
+  let inspectorById = new Map();
   let inspectoresLoaded = false;
-  // Item 5 (2026-08-27): no prioridad preselected — the top-4500 points BY
-  // SCORE (see reload()'s own `limit: 4500`) already ARE the critical
+  // Item 5 (2026-08-27): no prioridad preselected — the top-2500 points BY
+  // SCORE (see reload()'s own `limit: 2500`) already ARE the critical
   // working material, so narrowing to 'alta' by default would hide the
-  // rest of that same top-4500 set instead of widening it. The
+  // rest of that same top-2500 set instead of widening it. The
   // "Alta"/Media/Baja chips still narrow client-side + re-fetch.
-  let filters = { prioridad: '', comuna: '', search: '' };
+  let filters = { prioridad: '', comuna: '', search: '', grupo: '' };
   const selected = new Set();
   let busy = false;
 
   root.innerHTML = shellHtml();
+  // The persistent-map singletons (module scope, step 4) may still point at
+  // a DOM node from a PREVIOUS open of this tab — the innerHTML rewrite above
+  // just detached it. Tear down so the next renderMapSection() rebuilds
+  // against the fresh #planeacion-map node instead of a dead reference.
+  teardownMap();
   const overlayEl = root.querySelector('#planeacion-overlay');
   const showOverlay = () => { overlayEl.hidden = false; };
   const hideOverlay = () => { overlayEl.hidden = true; };
@@ -1364,6 +1404,8 @@ export function initPlaneacion(root, { getToken }) {
   const filtersEl = root.querySelector('#planeacion-filters');
   const tableWrap = root.querySelector('#planeacion-table-wrap');
   const cuadrillasWrap = root.querySelector('#planeacion-cuadrillas');
+  const grupoChipsEl = root.querySelector('#planeacion-grupo-chips');
+  const grupoResumenEl = root.querySelector('#planeacion-grupo-resumen');
   const autoBtn = root.querySelector('#planeacion-auto');
   const autoComunaSelect = root.querySelector('#planeacion-auto-comuna');
   const autoBarrioSelect = root.querySelector('#planeacion-auto-barrio');
@@ -1724,13 +1766,40 @@ export function initPlaneacion(root, { getToken }) {
 
   // ---- cuadrillas section ---------------------------------------------------
   function renderCuadrillasSection() {
-    const inspectores = getInspectores();
-    const inspectorById = new Map(inspectores.map((i) => [i.uid, i]));
+    // Guard: a grupo deleted/deactivated mid-session must not leave the view
+    // filtered to a chip that no longer exists — drop it instead.
+    if (filters.grupo && !grupos.some((g) => g.id === filters.grupo && g.activo !== false)) {
+      filters = { ...filters, grupo: '' };
+    }
     const gruposActivos = grupos.filter((g) => g.activo !== false);
     // `rows` (from the same-reload `listPuntos`) is the authoritative source
     // for a point's CURRENT `grupo_id` — see `cuadrillasHtml`'s own comment.
     const grupoIdByPunto = new Map(rows.map((r) => [r.id, r.grupo_id]));
     cuadrillasWrap.innerHTML = cuadrillasHtml(cuadrillas, inspectorById, gruposActivos, grupoIdByPunto);
+
+    // Paso-2 grupo filter chips (`planeacion-grupo-filter` change): "Todos" +
+    // one per grupo activo. `rows` only carries the EDAN/survey campaign
+    // (`listPuntos` reads `planeacion_puntos`) — a grupo's Stickers-campaign
+    // points (`sticker_matches`, a SEPARATE collection metricasProgreso also
+    // tallies, see backend `metricas_progreso`'s `combinado`) never appear in
+    // `rows` at all. So: prefer the server's combined tally once wave-2 has
+    // landed (`metricasData.grupos[gid].combinado`, both campaigns merged);
+    // grupoTallyFromRows(rows, gid) is only the instant, survey-only estimate
+    // shown before wave-2 arrives (or if a grupo is new/unlisted there).
+    const tallyForGrupo = (gid) => metricasData?.grupos?.[gid]?.combinado || grupoTallyFromRows(rows, gid);
+    grupoChipsEl.innerHTML = [
+      `<button type="button" class="asignacion-chip${filters.grupo ? '' : ' is-active'}" data-grupo-chip="">Todos</button>`,
+      ...gruposActivos.map((g) => {
+        const tally = tallyForGrupo(g.id);
+        return `<button type="button" class="asignacion-chip${filters.grupo === g.id ? ' is-active' : ''}" data-grupo-chip="${escapeHtml(g.id)}">${escapeHtml(g.nombre || g.id)} · ${tally.hechos}/${tally.asignados}</button>`;
+      }),
+    ].join('');
+
+    grupoResumenEl.hidden = !filters.grupo;
+    if (filters.grupo) {
+      const tally = tallyForGrupo(filters.grupo);
+      grupoResumenEl.innerHTML = `${progresoBarraHtml(tally)}<p class="sticker-meta">${tally.asignados} asignados · ${tally.hechos} completados · ${tally.pendientes} pendientes</p>`;
+    }
 
     cuadrillasWrap.querySelectorAll('[data-eliminar]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -1738,6 +1807,7 @@ export function initPlaneacion(root, { getToken }) {
         runAction(
           { action: 'eliminarCuadrilla', cuadrilla_id: btn.dataset.eliminar },
           'Cuadrilla eliminada.',
+          reloadPuntos,
         );
       });
     });
@@ -1758,6 +1828,7 @@ export function initPlaneacion(root, { getToken }) {
         runAction(
           { action: 'asignarGrupoAPuntos', grupo_id: grupoId, puntos },
           (resp) => `Grupo asignado a ${puntos.length} punto${puntos.length === 1 ? '' : 's'} de la cuadrilla.${stickersAsignadosSuffix(resp)}`,
+          reloadPuntos,
         );
       });
     });
@@ -1769,10 +1840,25 @@ export function initPlaneacion(root, { getToken }) {
         runAction(
           { action: 'desasignarGrupo', puntos },
           (resp) => `Grupo quitado de ${puntos.length} punto${puntos.length === 1 ? '' : 's'} de la cuadrilla.${stickersDesasignadosSuffix(resp)}`,
+          reloadPuntos,
         );
       });
     });
   }
+
+  // ---- Paso-2 grupo filter chips wiring (delegated once — `#planeacion-
+  // grupo-chips` itself is a static container from the shell, only its
+  // innerHTML is rebuilt on every renderCuadrillasSection(), same pattern as
+  // `filtersEl` below). Selecting a grupo filters BOTH the Paso-3 table and
+  // the map to that grupo's assigned points, and re-fits the map to them.
+  grupoChipsEl.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-grupo-chip]');
+    if (!btn) return;
+    filters = { ...filters, grupo: btn.dataset.grupoChip };
+    renderTable();
+    renderCuadrillasSection();
+    renderMapSection(true);
+  });
 
   // ---- grupos de inspectores section (`grupos-inspectores` change) --------
   // NOT the cuadrillas section above (groups of POINTS under one inspector)
@@ -1782,8 +1868,6 @@ export function initPlaneacion(root, { getToken }) {
   // pass `reloadGruposVehiculos` (hotfix A3/C4) so they don't wait on — or
   // get hidden behind a failure in — the unrelated puntos/cuadrillas fetch.
   function renderGruposSection() {
-    const inspectores = getInspectores();
-    const inspectorById = new Map(inspectores.map((i) => [i.uid, i]));
     // Options for the per-row vehicle picker: active vehicles not already
     // holding a DIFFERENT group (the row's own gruposHtml logic also
     // always includes the row's own current vehicle regardless).
@@ -1968,7 +2052,6 @@ export function initPlaneacion(root, { getToken }) {
   // `reload()` fetched into `metricasData`. Inspector names resolved via
   // the SAME cached roster every other section already uses.
   function renderMetricasSection() {
-    const inspectorById = new Map(getInspectores().map((i) => [i.uid, i]));
     metricasWrap.innerHTML = metricasHtml(metricasData, inspectorById);
   }
 
@@ -2213,6 +2296,7 @@ export function initPlaneacion(root, { getToken }) {
     await runAction(
       { action: 'asignarGrupoAPuntos', grupo_id: grupoSelect.value, puntos },
       (resp) => `Grupo asignado a ${puntos.length} punto${puntos.length === 1 ? '' : 's'}.${stickersAsignadosSuffix(resp)}`,
+      reloadPuntos,
     );
   });
   quitarGrupoBtn.addEventListener('click', async () => {
@@ -2221,14 +2305,26 @@ export function initPlaneacion(root, { getToken }) {
     await runAction(
       { action: 'desasignarGrupo', puntos },
       (resp) => `Grupo quitado de ${puntos.length} punto${puntos.length === 1 ? '' : 's'}.${stickersDesasignadosSuffix(resp)}`,
+      reloadPuntos,
     );
   });
 
-  function renderMapSection() {
+  function renderMapSection(fit = true) {
     const inspectores = getInspectores().filter(isHabilitado);
-    const n = renderMap(currentRows(), inspectores);
+    const n = renderMap(currentRows(), inspectores, { fit });
     const sinCoords = rows.length - n;
-    mapMeta.textContent = sinCoords ? `${n} en el mapa · ${sinCoords} sin coordenadas` : `${n} en el mapa`;
+    const metaBase = sinCoords ? `${n} en el mapa · ${sinCoords} sin coordenadas` : `${n} en el mapa`;
+    // Grupo prefix (step 8): only when a grupo chip actually narrows the view
+    // — otherwise the meta text reads exactly as it did before this change.
+    let prefix = '';
+    if (filters.grupo) {
+      const g = grupos.find((x) => x.id === filters.grupo);
+      const label = g ? (g.nombre || g.id) : filters.grupo;
+      // Grupo names sometimes already start with "Grupo" (e.g. "Grupo La
+      // Flora") — avoid a "Grupo Grupo …" double prefix in that case.
+      prefix = /^grupo\b/i.test(label) ? `${label} · ` : `Grupo ${label} · `;
+    }
+    mapMeta.textContent = prefix + metaBase;
   }
 
   // ---- search box wiring (client-side only, like the comuna chip): filters
@@ -2236,11 +2332,18 @@ export function initPlaneacion(root, { getToken }) {
   // input lives in the static shell (NOT inside filtersEl, which renderTable
   // rebuilds), so typing never loses focus. Also re-renders the map so the
   // globe matches the visible rows.
+  // Debounced (step 5, 200ms): the persistent map (step 4) makes a per-
+  // keystroke re-render cheap, but still not worth doing on EVERY keystroke —
+  // `fit: false` also keeps the viewport from re-zooming while typing.
   const searchInput = root.querySelector('#planeacion-search');
+  let searchTimer = null;
   searchInput.addEventListener('input', () => {
-    filters = { ...filters, search: searchInput.value };
-    renderTable();
-    renderMapSection();
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      filters = { ...filters, search: searchInput.value };
+      renderTable();
+      renderMapSection(false);
+    }, 200);
   });
 
   // ---- filter chip wiring (delegated once; re-attached on every renderTable) --
@@ -2269,6 +2372,7 @@ export function initPlaneacion(root, { getToken }) {
     if (inspectoresLoaded) return;
     const { inspectores } = await callStickersApi(getToken, { action: 'list' });
     inspectoresCache = inspectores || [];
+    inspectorById = new Map(inspectoresCache.map((i) => [i.uid, i]));
     inspectoresLoaded = true;
   }
 
@@ -2303,6 +2407,42 @@ export function initPlaneacion(root, { getToken }) {
       renderGruposSection();
       renderVehiculosSection();
       renderConductoresSection();
+    } finally {
+      hideOverlay();
+    }
+  }
+
+  // Targeted refresh for grupo-on-points actions (step 6, `planeacion-grupo-
+  // filter` change): asignarGrupoAPuntos/desasignarGrupo/eliminarCuadrilla
+  // only ever change `planeacion_puntos` (grupo_id/estado_asignacion) and
+  // cuadrillas — never grupos/vehiculos/conductores/inspectores — so a full
+  // `reload()`'s 7-call wave is wasted work for them. Same listPuntos request
+  // shape as reload()'s own wave 1, same post-mutation selection reset.
+  async function reloadPuntos() {
+    showErr('');
+    showOverlay();
+    try {
+      const incluirLevantados = !!root.querySelector('#planeacion-incluir-levantados')?.checked;
+      const listPuntosBody = { action: 'listPuntos', incluirLevantados, limit: 2500 };
+      if (filters.prioridad) listPuntosBody.prioridad = filters.prioridad;
+      const [listResp, cuadrillasResp] = await Promise.all([
+        callApi(getToken, listPuntosBody),
+        callApi(getToken, { action: 'listCuadrillas' }),
+      ]);
+      cuadrillas = cuadrillasResp.cuadrillas || [];
+      rows = buildRows(listResp.puntos, cuadrillas, getInspectores(), grupos);
+      selected.clear();
+      crearBtn.disabled = true;
+      asignarGrupoBtn.disabled = true;
+      quitarGrupoBtn.disabled = true;
+      const shownCount = (listResp.puntos || []).length;
+      renderTruncacion(!!listResp.truncado, shownCount, resumenData ? resumenData.pendientes : shownCount);
+      renderKpis();
+      renderTable();
+      renderCuadrillasSection();
+      renderMapSection(false);
+    } catch (err) {
+      showErr(err.message);
     } finally {
       hideOverlay();
     }
@@ -2412,6 +2552,10 @@ export function initPlaneacion(root, { getToken }) {
         // (or the empty state) instead of "Cargando progreso…" forever.
         renderMetricasSection();
       }
+      // Upgrades the Paso-2 chips/resumen from the survey-only client tally
+      // to the server's combined (stickers + survey) tally now that wave-2
+      // landed, and keeps the collapsed "Detalle de progreso" card in sync.
+      renderCuadrillasSection();
     });
   }
 
