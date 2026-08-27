@@ -15,6 +15,10 @@ appended below. Phase 3 (formulario) and Phase 4 (wrap-up) remain NOT started.
 **Update (PR 3 run):** Phase 3 (`formulario/js/form.js` + `formulario/js/logic.js`) is now done —
 see the "PR 3" sections appended below. Only Phase 4 (wrap-up) remains NOT started.
 
+**Update (PR 4 run):** Phase 4 (wrap-up — full-suite verification + `proposal.md` Success
+Criteria) is now done — see the "PR 4" section appended below. All 24 tasks across all 4 phases
+are complete.
+
 ## Mode
 
 Strict TDD (repo convention, `strict_tdd: true`). RED tests written and confirmed failing
@@ -337,3 +341,60 @@ None beyond the render-guard discrepancy already documented in Deviations #1.
 7/7 Phase 3 tasks complete (22/24 total tasks across all 4 phases: 5 Phase 1 + 10 Phase 2 + 7
 Phase 3). Ready for PR 4 (Phase 4 wrap-up) or for `sdd-verify` to gate this slice before PR 3
 ships.
+
+---
+
+## PR 4 / Phase 4 — Wrap-up (full-suite verification + Success Criteria)
+
+### Completed Tasks (Phase 4)
+
+- [x] 4.1 Ran both full suites end to end, no code changes:
+      - `python -m pytest backend/tests -q` → `729 passed, 1 warning in 18.93s` (same warning as
+        PR 2's run — `StarletteDeprecationWarning` from `fastapi.testclient`, pre-existing,
+        unrelated to this change).
+      - `node --test formulario/test/logic.test.mjs` → `tests 85, pass 85, fail 0` (only test file
+        under `formulario/test/`, confirmed via directory listing — equivalent to running the
+        whole `formulario/test/` directory).
+      - Zero regressions across all 3 phases' changes.
+- [x] 4.2 Marked all 4 `proposal.md` Success Criteria checkboxes `[x]`: radius sweep
+      assign/desassign (PR 1, verified by the 212-passed full-file run), `marcarSurveyHecho` +
+      on-demand twin creation (PR 2, verified by the 60-passed full-file run), Cercanos per-type
+      CTA labels + zero emoji in `form.js` (PR 3, verified by the 85-passed logic-test run + the
+      task 3.6 emoji grep). The formulario-side manual browser check (SVG icons rendering,
+      button click flow) was NOT run — no browser/DOM harness exists in this non-interactive
+      session; `design.md`'s own Testing Strategy table scopes that check as
+      E2E/manual, out of `logic.test` scope, same deferral already recorded in PR 3.
+
+### Work Unit Evidence
+
+| Evidence | Value |
+|---|---|
+| Focused test command and exact result | N/A — Phase 4 is verification-only, no production code changed. Full-suite commands and results listed above under 4.1. |
+| Runtime harness command/scenario and exact result | N/A — no runtime boundary crossed this phase; both full suites already exercise their respective fake-Firestore/logic-layer harnesses from PR 1-3. |
+| Rollback boundary | N/A — only `tasks.md`, `proposal.md`, and `apply-progress.md` changed this phase; no source/test files touched. |
+
+### Files Changed (PR 4)
+
+| File | Action | What Was Done |
+|------|--------|---------------|
+| `openspec/changes/survey-sticker-sync/proposal.md` | Modified | Checked all 4 Success Criteria boxes. |
+| `openspec/changes/survey-sticker-sync/tasks.md` | Modified | Marked 4.1-4.2 `[x]`. |
+| `openspec/changes/survey-sticker-sync/apply-progress.md` | Modified | Appended this PR 4 section. |
+
+### Issues Found
+
+None. Both full suites green with zero regressions.
+
+### Workload / PR Boundary (PR 4)
+
+- Mode: chained PR slice (stacked-to-main), final slice in the chain
+- Current work unit: Unit 4 — Wrap-up (PR 4)
+- Boundary: starts from PR 3's merged state, ends with both full suites verified green and
+  `proposal.md`/`tasks.md` marked complete. No further PRs planned for this change.
+- Estimated review budget impact: ~10 changed lines (checkbox flips only) — trivial, well under
+  budget.
+
+## Status (as of PR 4)
+
+2/2 Phase 4 tasks complete (24/24 total tasks across all 4 phases: 5 Phase 1 + 10 Phase 2 + 7
+Phase 3 + 2 Phase 4). All tasks done. Ready for `sdd-verify`.

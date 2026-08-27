@@ -164,6 +164,6 @@ Phase 1/2 and can land in the same PR without a backend dependency.
 
 ## Phase 4 — Wrap-up
 
-- [ ] 4.1 Run the full backend suite (`pytest backend/tests/`) and the full formulario suite
+- [x] 4.1 Run the full backend suite (`pytest backend/tests/`) and the full formulario suite
       (`node --test formulario/test/`) once end to end; confirm no cross-phase regression.
-- [ ] 4.2 Update `proposal.md`'s Success Criteria checkboxes once each is manually confirmed.
+- [x] 4.2 Update `proposal.md`'s Success Criteria checkboxes once each is manually confirmed.
