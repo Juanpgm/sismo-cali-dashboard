@@ -248,6 +248,17 @@ def _server_timestamp() -> Any:
 
 PAGE_SIZE_DEFAULT = 50
 
+# planeacion-flujo-confiable (2026-08-27 scope rider): the ORIGINAL
+# multi-`.where()` + `.order_by("ts")` query needed THREE composite indexes
+# (`entidad+ts`, `actor_uid+ts`, `entidad+actor_uid+ts`) — one per filter
+# combination an operator might click — and production was 503ing on any
+# filtered query while those indexes built. Bounded over-fetch cap for the
+# single `order_by("ts", DESCENDING)` fetch below; `page_size * 5` gives
+# comfortable headroom for a filtered page without re-scanning the whole
+# collection, capped at 1000 so a huge `page_size` can't demand an
+# unbounded read.
+_AUDITORIA_OVERFETCH_CAP = 1000
+
 
 def list_auditoria(
     db: Any,
@@ -258,26 +269,55 @@ def list_auditoria(
     antes_de: Any = None,
     page_size: int = PAGE_SIZE_DEFAULT,
 ) -> dict[str, Any]:
-    """ADR-4: one query, `ts`-inequality cursor pagination — never `offset`
-    or `start_after` (see design.md for why). `page_size + 1` rows fetched;
-    `hay_mas` reports truncation without a separate count query, same
-    `list_puntos`/`LIMIT_MAX + 1` idiom this router's own dispatcher uses."""
+    """ADR-4: `ts`-cursor pagination — never `offset`/`start_after`. Needs
+    NO composite index (2026-08-27 scope rider): a SINGLE
+    `order_by("ts", DESCENDING).limit(_AUDITORIA_OVERFETCH_CAP)` fetch (only
+    a single-field index, which Firestore always auto-creates), then
+    `entidad`/`actor_uid`/`ts`-range ALL filtered in code — the exact
+    "filter the harder conditions in code" tradeoff
+    `routers/planeacion_asignaciones.py:list_puntos` already documents
+    (Firestore needs one composite index per distinct filter COMBINATION;
+    moving every combination into Python needs none, ever, no matter how
+    many filters this endpoint later grows).
+
+    Pagination caveat (honest, not silently swept under the over-fetch):
+    each call re-fetches the newest `_AUDITORIA_OVERFETCH_CAP` docs by `ts`
+    and filters/pages WITHIN that window. If a narrow filter (e.g. one
+    `actor_uid`) has more than `_AUDITORIA_OVERFETCH_CAP` non-matching rows
+    interleaved ahead of it in `ts` order, a deep page's `hay_mas`/cursor
+    can under-report matches older than the window — the same class of
+    bound the prior `LIMIT_MAX + 1` over-fetch already accepted elsewhere in
+    this codebase, just against a fixed cap instead of the full collection.
+    Strictly better than the prior behavior either way: an unfiltered or
+    lightly-filtered query (the common case) sees every row within the cap
+    with no index dependency at all, where before ANY filtered query 503'd
+    outright without the 3 composite indexes built.
+    """
     from google.cloud import firestore as _fs  # deferred import, credentials/clients.py's own convention
 
-    query = db.collection(PLANEACION_AUDITORIA_COLLECTION)
-    if tipo:
-        query = query.where("entidad", "==", tipo)
-    if usuario:
-        query = query.where("actor_uid", "==", usuario)
-    if desde is not None:
-        query = query.where("ts", ">=", desde)
-    if antes_de is not None:
-        query = query.where("ts", "<", antes_de)
-    query = query.order_by("ts", direction=_fs.Query.DESCENDING).limit(page_size + 1)
+    fetch_cap = min(page_size * 5, _AUDITORIA_OVERFETCH_CAP)
+    query = (
+        db.collection(PLANEACION_AUDITORIA_COLLECTION)
+        .order_by("ts", direction=_fs.Query.DESCENDING)
+        .limit(fetch_cap)
+    )
+    raw = [_doc_to_dict(d) for d in query.get()]
 
-    rows = [_doc_to_dict(d) for d in query.get()]
-    hay_mas = len(rows) > page_size
-    rows = rows[:page_size]
+    def _matches(row: dict[str, Any]) -> bool:
+        if tipo and row.get("entidad") != tipo:
+            return False
+        if usuario and row.get("actor_uid") != usuario:
+            return False
+        ts = row.get("ts")
+        if desde is not None and not (ts is not None and ts >= desde):
+            return False
+        if antes_de is not None and not (ts is not None and ts < antes_de):
+            return False
+        return True
+
+    filtered = [r for r in raw if _matches(r)]
+    hay_mas = len(filtered) > page_size
+    rows = filtered[:page_size]
     return {
         "entradas": rows,
         "hay_mas": hay_mas,

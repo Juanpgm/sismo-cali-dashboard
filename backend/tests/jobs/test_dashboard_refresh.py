@@ -205,6 +205,172 @@ def test_ingest_survey_cali_missing_inspections_json_is_a_noop(tmp_path, monkeyp
     assert calls == []  # no Firestore call at all when there's nothing to ingest
 
 
+# --- puntos_contacto: reporter contact captured pre-strip, fail-soft ------
+# (planeacion-flujo-confiable, design.md ADR-1/ADR-2, task 1.1-1.4). The
+# restricted-channel write is exercised at the SAME granularity every other
+# test in this file uses -- pure helpers directly, or fetch_reportes() with
+# day_walk monkeypatched away (no real network).
+
+
+class _FakeContactDocRef:
+    def __init__(self, store: dict, doc_id: str) -> None:
+        self._store = store
+        self.id = doc_id
+
+
+class _FakeContactBatch:
+    def __init__(self) -> None:
+        self._pending: list[tuple[_FakeContactDocRef, dict, bool]] = []
+
+    def set(self, ref: _FakeContactDocRef, data: dict, merge: bool = False) -> None:
+        self._pending.append((ref, dict(data), merge))
+
+    def commit(self) -> None:
+        for ref, data, merge in self._pending:
+            current = dict(ref._store.get(ref.id, {})) if merge else {}
+            current.update(data)
+            ref._store[ref.id] = current
+        self._pending = []
+
+
+class _FakeContactCollection:
+    def __init__(self, store: dict) -> None:
+        self._store = store
+
+    def document(self, doc_id: str) -> _FakeContactDocRef:
+        return _FakeContactDocRef(self._store, doc_id)
+
+
+class _FakeContactDb:
+    def __init__(self) -> None:
+        self.stores: dict[str, dict] = {}
+
+    def collection(self, name: str) -> _FakeContactCollection:
+        return _FakeContactCollection(self.stores.setdefault(name, {}))
+
+    def batch(self) -> _FakeContactBatch:
+        return _FakeContactBatch()
+
+
+def test_make_raw_mapper_returns_same_stripped_output_as_raw_record_mapper():
+    rep = {"id": "1", "nombre": "Ana", "telefono": "300", "latitud": "3.1", "longitud": "-76.1"}
+    contactos: list[dict] = []
+    mapper = job._make_raw_mapper(contactos)
+
+    out = mapper(rep)
+
+    assert out == job._raw_record_mapper(rep)
+    assert contactos == [{"registro_id": "1", "nombre_solicitante": "Ana", "telefono_solicitante": "300"}]
+
+
+def test_make_raw_mapper_skips_records_without_an_id():
+    contactos: list[dict] = []
+    mapper = job._make_raw_mapper(contactos)
+
+    mapper({"nombre": "Sin Id", "telefono": "300"})
+
+    assert contactos == []
+
+
+def test_write_contactos_batched_merge_true_by_atencionsismo_doc_id():
+    db = _FakeContactDb()
+    contactos = [
+        {"registro_id": "14832", "nombre_solicitante": "Juan Perez", "telefono_solicitante": "3001234567"},
+    ]
+
+    job._write_contactos(contactos, db=db)
+
+    doc = db.stores["puntos_contacto"]["atencionsismo_14832"]
+    assert doc == {
+        "registro_id": "14832",
+        "nombre_solicitante": "Juan Perez",
+        "telefono_solicitante": "3001234567",
+    }
+
+
+# --- MANDATORY PII test (task 1.9): contact fields never leak into the ----
+# --- public reportes.json writer output — checked by NAME, not just via ---
+# --- the PII_FIELDS set, so a future PII_FIELDS edit can't silently drop --
+# --- this guarantee. ------------------------------------------------------
+
+
+def test_raw_record_mapper_never_emits_reporter_contact_fields():
+    rep = {
+        "id": "1",
+        "nombre": "Juan Perez",
+        "telefono": "3001234567",
+        "latitud": "3.1",
+        "longitud": "-76.1",
+    }
+
+    out = job._raw_record_mapper(rep)
+
+    assert "nombre_solicitante" not in out
+    assert "telefono_solicitante" not in out
+    assert "nombre" not in out
+    assert "telefono" not in out
+
+
+def test_write_contactos_noop_on_empty_list():
+    db = _FakeContactDb()
+
+    job._write_contactos([], db=db)
+
+    assert db.stores == {}
+
+
+async def _fake_day_walk_one_record(client, user, password, desde, *, until_ms=None, mapper=None):
+    raw = {
+        "id": "14832",
+        "estadoVerificacion": "Reportado",
+        "nombre": "Juan Perez",
+        "telefono": "3001234567",
+        "latitud": "3.1",
+        "longitud": "-76.1",
+    }
+    return [mapper(raw) if mapper else raw]
+
+
+def test_fetch_reportes_writes_contact_and_keeps_reportes_json_pii_free(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setenv("VISITADOS_API_PASS", "secret")
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _fake_day_walk_one_record)
+    fake_db = _FakeContactDb()
+    monkeypatch.setattr(job.credentials, "sismo", lambda: type("_C", (), {"firestore": fake_db})())
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1
+    doc = fake_db.stores["puntos_contacto"]["atencionsismo_14832"]
+    assert doc["nombre_solicitante"] == "Juan Perez"
+    assert doc["telefono_solicitante"] == "3001234567"
+
+    written = json.loads((tmp_path / "reportes.json").read_text(encoding="utf-8"))
+    assert "nombre_solicitante" not in written[0]
+    assert "nombre" not in written[0]
+    assert "telefono" not in written[0]
+
+
+def test_fetch_reportes_contact_write_failure_never_breaks_refresh(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setenv("VISITADOS_API_PASS", "secret")
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _fake_day_walk_one_record)
+
+    def _boom(contactos, *, db=None):
+        raise RuntimeError("firestore is down")
+
+    monkeypatch.setattr(job, "_write_contactos", _boom)
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1
+    assert (tmp_path / "reportes.json").exists()
+
+
 def test_ingest_survey_cali_failure_does_not_propagate_out_of_run_refresh_step(tmp_path, monkeypatch):
     """The main refresh pipeline (meta_guard/publish_blob) must never be
     blocked by a survey_cali/Firestore hiccup -- same fail-soft convention

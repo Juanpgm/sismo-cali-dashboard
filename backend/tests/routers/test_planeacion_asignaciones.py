@@ -2345,6 +2345,26 @@ def test_list_auditoria_pagination_bounds_result(monkeypatch):
     assert len(resp2.json()["entradas"]) == 2
 
 
+def test_list_auditoria_combined_tipo_and_usuario_filter_needs_no_composite_index(monkeypatch):
+    """planeacion-flujo-confiable scope rider: `tipo` + `usuario` together
+    used to need the `entidad+actor_uid+ts` composite index (one of the 3
+    the router previously depended on). `list_auditoria` now filters both
+    IN CODE over a single `order_by("ts")` fetch — no composite index
+    involved at all, real or faked."""
+    stores = _stores()
+    stores[PLANEACION_AUDITORIA] = {
+        "a": _auditoria_doc(entidad="vehiculo", actor_uid="u9", ts=300),
+        "b": _auditoria_doc(entidad="grupo", actor_uid="u9", ts=200),
+        "c": _auditoria_doc(entidad="vehiculo", actor_uid="u1", ts=100),
+    }
+    client = _admin_client(monkeypatch, stores)
+    resp = client.post("/planeacion-asignaciones", json={
+        "action": "listAuditoria", "tipo": "vehiculo", "usuario": "u9"})
+    assert resp.status_code == 200
+    entradas = resp.json()["entradas"]
+    assert [e["ts"] for e in entradas] == [300]
+
+
 def test_audit_write_failure_does_not_alter_the_mutation_response(monkeypatch):
     stores = _stores()
     client = _admin_client(monkeypatch, stores)

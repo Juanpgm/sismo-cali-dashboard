@@ -141,6 +141,11 @@ def _punto(registro_id, *, clave, tiene_survey=False, survey_globalid=None, matc
         # noise fields the projection must NOT leak:
         "direccion": "CL 1 # 2-3", "comuna": "3", "estado_asignacion": "pendiente",
         "inspector_uid": "uid-x", "prioridad_score": 42,
+        # planeacion-flujo-confiable MANDATORY PII check (task 1.9): even if
+        # a caller somehow injected these onto a planeacion_puntos doc
+        # (they never should — puntos_contacto is a sibling collection,
+        # design.md ADR-1), `_project`'s allowlist must still drop them.
+        "nombre_solicitante": "Juan Perez", "telefono_solicitante": "3001234567",
     }
 
 

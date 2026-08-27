@@ -179,22 +179,26 @@ class _FakeTransaction:
 
 
 class _FakeFirestore:
-    """Backs THREE independent collections by name so a query against one
+    """Backs FOUR independent collections by name so a query against one
     can never see another's docs — `sticker_matches` (misPuntos/
     marcarHecho), `planeacion_puntos` (misPuntosPlaneacion/
-    marcarHechoPlaneacion, `planeacion-asignaciones` follow-up batch), and
-    `grupos_inspectores` (`grupos-inspectores` change)."""
+    marcarHechoPlaneacion, `planeacion-asignaciones` follow-up batch),
+    `grupos_inspectores` (`grupos-inspectores` change), and `puntos_contacto`
+    (`planeacion-flujo-confiable`'s restricted contact channel, design.md
+    ADR-1 — read-only from this router's side)."""
 
     def __init__(
         self,
         sticker_store: dict[str, dict[str, Any]],
         planeacion_store: dict[str, dict[str, Any]] | None = None,
         grupos_store: dict[str, dict[str, Any]] | None = None,
+        contacto_store: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._stores = {
             "sticker_matches": sticker_store,
             "planeacion_puntos": planeacion_store if planeacion_store is not None else {},
             "grupos_inspectores": grupos_store if grupos_store is not None else {},
+            "puntos_contacto": contacto_store if contacto_store is not None else {},
         }
 
     def collection(self, name: str) -> _FakeCollection:
@@ -204,6 +208,9 @@ class _FakeFirestore:
     def transaction(self) -> _FakeTransaction:
         return _FakeTransaction()
 
+    def get_all(self, refs: list[_FakeDocRef]) -> list[_FakeSnapshot]:
+        return [ref.get() for ref in refs]
+
 
 class _FakeSismoClients:
     def __init__(
@@ -211,8 +218,9 @@ class _FakeSismoClients:
         sticker_store: dict[str, dict[str, Any]],
         planeacion_store: dict[str, dict[str, Any]] | None = None,
         grupos_store: dict[str, dict[str, Any]] | None = None,
+        contacto_store: dict[str, dict[str, Any]] | None = None,
     ) -> None:
-        self.firestore = _FakeFirestore(sticker_store, planeacion_store, grupos_store)
+        self.firestore = _FakeFirestore(sticker_store, planeacion_store, grupos_store, contacto_store)
         self.app = None
 
 
@@ -271,6 +279,7 @@ def _app(
     store: dict[str, dict[str, Any]],
     planeacion_store: dict[str, dict[str, Any]] | None = None,
     grupos_store: dict[str, dict[str, Any]] | None = None,
+    contacto_store: dict[str, dict[str, Any]] | None = None,
 ) -> FastAPI:
     monkeypatch.setenv("FIREBASE_SERVICE_ACCOUNT_JSON", '{"type": "service_account"}')
     monkeypatch.setenv("SIGNER_AWS_ACCESS_KEY_ID", "fake-access-key-id")
@@ -279,7 +288,9 @@ def _app(
     monkeypatch.setenv("SURVEY123_FORM_URL", "https://survey123.arcgis.com/share/abc123")
     credentials.s3.cache_clear()
     monkeypatch.setattr(
-        credentials, "sismo", lambda: _FakeSismoClients(store, planeacion_store, grupos_store)
+        credentials,
+        "sismo",
+        lambda: _FakeSismoClients(store, planeacion_store, grupos_store, contacto_store),
     )
     return create_app()
 
@@ -294,8 +305,9 @@ def _authed_client(
     claims: dict[str, Any],
     planeacion_store: dict[str, dict[str, Any]] | None = None,
     grupos_store: dict[str, dict[str, Any]] | None = None,
+    contacto_store: dict[str, dict[str, Any]] | None = None,
 ) -> TestClient:
-    app = _app(monkeypatch, store, planeacion_store, grupos_store)
+    app = _app(monkeypatch, store, planeacion_store, grupos_store, contacto_store)
     app.dependency_overrides[current_claims] = lambda: claims
     return TestClient(app)
 
@@ -452,6 +464,59 @@ def test_mis_puntos_planeacion_omits_survey_links_when_form_url_unset(monkeypatc
     punto = resp.json()["puntos"][0]
     assert punto["survey_web"] is None
     assert punto["survey_app"] is None
+
+
+def test_mis_puntos_planeacion_includes_reporter_contact_when_present(monkeypatch):
+    """planeacion-flujo-confiable, design.md ADR-3: `misPuntosPlaneacion`
+    merges `puntos_contacto/{doc.id}` onto the assignee's own point — the
+    SAME doc id `dashboard_refresh` wrote it under (design.md ADR-1)."""
+    store = _store()
+    planeacion = _planeacion_store()
+    contacto = {"pln-a": {"registro_id": "1", "nombre_solicitante": "Juan Perez", "telefono_solicitante": "3001234567"}}
+    client = _authed_client(monkeypatch, store, FAKE_CLAIMS_A, planeacion, contacto_store=contacto)
+
+    resp = client.post("/inspector-asignaciones", json={"action": "misPuntosPlaneacion"})
+
+    punto = resp.json()["puntos"][0]
+    assert punto["nombre_solicitante"] == "Juan Perez"
+    assert punto["telefono_solicitante"] == "3001234567"
+
+
+def test_mis_puntos_planeacion_nulls_reporter_contact_when_absent(monkeypatch):
+    """Null-safe, fail-open: no `puntos_contacto` doc for a point must never
+    break the picker — it just has no contact to show."""
+    store = _store()
+    planeacion = _planeacion_store()
+    client = _authed_client(monkeypatch, store, FAKE_CLAIMS_A, planeacion)
+
+    resp = client.post("/inspector-asignaciones", json={"action": "misPuntosPlaneacion"})
+
+    punto = resp.json()["puntos"][0]
+    assert punto["nombre_solicitante"] is None
+    assert punto["telefono_solicitante"] is None
+
+
+def test_mis_puntos_planeacion_reporter_contact_reaches_groupmate_too(monkeypatch):
+    """planeacion-asignaciones spec, "The assigned inspector and groupmates
+    see the contact": a group-assigned point's contact reaches EVERY member
+    of the group, not just whoever is `inspector_uid`."""
+    store = _store()
+    planeacion = _planeacion_store()
+    planeacion["pln-group"] = {
+        "inspector_uid": None,
+        "grupo_id": "g1",
+        "estado_asignacion": "pendiente",
+        "clave_integracion": "PLN-EEEEEE-55555555",
+    }
+    grupos = {"g1": _grupo(miembros=[UID_A])}
+    contacto = {"pln-group": {"registro_id": "5", "nombre_solicitante": "Ana Ruiz", "telefono_solicitante": "3009998888"}}
+    client = _authed_client(monkeypatch, store, FAKE_CLAIMS_A, planeacion, grupos, contacto)
+
+    resp = client.post("/inspector-asignaciones", json={"action": "misPuntosPlaneacion"})
+
+    punto = next(p for p in resp.json()["puntos"] if p["id"] == "pln-group")
+    assert punto["nombre_solicitante"] == "Ana Ruiz"
+    assert punto["telefono_solicitante"] == "3009998888"
 
 
 def test_cross_inspector_marcar_hecho_planeacion_is_rejected_no_write(monkeypatch):

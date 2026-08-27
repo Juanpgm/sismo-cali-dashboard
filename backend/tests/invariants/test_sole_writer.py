@@ -434,6 +434,31 @@ def test_planeacion_auditoria_literal_is_used_by_an_allowlisted_module():
     assert hits, "expected planeacion_auditoria to be referenced by an allowlisted module by now"
 
 
+# ── `planeacion-flujo-confiable` change (2026-08-27): `puntos_contacto` ─────
+#
+# A SIXTH, INDEPENDENT collection — design.md ADR-1's restricted contact
+# channel. Deliberately NOT merged onto `planeacion_puntos` (would ride
+# `_doc_to_dict`/`list_puntos`/`resumen`'s full-doc reads into the admin
+# panel and every future reader — see that ADR): a sibling collection makes
+# the leak structurally impossible instead of test-guarded. TWO allowlisted
+# modules: `app/jobs/dashboard_refresh.py` (sole WRITER — captures
+# `{nombre_solicitante, telefono_solicitante}` from the raw record before
+# the `PII_FIELDS` strip) and `app/routers/inspector_asignaciones.py` (sole
+# READER — `misPuntosPlaneacion` merges it onto the caller's own/group
+# points by doc id, never onto a public/admin surface).
+ALLOWED_MODULES_PUNTOS_CONTACTO = {
+    APP_ROOT / "jobs" / "dashboard_refresh.py",
+    APP_ROOT / "routers" / "inspector_asignaciones.py",
+}
+
+
+def test_puntos_contacto_literal_is_used_by_an_allowlisted_module():
+    hits = _files_containing("puntos_contacto")
+    unexpected = hits - ALLOWED_MODULES_PUNTOS_CONTACTO
+    assert not unexpected, f"unexpected puntos_contacto reference(s): {sorted(unexpected)}"
+    assert hits, "expected puntos_contacto to be referenced by an allowlisted module by now"
+
+
 # Scanner precision ----------------------------------------------------------
 # The scan must match a collection name as a WHOLE identifier. A naive
 # substring match makes any longer collection whose name merely CONTAINS a

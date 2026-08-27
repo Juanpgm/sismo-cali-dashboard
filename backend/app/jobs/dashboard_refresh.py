@@ -49,6 +49,7 @@ from pathlib import Path
 
 import httpx
 
+from app.credentials import clients as credentials
 from app.integracion import runlog
 from app.services import atencionsismo, survey_cali
 
@@ -76,6 +77,21 @@ SEED_GEOCODE_TIMEOUT_S = 30
 # the day-walk mechanics moved to app.services.atencionsismo).
 PII_FIELDS = {"nombre", "telefono", "cedula", "correo", "matriculaProfesional"}
 HEAVY_FIELDS = {"fotografiasEvaluacion", "mensajes"}
+
+# planeacion-flujo-confiable (design.md ADR-1/ADR-2): reporter contact,
+# captured from the RAW record BEFORE the PII strip above, lives in a
+# sibling collection — never merged onto a public/admin doc, so the leak is
+# impossible by construction rather than test-guarded. Doc id
+# `atencionsismo_{registro_id}` matches the pipeline's own points-collection
+# doc-id scheme (`app/jobs/planeacion_cruce.py:doc_id`, whose CLOSED
+# sole-writer allowlist this module deliberately does NOT join — see that
+# scan's own docstring for why an unrelated new collection avoiding a
+# closed literal is the honest resolution) so `misPuntosPlaneacion`
+# (`app/routers/inspector_asignaciones.py`) can read it by ids it already
+# holds. Allowlisted under `tests/invariants/test_sole_writer.py`'s
+# `ALLOWED_MODULES_PUNTOS_CONTACTO` (write side).
+PUNTOS_CONTACTO_COLLECTION = "puntos_contacto"
+_CONTACTO_BATCH_SIZE = 500  # Firestore batch-write chunk cap, house style
 
 # (local file under web/data/, blob pathname, max-age) — verbatim from
 # deploy/refresh.sh's up() calls, uniform --max-age 60 for every file.
@@ -117,6 +133,60 @@ def _raw_record_mapper(rep: dict) -> dict:
     return out
 
 
+def _make_raw_mapper(contactos: list[dict]):
+    """Wraps `_raw_record_mapper` in a closure that ALSO accumulates
+    `{registro_id, nombre_solicitante, telefono_solicitante}` from the raw
+    `rep` (pre-strip) into `contactos`, while still returning
+    `_raw_record_mapper(rep)` unchanged — `reportes.json` stays
+    byte-identical (design.md ADR-2). A record without an `id` is skipped
+    (nothing to key the contact doc by; `_raw_record_mapper`/`_dedupe_sorted`
+    already drop id-less records too)."""
+
+    def _mapper(rep: dict) -> dict:
+        registro_id = rep.get("id")
+        if registro_id:
+            contactos.append(
+                {
+                    "registro_id": str(registro_id),
+                    "nombre_solicitante": rep.get("nombre"),
+                    "telefono_solicitante": rep.get("telefono"),
+                }
+            )
+        return _raw_record_mapper(rep)
+
+    return _mapper
+
+
+def _write_contactos(contactos: list[dict], *, db=None) -> None:
+    """Batched `merge:true` write of reporter contact into
+    `puntos_contacto/atencionsismo_{registro_id}`. Propagates on error —
+    the call site in `fetch_reportes()` wraps this fail-soft (design.md
+    ADR-2), same convention as `ingest_survey_cali()`."""
+    if not contactos:
+        return
+    db = db or credentials.sismo().firestore
+    col = db.collection(PUNTOS_CONTACTO_COLLECTION)
+    # First-occurrence dedup would also be fine (merge:true either way);
+    # last-wins here mirrors "latest record in this run is the freshest
+    # source data" rather than favoring window-overlap arrival order.
+    by_id = {c["registro_id"]: c for c in contactos}
+    items = list(by_id.items())
+    for start in range(0, len(items), _CONTACTO_BATCH_SIZE):
+        batch = db.batch()
+        for registro_id, fields in items[start:start + _CONTACTO_BATCH_SIZE]:
+            doc_id = f"atencionsismo_{registro_id}"
+            batch.set(
+                col.document(doc_id),
+                {
+                    "registro_id": registro_id,
+                    "nombre_solicitante": fields.get("nombre_solicitante"),
+                    "telefono_solicitante": fields.get("telefono_solicitante"),
+                },
+                merge=True,
+            )
+        batch.commit()
+
+
 def _dedupe_sorted(records: list[dict]) -> list[dict]:
     """First-occurrence-wins dedup by `id`, then sorted by id — the same
     idempotency contract `fetch_reportes_api.py`'s `run()` had: an unchanged
@@ -151,13 +221,21 @@ async def fetch_reportes() -> int:
         return 0
 
     desde = os.environ.get("REPORTES_DESDE", atencionsismo.DEFAULT_DESDE)
+    contactos: list[dict] = []
     async with httpx.AsyncClient() as client:
-        raw_records = await atencionsismo.day_walk(client, user, password, desde, mapper=_raw_record_mapper)
+        raw_records = await atencionsismo.day_walk(
+            client, user, password, desde, mapper=_make_raw_mapper(contactos)
+        )
 
     records = _dedupe_sorted(raw_records)
     if not records:
         print("  API devolvió 0 reportes; conservo los archivos previos, nada escrito.")
         return 0
+
+    try:
+        _write_contactos(contactos)
+    except Exception as exc:  # noqa: BLE001 - fail-soft, refresh continues (design.md ADR-2)
+        print(f"  puntos_contacto write falló, sigo sin bloquear el refresh: {exc}")
 
     generated_at = atencionsismo.now_iso()
     WEB_DATA_DIR.mkdir(parents=True, exist_ok=True)

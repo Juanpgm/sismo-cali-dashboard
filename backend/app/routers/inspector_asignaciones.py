@@ -201,6 +201,20 @@ GRUPOS_INSPECTORES_COLLECTION = "grupos_inspectores"
 # Real Firestore caps an `in` query at 30 values.
 _IN_QUERY_CHUNK = 30
 
+# `planeacion-flujo-confiable` change (design.md ADR-1/ADR-3). READ-ONLY —
+# this module is the sole reader of the sibling restricted-contact channel
+# `app/jobs/dashboard_refresh.py` writes, keyed by the SAME doc id as its
+# `planeacion_puntos` counterpart (`atencionsismo_{registro_id}`), never
+# merged onto that doc itself (leak-impossible-by-construction, see that
+# job's own module comment). Allowlisted under
+# `tests/invariants/test_sole_writer.py`'s `ALLOWED_MODULES_PUNTOS_CONTACTO`
+# (read side).
+PUNTOS_CONTACTO_COLLECTION = "puntos_contacto"
+# Firestore `get_all` chunk cap, house style (the survey-ingest service's
+# own `_batched_read_source_state` precedent) — not the 30-value `in`-query
+# cap above, a separate, larger batching concern.
+_GET_ALL_CHUNK = 500
+
 # `puntos-disponibles` change. "Only what an inspector can see on foot" —
 # binding user decision, one named constant so it is retunable in one place.
 NEARBY_RADIUS_M = 300.0
@@ -328,13 +342,39 @@ def _pendiente_planeacion(data: dict[str, Any]) -> bool:
     return estado != DONE_ESTADO and estado != NO_APLICA_ESTADO
 
 
+def _contactos_por_id(db: Any, doc_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """`{doc_id: {'nombre_solicitante', 'telefono_solicitante'}}` via one
+    batched `get_all` over `puntos_contacto`, keyed by the SAME doc ids the
+    caller already holds (`planeacion_puntos` doc id ==
+    `puntos_contacto` doc id, design.md ADR-1). Missing/errored docs are
+    simply absent from the result — the caller merges null-safe."""
+    if not doc_ids:
+        return {}
+    col = db.collection(PUNTOS_CONTACTO_COLLECTION)
+    out: dict[str, dict[str, Any]] = {}
+    for start in range(0, len(doc_ids), _GET_ALL_CHUNK):
+        chunk = doc_ids[start:start + _GET_ALL_CHUNK]
+        refs = [col.document(doc_id) for doc_id in chunk]
+        for snap in db.get_all(refs):
+            if not snap.exists:
+                continue
+            data = snap.to_dict() or {}
+            out[snap.id] = {
+                "nombre_solicitante": data.get("nombre_solicitante"),
+                "telefono_solicitante": data.get("telefono_solicitante"),
+            }
+    return out
+
+
 def _mis_puntos_planeacion(db: Any, uid: str) -> list[dict[str, Any]]:
     """Every `planeacion_puntos` doc the caller can see — own-uid points
     UNION every point assigned to a group the caller actively belongs to
     (de-duplicated by doc id) — filtered to still-pending ones, each
-    carrying its prefilled Survey123 links. Structural port of
-    `_mis_puntos` above: single-field Firestore queries only (no composite
-    index needed), remaining filters applied in code."""
+    carrying its prefilled Survey123 links AND, when present, the
+    reporter's contact (design.md ADR-3 — one extra batched `get_all`
+    against `puntos_contacto`, keyed by doc ids already held here).
+    Structural port of `_mis_puntos` above: single-field Firestore queries
+    only (no composite index needed), remaining filters applied in code."""
     own_docs = db.collection(PLANEACION_PUNTOS_COLLECTION).where(
         "inspector_uid", "==", uid
     ).get()
@@ -346,6 +386,7 @@ def _mis_puntos_planeacion(db: Any, uid: str) -> list[dict[str, Any]]:
     settings = Settings()
     form_url = settings.survey123_form_url
     field_app_item_id = settings.survey123_field_app_item_id or None
+    contactos = _contactos_por_id(db, list(merged.keys()))
 
     puntos: list[dict[str, Any]] = []
     for doc in merged.values():
@@ -363,6 +404,7 @@ def _mis_puntos_planeacion(db: Any, uid: str) -> list[dict[str, Any]]:
             )
         else:
             urls = {"web": None, "app": None}
+        contacto = contactos.get(doc.id, {})
         puntos.append(
             {
                 "id": doc.id,
@@ -375,6 +417,8 @@ def _mis_puntos_planeacion(db: Any, uid: str) -> list[dict[str, Any]]:
                 "estado_asignacion": data.get("estado_asignacion") or "pendiente",
                 "survey_web": urls["web"],
                 "survey_app": urls["app"],
+                "nombre_solicitante": contacto.get("nombre_solicitante"),
+                "telefono_solicitante": contacto.get("telefono_solicitante"),
             }
         )
     return puntos
