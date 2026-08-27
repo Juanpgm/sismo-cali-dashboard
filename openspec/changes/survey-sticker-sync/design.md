@@ -6,14 +6,14 @@ Three edits, all additive, following patterns already in the two dispatchers:
 
 1. **Radius sweep** — extend `_propagar_grupo_a_stickers` / `_desasignar_grupo_de_stickers` (planeacion_asignaciones.py) so one survey-point grupo assignment also grabs *nearby* free stickers, not just the exact 40 m twin. Reuses `haversine_m` + `DEFAULT_MAX_RADIUS_M` (800 m) + the existing `_sticker_twin_libre` / `consumidos` first-link-wins machinery.
 2. **`marcarSurveyHecho`** — new own-uid action in inspector_asignaciones.py: mark the survey `hecho` (as `_marcar_hecho_planeacion` does) then best-effort materialize + pre-assign its sticker twin.
-3. **Formulario** — "Survey completado" button on `buildPlaneacionCard`, per-type Cercanos CTA labels, emoji→inline-SVG.
+3. **Formulario** — "Survey completado" button on `buildPlaneacionCard`, per-type Cercanos CTA labels, emoji→inline-SVG. Shipped render guard is `p.campana !== 'sticker'`, not the originally-drafted `=== 'survey'`: `_mis_puntos_planeacion` never sets a `campana` key on its returned points, so the literal guard would have hidden the button on every real card. The negated guard preserves the same defensive intent (never show on an actual sticker-shaped card) without depending on a field this endpoint doesn't emit.
 
 ## Architecture Decisions
 
 ### Two link tiers on the sweep
-**Choice**: The exact twin (≤`MAX_MATCH_M` 40 m via `_encontrar_twin_sticker`) keeps the durable linkage (`clave_integracion` + `planeacion_punto_id`); radius neighbours (>40 m, ≤800 m, `_sticker_twin_libre`, not already `consumidos`) get **`grupo_id` only**.
+**Choice**: The exact twin (≤`MAX_MATCH_M` 40 m via `_encontrar_twin_sticker`) keeps the durable linkage (`clave_integracion` + `planeacion_punto_id`); radius neighbours (>40 m, ≤800 m, `_sticker_radius_libre`, not already `consumidos`) get **`grupo_id` only**. `_sticker_radius_libre` additionally excludes any candidate that already carries a `clave_integracion` — shipped stricter than the original wording, found via a real regression test (`test_asignar_grupo_does_not_overwrite_a_twin_linked_to_a_different_clave`): without the guard, a radius candidate already durably paired with a *different* survey point got silently re-pointed by the sweep.
 **Alternatives**: stamp `clave_integracion` on every swept sticker.
-**Rationale**: a neighbour is a *different* building — persisting the survey point's key there would fabricate a false pairing. `grupo_id` is a routing hint (same crew, same block); the pairing key is not.
+**Rationale**: a neighbour is a *different* building — persisting the survey point's key there would fabricate a false pairing. `grupo_id` is a routing hint (same crew, same block); the pairing key is not, and an existing pairing key must never be overwritten by an anonymous radius hit.
 
 ### Circle-per-point, whole-collection-in-memory
 **Choice**: sweep a `DEFAULT_MAX_RADIUS_M` circle around **each assigned survey point** over the once-loaded `sticker_matches` collection (~1.2 k docs).
