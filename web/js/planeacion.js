@@ -254,11 +254,15 @@ export function diaPicoPlacaHoy(date = new Date()) {
 // ADR-5; planeacion-asignaciones spec "Auto-agrupar returns actionable
 // created-count feedback"). No backend change: run_auto_agrupar already
 // returns the created-cuadrillas list. -------------------------------------
-export function autoAgruparMensaje(n) {
+// `auto-agrupar-comuna-barrio` change: optional `{comuna, barrio}` scope
+// suffix, e.g. "3 cuadrillas creadas en COMUNA 19 · barrio San Fernando."
+// Omitted/empty comuna keeps the message exactly as before (no suffix).
+export function autoAgruparMensaje(n, { comuna, barrio } = {}) {
+  const alcance = comuna ? ` en ${comuna}${barrio ? ` · barrio ${barrio}` : ''}` : '';
   if (n > 0) {
-    return `${n} cuadrilla${n === 1 ? '' : 's'} creada${n === 1 ? '' : 's'}. Volver a ejecutar agrupa el siguiente lote.`;
+    return `${n} cuadrilla${n === 1 ? '' : 's'} creada${n === 1 ? '' : 's'}${alcance}. Volver a ejecutar agrupa el siguiente lote.`;
   }
-  return 'No hay puntos pendientes sin agrupar.';
+  return `No hay puntos pendientes sin agrupar${alcance}.`;
 }
 
 // ---- vehiculo save payloads (feature H frontend) --------------------------
@@ -366,6 +370,12 @@ function cardHead(title, subtitle, extra = '') {
 
 function shellHtml() {
   return `
+    <div class="planeacion-overlay" id="planeacion-overlay" hidden>
+      <div class="planeacion-overlay-box">
+        <span class="asignacion-spinner" aria-hidden="true"></span>
+        <span>Actualizando datos…</span>
+      </div>
+    </div>
     <header class="sticker-page-head">
       <h2 class="sticker-h1">Planeación</h2>
       <p class="sticker-lead">Agrupación, asignación y seguimiento de los puntos de inspección.</p>
@@ -403,6 +413,14 @@ function shellHtml() {
           ${cardHead('Paso 1 · Priorizar', 'Auto-agrupar los puntos pendientes por cercanía, o marcar filas en la tabla para crear una cuadrilla manual.')}
           <div class="card-toolbar asignacion-actions-bar" id="planeacion-toolbar">
             <button type="button" class="btn-primary" id="planeacion-auto">Auto-agrupar</button>
+            <label class="sticker-field asignacion-inline-field">
+              <span>Comuna / Corregimiento</span>
+              <select id="planeacion-auto-comuna"><option value="">— Todas —</option></select>
+            </label>
+            <label class="sticker-field asignacion-inline-field">
+              <span>Barrio / Vereda</span>
+              <select id="planeacion-auto-barrio" disabled><option value="">— Todos —</option></select>
+            </label>
             <label class="sticker-field asignacion-inline-field">
               <span>Radio (m)</span>
               <input type="number" id="planeacion-max-radius" min="50" step="50" placeholder="${DEFAULT_MAX_RADIUS_M}">
@@ -1233,6 +1251,9 @@ export function initPlaneacion(root, { getToken }) {
   let busy = false;
 
   root.innerHTML = shellHtml();
+  const overlayEl = root.querySelector('#planeacion-overlay');
+  const showOverlay = () => { overlayEl.hidden = false; };
+  const hideOverlay = () => { overlayEl.hidden = true; };
   const mapMeta = root.querySelector('#planeacion-map-meta');
   const okBox = root.querySelector('#planeacion-ok');
   const errBox = root.querySelector('#planeacion-error');
@@ -1242,6 +1263,8 @@ export function initPlaneacion(root, { getToken }) {
   const tableWrap = root.querySelector('#planeacion-table-wrap');
   const cuadrillasWrap = root.querySelector('#planeacion-cuadrillas');
   const autoBtn = root.querySelector('#planeacion-auto');
+  const autoComunaSelect = root.querySelector('#planeacion-auto-comuna');
+  const autoBarrioSelect = root.querySelector('#planeacion-auto-barrio');
   const radiusInput = root.querySelector('#planeacion-max-radius');
   const sizeInput = root.querySelector('#planeacion-max-size');
   const crearBtn = root.querySelector('#planeacion-crear');
@@ -1320,6 +1343,31 @@ export function initPlaneacion(root, { getToken }) {
   function renderKpis() {
     kpisEl.innerHTML = kpisHtml(resumenData);
   }
+
+  // `auto-agrupar-comuna-barrio` change: comuna select from
+  // resumenData.barrios_por_comuna keys (pending-only); barrio select is
+  // DEPENDENT on the chosen comuna. Both preserve the current selection
+  // across reload() when it is still a valid option.
+  function renderAutoBarrioSelect() {
+    const comuna = autoComunaSelect.value;
+    const barrios = (comuna && resumenData && resumenData.barrios_por_comuna
+      && resumenData.barrios_por_comuna[comuna]) || [];
+    const prevBarrio = autoBarrioSelect.value;
+    autoBarrioSelect.innerHTML = '<option value="">— Todos —</option>'
+      + barrios.map((b) => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join('');
+    autoBarrioSelect.disabled = !comuna;
+    autoBarrioSelect.value = barrios.includes(prevBarrio) ? prevBarrio : '';
+  }
+
+  function renderAutoScopeSelects() {
+    const comunas = Object.keys((resumenData && resumenData.barrios_por_comuna) || {}).sort();
+    const prevComuna = autoComunaSelect.value;
+    autoComunaSelect.innerHTML = '<option value="">— Todas —</option>'
+      + comunas.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+    autoComunaSelect.value = comunas.includes(prevComuna) ? prevComuna : '';
+    renderAutoBarrioSelect();
+  }
+  autoComunaSelect.addEventListener('change', renderAutoBarrioSelect);
 
   function renderTruncacion(truncado, shown, totalPendientes) {
     const msg = truncado ? formatTruncacion(shown, totalPendientes) : null;
@@ -2109,6 +2157,7 @@ export function initPlaneacion(root, { getToken }) {
     // `.sticker-loading` pattern `reload()`/the historial subtab already use.
     gruposWrap.innerHTML = '<p class="sticker-loading">Cargando grupos…</p>';
     vehiculosWrap.innerHTML = '<p class="sticker-loading">Cargando vehículos…</p>';
+    showOverlay();
     try {
       const [gruposResp, vehiculosResp, conductoresResp] = await Promise.all([
         callApi(getToken, { action: 'listGrupos' }),
@@ -2129,6 +2178,8 @@ export function initPlaneacion(root, { getToken }) {
       renderGruposSection();
       renderVehiculosSection();
       renderConductoresSection();
+    } finally {
+      hideOverlay();
     }
   }
 
@@ -2136,6 +2187,7 @@ export function initPlaneacion(root, { getToken }) {
     showOk('');
     showErr('');
     tableWrap.innerHTML = '<p class="sticker-loading">Cargando planeación…</p>';
+    showOverlay();
     try {
       await ensureInspectores();
       const incluirLevantados = !!root.querySelector('#planeacion-incluir-levantados')?.checked;
@@ -2143,7 +2195,10 @@ export function initPlaneacion(root, { getToken }) {
       // (backend's own listPuntos ordering). `prioridad` is sent only when
       // a chip actually narrows it — an empty value would just be ignored
       // server-side, but omitting it keeps the request body honest.
-      const listPuntosBody = { action: 'listPuntos', incluirLevantados, limit: 4500 };
+      // Item 2A (2026-08-27, Planeación performance): 4500 -> 2500. Still the
+      // top-N critical working set by score; a smaller page renders faster
+      // without hiding work (formatTruncacion's own banner is unchanged).
+      const listPuntosBody = { action: 'listPuntos', incluirLevantados, limit: 2500 };
       if (filters.prioridad) listPuntosBody.prioridad = filters.prioridad;
       const results = await Promise.allSettled([
         callApi(getToken, listPuntosBody),
@@ -2171,6 +2226,7 @@ export function initPlaneacion(root, { getToken }) {
       conductores = conductoresResult.status === 'fulfilled' ? (conductoresResult.value.conductores || []) : conductores;
       metricasData = metricasResult.status === 'fulfilled' ? (metricasResult.value.metricas || null) : metricasData;
       resumenData = resumenResult.status === 'fulfilled' ? (resumenResult.value.resumen || null) : resumenData;
+      renderAutoScopeSelects();
       rows = buildRows(listResp.puntos, cuadrillas, getInspectores());
       selected.clear();
       crearBtn.disabled = true;
@@ -2194,6 +2250,8 @@ export function initPlaneacion(root, { getToken }) {
     } catch (err) {
       teardownMap();
       tableWrap.innerHTML = `<p class="sticker-error" role="alert">${escapeHtml(err.message)}</p>`;
+    } finally {
+      hideOverlay();
     }
   }
 
@@ -2207,8 +2265,12 @@ export function initPlaneacion(root, { getToken }) {
       const body = { action: 'autoAgrupar' };
       if (radiusInput.value) body.maxRadiusM = Number(radiusInput.value);
       if (sizeInput.value) body.maxSize = Number(sizeInput.value);
+      const comuna = autoComunaSelect.value;
+      const barrio = autoBarrioSelect.value;
+      if (comuna) body.comuna = comuna;
+      if (barrio) body.barrio = barrio;
       const { cuadrillas: nuevas } = await callApi(getToken, body);
-      showOk(autoAgruparMensaje(nuevas.length));
+      showOk(autoAgruparMensaje(nuevas.length, { comuna, barrio }));
       await reload();
     } catch (err) {
       showErr(err.message);

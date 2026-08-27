@@ -322,6 +322,22 @@ AUTOAGRUPAR_LIMIT = 2000
 LIMIT_DEFAULT = 300
 LIMIT_MAX = 5000
 
+# Item 2B (2026-08-27, Planeación performance): `listPuntos` used to ship the
+# FULL document. This is the exact field set `web/js/planeacion.js`'s
+# `buildRows`/table/popup/editar+noAplica modals actually read off a punto
+# (confirmed by reading that code, not guessed) — everything else (audit
+# timestamps like `matched_at`/`asignado_en`/`editado_en`, pipeline-internal
+# fields) is dropped at the QUERY level via `.select()`, cutting both the
+# read cost and the response payload. `prioridad_score` stays in the set
+# because `order_by` requires it in the projection.
+PUNTOS_LIST_FIELDS: tuple[str, ...] = (
+    "direccion", "barrio", "comuna", "afectacion", "estado_verificacion",
+    "tipo_inmueble", "habitabilidad", "prioridad", "prioridad_override",
+    "prioridad_score", "estado_asignacion", "cuadrilla_id", "inspector_uid",
+    "tier", "match_via", "tiene_survey", "coords", "notas",
+    "motivo_exclusion", "clave_integracion",
+)
+
 _PRIORIDAD_RANK = {"alta": 3, "media": 2, "baja": 1}
 
 # Sentinel distinguishing "key omitted from the request body" from "key
@@ -550,7 +566,8 @@ def list_puntos(db: Any, params: dict[str, Any]) -> dict[str, Any]:
     if not incluir_levantados:
         query = query.where("tiene_survey", "==", False)
     query = (
-        query.order_by("prioridad_score", direction=_fs.Query.DESCENDING)
+        query.select(list(PUNTOS_LIST_FIELDS))
+        .order_by("prioridad_score", direction=_fs.Query.DESCENDING)
         .limit(over_fetch_limit)
     )
     puntos = [_doc_to_dict(d) for d in query.get()]
@@ -586,11 +603,19 @@ def resumen(db: Any) -> dict[str, Any]:
 
     por_prioridad: dict[str, int] = {}
     por_comuna: dict[str, int] = {}
+    # `auto-agrupar-comuna-barrio` change: distinct barrios per comuna, over
+    # the SAME pendientes_puntos list already built above (no extra reads) —
+    # populates the frontend's dependent "Barrio / Vereda" select.
+    barrios_por_comuna_sets: dict[str, set[str]] = {}
     for p in pendientes_puntos:
         k1 = _effective_prioridad(p)
         por_prioridad[k1] = por_prioridad.get(k1, 0) + 1
         k2 = str(p.get("comuna") or "sin_comuna")
         por_comuna[k2] = por_comuna.get(k2, 0) + 1
+        barrio = str(p.get("barrio") or "").strip()
+        if barrio:
+            barrios_por_comuna_sets.setdefault(k2, set()).add(barrio)
+    barrios_por_comuna = {k: sorted(v) for k, v in barrios_por_comuna_sets.items()}
 
     por_estado_asignacion: dict[str, int] = {}
     for p in puntos:
@@ -611,6 +636,7 @@ def resumen(db: Any) -> dict[str, Any]:
         "por_comuna": por_comuna,
         "por_estado_asignacion": por_estado_asignacion,
         "por_match_via": por_match_via,
+        "barrios_por_comuna": barrios_por_comuna,
     }
 
 
@@ -636,6 +662,8 @@ def run_auto_agrupar(db: Any, body: dict[str, Any]) -> list[dict[str, Any]]:
     dispatcher's own `run_auto_agrupar` documents."""
     max_radius_m = _positive_number(body.get("maxRadiusM"), DEFAULT_MAX_RADIUS_M)
     max_size = _positive_number(body.get("maxSize"), DEFAULT_MAX_SIZE)
+    comuna = str(body.get("comuna") or "").strip()
+    barrio = str(body.get("barrio") or "").strip()
 
     from google.cloud import firestore as _fs  # deferred import, credentials/clients.py's own convention
 
@@ -653,15 +681,24 @@ def run_auto_agrupar(db: Any, body: dict[str, Any]) -> list[dict[str, Any]]:
     # Needs a composite index on (estado_asignacion, cuadrilla_id,
     # tiene_survey, prioridad_score DESC) — operator step.
     limite = int(_positive_number(body.get("limite"), AUTOAGRUPAR_LIMIT))
-    docs = (
+    query = (
         db.collection(PLANEACION_PUNTOS_COLLECTION)
         .where("estado_asignacion", "==", "pendiente")
         .where("cuadrilla_id", "==", None)
         .where("tiene_survey", "==", False)
-        .order_by("prioridad_score", direction=_fs.Query.DESCENDING)
-        .limit(limite)
-        .get()
     )
+    # `auto-agrupar-comuna-barrio` change: scope the working set to one
+    # comuna and (dependent) barrio instead of city-wide, same equality-only
+    # `.where()` shape as the three filters above. Adds a 4th/5th equality to
+    # a query the zig-zag merge join already handles without a composite
+    # index in production; if a future combination ever needs one, the B1
+    # handler further down already returns the 503+creation-link, so no new
+    # handling is needed here.
+    if comuna:
+        query = query.where("comuna", "==", comuna)
+    if barrio:
+        query = query.where("barrio", "==", barrio)
+    docs = query.order_by("prioridad_score", direction=_fs.Query.DESCENDING).limit(limite).get()
     all_puntos = [_doc_to_dict(d) for d in docs]
     excluded_ids = set(points_with_survey(all_puntos)) | set(points_excluded(all_puntos))
     puntos = [p for p in all_puntos if p["id"] not in excluded_ids]
@@ -1855,6 +1892,9 @@ class PlaneacionAsignacionesRequest(BaseModel):
     estado: str | None = None
     prioridad: str | None = None
     comuna: str | None = None
+    # `auto-agrupar-comuna-barrio` change: dependent scope for autoAgrupar
+    # (listPuntos does not read this one — comuna above already covers it).
+    barrio: str | None = None
     soloPendientes: bool | None = None
     # Widens listPuntos to points that already have a survey, so a wrong
     # auto-close is reviewable (a closed point is only correctable if it can

@@ -1120,6 +1120,22 @@ td { padding: 10px 14px; vertical-align: top; color: var(--text-primary); max-wi
 }
 .modal.is-open { display: flex; }
 .modal-backdrop { position: fixed; inset: 0; background: rgba(2, 8, 18, 0.7); }
+
+/* Planeación reload overlay (item 2C, 2026-08-27) — same translucent
+   backdrop as .modal-backdrop, shown while reload()/reloadGruposVehiculos()
+   are in flight; always cleared in their own `finally`. */
+.planeacion-overlay {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(2, 8, 18, 0.55);
+}
+.planeacion-overlay-box {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--surface); color: var(--text-primary);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
+  padding: 14px 20px; box-shadow: var(--shadow-modal); font-size: .92rem;
+}
+.planeacion-overlay .asignacion-spinner { margin-right: 0; }
 .modal-panel {
   position: relative;
   background: var(--surface);

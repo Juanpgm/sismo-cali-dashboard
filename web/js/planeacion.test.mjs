@@ -276,4 +276,26 @@ assert.equal(
 );
 assert.equal(autoAgruparMensaje(0), 'No hay puntos pendientes sin agrupar.');
 
+// `auto-agrupar-comuna-barrio` change: optional scope suffix.
+assert.equal(
+  autoAgruparMensaje(3, { comuna: 'COMUNA 19', barrio: 'San Fernando' }),
+  '3 cuadrillas creadas en COMUNA 19 · barrio San Fernando. Volver a ejecutar agrupa el siguiente lote.',
+);
+assert.equal(
+  autoAgruparMensaje(1, { comuna: 'COMUNA 19' }),
+  '1 cuadrilla creada en COMUNA 19. Volver a ejecutar agrupa el siguiente lote.',
+);
+// Comuna-only path, exact call shape the click handler sends when the
+// barrio select is left at "— Todos —" (empty string, not absent key):
+// message must mention only the comuna.
+assert.equal(
+  autoAgruparMensaje(3, { comuna: 'COMUNA 19', barrio: '' }),
+  '3 cuadrillas creadas en COMUNA 19. Volver a ejecutar agrupa el siguiente lote.',
+);
+assert.equal(
+  autoAgruparMensaje(0, { comuna: 'COMUNA 19', barrio: 'San Fernando' }),
+  'No hay puntos pendientes sin agrupar en COMUNA 19 · barrio San Fernando.',
+);
+assert.equal(autoAgruparMensaje(2, {}), autoAgruparMensaje(2));
+
 console.log('ok — planeacion.js pure table/map/filter logic');

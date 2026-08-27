@@ -88,6 +88,7 @@ class _FakeQuery:
         order_field: str | None = None,
         order_desc: bool = False,
         limit_n: int | None = None,
+        select_fields: list[str] | None = None,
     ) -> None:
         self._collection = collection
         self._store = store
@@ -95,6 +96,7 @@ class _FakeQuery:
         self._order_field = order_field
         self._order_desc = order_desc
         self._limit_n = limit_n
+        self._select_fields = select_fields
 
     def where(self, field: str, op: str, value: Any) -> "_FakeQuery":
         if op == "==":
@@ -110,15 +112,27 @@ class _FakeQuery:
         else:
             raise AssertionError(f"unsupported op {op!r} in fake Firestore")
         return _FakeQuery(
-            self._collection, self._store, matched, self._order_field, self._order_desc, self._limit_n
+            self._collection, self._store, matched, self._order_field, self._order_desc,
+            self._limit_n, self._select_fields,
         )
 
     def order_by(self, field: str, direction: str | None = None) -> "_FakeQuery":
         desc = direction == "DESCENDING"
-        return _FakeQuery(self._collection, self._store, self._ids, field, desc, self._limit_n)
+        return _FakeQuery(self._collection, self._store, self._ids, field, desc, self._limit_n, self._select_fields)
 
     def limit(self, n: int) -> "_FakeQuery":
-        return _FakeQuery(self._collection, self._store, self._ids, self._order_field, self._order_desc, n)
+        return _FakeQuery(
+            self._collection, self._store, self._ids, self._order_field, self._order_desc, n, self._select_fields
+        )
+
+    def select(self, field_paths: list[str]) -> "_FakeQuery":
+        """Firestore projection: only these fields come back in `to_dict()`
+        (`auto-agrupar-comuna-barrio` follow-up, item 2B — same precedent as
+        `get_all(field_paths=...)` below)."""
+        return _FakeQuery(
+            self._collection, self._store, self._ids, self._order_field, self._order_desc,
+            self._limit_n, list(field_paths),
+        )
 
     def _ordered_ids(self) -> list[str]:
         ids = list(self._ids)
@@ -132,13 +146,18 @@ class _FakeQuery:
             ids = ids[: self._limit_n]
         return ids
 
+    def _projected(self, data: dict[str, Any] | None) -> dict[str, Any] | None:
+        if data is None or self._select_fields is None:
+            return data
+        return {k: v for k, v in data.items() if k in self._select_fields}
+
     def get(self) -> list[_FakeSnapshot]:
         return self.stream()
 
     def stream(self) -> list[_FakeSnapshot]:
         snaps = []
         for doc_id in self._ordered_ids():
-            snap = _FakeSnapshot(self._collection, doc_id, self._store.get(doc_id))
+            snap = _FakeSnapshot(self._collection, doc_id, self._projected(self._store.get(doc_id)))
             snap.reference = _FakeDocRef(self._store, self._collection, doc_id)
             snaps.append(snap)
         return snaps
@@ -560,6 +579,27 @@ def test_resumen_includes_por_match_via_tally(monkeypatch):
     assert resp.json()["resumen"]["por_match_via"] == {"clave": 2, "cercania": 1}
 
 
+def test_resumen_includes_barrios_por_comuna_sorted_distinct_pending_only(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {**_punto(comuna="COMUNA 19"), "barrio": "Tequendama"},
+        "p2": {**_punto(comuna="COMUNA 19"), "barrio": "San Fernando"},
+        "p3": {**_punto(comuna="COMUNA 19"), "barrio": "San Fernando"},  # duplicate barrio
+        "p4": {**_punto(comuna="COMUNA 19"), "barrio": None},  # no barrio, excluded
+        "p5": {**_punto(comuna="COMUNA 2"), "barrio": "Otro"},
+        # not pending -> excluded from the tally even though it has a barrio
+        "p6": {**_punto(comuna="COMUNA 19", tiene_survey=True), "barrio": "Ya Levantado"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "resumen"})
+
+    assert resp.json()["resumen"]["barrios_por_comuna"] == {
+        "COMUNA 19": ["San Fernando", "Tequendama"],
+        "COMUNA 2": ["Otro"],
+    }
+
+
 # ── listCuadrillas ───────────────────────────────────────────────────────
 
 
@@ -695,6 +735,70 @@ def test_auto_agrupar_router_never_touches_estado_asignacion(monkeypatch):
     grupo = resp.json()["cuadrillas"][0]
     assert grupo["inspector_uid"] is None
     assert stores[PLANEACION_PUNTOS]["p1"]["estado_asignacion"] == "pendiente"
+
+
+# ── autoAgrupar scoped by comuna/barrio ─────────────────────────────────
+
+
+def _scopeable(comuna, barrio, lat, lon, score=50):
+    return {
+        "estado_asignacion": "pendiente", "cuadrilla_id": None, "tiene_survey": False,
+        "prioridad_score": score, "coords": {"lat": lat, "lon": lon},
+        "comuna": comuna, "barrio": barrio,
+    }
+
+
+def test_auto_agrupar_router_with_comuna_only_clusters_that_comuna(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "c19a": _scopeable("COMUNA 19", "San Fernando", 3.40, -76.50),
+        "c19b": _scopeable("COMUNA 19", "Tequendama", 3.4001, -76.5001),
+        "c2": _scopeable("COMUNA 2", "Otro Barrio", 3.40, -76.50),
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "autoAgrupar", "comuna": "COMUNA 19"})
+
+    assert resp.status_code == 200
+    assigned = {pid for c in resp.json()["cuadrillas"] for pid in c["puntos"]}
+    assert assigned == {"c19a", "c19b"}
+    assert stores[PLANEACION_PUNTOS]["c2"]["cuadrilla_id"] is None
+
+
+def test_auto_agrupar_router_with_comuna_and_barrio_clusters_only_that_barrio(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "sf1": _scopeable("COMUNA 19", "San Fernando", 3.40, -76.50),
+        "sf2": _scopeable("COMUNA 19", "San Fernando", 3.4001, -76.5001),
+        "tq1": _scopeable("COMUNA 19", "Tequendama", 3.40, -76.50),
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "autoAgrupar", "comuna": "COMUNA 19", "barrio": "San Fernando"},
+    )
+
+    assert resp.status_code == 200
+    assigned = {pid for c in resp.json()["cuadrillas"] for pid in c["puntos"]}
+    assert assigned == {"sf1", "sf2"}
+    assert stores[PLANEACION_PUNTOS]["tq1"]["cuadrilla_id"] is None
+
+
+def test_auto_agrupar_router_without_comuna_or_barrio_is_unscoped(monkeypatch):
+    """Empty/absent comuna/barrio params = current (unscoped) behavior."""
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "c19": _scopeable("COMUNA 19", "San Fernando", 3.40, -76.50),
+        "c2": _scopeable("COMUNA 2", "Otro Barrio", 3.4600, -76.5600),
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "autoAgrupar", "comuna": "  "})
+
+    assert resp.status_code == 200
+    assigned = {pid for c in resp.json()["cuadrillas"] for pid in c["puntos"]}
+    assert assigned == {"c19", "c2"}
 
 
 # ── crearCuadrilla ────────────────────────────────────────────────────────
@@ -1324,6 +1428,13 @@ def test_list_puntos_omitting_the_flag_still_excludes_surveyed(monkeypatch):
 
 
 def test_list_puntos_serializes_datetime_fields(monkeypatch):
+    """Item 2B (2026-08-27) follow-up: `listPuntos` now projects to
+    `pa.PUNTOS_LIST_FIELDS` (`.select()`), and `matched_at` is not in that
+    set — it never reaches `to_dict()` at all now, real Firestore included,
+    so the field is simply absent rather than raising. The `_jsonable`
+    funnel itself stays covered generically by
+    `test_list_cuadrillas_serializes_datetime_fields` below, whose action
+    (`listCuadrillas`) reads full, unprojected docs."""
     from datetime import datetime, timezone
 
     stores = _stores()
@@ -1336,12 +1447,26 @@ def test_list_puntos_serializes_datetime_fields(monkeypatch):
     resp = client.post("/planeacion-asignaciones", json={"action": "listPuntos"})
 
     assert resp.status_code == 200, resp.text
+    assert "matched_at" not in resp.json()["puntos"][0]
+
+
+def test_list_puntos_response_contains_only_projected_fields(monkeypatch):
+    """Item 2B (2026-08-27): `listPuntos` must not ship the full document —
+    only `pa.PUNTOS_LIST_FIELDS` plus `id`, matching what
+    `web/js/planeacion.js`'s `buildRows`/table/popup/modals actually read
+    off a punto."""
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {**_punto(), "direccion": "Cra 1 # 2-3",
+               "heavy_leftover_field": "should not be shipped"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post("/planeacion-asignaciones", json={"action": "listPuntos"})
+
     punto = resp.json()["puntos"][0]
-    assert isinstance(punto["matched_at"], str), (
-        "a datetime must be serialized to a string, not handed to the JSON "
-        "encoder raw -- real Firestore returns DatetimeWithNanoseconds here"
-    )
-    assert punto["matched_at"].startswith("2026-08-26T09:04:37")
+    assert set(punto.keys()) <= {"id", *pa.PUNTOS_LIST_FIELDS}
+    assert "heavy_leftover_field" not in punto
 
 
 def test_list_cuadrillas_serializes_datetime_fields(monkeypatch):
