@@ -555,7 +555,22 @@ class PlaneacionAggregatesCache:
 # ---- Firestore-backed actions ----------------------------------------------
 
 
-def list_puntos(db: Any, params: dict[str, Any]) -> dict[str, Any]:
+def _fetch_assigned_puntos(db: Any) -> dict[str, dict[str, Any]]:
+    """The three single-field-inequality reads `list_puntos`'s "always
+    include assigned points" widening needs — extracted so it can be routed
+    through `PlaneacionAggregatesCache` (see the call site's own comment).
+    Each field is auto-indexed (no composite index), and a point matching
+    more than one is only kept once (first field wins; same projected
+    fields regardless of which query matched, so no data is lost)."""
+    assigned: dict[str, dict[str, Any]] = {}
+    for field in ("grupo_id", "inspector_uid", "cuadrilla_id"):
+        for d in db.collection(PLANEACION_PUNTOS_COLLECTION).where(field, "!=", None).select(list(PUNTOS_LIST_FIELDS)).get():
+            if d.id not in assigned:
+                assigned[d.id] = _doc_to_dict(d)
+    return assigned
+
+
+def list_puntos(db: Any, params: dict[str, Any], cache: "PlaneacionAggregatesCache") -> dict[str, Any]:
     """Bounded, prioritized working set (ADR-9) — never the full
     collection. Default filter excludes surveyed points and points marked
     `no_aplica`; ordering uses the OVERRIDE-aware effective priority
@@ -648,14 +663,20 @@ def list_puntos(db: Any, params: dict[str, Any]) -> dict[str, Any]:
     # below the top-N priority page — otherwise a low-priority assigned point
     # is invisible in the table and unmanageable (can't desasignar it, it
     # blocks its group's deletion, and it is missing from the Grupo column).
-    # The assigned set is bounded by real field capacity (small), so three
-    # single-field-inequality reads (each auto-indexed, no composite index)
-    # are cheap. They still honor the active narrowing filters via `_passes`.
-    assigned: dict[str, dict[str, Any]] = {}
-    for field in ("grupo_id", "inspector_uid", "cuadrilla_id"):
-        for d in db.collection(PLANEACION_PUNTOS_COLLECTION).where(field, "!=", None).select(list(PUNTOS_LIST_FIELDS)).get():
-            if d.id not in assigned:
-                assigned[d.id] = _doc_to_dict(d)
+    #
+    # Speed follow-up (2026-08-27): the three-query fetch below used to run
+    # fresh on EVERY listPuntos call — the tab's own reload() calls it on
+    # every open AND again after every mutation (autoAgrupar included), so an
+    # admin paid for three sequential full-field-set reads over and over in
+    # the same few seconds. It is now routed through the SAME
+    # `PlaneacionAggregatesCache` `resumen`/`metricasProgreso` already use:
+    # 5-minute TTL, unconditionally busted after any mutating action (see the
+    # dispatcher's `cache.clear()`), so an admin never sees a stale assigned
+    # set after their own change — only repeat reads within that window get
+    # cheaper. The cached value is filter-independent (raw merged docs, same
+    # PUNTOS_LIST_FIELDS regardless of the caller's params); `_passes`/
+    # `page_ids` narrowing still runs per-call below on top of it.
+    assigned = cache.get_or_fetch("assignedPuntos", lambda: _fetch_assigned_puntos(db))
     extra = [p for pid, p in assigned.items() if pid not in page_ids and _passes(p)]
     if extra:
         page = page + extra
@@ -2090,7 +2111,7 @@ def _dispatch(
     post-mutation audit hook at ONE call site (design.md ADR-2)."""
     try:
         if body.action == "listPuntos":
-            return JSONResponse({"ok": True, **list_puntos(db, payload)})
+            return JSONResponse({"ok": True, **list_puntos(db, payload, cache)})
         if body.action == "resumen":
             return JSONResponse({"ok": True, "resumen": cache.get_or_fetch("resumen", lambda: resumen(db))})
         if body.action == "listCuadrillas":
