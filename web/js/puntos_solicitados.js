@@ -21,6 +21,7 @@
 // not resolved from a basemap polygon.
 import {
   COLORS, escapeHtml, basemapTileUrl, normalize, showToast, mountCombobox, debounce,
+  loadXlsx, downloadStamp,
 } from './utils.js';
 import { buildMiniMap } from './mapview.js';
 import { openLightbox } from './table.js';
@@ -135,6 +136,35 @@ export function nombreInspectorPorUid(uid, inspectores) {
   if (!uid) return null;
   const found = (inspectores || []).find((i) => i.uid === uid);
   return found ? (found.nombre_completo || found.codigo || uid) : null;
+}
+
+// ---- Inspector load-count badges (F3, design.md ADR-5) --------------------
+// Client-side, derived from the already-fetched solicitado points list — no
+// new backend call. Ceiling: this is a solicitado-tab-scoped count, not the
+// inspector's global planeación load (that lives in
+// planeacion_asignaciones' metricasProgreso.por_inspector).
+// `ponytail:` tab-scoped count; swap to metricasProgreso.por_inspector only
+// if admins need each inspector's global load at assign-time.
+
+/** One-pass tally: `{ [inspector_uid]: number of currently-loaded puntos
+ *  assigned to them }`. Points without an inspector_uid don't count. */
+export function contarCargaPorInspector(puntos) {
+  const counts = {};
+  for (const p of (puntos || [])) {
+    if (!p || !p.inspector_uid) continue;
+    counts[p.inspector_uid] = (counts[p.inspector_uid] || 0) + 1;
+  }
+  return counts;
+}
+
+/** Roster option label with active load, adapted from
+ *  stickers-asignacion.js's inspectorOptionLabel() (`Nombre — codigo (N)`) —
+ *  same format, `count` computed by the caller (contarCargaPorInspector)
+ *  instead of a per-inspector-cap-aware count. */
+export function inspectorLabelConCarga(insp, count) {
+  const name = insp.nombre_completo || `Brigada ${insp.codigo || '—'}`;
+  const code = insp.codigo ? ` — ${insp.codigo}` : '';
+  return `${name}${code} (${count || 0})`;
 }
 
 /** Newest creado_en first — same "most recent first" convention as
@@ -253,6 +283,7 @@ export function sectionHtml() {
             <span>Barrio</span>
             <select id="ps-barrio-select" aria-label="Filtrar por barrio" disabled><option value="">— Todos los barrios —</option></select>
           </label>
+          <button type="button" class="sticker-action" id="ps-download">Descargar .xlsx</button>
         </div>
       </div>
 
@@ -505,18 +536,36 @@ function renderMap(puntos, onDetail) {
 
 // ---- Record list -------------------------------------------------------------
 
+// (puntos-solicitados-busqueda-asignacion F2, design.md ADR-3) The whole row
+// used to be a single <button class="eval-row">; a card-level "Asignar"
+// control can't nest inside it (button-in-button is invalid HTML and would
+// break the row's own click target), so it's now a sibling button beside it,
+// plus a sibling inline panel[hidden] that expands in place below the row —
+// no floating/anchored popover, the list is scrollable and an inline panel
+// reflows naturally.
 function listItemHtml(p) {
   const e = estadoDe(p);
   const fotos = (p.fotos || []).length ? `${p.fotos.length} foto${p.fotos.length === 1 ? '' : 's'}` : 'sin fotos';
-  return `<li>
-    <button type="button" class="eval-row" data-ps-detail="${escapeHtml(p.id)}">
-      <span class="eval-dot" style="background:${e.color}" aria-hidden="true"></span>
-      <span class="eval-name">${escapeHtml(p.nombre || 'Sin nombre')}</span>
-      <span class="eval-pill" style="--eval-pill:${e.color}">${escapeHtml(e.label)}</span>
-      <span class="eval-meta">${escapeHtml(p.comuna_corregimiento || 'Sin comuna')} · ${escapeHtml(p.barrio_vereda || 'Sin barrio')}</span>
-      <span class="eval-meta">${escapeHtml(p.nombre_solicitante || 'Sin solicitante')} · ${fotos}</span>
-      <span class="eval-cta">Ver detalle &rsaquo;</span>
-    </button>
+  return `<li class="ps-item">
+    <div class="ps-row-wrap">
+      <button type="button" class="eval-row" data-ps-detail="${escapeHtml(p.id)}">
+        <span class="eval-dot" style="background:${e.color}" aria-hidden="true"></span>
+        <span class="eval-name">${escapeHtml(p.nombre || 'Sin nombre')}</span>
+        <span class="eval-pill" style="--eval-pill:${e.color}">${escapeHtml(e.label)}</span>
+        <span class="eval-meta">${escapeHtml(p.comuna_corregimiento || 'Sin comuna')} · ${escapeHtml(p.barrio_vereda || 'Sin barrio')}</span>
+        <span class="eval-meta">${escapeHtml(p.nombre_solicitante || 'Sin solicitante')} · ${fotos}</span>
+        <span class="eval-cta">Ver detalle &rsaquo;</span>
+      </button>
+      <button type="button" class="btn-link ps-asignar-btn" data-ps-asignar="${escapeHtml(p.id)}">Asignar</button>
+    </div>
+    <div class="ps-asignar-panel" data-ps-asignar-panel="${escapeHtml(p.id)}" hidden>
+      <div class="asignacion-combo">
+        <input type="text" class="asignacion-combo-input ps-asignar-input"
+          role="combobox" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false"
+          placeholder="Buscar inspector…" aria-label="Buscar inspector para asignar">
+        <ul class="asignacion-combo-list ps-asignar-list" role="listbox" hidden></ul>
+      </div>
+    </div>
   </li>`;
 }
 
@@ -748,6 +797,7 @@ export function initPuntosSolicitados(section, { getToken }) {
   const chipsEl = section.querySelector('#ps-estado-chips');
   const comunaSelect = section.querySelector('#ps-comuna-select');
   const barrioSelect = section.querySelector('#ps-barrio-select');
+  const downloadBtn = section.querySelector('#ps-download');
 
   const buscarBtn = section.querySelector('#ps-buscar');
   const buscarModal = section.querySelector('#ps-buscar-modal');
@@ -821,8 +871,9 @@ export function initPuntosSolicitados(section, { getToken }) {
     const inspectorInput = modalBody.querySelector('#ps-detail-inspector-input');
     const inspectorList = modalBody.querySelector('#ps-detail-inspector-list');
     if (inspectorInput && inspectorList) {
+      const carga = contarCargaPorInspector(allPuntos);
       mountCombobox(inspectorInput, inspectorList, {
-        options: inspectoresCache.map((i) => ({ id: i.uid, label: i.nombre_completo || i.codigo || i.uid })),
+        options: inspectoresCache.map((i) => ({ id: i.uid, label: inspectorLabelConCarga(i, carga[i.uid]) })),
         onSelect: (uid) => asignarInspector(id, uid),
       });
       const nombreActual = nombreInspectorPorUid(p.inspector_uid, inspectoresCache);
@@ -861,6 +912,39 @@ export function initPuntosSolicitados(section, { getToken }) {
     if (btn && listEl.contains(btn)) openDetail(btn.dataset.psDetail);
   });
 
+  // ---- Card-level "Asignar" inline panel (F2, ADR-3) ----
+  // Only one panel open at a time; mounting the combobox happens lazily on
+  // open (not at list-render time) since renderFiltered() rebuilds the whole
+  // list's innerHTML on every load/filter change, which would orphan any
+  // eagerly-mounted combobox instance.
+  let openAsignarId = null;
+  function closeAsignarPanels() {
+    listEl.querySelectorAll('.ps-asignar-panel').forEach((panel) => { panel.hidden = true; });
+    openAsignarId = null;
+  }
+  listEl.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-ps-asignar]');
+    if (!btn) return;
+    const id = btn.dataset.psAsignar;
+    if (openAsignarId === id) { closeAsignarPanels(); return; }
+    closeAsignarPanels();
+    const panel = listEl.querySelector(`[data-ps-asignar-panel="${CSS.escape(id)}"]`);
+    if (!panel) return;
+    panel.hidden = false;
+    openAsignarId = id;
+    const input = panel.querySelector('.ps-asignar-input');
+    const list = panel.querySelector('.ps-asignar-list');
+    const p = byId.get(id);
+    const carga = contarCargaPorInspector(allPuntos);
+    mountCombobox(input, list, {
+      options: inspectoresCache.map((i) => ({ id: i.uid, label: inspectorLabelConCarga(i, carga[i.uid]) })),
+      onSelect: (uid) => { asignarInspector(id, uid); closeAsignarPanels(); },
+    });
+    const nombreActual = nombreInspectorPorUid(p && p.inspector_uid, inspectoresCache);
+    input.value = nombreActual || '';
+    setTimeout(() => input.focus(), 0);
+  });
+
   const setHighlight = (id, on) => {
     const marker = markerById.get(id);
     if (marker) marker.setStyle(on ? { radius: 12, color: COLORS.accent, weight: 3 } : { radius: 8, color: '#0B1D33', weight: 1 });
@@ -875,6 +959,7 @@ export function initPuntosSolicitados(section, { getToken }) {
     chipsEl.innerHTML = estadoChipsHtml(filters.estado);
     kpis.innerHTML = kpisHtml(filtered);
     barEl.innerHTML = barHtml(filtered);
+    openAsignarId = null; // full innerHTML rebuild below orphans any open panel
 
     if (!filtered.length) {
       listEl.innerHTML = allPuntos.length
@@ -954,6 +1039,42 @@ export function initPuntosSolicitados(section, { getToken }) {
     renderFiltered();
   });
   barrioSelect.addEventListener('change', () => { filters = { ...filters, barrio: barrioSelect.value }; renderFiltered(); });
+
+  // xlsx export (F3) — mirrors evaluaciones.js's #eval-download wiring
+  // (loadXlsx()/downloadStamp() from utils.js, same header-block convention).
+  downloadBtn.addEventListener('click', async () => {
+    let XLSX;
+    try { XLSX = await loadXlsx(); } catch { showToast('No se pudo cargar el generador de Excel.', 'error'); return; }
+    const rows = sortPuntos(applyFilters(allPuntos, filters)).map((p) => ({
+      id: p.id,
+      clave_integracion: p.clave_integracion,
+      nombre: p.nombre,
+      estado: estadoDe(p).label,
+      comuna: p.comuna_corregimiento,
+      barrio: p.barrio_vereda,
+      direccion: p.direccion,
+      nombre_solicitante: p.nombre_solicitante,
+      telefono_solicitante: p.telefono_solicitante,
+      justificacion: p.justificacion,
+      lat: p.coords ? p.coords.lat : '',
+      lng: p.coords ? p.coords.lon : '',
+      inspector: nombreInspectorPorUid(p.inspector_uid, inspectoresCache) || 'Sin asignar',
+      num_fotos: (p.fotos || []).length,
+      creado_en: p.creado_en || '',
+    }));
+    if (!rows.length) { showToast('No hay puntos solicitados con los filtros aplicados.', 'error'); return; }
+    const { legible, slug } = downloadStamp();
+    const ws = XLSX.utils.aoa_to_sheet([
+      ['Puntos Solicitados'],
+      ['Fecha de generación:', legible],
+      ['Registros:', rows.length],
+      [],
+    ]);
+    XLSX.utils.sheet_add_json(ws, rows, { origin: 'A5' });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'puntos_solicitados');
+    XLSX.writeFile(wb, `puntos_solicitados_${slug}.xlsx`);
+  });
 
   // ---- create modal: comuna/barrio comboboxes ----
   // comuna_barrios.json (built by scripts/prepare_basemaps.py from the same
@@ -1193,7 +1314,7 @@ export function initPuntosSolicitados(section, { getToken }) {
     const direccion = direccionInput.value.trim();
     if (!direccion) { showToast('Escribí una dirección para ubicar.', 'error'); return; }
     geocodeBtn.disabled = true;
-    geocodeBtn.textContent = 'Ubicando…';
+    geocodeBtn.innerHTML = '<span class="asignacion-spinner" aria-hidden="true"></span>Ubicando…';
     try {
       const result = await apiGeocode(getToken, direccion);
       if (result.accepted) {
@@ -1287,7 +1408,7 @@ export function initPuntosSolicitados(section, { getToken }) {
     const clave = isEdit ? editing.clave_integracion : null;
     const idParaFotos = isEdit ? editing.id : null;
     crearSubmit.disabled = true;
-    crearSubmit.textContent = isEdit ? 'Guardando…' : 'Creando…';
+    crearSubmit.innerHTML = `<span class="asignacion-spinner" aria-hidden="true"></span>${isEdit ? 'Guardando…' : 'Creando…'}`;
     setFotosLocked(true);
     let record;
     try {

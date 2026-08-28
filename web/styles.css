@@ -1861,6 +1861,17 @@ body:not([data-role="admin"]) .view-tab[data-view="puntos-solicitados"] { displa
   border: 1px solid color-mix(in srgb, var(--eval-pill) 40%, transparent);
 }
 
+/* Card-level "Asignar" (puntos-solicitados-busqueda-asignacion F2, ADR-3):
+   .eval-row stays the whole-row detail button; .ps-asignar-btn is a sibling
+   (button-in-button is invalid HTML), and .ps-asignar-panel is an inline
+   expand-in-place panel below the row — no floating popover, the list
+   scrolls and this reflows naturally. */
+.ps-row-wrap { display: flex; align-items: center; gap: 6px; }
+.ps-row-wrap .eval-row { flex: 1; min-width: 0; }
+.ps-asignar-btn { flex: none; padding: 0 4px; }
+.ps-asignar-panel { padding: 6px 10px 10px 28px; }
+.ps-asignar-panel[hidden] { display: none; }
+
 .eval-detail-banner {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   margin-bottom: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--border);

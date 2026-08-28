@@ -4,6 +4,7 @@ import assert from 'node:assert';
 import {
   ESTADOS, estadoDe, contarPorEstado, applyFilters, sortPuntos, removeFotoAt, nombreInspectorPorUid,
   prefillStepsFromResultado, prefillStepsFromQuery, apiBuscar, runGuardedBuscar,
+  contarCargaPorInspector, inspectorLabelConCarga,
 } from './puntos_solicitados.js';
 
 // The derived lifecycle states (ADR-4 map's output values), in the order they
@@ -218,4 +219,30 @@ assert.deepStrictEqual(Object.fromEntries(prefillStepsFromQuery(undefined)), { d
   assert.deepStrictEqual(rendered, [[]]);
 }
 
-console.log('ok — puntos_solicitados.js estado classification, filters, sort, buscar prefill mapping, stale-search guard');
+// contarCargaPorInspector — client-side one-pass tally over the already-
+// loaded puntos list (design.md ADR-5): only counts puntos WITH an
+// inspector_uid, never throws on a missing/empty list.
+assert.deepStrictEqual(
+  contarCargaPorInspector([
+    { id: '1', inspector_uid: 'uid-1' },
+    { id: '2', inspector_uid: 'uid-1' },
+    { id: '3', inspector_uid: 'uid-2' },
+    { id: '4' }, // no inspector_uid — not counted
+    { id: '5', inspector_uid: null },
+  ]),
+  { 'uid-1': 2, 'uid-2': 1 },
+);
+assert.deepStrictEqual(contarCargaPorInspector([]), {});
+assert.deepStrictEqual(contarCargaPorInspector(undefined), {});
+
+// inspectorLabelConCarga — adapted from stickers-asignacion.js's
+// inspectorOptionLabel(): "Nombre — codigo (N)"; falls back to "Brigada
+// {codigo}" when nombre_completo is missing, and to 0 when count is falsy.
+assert.strictEqual(
+  inspectorLabelConCarga({ nombre_completo: 'Ana Torres', codigo: 'INS-01' }, 3),
+  'Ana Torres — INS-01 (3)',
+);
+assert.strictEqual(inspectorLabelConCarga({ codigo: 'INS-02' }, 0), 'Brigada INS-02 — INS-02 (0)');
+assert.strictEqual(inspectorLabelConCarga({ nombre_completo: 'Sin código' }, undefined), 'Sin código (0)');
+
+console.log('ok — puntos_solicitados.js estado classification, filters, sort, buscar prefill mapping, stale-search guard, inspector load-count tally');
