@@ -94,6 +94,15 @@ export function removeFotoAt(files, index) {
   return copy;
 }
 
+/** Resolves an `inspector_uid` (mirror field, GET-only, ADR-4) against the
+ *  Stickers roster already loaded for this tab. `null` covers both "no uid"
+ *  and "uid not found in the roster" — both render as "Sin asignar". */
+export function nombreInspectorPorUid(uid, inspectores) {
+  if (!uid) return null;
+  const found = (inspectores || []).find((i) => i.uid === uid);
+  return found ? (found.nombre_completo || found.codigo || uid) : null;
+}
+
 /** Newest creado_en first — same "most recent first" convention as
  *  evaluaciones.js's list. Missing/unparseable dates sort last, never throw. */
 export function sortPuntos(list) {
@@ -453,8 +462,9 @@ function listItemHtml(p) {
 
 // ---- Detail modal --------------------------------------------------------------
 
-function detailHtml(p) {
+function detailHtml(p, inspectores) {
   const e = estadoDe(p);
+  const nombreInspector = nombreInspectorPorUid(p.inspector_uid, inspectores);
   const group = (titulo, filas) => {
     const body = filas
       .filter(([, v]) => v !== '' && v != null)
@@ -488,6 +498,19 @@ function detailHtml(p) {
       ['Solicitante', p.nombre_solicitante || 'Sin dato'],
       ['Teléfono', p.telefono_solicitante || 'Sin dato'],
     ])}
+    <div class="detail-group">
+      <h3>Asignación</h3>
+      <dl class="detail-fields">
+        <div class="detail-field"><dt>Inspector asignado</dt><dd>${escapeHtml(nombreInspector || 'Sin asignar')}</dd></div>
+      </dl>
+      <div class="asignacion-combo">
+        <input type="text" id="ps-detail-inspector-input" class="asignacion-combo-input"
+          role="combobox" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false"
+          placeholder="Buscar inspector…" aria-label="Buscar inspector para asignar">
+        <ul class="asignacion-combo-list" id="ps-detail-inspector-list" role="listbox" hidden></ul>
+      </div>
+      ${p.inspector_uid ? '<button type="button" class="btn-secondary" id="ps-detail-quitar-asignacion">Quitar asignación</button>' : ''}
+    </div>
     <div class="sticker-form-actions">
       <button type="button" class="btn-secondary" id="ps-detail-eliminar" data-ps-id="${escapeHtml(p.id)}">Eliminar punto</button>
       <button type="button" class="btn-primary" id="ps-detail-editar" data-ps-id="${escapeHtml(p.id)}">Editar punto</button>
@@ -591,6 +614,22 @@ async function apiGeocode(getToken, direccion) {
   return fetchJson(apiUrl('geocode'), { method: 'POST', headers, body: JSON.stringify({ direccion }) });
 }
 
+// Roster read-only reuse of Stickers' own endpoint (same pattern as
+// planeacion.js's callStickersApi) — this tab needs it only to resolve/pick
+// an inspector for a single point, never to manage the roster itself.
+async function callStickersApi(getToken, body) {
+  const headers = { 'Content-Type': 'application/json', ...(await authHeaders(getToken)) };
+  return fetchJson(apiUrl('stickers'), { method: 'POST', headers, body: JSON.stringify(body) });
+}
+
+// `action`-dispatched endpoint (unlike this file's own REST puntos-solicitados
+// calls) — only `editarAsignacion` is used here, to write inspector_uid onto
+// the SAME planeacion_puntos mirror `mirror_id` already points at.
+async function callPlaneacionApi(getToken, body) {
+  const headers = { 'Content-Type': 'application/json', ...(await authHeaders(getToken)) };
+  return fetchJson(apiUrl('planeacionAsignaciones'), { method: 'POST', headers, body: JSON.stringify(body) });
+}
+
 // ---- Entry point -------------------------------------------------------------
 
 const AUTO_REFRESH_MS = 5 * 60 * 1000;
@@ -637,6 +676,14 @@ export function initPuntosSolicitados(section, { getToken }) {
   let byId = new Map();
   let allPuntos = [];
   let comunaMap = new Map();
+  // Inspector roster, fetched ONCE per tab open (not per modal open) — same
+  // "cache at init" convention as planeacion.js's ensureInspectores(). A
+  // failed fetch just leaves the combobox with zero options; assigning still
+  // works once the admin reloads the tab.
+  let inspectoresCache = [];
+  callStickersApi(getToken, { action: 'list' })
+    .then((data) => { inspectoresCache = data.inspectores || []; })
+    .catch((err) => console.error('No se pudo cargar el roster de inspectores:', err));
   let filters = { search: '', estado: '', comuna: '', barrio: '' };
   let fotosSeleccionadas = []; // File[] — newly picked, not yet uploaded
   let fotosExistentes = []; // string[] — already-uploaded URLs, populated when editing
@@ -655,7 +702,7 @@ export function initPuntosSolicitados(section, { getToken }) {
     const p = byId.get(id);
     if (!p) return;
     modalTitle.textContent = p.nombre || 'Punto solicitado';
-    modalBody.innerHTML = detailHtml(p);
+    modalBody.innerHTML = detailHtml(p, inspectoresCache);
     modal.classList.add('is-open');
     modal.setAttribute('aria-hidden', 'false');
     // buildMiniMap speaks the Panel's record shape (x = lng, y = lat) — same
@@ -668,6 +715,44 @@ export function initPuntosSolicitados(section, { getToken }) {
     if (delBtn) delBtn.addEventListener('click', () => eliminarPunto(id));
     const editBtn = modalBody.querySelector('#ps-detail-editar');
     if (editBtn) editBtn.addEventListener('click', () => { closeModal(); abrirEditar(p); });
+
+    // Assignment combobox — same mountCombobox pattern as comuna/barrio above.
+    const inspectorInput = modalBody.querySelector('#ps-detail-inspector-input');
+    const inspectorList = modalBody.querySelector('#ps-detail-inspector-list');
+    if (inspectorInput && inspectorList) {
+      mountCombobox(inspectorInput, inspectorList, {
+        options: inspectoresCache.map((i) => ({ id: i.uid, label: i.nombre_completo || i.codigo || i.uid })),
+        onSelect: (uid) => asignarInspector(id, uid),
+      });
+      const nombreActual = nombreInspectorPorUid(p.inspector_uid, inspectoresCache);
+      if (nombreActual) inspectorInput.value = nombreActual;
+    }
+    const quitarBtn = modalBody.querySelector('#ps-detail-quitar-asignacion');
+    if (quitarBtn) quitarBtn.addEventListener('click', () => asignarInspector(id, null));
+  }
+
+  /** Assigns (uid truthy) or clears (uid null, "Quitar asignación") the
+   *  inspector on the SAME planeacion_puntos mirror this point already has
+   *  (`p.mirror_id`) via the existing editarAsignacion action — never writes
+   *  to puntos_solicitados itself (ADR-4: this router never owns lifecycle
+   *  fields). Reloads the list (so estado_seguimiento/inspector_uid reflect
+   *  the mirror) and re-renders the still-open modal from the fresh point. */
+  async function asignarInspector(id, uid) {
+    const p = byId.get(id);
+    if (!p || !p.mirror_id) { showToast('No se pudo determinar el punto en planeación.', 'error'); return; }
+    try {
+      await callPlaneacionApi(getToken, {
+        action: 'editarAsignacion',
+        punto_id: p.mirror_id,
+        inspector_uid: uid,
+        estado_asignacion: uid ? 'asignado' : 'pendiente',
+      });
+      showToast(uid ? 'Inspector asignado.' : 'Asignación quitada.');
+      await load();
+      if (byId.has(id) && modal.classList.contains('is-open')) openDetail(id);
+    } catch (err) {
+      showToast(`No se pudo actualizar la asignación: ${err.message}`, 'error');
+    }
   }
 
   section.addEventListener('click', (ev) => {

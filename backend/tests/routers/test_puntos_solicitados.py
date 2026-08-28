@@ -337,6 +337,30 @@ def test_estado_seguimiento_tracks_mirror_estado_asignacion_transitions(monkeypa
     assert stores[PUNTOS_SOLICITADOS][sid]["estado_seguimiento"] == "pendiente"
 
 
+# ── GET exposes inspector_uid/mirror_id read from the mirror ───────────────
+
+
+def test_list_exposes_inspector_uid_and_mirror_id_from_mirror(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+    sid = client.post("/puntos-solicitados", json=VALID_BODY).json()["id"]
+    mirror_id = f"solicitado_{sid}"
+
+    def _punto() -> dict:
+        listing = client.get("/puntos-solicitados").json()["puntos"]
+        return next(p for p in listing if p["id"] == sid)
+
+    # No assignment yet: inspector_uid is None, mirror_id is always present.
+    punto = _punto()
+    assert punto["inspector_uid"] is None
+    assert punto["mirror_id"] == mirror_id
+
+    stores[PLANEACION_PUNTOS][mirror_id]["inspector_uid"] = "uid-inspector-1"
+    punto = _punto()
+    assert punto["inspector_uid"] == "uid-inspector-1"
+    assert punto["mirror_id"] == mirror_id
+
+
 # ── Manual coordinate entry without calling /geocode (3.7) ─────────────────
 
 

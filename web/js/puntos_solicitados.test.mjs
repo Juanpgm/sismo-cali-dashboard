@@ -2,7 +2,7 @@
 // classification, counts, filters and sort. Run: node web/js/puntos_solicitados.test.mjs
 import assert from 'node:assert';
 import {
-  ESTADOS, estadoDe, contarPorEstado, applyFilters, sortPuntos, removeFotoAt,
+  ESTADOS, estadoDe, contarPorEstado, applyFilters, sortPuntos, removeFotoAt, nombreInspectorPorUid,
 } from './puntos_solicitados.js';
 
 // The derived lifecycle states (ADR-4 map's output values), in the order they
@@ -87,5 +87,19 @@ assert.deepStrictEqual(removeFotoAt(fotos, 2).map((f) => f.name), ['a.jpg', 'b.j
 assert.deepStrictEqual(removeFotoAt(fotos, 0).map((f) => f.name), ['b.jpg', 'c.jpg']); // first
 assert.strictEqual(fotos.length, 3); // input untouched — no in-place mutation
 assert.deepStrictEqual(removeFotoAt([{ name: 'only.jpg' }], 0), []); // down to empty
+
+// nombreInspectorPorUid — resolves an inspector_uid against the Stickers
+// roster; null/unmatched uid and missing/empty roster all fall back to null
+// ("Sin asignar" at render time), never throw.
+const roster = [
+  { uid: 'uid-1', nombre_completo: 'Ana Torres', codigo: 'INS-01' },
+  { uid: 'uid-2', codigo: 'INS-02' }, // no nombre_completo — falls back to codigo
+];
+assert.strictEqual(nombreInspectorPorUid('uid-1', roster), 'Ana Torres');
+assert.strictEqual(nombreInspectorPorUid('uid-2', roster), 'INS-02');
+assert.strictEqual(nombreInspectorPorUid('uid-desconocido', roster), null);
+assert.strictEqual(nombreInspectorPorUid(null, roster), null);
+assert.strictEqual(nombreInspectorPorUid('uid-1', []), null);
+assert.strictEqual(nombreInspectorPorUid('uid-1', undefined), null);
 
 console.log('ok — puntos_solicitados.js estado classification, filters, sort');

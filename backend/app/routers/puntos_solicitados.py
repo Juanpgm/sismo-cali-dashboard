@@ -288,6 +288,11 @@ def listar_puntos_solicitados(claims: dict[str, Any] = Depends(require_role("adm
             "id": d.id,
             **data,
             "estado_seguimiento": ESTADO_SEGUIMIENTO_MAP.get(estado_asignacion, "pendiente"),
+            # Read-only passthrough of the mirror's assignment (never written
+            # by this router — ADR-4); mirror_id spares the frontend from
+            # re-deriving the `solicitado_{id}` convention itself.
+            "inspector_uid": (mirror or {}).get("inspector_uid"),
+            "mirror_id": _mirror_doc_id(d.id),
         })
     return JSONResponse({"ok": True, "puntos": puntos})
 
