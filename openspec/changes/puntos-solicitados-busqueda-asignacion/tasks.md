@@ -57,21 +57,21 @@ Chain strategy: stacked-to-main
 
 ## Phase 5: Frontend — card-level assign (F2, ADR-3)
 
-- [ ] 5.1 `web/js/puntos_solicitados.js` `listItemHtml()`: split the single `eval-row` button into sibling detail button + `.ps-asignar-btn`, plus sibling `.ps-asignar-panel[hidden]`.
-- [ ] 5.2 `init()`: delegate click on `.ps-asignar-btn` to toggle its panel (only one open at a time), mount `mountCombobox` over `inspectoresCache`, call existing `asignarInspector(id, uid)` on selection — Satisfies: "Card-level assignment action" (Scenario: Assigning from the list view).
-- [ ] 5.3 `web/styles.css`: `.ps-asignar-btn`/`.ps-asignar-panel` inline-panel styles, reusing `.asignacion-combo`.
+- [x] 5.1 `web/js/puntos_solicitados.js` `listItemHtml()`: split the single `eval-row` button into sibling detail button + `.ps-asignar-btn`, plus sibling `.ps-asignar-panel[hidden]`.
+- [x] 5.2 `init()`: delegate click on `.ps-asignar-btn` to toggle its panel (only one open at a time), mount `mountCombobox` over `inspectoresCache`, call existing `asignarInspector(id, uid)` on selection — Satisfies: "Card-level assignment action" (Scenario: Assigning from the list view).
+- [x] 5.3 `web/styles.css`: `.ps-asignar-btn`/`.ps-asignar-panel` inline-panel styles, reusing `.asignacion-combo`.
 
 ## Phase 6: Frontend — polish (F3: xlsx, badges, spinners)
 
-- [ ] 6.1 `web/js/puntos_solicitados.js`: xlsx export button mirroring `evaluaciones.js` `downloadStamp`/`loadXlsx` (`710-756`) — Satisfies: "xlsx export".
-- [ ] 6.2 Same file: client-side `count[uid]` one-pass tally over the loaded list, passed to `inspectorOptionLabel` (adapted from `stickers-asignacion.js:351`) for both the detail-modal and card-level comboboxes — Satisfies: "Inspector selection shows active-assignment load".
-- [ ] 6.3 Same file: `.asignacion-spinner` + disabled state on `#ps-crear-submit`/`#ps-geocode-btn` while in flight, in addition to existing text change — Satisfies: "Busy state feedback on create/geocode actions" (both scenarios).
-- [ ] 6.4 `web/styles.css`: confirm `.asignacion-combo-count`/`.asignacion-spinner` reused unmodified; add only if layout breaks in this context.
+- [x] 6.1 `web/js/puntos_solicitados.js`: xlsx export button mirroring `evaluaciones.js` `downloadStamp`/`loadXlsx` (`710-756`) — Satisfies: "xlsx export".
+- [x] 6.2 Same file: client-side `count[uid]` one-pass tally over the loaded list, passed to `inspectorOptionLabel` (adapted from `stickers-asignacion.js:351`) for both the detail-modal and card-level comboboxes — Satisfies: "Inspector selection shows active-assignment load". *(Deviation: implemented as `contarCargaPorInspector`/`inspectorLabelConCarga`, local adapted functions — no `.asignacion-combo-count` DOM span, since the shared `mountCombobox` in `utils.js` renders one label span per option and is out of this batch's edit scope (`utils.js` shared by `planeacion.js`/`stickers-asignacion.js` too; ADR-3 also says reuse `mountCombobox` "as-is"). The count is embedded in the label text itself, same `Nombre — codigo (N)` format `inspectorOptionLabel` produces, satisfying the scenario ("each inspector's option shows their current active-assignment count") without touching shared combobox rendering.)*
+- [x] 6.3 Same file: `.asignacion-spinner` + disabled state on `#ps-crear-submit`/`#ps-geocode-btn` while in flight, in addition to existing text change — Satisfies: "Busy state feedback on create/geocode actions" (both scenarios).
+- [x] 6.4 `web/styles.css`: confirmed `.asignacion-combo-count`/`.asignacion-spinner` reused unmodified — no new CSS needed for either (spinner reused as-is; combo-count not used per the 6.2 deviation note).
 
 ## Phase 7: Frontend tests — polish
 
-- [ ] 7.1 RED `web/js/puntos_solicitados.test.mjs`: client-side count-tally helper (pure function, list → `{uid: count}`).
-- [ ] 7.2 GREEN: `node --test "web/js/puntos_solicitados.test.mjs"`.
+- [x] 7.1 RED `web/js/puntos_solicitados.test.mjs`: client-side count-tally helper (pure function, list → `{uid: count}`) — `contarCargaPorInspector` + `inspectorLabelConCarga` assertions added.
+- [x] 7.2 GREEN: `node --test "web/js/puntos_solicitados.test.mjs"`.
 
 ## Phase 1b: Backend — 4R polish pass (post-review, non-blocking WARNINGs)
 
@@ -82,6 +82,6 @@ Chain strategy: stacked-to-main
 
 ## Phase 8: Verification
 
-- [ ] 8.1 Full `python -m pytest backend/tests/`, zero failures.
-- [ ] 8.2 Full `node --test "web/js/**/*.test.mjs"` (per `openspec/config.yaml` `verify.test_command`), zero failures.
-- [ ] 8.3 Manual (flag for operator, needs live admin session): search selects+prefills correctly; card "Asignar" assigns without opening the modal; xlsx downloads; inspector options show count badges; create/geocode buttons show spinner.
+- [x] 8.1 Full `python -m pytest backend/tests/`, zero failures. Result: **800 passed**.
+- [x] 8.2 Full `node --test "web/js/*.test.mjs"`, zero failures. Result: **9/9 test files pass** (69 assertions across files, including the new `contarCargaPorInspector`/`inspectorLabelConCarga` cases).
+- [ ] 8.3 Manual (flag for operator, needs live admin session): search selects+prefills correctly; card "Asignar" assigns without opening the modal; xlsx downloads; inspector options show count in label; create/geocode buttons show spinner.

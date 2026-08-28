@@ -4,7 +4,9 @@ import assert from 'node:assert';
 import {
   ESTADOS, estadoDe, contarPorEstado, applyFilters, sortPuntos, removeFotoAt, nombreInspectorPorUid,
   prefillStepsFromResultado, prefillStepsFromQuery, apiBuscar, runGuardedBuscar,
+  contarCargaPorInspector, inspectorLabelConCarga, remountAsignarNodes,
 } from './puntos_solicitados.js';
+import { mountCombobox } from './utils.js';
 
 // The derived lifecycle states (ADR-4 map's output values), in the order they
 // progress through the assignment machinery.
@@ -218,4 +220,115 @@ assert.deepStrictEqual(Object.fromEntries(prefillStepsFromQuery(undefined)), { d
   assert.deepStrictEqual(rendered, [[]]);
 }
 
-console.log('ok — puntos_solicitados.js estado classification, filters, sort, buscar prefill mapping, stale-search guard');
+// contarCargaPorInspector — client-side one-pass tally over the already-
+// loaded puntos list (design.md ADR-5): only counts puntos WITH an
+// inspector_uid, never throws on a missing/empty list.
+assert.deepStrictEqual(
+  contarCargaPorInspector([
+    { id: '1', inspector_uid: 'uid-1' },
+    { id: '2', inspector_uid: 'uid-1' },
+    { id: '3', inspector_uid: 'uid-2' },
+    { id: '4' }, // no inspector_uid — not counted
+    { id: '5', inspector_uid: null },
+  ]),
+  { 'uid-1': 2, 'uid-2': 1 },
+);
+assert.deepStrictEqual(contarCargaPorInspector([]), {});
+assert.deepStrictEqual(contarCargaPorInspector(undefined), {});
+
+// inspectorLabelConCarga — adapted from stickers-asignacion.js's
+// inspectorOptionLabel(): "Nombre — codigo (N)"; falls back to "Brigada
+// {codigo}" when nombre_completo is missing, and to 0 when count is falsy.
+assert.strictEqual(
+  inspectorLabelConCarga({ nombre_completo: 'Ana Torres', codigo: 'INS-01' }, 3),
+  'Ana Torres — INS-01 (3)',
+);
+assert.strictEqual(inspectorLabelConCarga({ codigo: 'INS-02' }, 0), 'Brigada INS-02 — INS-02 (0)');
+assert.strictEqual(inspectorLabelConCarga({ nombre_completo: 'Sin código' }, undefined), 'Sin código (0)');
+
+// remountAsignarNodes + mountCombobox — regression for the CRITICAL
+// duplicate-write bug: the card-level Asignar panel's row DOM survives
+// close/reopen (closeAsignarPanels() only hides it), and mountCombobox has
+// no unmount — it attaches listeners straight onto the input/list nodes it's
+// given. Re-mounting on the SAME nodes on every open stacked another set of
+// listeners each time, so one selection fired onSelect (asignarInspector's
+// real backend write) once per stacked mount. remountAsignarNodes() must
+// hand every open a fresh clone so exactly one listener set is ever live.
+//
+// Minimal fake DOM node (this repo's web/js/*.test.mjs convention tests
+// exported pure functions, not real DOM — see utils.test.mjs's note on
+// mountCombobox — so this stub models only the handful of Element methods
+// mountCombobox/remountAsignarNodes actually call, not a full DOM).
+{
+  class FakeNode {
+    constructor(classes) {
+      this.classList = new Set(classes);
+      this.dataset = {};
+      this.parentNode = null;
+      this.children = [];
+      this._listeners = {};
+      this.hidden = false;
+      this.value = '';
+    }
+
+    addEventListener(type, fn) { (this._listeners[type] ||= []).push(fn); }
+
+    setAttribute() {}
+
+    select() {}
+
+    querySelector(selector) {
+      const cls = selector.replace(/^\./, '');
+      return this.children.find((c) => c.classList.has(cls)) || null;
+    }
+
+    closest(selector) {
+      const cls = selector.replace(/^\./, '');
+      return this.classList.has(cls) ? this : null;
+    }
+
+    cloneNode() { return new FakeNode(this.classList); } // real cloneNode never copies listeners
+    replaceWith(next) {
+      const i = this.parentNode.children.indexOf(this);
+      this.parentNode.children[i] = next;
+      next.parentNode = this.parentNode;
+      this.parentNode = null;
+    }
+  }
+
+  function fakePanel() {
+    const panel = new FakeNode([]);
+    const input = new FakeNode(['ps-asignar-input']);
+    const list = new FakeNode(['ps-asignar-list']);
+    input.parentNode = panel; list.parentNode = panel;
+    panel.children = [input, list];
+    return panel;
+  }
+
+  function open(panel, calls) {
+    const { input, list } = remountAsignarNodes(panel);
+    mountCombobox(input, list, {
+      options: [{ id: 'uid-1', label: 'Ana Torres' }],
+      onSelect: (uid) => calls.push(uid),
+    });
+    return { input, list };
+  }
+
+  function selectFirstOption(list) {
+    const target = new FakeNode(['asignacion-combo-option']);
+    target.dataset.id = 'uid-1';
+    // mousedown (not click) is what mountCombobox listens on.
+    list._listeners.mousedown.forEach((fn) => fn({ target, preventDefault() {} }));
+  }
+
+  const calls = [];
+  const panel = fakePanel();
+  open(panel, calls); // open
+  panel.hidden = true; // close (hide only — same as production's closeAsignarPanels)
+  const { list: list2 } = open(panel, calls); // reopen — must remount on FRESH nodes
+  assert.strictEqual(list2._listeners.mousedown.length, 1, 'reopening must not stack a second mousedown listener');
+  selectFirstOption(list2);
+  assert.deepStrictEqual(calls, ['uid-1'], "onSelect (asignarInspector's write) must fire exactly once for one selection after open→close→open");
+}
+
+console.log('ok — puntos_solicitados.js estado classification, filters, sort, buscar prefill mapping, stale-search guard, inspector load-count tally, asignar-panel remount regression');
