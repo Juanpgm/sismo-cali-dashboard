@@ -43,17 +43,17 @@ Chain strategy: stacked-to-main
 
 ## Phase 3: Frontend — search modal + prefill (F1, ADR-1 consumer)
 
-- [ ] 3.1 `web/js/puntos_solicitados.js` `sectionHtml()`: add "Buscar punto" button + `#ps-buscar-modal` (debounced input + results list container).
-- [ ] 3.2 Wire debounced fetch to `GET /puntos-solicitados/buscar?q=`; render results (`direccion`/`barrio`/`comuna`/`nombre_solicitante`) each with "Usar este punto".
-- [ ] 3.3 Prefill wiring into existing `#ps-crear-modal` per design's field mapping: `direccion`→`#ps-direccion`+`name="nombre"`, `comuna`→`#ps-comuna-input` (fire select to load barrios) **before** `barrio`→`#ps-barrio-input`, `lat`/`lng`→`#ps-lat`/`#ps-lng`+marker, `nombre_solicitante`/`telefono_solicitante` — Satisfies: "Search result selection prefills the create form" (Scenario: Selecting a result prefills the create form).
-- [ ] 3.4 "Crear punto nuevo" fallback: prefill only `direccion`+`nombre` from typed `q`, everything else blank — Satisfies: same requirement (Scenario: No match still allows manual creation).
-- [ ] 3.5 `web/styles.css`: `.ps-buscar-modal`/result-list styles.
+- [x] 3.1 `web/js/puntos_solicitados.js` `sectionHtml()`: add "Buscar punto" button + `#ps-buscar-modal` (debounced input + results list container).
+- [x] 3.2 Wire debounced fetch to `GET /puntos-solicitados/buscar?q=`; render results (`direccion`/`barrio`/`comuna`/`nombre_solicitante`) each with "Usar este punto".
+- [x] 3.3 Prefill wiring into existing `#ps-crear-modal` per design's field mapping: `direccion`→`#ps-direccion`+`name="nombre"`, `comuna`→`#ps-comuna-input` (fire select to load barrios) **before** `barrio`→`#ps-barrio-input`, `lat`/`lng`→`#ps-lat`/`#ps-lng`+marker, `nombre_solicitante`/`telefono_solicitante` — Satisfies: "Search result selection prefills the create form" (Scenario: Selecting a result prefills the create form). *(Implemented via exported pure `prefillStepsFromResultado()` → ordered `[field,value]` steps, applied by an internal `aplicarPrefillSteps()` that reuses `resetCrearForm()`/`selectComuna()`/`renderCreateMap()` as-is.)*
+- [x] 3.4 "Crear punto nuevo" fallback: prefill only `direccion`+`nombre` from typed `q`, everything else blank — Satisfies: same requirement (Scenario: No match still allows manual creation). *(Exported pure `prefillStepsFromQuery()`.)*
+- [x] 3.5 `web/styles.css`: `.ps-buscar-modal`/result-list styles. *(Implemented as `.ps-buscar-list`/`.ps-buscar-row`/`.ps-buscar-info`; modal itself reuses `.modal`/`.modal-panel`/`.sticker-modal-panel` unmodified — no `.ps-buscar-modal` class needed.)*
 
 ## Phase 4: Frontend tests — search
 
-- [ ] 4.1 RED `web/js/puntos_solicitados.test.mjs`: exported prefill-mapping helper (result → field values).
-- [ ] 4.2 RED same file: comuna-before-barrio sequencing helper (barrio value applied only after comuna is set).
-- [ ] 4.3 GREEN: `node --test "web/js/puntos_solicitados.test.mjs"`.
+- [x] 4.1 RED `web/js/puntos_solicitados.test.mjs`: exported prefill-mapping helper (result → field values).
+- [x] 4.2 RED same file: comuna-before-barrio sequencing helper (barrio value applied only after comuna is set).
+- [x] 4.3 GREEN: `node --test "web/js/puntos_solicitados.test.mjs"`.
 
 ## Phase 5: Frontend — card-level assign (F2, ADR-3)
 

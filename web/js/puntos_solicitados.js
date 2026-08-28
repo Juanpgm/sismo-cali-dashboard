@@ -20,7 +20,7 @@
 // comuna_corregimiento/barrio_vereda are typed admin fields on this record,
 // not resolved from a basemap polygon.
 import {
-  COLORS, escapeHtml, basemapTileUrl, normalize, showToast, mountCombobox,
+  COLORS, escapeHtml, basemapTileUrl, normalize, showToast, mountCombobox, debounce,
 } from './utils.js';
 import { buildMiniMap } from './mapview.js';
 import { openLightbox } from './table.js';
@@ -92,6 +92,40 @@ export function removeFotoAt(files, index) {
   const copy = files.slice();
   copy.splice(index, 1);
   return copy;
+}
+
+// ---- Buscar punto: search-result → #ps-crear-modal prefill (F1) -----------
+// (puntos-solicitados-busqueda-asignacion, design.md "Prefill field mapping")
+
+/** `GET /puntos-solicitados/buscar` result → ORDERED `[formField, value]`
+ *  steps to apply into the existing `#ps-crear-modal`. Order matters: the
+ *  barrio combobox stays `disabled` until a comuna is set, so 'comuna' MUST
+ *  be applied before 'barrio' — applying out of order would silently drop
+ *  the barrio value. Exported so both the mapping and this comuna-before-
+ *  barrio sequencing invariant are unit-testable without the DOM. */
+export function prefillStepsFromResultado(resultado) {
+  const r = resultado || {};
+  return [
+    ['direccion', r.direccion || ''],
+    ['nombre', r.direccion || ''],
+    ['comuna', r.comuna || ''],
+    ['barrio', r.barrio || ''],
+    ['lat', Number.isFinite(r.lat) ? r.lat : null],
+    ['lng', Number.isFinite(r.lng) ? r.lng : null],
+    ['nombre_solicitante', r.nombre_solicitante || ''],
+    ['telefono_solicitante', r.telefono_solicitante || ''],
+  ];
+}
+
+/** "Crear punto nuevo" fallback (no result selected, or zero matches):
+ *  prefill ONLY dirección (+ nombre, same default select-result uses) from
+ *  the typed search text — everything else stays blank. */
+export function prefillStepsFromQuery(query) {
+  const q = (query || '').trim();
+  return [
+    ['direccion', q],
+    ['nombre', q],
+  ];
 }
 
 /** Resolves an `inspector_uid` (mirror field, GET-only, ADR-4) against the
@@ -197,6 +231,7 @@ export function sectionHtml() {
       <div class="section-bar">
         <h3 class="section-bar-title">Puntos Solicitados</h3>
         <button type="button" class="sticker-action" id="ps-reload">Actualizar</button>
+        <button type="button" class="btn-secondary" id="ps-buscar">Buscar punto</button>
         <button type="button" class="btn-primary" id="ps-crear">Crear punto solicitado</button>
       </div>
 
@@ -249,6 +284,31 @@ export function sectionHtml() {
             </button>
           </div>
           <div class="modal-body" id="ps-modal-body"></div>
+        </div>
+      </div>
+
+      <!-- Buscar punto modal (puntos-solicitados-busqueda-asignacion F1):
+           debounced search over GET /puntos-solicitados/buscar, results feed
+           the SAME create modal below via prefill, never a separate form. -->
+      <div class="modal" id="ps-buscar-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="ps-buscar-title">
+        <div class="modal-backdrop" data-ps-buscar-close></div>
+        <div class="modal-panel sticker-modal-panel">
+          <div class="modal-header">
+            <h2 id="ps-buscar-title">Buscar punto</h2>
+            <button type="button" class="btn-icon" data-ps-buscar-close aria-label="Cerrar">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
+            </button>
+          </div>
+          <div class="modal-body">
+            <div class="asignacion-search">
+              <input type="search" id="ps-buscar-input" class="sticker-search-input"
+                placeholder="Buscar por dirección, barrio, comuna o solicitante…" aria-label="Buscar punto existente">
+            </div>
+            <ul class="eval-list ps-buscar-list" id="ps-buscar-list"></ul>
+            <div class="sticker-form-actions">
+              <button type="button" class="btn-secondary" id="ps-buscar-nuevo">Crear punto nuevo</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -609,6 +669,41 @@ async function apiDelete(getToken, id) {
   return fetchJson(`${apiUrl('puntosSolicitados')}/${encodeURIComponent(id)}`, { method: 'DELETE', headers });
 }
 
+// (puntos-solicitados-busqueda-asignacion F1) Admin-only search over
+// existing atencionsismo reports — read-only, same auth/error convention as
+// the rest of this file's REST calls.
+export async function apiBuscar(getToken, q) {
+  const headers = await authHeaders(getToken);
+  const data = await fetchJson(`${apiUrl('puntosSolicitados')}/buscar?q=${encodeURIComponent(q)}`, { headers });
+  return data.resultados || [];
+}
+
+// ---- Buscar punto: stale-response guard (F1 race-condition fix) -----------
+//
+// CRITICAL fix: debounce() (utils.js) only coalesces calls fired within its
+// window — it does NOT cancel in-flight fetches. An admin who types, pauses
+// long enough for request A to fire, then types more before A resolves
+// (firing request B) has both requests racing independently; if A resolves
+// AFTER B, whoever renders last wins even though B is the newer query.
+// `runGuardedBuscar` fixes this with a monotonic request-id counter: the
+// caller bumps `state.current` on every keystroke/open/close and passes that
+// value as `requestId`; a response only renders if no newer request has
+// started since — otherwise it's silently discarded (no render, no error).
+// `search` is injectable so this is unit-testable without DOM/fetch.
+export async function runGuardedBuscar(query, requestId, state, { search, onResult, onError }) {
+  const q = (query || '').trim();
+  if (!q) {
+    if (requestId === state.current) onResult([]);
+    return;
+  }
+  try {
+    const resultados = await search(q);
+    if (requestId === state.current) onResult(resultados);
+  } catch (err) {
+    if (requestId === state.current) onError(err);
+  }
+}
+
 async function apiGeocode(getToken, direccion) {
   const headers = { 'Content-Type': 'application/json', ...(await authHeaders(getToken)) };
   return fetchJson(apiUrl('geocode'), { method: 'POST', headers, body: JSON.stringify({ direccion }) });
@@ -653,6 +748,12 @@ export function initPuntosSolicitados(section, { getToken }) {
   const chipsEl = section.querySelector('#ps-estado-chips');
   const comunaSelect = section.querySelector('#ps-comuna-select');
   const barrioSelect = section.querySelector('#ps-barrio-select');
+
+  const buscarBtn = section.querySelector('#ps-buscar');
+  const buscarModal = section.querySelector('#ps-buscar-modal');
+  const buscarInput = section.querySelector('#ps-buscar-input');
+  const buscarListEl = section.querySelector('#ps-buscar-list');
+  const buscarNuevoBtn = section.querySelector('#ps-buscar-nuevo');
 
   const crearBtn = section.querySelector('#ps-crear');
   const crearModal = section.querySelector('#ps-crear-modal');
@@ -973,6 +1074,109 @@ export function initPuntosSolicitados(section, { getToken }) {
     crearModal.setAttribute('aria-hidden', 'false');
   }
   crearModal.querySelectorAll('[data-ps-crear-close]').forEach((el) => el.addEventListener('click', closeCrear));
+
+  // ---- Buscar punto modal (puntos-solicitados-busqueda-asignacion F1) ----
+  // Applies a `prefillStepsFromResultado`/`prefillStepsFromQuery` steps array
+  // (pure, unit-tested) onto the ALREADY-RESET create form/comboboxes/map —
+  // reuses resetCrearForm()/selectComuna()/renderCreateMap() as-is, no
+  // duplicated form logic.
+  function aplicarPrefillSteps(steps) {
+    let lat = null;
+    let lng = null;
+    for (const [field, value] of steps) {
+      if (field === 'direccion') direccionInput.value = value;
+      else if (field === 'nombre') crearForm.elements.nombre.value = value;
+      else if (field === 'comuna') { if (value) { comunaComboInput.value = value; selectComuna(value); } }
+      else if (field === 'barrio') { if (value) barrioComboInput.value = value; }
+      else if (field === 'nombre_solicitante') crearForm.elements.nombre_solicitante.value = value;
+      else if (field === 'telefono_solicitante') crearForm.elements.telefono_solicitante.value = value;
+      else if (field === 'lat') lat = value;
+      else if (field === 'lng') lng = value;
+    }
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      latInput.value = lat.toFixed(6);
+      lngInput.value = lng.toFixed(6);
+      renderCreateMap(lat, lng, (nlat, nlng) => { latInput.value = nlat.toFixed(6); lngInput.value = nlng.toFixed(6); });
+    }
+  }
+
+  function openCrearDesdeBusqueda(resultado) {
+    resetCrearForm();
+    aplicarPrefillSteps(prefillStepsFromResultado(resultado));
+    crearModal.classList.add('is-open');
+    crearModal.setAttribute('aria-hidden', 'false');
+  }
+
+  function openCrearNuevoDesdeQuery(query) {
+    resetCrearForm();
+    aplicarPrefillSteps(prefillStepsFromQuery(query));
+    crearModal.classList.add('is-open');
+    crearModal.setAttribute('aria-hidden', 'false');
+  }
+
+  function buscarResultItemHtml(r, idx) {
+    return `<li>
+      <div class="eval-row ps-buscar-row">
+        <div class="ps-buscar-info">
+          <span class="eval-name">${escapeHtml(r.direccion || 'Sin dirección')}</span>
+          <span class="eval-meta">${escapeHtml(r.barrio || 'Sin barrio')} · ${escapeHtml(r.comuna || 'Sin comuna')}</span>
+          <span class="eval-meta">${escapeHtml(r.nombre_solicitante || 'Sin solicitante')}</span>
+        </div>
+        <button type="button" class="btn-link" data-ps-buscar-usar="${idx}">Usar este punto &rsaquo;</button>
+      </div>
+    </li>`;
+  }
+
+  let buscarResultados = [];
+  function renderBuscarResultados(list) {
+    buscarResultados = list;
+    buscarListEl.innerHTML = list.length
+      ? list.map((r, idx) => buscarResultItemHtml(r, idx)).join('')
+      : '<li class="eval-empty">Sin resultados. Podés crear un punto nuevo.</li>';
+  }
+
+  // `buscarState.current` is bumped on every keystroke AND on open/close, so
+  // a response from a request started before the modal was closed/reopened
+  // can never render into it — see runGuardedBuscar above.
+  const buscarState = { current: 0 };
+  const runBuscar = debounce((q, requestId) => runGuardedBuscar(q, requestId, buscarState, {
+    search: (query) => apiBuscar(getToken, query),
+    onResult: renderBuscarResultados,
+    onError: (err) => { buscarListEl.innerHTML = `<li class="sticker-error" role="alert">No se pudo buscar: ${escapeHtml(err.message)}</li>`; },
+  }), 300);
+  buscarInput.addEventListener('input', () => {
+    buscarState.current += 1;
+    runBuscar(buscarInput.value, buscarState.current);
+  });
+
+  function openBuscar() {
+    buscarState.current += 1; // invalidate any in-flight search from a previous session
+    buscarInput.value = '';
+    renderBuscarResultados([]);
+    buscarModal.classList.add('is-open');
+    buscarModal.setAttribute('aria-hidden', 'false');
+    setTimeout(() => buscarInput.focus(), 0);
+  }
+  function closeBuscar() {
+    buscarState.current += 1; // invalidate any in-flight search so it can't land after close
+    buscarModal.classList.remove('is-open');
+    buscarModal.setAttribute('aria-hidden', 'true');
+  }
+  buscarBtn.addEventListener('click', openBuscar);
+  buscarModal.querySelectorAll('[data-ps-buscar-close]').forEach((el) => el.addEventListener('click', closeBuscar));
+  buscarListEl.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-ps-buscar-usar]');
+    if (!btn) return;
+    const resultado = buscarResultados[Number(btn.dataset.psBuscarUsar)];
+    if (!resultado) return;
+    closeBuscar();
+    openCrearDesdeBusqueda(resultado);
+  });
+  buscarNuevoBtn.addEventListener('click', () => {
+    const query = buscarInput.value;
+    closeBuscar();
+    openCrearNuevoDesdeQuery(query);
+  });
 
   function syncCoordsFromInputs() {
     const lat = Number(latInput.value);
