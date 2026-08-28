@@ -11,7 +11,9 @@ Fake in-memory Firestore double, same shape/convention as
 auto-id `.document()`), extended with an injectable batch-commit failure
 (`_FakeBatch.commit()` can be made to raise BEFORE applying any op — proves
 ADR-1's "neither document exists on failure" by construction, mirroring how
-a real Firestore `WriteBatch` behaves).
+a real Firestore `WriteBatch` behaves) AND an injectable read failure
+(`fail_flag["fail_read"]` makes `_FakeCollection.get()`/`_FakeFirestore.
+get_all()` raise, for GET's Firestore-hiccup coverage).
 """
 from __future__ import annotations
 
@@ -78,10 +80,11 @@ class _FakeDocRef:
 
 
 class _FakeCollection:
-    def __init__(self, collection: str, store: dict[str, dict[str, Any]]) -> None:
+    def __init__(self, collection: str, store: dict[str, dict[str, Any]], fail_flag: dict[str, bool]) -> None:
         self._collection = collection
         self._store = store
         self._auto_seq = 0
+        self._fail_flag = fail_flag
 
     def document(self, doc_id: str | None = None) -> _FakeDocRef:
         if doc_id is None:
@@ -90,6 +93,8 @@ class _FakeCollection:
         return _FakeDocRef(self._store, self._collection, doc_id)
 
     def get(self) -> list[_FakeSnapshot]:
+        if self._fail_flag.get("fail_read"):
+            raise RuntimeError("simulated Firestore read failure")
         return [_FakeSnapshot(self._collection, doc_id, data) for doc_id, data in self._store.items()]
 
 
@@ -126,12 +131,14 @@ class _FakeFirestore:
         self._fail_flag = fail_flag
 
     def collection(self, name: str) -> _FakeCollection:
-        return _FakeCollection(name, self._stores.setdefault(name, {}))
+        return _FakeCollection(name, self._stores.setdefault(name, {}), self._fail_flag)
 
     def batch(self) -> _FakeBatch:
         return _FakeBatch(self._fail_flag)
 
     def get_all(self, refs: list[_FakeDocRef]) -> list[_FakeSnapshot]:
+        if self._fail_flag.get("fail_read"):
+            raise RuntimeError("simulated Firestore read failure")
         return [ref.get() for ref in refs]
 
 
@@ -324,10 +331,33 @@ def test_manual_lat_lng_submit_creates_point_with_those_coordinates(monkeypatch)
     assert stores[PLANEACION_PUNTOS][f"solicitado_{sid}"]["coords"] == {"lat": 3.401234, "lon": -76.512345}
 
 
-# ── PATCH edits request metadata only, never the mirror/lifecycle ──────────
+# ── PATCH re-syncs mirrored display fields, never solicitado-only/lifecycle ─
+
+
+def test_patch_mirrored_field_updates_the_mirror(monkeypatch):
+    """A mirrored field (ADR-2: nombre/direccion/barrio/comuna/coords) must
+    reach `planeacion_puntos/solicitado_{id}` too, atomically."""
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+    sid = client.post("/puntos-solicitados", json=VALID_BODY).json()["id"]
+
+    resp = client.patch(f"/puntos-solicitados/{sid}", json={
+        "nombre": "Casa renombrada",
+        "lat": 3.999,
+        "lng": -76.111,
+    })
+    assert resp.status_code == 200
+    assert stores[PUNTOS_SOLICITADOS][sid]["nombre"] == "Casa renombrada"
+    assert stores[PUNTOS_SOLICITADOS][sid]["coords"] == {"lat": 3.999, "lon": -76.111}
+
+    mirror = stores[PLANEACION_PUNTOS][f"solicitado_{sid}"]
+    assert mirror["nombre"] == "Casa renombrada"
+    assert mirror["coords"] == {"lat": 3.999, "lon": -76.111}
 
 
 def test_patch_edits_request_fields_never_touches_mirror_or_lifecycle(monkeypatch):
+    """`justificacion` is solicitado-only (ADR-2) — it must never reach the
+    mirror; lifecycle fields on the mirror stay untouched by PATCH (ADR-4)."""
     stores = _stores()
     client = _admin_client(monkeypatch, stores)
     sid = client.post("/puntos-solicitados", json=VALID_BODY).json()["id"]
@@ -336,7 +366,10 @@ def test_patch_edits_request_fields_never_touches_mirror_or_lifecycle(monkeypatc
     resp = client.patch(f"/puntos-solicitados/{sid}", json={"justificacion": "Actualizada"})
     assert resp.status_code == 200
     assert stores[PUNTOS_SOLICITADOS][sid]["justificacion"] == "Actualizada"
+    assert "justificacion" not in stores[PLANEACION_PUNTOS][f"solicitado_{sid}"]
     assert stores[PLANEACION_PUNTOS][f"solicitado_{sid}"] == mirror_before
+    assert stores[PLANEACION_PUNTOS][f"solicitado_{sid}"]["estado_asignacion"] == "pendiente"
+    assert stores[PLANEACION_PUNTOS][f"solicitado_{sid}"]["cuadrilla_id"] is None
 
 
 def test_patch_unknown_id_is_404(monkeypatch):
@@ -344,6 +377,38 @@ def test_patch_unknown_id_is_404(monkeypatch):
     client = _admin_client(monkeypatch, stores)
     resp = client.patch("/puntos-solicitados/does-not-exist", json={"justificacion": "x"})
     assert resp.status_code == 404
+
+
+def test_patch_with_more_than_max_fotos_is_rejected(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+    sid = client.post("/puntos-solicitados", json=VALID_BODY).json()["id"]
+
+    resp = client.patch(f"/puntos-solicitados/{sid}", json={"fotos": [f"f{i}" for i in range(11)]})
+    assert resp.status_code == 400
+    assert stores[PUNTOS_SOLICITADOS][sid]["fotos"] == []
+
+
+def test_patch_with_exactly_max_fotos_is_accepted(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+    sid = client.post("/puntos-solicitados", json=VALID_BODY).json()["id"]
+
+    resp = client.patch(f"/puntos-solicitados/{sid}", json={"fotos": [f"f{i}" for i in range(10)]})
+    assert resp.status_code == 200
+    assert len(stores[PUNTOS_SOLICITADOS][sid]["fotos"]) == 10
+
+
+def test_patch_firestore_failure_is_a_clean_502(monkeypatch):
+    stores = _stores()
+    fail_flag: dict[str, bool] = {}
+    client = _admin_client(monkeypatch, stores, fail_flag)
+    sid = client.post("/puntos-solicitados", json=VALID_BODY).json()["id"]
+
+    fail_flag["fail"] = True
+    resp = client.patch(f"/puntos-solicitados/{sid}", json={"nombre": "x"})
+    assert resp.status_code == 502
+    assert stores[PUNTOS_SOLICITADOS][sid]["nombre"] != "x"
 
 
 # ── DELETE removes both the request doc and its mirror ─────────────────────
@@ -365,6 +430,32 @@ def test_delete_unknown_id_is_404(monkeypatch):
     client = _admin_client(monkeypatch, stores)
     resp = client.delete("/puntos-solicitados/does-not-exist")
     assert resp.status_code == 404
+
+
+def test_delete_firestore_failure_is_a_clean_502(monkeypatch):
+    stores = _stores()
+    fail_flag: dict[str, bool] = {}
+    client = _admin_client(monkeypatch, stores, fail_flag)
+    sid = client.post("/puntos-solicitados", json=VALID_BODY).json()["id"]
+
+    fail_flag["fail"] = True
+    resp = client.delete(f"/puntos-solicitados/{sid}")
+    assert resp.status_code == 502
+    assert sid in stores[PUNTOS_SOLICITADOS]
+
+
+# ── GET Firestore failure is a clean 502 ────────────────────────────────────
+
+
+def test_list_firestore_read_failure_is_a_clean_502(monkeypatch):
+    stores = _stores()
+    fail_flag: dict[str, bool] = {}
+    client = _admin_client(monkeypatch, stores, fail_flag)
+    client.post("/puntos-solicitados", json=VALID_BODY)
+
+    fail_flag["fail_read"] = True
+    resp = client.get("/puntos-solicitados")
+    assert resp.status_code == 502
 
 
 # ── POST /geocode: any authenticated caller, key never in response ─────────
@@ -397,6 +488,48 @@ def test_geocode_route_maps_key_error_to_502(monkeypatch):
 
     import app.routers.puntos_solicitados as router_mod
     monkeypatch.setattr(router_mod, "geocode_service", _raise_key_error)
+
+    client = _viewer_client(monkeypatch, stores)
+    resp = client.post("/geocode", json={"direccion": "Calle 1 # 2-3"})
+    assert resp.status_code == 502
+
+
+def test_geocode_route_502_never_leaks_the_api_key_on_transport_failure(monkeypatch):
+    """Regression: full path through the REAL geocode_service (not a mocked
+    GeocodeTransportError) — a `requests.get` connection failure whose
+    message embeds the API key must not surface that key in the 502
+    response body, even though `_default_http_get` builds `params["key"]`
+    from this exact env var."""
+    import requests
+
+    stores = _stores()
+    fake_key = "AIzaFAKE-SECRET-KEY-67890"
+    monkeypatch.setenv("GOOGLE_MAPS_API_KEY", fake_key)
+
+    def _raise_with_key_in_message(*args, **kwargs):
+        raise requests.exceptions.ConnectionError(
+            f"Max retries exceeded with url: /maps/api/geocode/json?key={fake_key}"
+        )
+
+    monkeypatch.setattr(requests, "get", _raise_with_key_in_message)
+
+    client = _viewer_client(monkeypatch, stores)
+    resp = client.post("/geocode", json={"direccion": "Calle 1 # 2-3"})
+    assert resp.status_code == 502
+    assert fake_key not in resp.text
+
+
+def test_geocode_route_maps_transport_error_to_502(monkeypatch):
+    """Timeout/connection-error/malformed-response failures inside
+    `geocode()` must also come back as a clean 502, not an unhandled 500."""
+    stores = _stores()
+
+    def _raise_transport_error(direccion, **kwargs):
+        from app.services.geocode import GeocodeTransportError
+        raise GeocodeTransportError("Geocoding API request failed: timeout")
+
+    import app.routers.puntos_solicitados as router_mod
+    monkeypatch.setattr(router_mod, "geocode_service", _raise_transport_error)
 
     client = _viewer_client(monkeypatch, stores)
     resp = client.post("/geocode", json={"direccion": "Calle 1 # 2-3"})

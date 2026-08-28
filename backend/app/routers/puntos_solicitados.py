@@ -31,17 +31,22 @@ Firestore access); `doc_id('solicitado', sid)` yields the exact
 **ADR-4 — `estado_seguimiento` is DERIVED, never a synced second
 lifecycle.** `listar_puntos_solicitados` reads the mirror's
 `estado_asignacion` (one batched `get_all`) and maps it through
-`ESTADO_SEGUIMIENTO_MAP`. `PATCH /{id}` only ever touches
-`puntos_solicitados` request-metadata fields — it never writes
-`estado_seguimiento` or anything on the mirror; every lifecycle transition
-is driven exclusively by the EXISTING `planeacion_asignaciones.py`/
-`inspector_asignaciones.py` endpoints.
+`ESTADO_SEGUIMIENTO_MAP`. `PATCH /{id}` never writes `estado_seguimiento`
+or lifecycle fields (`estado_asignacion`/`cuadrilla_id`/`inspector_uid`) —
+every lifecycle transition is driven exclusively by the EXISTING
+`planeacion_asignaciones.py`/`inspector_asignaciones.py` endpoints. It DOES
+re-sync the ADR-2 mirrored display subset (`nombre`/`direccion`/`barrio`/
+`comuna`/`coords`) onto the mirror in the same atomic batch, so a corrected
+name/address/location never goes stale on the assignment board;
+`justificacion`/contact/photos stay solicitado-only, never copied.
 
 **ADR-5 — `POST /geocode`: live proxy, `Depends(require_auth)`** (any
 authenticated caller, not admin-only — creating a point still IS
 admin-only). Delegates to the pure `app.services.geocode.geocode`; a
-`GeocodeKeyError` (bad key/quota) maps to 502. The API key never appears in
-any response — `geocode()` reads it from the environment itself.
+`GeocodeKeyError` (bad key/quota) or `GeocodeTransportError` (timeout/
+connection failure/malformed response) both map to the same 502. The API
+key never appears in any response — `geocode()` reads it from the
+environment itself.
 
 **ADR-6 — sole-writer allowlist**: this module is added to
 `tests/invariants/test_sole_writer.py`'s existing
@@ -51,6 +56,7 @@ independent `puntos_solicitados` collection literal check names this file
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -61,7 +67,7 @@ from pydantic import BaseModel, Field
 from app.auth.deps import require_auth, require_role
 from app.credentials import clients as credentials
 from app.jobs.planeacion_cruce import clave_integracion, doc_id
-from app.services.geocode import GeocodeKeyError
+from app.services.geocode import GeocodeKeyError, GeocodeTransportError
 from app.services.geocode import geocode as geocode_service
 
 REQUIRED_CLIENTS: tuple[str, ...] = ("sismo",)
@@ -234,6 +240,7 @@ def crear_punto_solicitado(
         batch.set(db.collection(PLANEACION_PUNTOS_COLLECTION).document(_mirror_doc_id(sid)), mirror_fields)
         batch.commit()
     except Exception as exc:  # noqa: BLE001 — batch is atomic; surface as a clean 502, never a partial write
+        logging.exception("Fallo creando punto solicitado")
         raise HTTPException(status_code=502, detail=f"No se pudo crear el punto solicitado: {exc}") from exc
 
     return JSONResponse({"ok": True, "id": sid, "clave_integracion": clave}, status_code=201)
@@ -245,14 +252,18 @@ def listar_puntos_solicitados(claims: dict[str, Any] = Depends(require_role("adm
     mirror's `estado_asignacion` via one batched `get_all` — never the
     stored seed value once a mirror exists."""
     db = credentials.sismo().firestore
-    docs = list(db.collection(PUNTOS_SOLICITADOS_COLLECTION).get())
-    if not docs:
-        return JSONResponse({"ok": True, "puntos": []})
+    try:
+        docs = list(db.collection(PUNTOS_SOLICITADOS_COLLECTION).get())
+        if not docs:
+            return JSONResponse({"ok": True, "puntos": []})
 
-    mirror_refs = [
-        db.collection(PLANEACION_PUNTOS_COLLECTION).document(_mirror_doc_id(d.id)) for d in docs
-    ]
-    mirror_by_id = {s.id: (s.to_dict() or {}) for s in db.get_all(mirror_refs) if s.exists}
+        mirror_refs = [
+            db.collection(PLANEACION_PUNTOS_COLLECTION).document(_mirror_doc_id(d.id)) for d in docs
+        ]
+        mirror_by_id = {s.id: (s.to_dict() or {}) for s in db.get_all(mirror_refs) if s.exists}
+    except Exception as exc:  # noqa: BLE001 — clean 502, never an unhandled 500
+        logging.exception("Fallo listando puntos solicitados")
+        raise HTTPException(status_code=502, detail=f"No se pudo listar los puntos solicitados: {exc}") from exc
 
     puntos = []
     for d in docs:
@@ -273,9 +284,17 @@ def editar_punto_solicitado(
     body: EditarPuntoSolicitadoBody,
     claims: dict[str, Any] = Depends(require_role("admin")),
 ) -> JSONResponse:
-    """ADR-4: edits ONLY `puntos_solicitados` request-metadata fields —
-    never `estado_seguimiento`, never the mirror. `lat`/`lng` are collapsed
-    into the same `coords:{lat,lon}` shape the create path writes."""
+    """ADR-4: edits `puntos_solicitados` request-metadata fields — never
+    `estado_seguimiento`. `lat`/`lng` are collapsed into the same
+    `coords:{lat,lon}` shape the create path writes. The subset of fields
+    ADR-2 mirrors (`nombre`/`direccion`/`barrio`/`comuna`/`coords`) is
+    re-synced onto the `planeacion_puntos` mirror in the SAME atomic batch
+    (ADR-1 precedent) so the assignment board never renders stale
+    location/name; `justificacion`/contact/photos/lifecycle stay untouched
+    on the mirror, per ADR-2/ADR-4."""
+    if body.fotos is not None and len(body.fotos) > MAX_FOTOS:
+        raise HTTPException(status_code=400, detail=f"Máximo {MAX_FOTOS} fotos.")
+
     db = credentials.sismo().firestore
     ref = db.collection(PUNTOS_SOLICITADOS_COLLECTION).document(id)
     snap = ref.get()
@@ -292,8 +311,26 @@ def editar_punto_solicitado(
             "lon": lng if lng is not None else current_coords.get("lon"),
         }
 
-    if changes:
-        ref.set(changes, merge=True)
+    # ADR-2's mirrored subset only — request-only fields (justificacion,
+    # contact, photos) never cross onto planeacion_puntos.
+    mirror_field_map = {"nombre": "nombre", "direccion": "direccion",
+                         "barrio_vereda": "barrio", "comuna_corregimiento": "comuna"}
+    mirror_changes = {mirror_field_map[k]: v for k, v in changes.items() if k in mirror_field_map}
+    if "coords" in changes:
+        mirror_changes["coords"] = changes["coords"]
+
+    try:
+        if mirror_changes:
+            mirror_ref = db.collection(PLANEACION_PUNTOS_COLLECTION).document(_mirror_doc_id(id))
+            batch = db.batch()
+            batch.set(ref, changes, merge=True)
+            batch.set(mirror_ref, mirror_changes, merge=True)
+            batch.commit()
+        elif changes:
+            ref.set(changes, merge=True)
+    except Exception as exc:  # noqa: BLE001 — clean 502, never an unhandled 500
+        logging.exception("Fallo actualizando punto solicitado %s", id)
+        raise HTTPException(status_code=502, detail=f"No se pudo actualizar el punto solicitado: {exc}") from exc
     return JSONResponse({"ok": True, "id": id})
 
 
@@ -310,10 +347,14 @@ def eliminar_punto_solicitado(
     if not ref.get().exists:
         raise _not_found()
 
-    batch = db.batch()
-    batch.delete(ref)
-    batch.delete(db.collection(PLANEACION_PUNTOS_COLLECTION).document(_mirror_doc_id(id)))
-    batch.commit()
+    try:
+        batch = db.batch()
+        batch.delete(ref)
+        batch.delete(db.collection(PLANEACION_PUNTOS_COLLECTION).document(_mirror_doc_id(id)))
+        batch.commit()
+    except Exception as exc:  # noqa: BLE001 — clean 502, never an unhandled 500
+        logging.exception("Fallo eliminando punto solicitado %s", id)
+        raise HTTPException(status_code=502, detail=f"No se pudo eliminar el punto solicitado: {exc}") from exc
     return JSONResponse({"ok": True, "id": id})
 
 
@@ -323,11 +364,13 @@ def geocode_route(
     claims: dict[str, Any] = Depends(require_auth),
 ) -> JSONResponse:
     """ADR-5: live proxy, any authenticated caller. Google
-    REQUEST_DENIED/OVER_QUERY_LIMIT/INVALID_REQUEST -> 502 (key/quota
-    problem, not an address rejection); everything else comes back as
-    `geocode()`'s own `{ok, accepted, ...}` shape unchanged."""
+    REQUEST_DENIED/OVER_QUERY_LIMIT/INVALID_REQUEST, transport failures
+    (timeout/connection error), and malformed responses all map to the
+    SAME clean 502 (key/quota problem or upstream failure, never an
+    address rejection); everything else comes back as `geocode()`'s own
+    `{ok, accepted, ...}` shape unchanged."""
     try:
         result = geocode_service(body.direccion)
-    except GeocodeKeyError as exc:
+    except (GeocodeKeyError, GeocodeTransportError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return JSONResponse(result)

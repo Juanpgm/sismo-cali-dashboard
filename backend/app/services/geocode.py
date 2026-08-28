@@ -18,6 +18,7 @@ already uses for `_load_reportes`/`fetch_surveys`.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from typing import Any, Callable
@@ -65,10 +66,28 @@ class GeocodeKeyError(RuntimeError):
     `accepted:false` address rejection."""
 
 
+class GeocodeTransportError(RuntimeError):
+    """Transport-level failure (timeout/connection error) or a malformed/
+    non-JSON Google response (missing `results[0].geometry.location`, etc).
+    The router maps this to the SAME clean 502 as `GeocodeKeyError` — never
+    an unhandled 500."""
+
+
 def _default_http_get(url: str, *, params: dict[str, Any], timeout: int) -> dict[str, Any]:
     import requests  # deferred import — same convention as planeacion_cruce.py's _load_reportes
 
-    return requests.get(url, params=params, timeout=timeout).json()
+    try:
+        return requests.get(url, params=params, timeout=timeout).json()
+    except requests.exceptions.RequestException as exc:
+        # Never interpolate str(exc) into the client-facing message: urllib3's
+        # connection-error strings (e.g. MaxRetryError) can embed the full
+        # request URL, which includes the `key=<GOOGLE_MAPS_API_KEY>` query
+        # param. Log the real exception server-side only.
+        logging.exception("Geocoding API request failed")
+        raise GeocodeTransportError("Geocoding API request failed") from exc
+    except ValueError as exc:  # non-JSON body (json.JSONDecodeError is a ValueError)
+        logging.exception("Geocoding API returned a non-JSON response")
+        raise GeocodeTransportError("Geocoding API returned a non-JSON response") from exc
 
 
 def geocode(
@@ -114,13 +133,21 @@ def geocode(
     if status != "OK" or not payload.get("results"):
         return {"ok": True, "accepted": False, "reason": "sin_resultado"}
 
-    result = payload["results"][0]
-    loc_type = result["geometry"].get("location_type", "")
-    if loc_type not in ACCEPTED:
-        return {"ok": True, "accepted": False, "reason": "precision_insuficiente",
-                "location_type": loc_type}
-    loc = result["geometry"]["location"]
-    lat, lng = float(loc["lat"]), float(loc["lng"])
+    try:
+        result = payload["results"][0]
+        loc_type = result["geometry"].get("location_type", "")
+        if loc_type not in ACCEPTED:
+            return {"ok": True, "accepted": False, "reason": "precision_insuficiente",
+                    "location_type": loc_type}
+        loc = result["geometry"]["location"]
+        lat, lng = float(loc["lat"]), float(loc["lng"])
+    except (KeyError, TypeError, ValueError) as exc:
+        # Same rationale as _default_http_get: the response payload that
+        # produced this error could itself echo back request params (incl.
+        # the API key) in a malformed shape — keep the client-facing message
+        # generic and log the real exception server-side only.
+        logging.exception("Malformed Geocoding API response")
+        raise GeocodeTransportError("Malformed Geocoding API response") from exc
     if not (CALI_BBOX["lat_min"] <= lat <= CALI_BBOX["lat_max"]
             and CALI_BBOX["lon_min"] <= lng <= CALI_BBOX["lon_max"]):
         return {"ok": True, "accepted": False, "reason": "fuera_de_cali",
@@ -186,6 +213,15 @@ def _selfcheck() -> None:
         geocode("CL 1 # 2-3", http_get=_fake_denied, api_key="fake")
         raise AssertionError("expected GeocodeKeyError")
     except GeocodeKeyError:
+        pass
+
+    def _fake_malformed(url, *, params, timeout):
+        return {"status": "OK", "results": [{"geometry": {"location_type": "ROOFTOP"}}]}  # no "location"
+
+    try:
+        geocode("CL 1 # 2-3", http_get=_fake_malformed, api_key="fake")
+        raise AssertionError("expected GeocodeTransportError")
+    except GeocodeTransportError:
         pass
 
     print("geocode self-check OK")

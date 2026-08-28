@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.geocode import GeocodeKeyError, geocode
+from app.services.geocode import GeocodeKeyError, GeocodeTransportError, geocode
 
 
 def _payload(status: str, results: list[dict] | None = None, error_message: str | None = None) -> dict:
@@ -103,3 +103,78 @@ def test_api_key_never_appears_in_the_result():
     r = geocode("CL 1", http_get=fake_get, api_key="super-secret-key")
     assert "super-secret-key" not in str(r)
     assert "key" not in r
+
+
+# ── Transport/malformed-response failures map to GeocodeTransportError ─────
+
+
+def test_malformed_response_missing_location_raises_transport_error():
+    def fake_get(url, *, params, timeout):
+        # "OK" status but no "location" under geometry — malformed shape.
+        return _payload("OK", [{"geometry": {"location_type": "ROOFTOP"}}])
+
+    with pytest.raises(GeocodeTransportError):
+        geocode("CL 1 # 2-3", http_get=fake_get, api_key="fake")
+
+
+def test_default_http_get_wraps_timeout_as_transport_error(monkeypatch):
+    import requests
+
+    from app.services import geocode as geocode_module
+
+    def _raise_timeout(*args, **kwargs):
+        raise requests.exceptions.Timeout("timed out")
+
+    monkeypatch.setattr(requests, "get", _raise_timeout)
+    with pytest.raises(GeocodeTransportError):
+        geocode_module._default_http_get(
+            geocode_module.GEOCODE_URL, params={"key": "fake"}, timeout=30
+        )
+
+
+def test_default_http_get_wraps_connection_error_as_transport_error(monkeypatch):
+    import requests
+
+    from app.services import geocode as geocode_module
+
+    def _raise_connection_error(*args, **kwargs):
+        raise requests.exceptions.ConnectionError("connection refused")
+
+    monkeypatch.setattr(requests, "get", _raise_connection_error)
+    with pytest.raises(GeocodeTransportError):
+        geocode_module._default_http_get(
+            geocode_module.GEOCODE_URL, params={"key": "fake"}, timeout=30
+        )
+
+
+def test_transport_error_message_never_leaks_the_api_key(monkeypatch, caplog):
+    """Regression: urllib3/requests connection-error strings (e.g.
+    MaxRetryError.__str__) can embed the full request URL, including
+    `key=<GOOGLE_MAPS_API_KEY>`. The exception raised out of
+    `_default_http_get` — which becomes the client-facing 502 `detail` in
+    the router — must be a fixed generic message, never str(exc). The real
+    exception must still be logged server-side via logging.exception."""
+    import logging
+
+    import requests
+
+    from app.services import geocode as geocode_module
+
+    fake_key = "AIzaFAKE-SECRET-KEY-12345"
+
+    def _raise_with_key_in_message(*args, **kwargs):
+        raise requests.exceptions.ConnectionError(
+            f"HTTPSConnectionPool(host='maps.googleapis.com', port=443): "
+            f"Max retries exceeded with url: /maps/api/geocode/json?key={fake_key}&address=X"
+        )
+
+    monkeypatch.setattr(requests, "get", _raise_with_key_in_message)
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(GeocodeTransportError) as exc_info:
+            geocode_module._default_http_get(
+                geocode_module.GEOCODE_URL, params={"key": fake_key}, timeout=30
+            )
+
+    assert fake_key not in str(exc_info.value)
+    assert fake_key in caplog.text  # original exception still reaches server logs

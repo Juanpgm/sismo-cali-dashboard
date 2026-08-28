@@ -34,8 +34,8 @@ Chain strategy: pending
 
 - [x] 2.1 Create `backend/app/routers/puntos_solicitados.py`: `REQUIRED_CLIENTS=("sismo",)`; import `clave_integracion`, `doc_id` from `app.jobs.planeacion_cruce`; `POST` create (admin-only via existing claims dep, ADR-1 pre-generate id + single `db.batch()` writing both `puntos_solicitados/{id}` and `planeacion_puntos/solicitado_{id}` per ADR-2/ADR-3 field shape).
 - [x] 2.2 Add `GET` list to the same router: batched `get_all` over known `solicitado_{sid}` mirror ids, derive `estado_seguimiento` from `estado_asignacion` per ADR-4 map (`pendiente→pendiente`, `asignado→asignado`, `en_proceso→en_proceso`, `hecho→visitado`, `no_aplica→excluido`).
-- [x] 2.3 Add `PATCH /{id}` (admin-only, edits `puntos_solicitados` request fields only — never lifecycle) and `DELETE /{id}` (admin-only) to the router.
-- [x] 2.4 Add `POST /geocode` to the router: `Depends(require_auth)`, calls `app.services.geocode.geocode()`, maps Google `REQUEST_DENIED`/`OVER_QUERY_LIMIT`/`INVALID_REQUEST` → 502; key never in response (ADR-5).
+- [x] 2.3 Add `PATCH /{id}` (admin-only, edits `puntos_solicitados` request fields — never lifecycle) and `DELETE /{id}` (admin-only) to the router. Corrective fix round: `PATCH` now also re-syncs the ADR-2 mirrored subset (`nombre`/`direccion`/`barrio`/`comuna`/`coords`) onto the mirror in the same atomic batch (was previously stale after edit), enforces `MAX_FOTOS` same as create, and all four CRUD routes now catch Firestore failures → clean 502 with `logging.exception`.
+- [x] 2.4 Add `POST /geocode` to the router: `Depends(require_auth)`, calls `app.services.geocode.geocode()`, maps Google `REQUEST_DENIED`/`OVER_QUERY_LIMIT`/`INVALID_REQUEST` → 502; key never in response (ADR-5). Corrective fix round: `_default_http_get`/`geocode()` now also catch transport failures (timeout/connection error) and malformed/non-JSON responses, mapped to the same 502 via a new `GeocodeTransportError`.
 - [x] 2.5 Modify `backend/app/main.py`: import `puntos_solicitados` router, add to `_ROUTERS` tuple.
 
 ## Phase 3: Backend tests
