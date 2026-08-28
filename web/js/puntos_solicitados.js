@@ -245,26 +245,32 @@ export function sectionHtml() {
           </div>
           <div class="modal-body">
             <form id="ps-crear-form" class="sticker-form">
+              <label class="sticker-field"><span>Nombre *</span>
+                <input name="nombre" required placeholder="Casa esquinera" autocomplete="off">
+              </label>
+              <!-- Full-width, one per row (not inside .sticker-form-grid): the
+                   comuna/barrio combos share .asignacion-combo's CSS with the
+                   wide inspector comboboxes (stickers-asignacion.js/
+                   planeacion.js) — squeezing them into a 233px 2-col grid
+                   cell let the open dropdown bleed onto the "Nombre del
+                   solicitante" field directly below in the same column. -->
+              <label class="sticker-field"><span>Comuna / corregimiento *</span>
+                <div class="asignacion-combo">
+                  <input type="text" name="comuna_corregimiento" id="ps-comuna-input" class="asignacion-combo-input"
+                    role="combobox" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false"
+                    required placeholder="Buscar comuna o corregimiento…" aria-label="Buscar comuna o corregimiento">
+                  <ul class="asignacion-combo-list" id="ps-comuna-list" role="listbox" hidden></ul>
+                </div>
+              </label>
+              <label class="sticker-field"><span>Barrio / vereda *</span>
+                <div class="asignacion-combo">
+                  <input type="text" name="barrio_vereda" id="ps-barrio-input" class="asignacion-combo-input"
+                    role="combobox" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false"
+                    required disabled placeholder="Elegí una comuna primero…" aria-label="Buscar barrio o vereda">
+                  <ul class="asignacion-combo-list" id="ps-barrio-list" role="listbox" hidden></ul>
+                </div>
+              </label>
               <div class="sticker-form-grid">
-                <label class="sticker-field"><span>Nombre *</span>
-                  <input name="nombre" required placeholder="Casa esquinera" autocomplete="off">
-                </label>
-                <label class="sticker-field"><span>Comuna / corregimiento *</span>
-                  <div class="asignacion-combo">
-                    <input type="text" name="comuna_corregimiento" id="ps-comuna-input" class="asignacion-combo-input"
-                      role="combobox" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false"
-                      required placeholder="Buscar comuna o corregimiento…" aria-label="Buscar comuna o corregimiento">
-                    <ul class="asignacion-combo-list" id="ps-comuna-list" role="listbox" hidden></ul>
-                  </div>
-                </label>
-                <label class="sticker-field"><span>Barrio / vereda *</span>
-                  <div class="asignacion-combo">
-                    <input type="text" name="barrio_vereda" id="ps-barrio-input" class="asignacion-combo-input"
-                      role="combobox" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false"
-                      required disabled placeholder="Elegí una comuna primero…" aria-label="Buscar barrio o vereda">
-                    <ul class="asignacion-combo-list" id="ps-barrio-list" role="listbox" hidden></ul>
-                  </div>
-                </label>
                 <label class="sticker-field"><span>Nombre del solicitante *</span>
                   <input name="nombre_solicitante" required placeholder="María Pérez" autocomplete="off">
                 </label>

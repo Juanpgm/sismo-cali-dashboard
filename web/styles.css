@@ -2022,7 +2022,11 @@ details[open] > summary.card-title::before { transform: rotate(90deg); }
 .asignacion-grupo-miembro input { accent-color: var(--accent); width: 16px; height: 16px; }
 .asignacion-cuadrilla-actions .sticker-action { padding: 6px 10px; font-size: .78rem; }
 
-.asignacion-combo { position: relative; min-width: 0; flex: 1 1 200px; }
+/* isolation:isolate roots a stacking context here so the dropdown's z-index
+   (below) always wins over sibling content, regardless of what stacking
+   contexts exist further up in whatever layout embeds this combo — no
+   visual effect on its own, pure containment insurance. */
+.asignacion-combo { position: relative; min-width: 0; flex: 1 1 200px; isolation: isolate; }
 .asignacion-combo-input {
   width: 100%; padding: 8px 32px 8px 11px; border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text-primary);
