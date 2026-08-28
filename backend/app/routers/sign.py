@@ -14,6 +14,17 @@ backend uses (`app/auth/verify.py`) — instead of a second, redundant network
 round-trip to Firebase. The request shape changes accordingly: the legacy
 body was `{idToken, codigo, slot}`; this route reads the token from the
 `Authorization: Bearer` header and the body is `{codigo, slot}` only.
+
+**puntos-solicitados gap-fix (change: `puntos-solicitados`).** PR1 never
+extended this router for solicited-point codes, leaving the "Puntos
+Solicitados" tab's photo upload 400ing. A second code shape is now
+accepted: a `clave_integracion` minted by
+`app.jobs.planeacion_cruce.clave_integracion` (`PLN-<slug>-<digest>`),
+validated via that module's own `verify_clave_integracion` — never
+re-implemented here (no Firestore access, no new collection reference).
+Matching codes key under `solicitados/{codigo}/foto_{slot}.jpg` instead of
+`evaluaciones/{codigo}/foto_{slot}.jpg`; the evaluaciones path/regex are
+untouched.
 """
 from __future__ import annotations
 
@@ -25,7 +36,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.auth.deps import require_auth
+from app.auth.roles import role_from_claims
 from app.credentials import clients as credentials
+from app.jobs.planeacion_cruce import verify_clave_integracion
 
 # s3() is only reachable from this router (backend-platform spec: "A route
 # cannot reach an undeclared client"). create_app() unions this into its
@@ -62,13 +75,21 @@ def sign(
     body: SignRequest,
     claims: dict[str, Any] = Depends(require_auth),
 ) -> SignResponse:
-    if not CODIGO_RE.match(body.codigo or ""):
+    es_solicitado = verify_clave_integracion(body.codigo)
+    if not CODIGO_RE.match(body.codigo or "") and not es_solicitado:
         raise HTTPException(status_code=400, detail="bad-request")
+    # Solicited-point codes are admin-only everywhere else (every route in
+    # `routers/puntos-solicitados.py` is `require_role("admin")`); the
+    # evaluaciones path stays open to any authenticated role (field
+    # inspectors), intentionally unchanged.
+    if es_solicitado and role_from_claims(claims) != "admin":
+        raise HTTPException(status_code=403, detail="No autorizado.")
     if not (1 <= body.slot <= _max_slot()):
         raise HTTPException(status_code=400, detail="bad-request")
 
     bucket_client = credentials.s3()
-    key = f"evaluaciones/{body.codigo}/foto_{body.slot}.jpg"
+    prefix = "solicitados" if es_solicitado else "evaluaciones"
+    key = f"{prefix}/{body.codigo}/foto_{body.slot}.jpg"
     upload_url = bucket_client.client.generate_presigned_url(
         "put_object",
         Params={

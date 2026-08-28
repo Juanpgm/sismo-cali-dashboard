@@ -9,11 +9,11 @@
 | Chained PRs recommended | Yes |
 | Suggested split | PR1 backend (geocode.py + router + main.py + sole-writer + pytest) → PR2 frontend tab (puntos_solicitados.js + index.html/main.js/styles.css + node tests) → PR3 formulario badge/sort + planeacion.js rename |
 | Delivery strategy | ask-on-risk |
-| Chain strategy | pending |
+| Chain strategy | stacked-to-main (resolved before PR2 apply) |
 
-Decision needed before apply: Yes
+Decision needed before apply: No — resolved: stacked-to-main, this apply batch is PR2/3
 Chained PRs recommended: Yes
-Chain strategy: pending
+Chain strategy: stacked-to-main
 400-line budget risk: High
 
 ### Suggested Work Units
@@ -53,16 +53,16 @@ Chain strategy: pending
 
 ## Phase 4: Frontend — new tab
 
-- [ ] 4.1 Create `web/js/puntos_solicitados.js` cloned from `web/js/evaluaciones.js`: KPIs + filters + Leaflet map colored by `estado_seguimiento` + card list + detail modal (photos/justificación/contacto); export pure helpers (color-by-estado, sort, filter) for testing.
-- [ ] 4.2 In the same file, add "Crear punto solicitado" modal: required-field form, live `/geocode` call on typed address showing a draggable-marker Leaflet map, manual lat/lng fallback, up to 10 photos via existing presigned S3 flow (`solicitados/{id}/foto_{slot}.jpg`).
-- [ ] 4.3 Modify `web/index.html`: add nav button + `data-view-panel` section for "Puntos Solicitados", admin-gated same pattern as Stickers/Usuarios.
-- [ ] 4.4 Modify `web/js/main.js`: add `switchView()` branch wiring the new panel, gated to admin/superadmin custom claims.
-- [ ] 4.5 Modify `web/styles.css`: admin-only visibility gate + PRIORIDAD/estado color rules for the new tab (distinct from existing pill scheme, consistent with formulario badge in Phase 6).
+- [x] 4.1 Create `web/js/puntos_solicitados.js` cloned from `web/js/evaluaciones.js`: KPIs + filters + Leaflet map colored by `estado_seguimiento` + card list + detail modal (photos/justificación/contacto); export pure helpers (color-by-estado, sort, filter) for testing.
+- [x] 4.2 In the same file, add "Crear punto solicitado" modal: required-field form, live `/geocode` call on typed address showing a draggable-marker Leaflet map, manual lat/lng fallback, up to 10 photos via existing presigned S3 flow (`solicitados/{id}/foto_{slot}.jpg`). **Deviation (closed)** — photos upload AFTER create (id doesn't exist before then), by design. `backend/app/routers/sign.py`'s `CODIGO_RE`/key prefix gap (never extended for this use case in PR1) is now closed on this branch: `sign.py` also accepts a `clave_integracion` (`PLN-<slug>-<digest>`) code via `app.jobs.planeacion_cruce.verify_clave_integracion` and keys matching uploads under `solicitados/{codigo}/foto_{slot}.jpg`; the evaluaciones path/regex are unchanged. Covered by `backend/tests/routers/test_sign.py` (accepted+solicitados-key, evaluaciones regression, malformed-shape rejection); full `python -m pytest backend/tests/` is 777 passed.
+- [x] 4.3 Modify `web/index.html`: add nav button + `data-view-panel` section for "Puntos Solicitados", admin-gated same pattern as Stickers/Usuarios.
+- [x] 4.4 Modify `web/js/main.js`: add `switchView()` branch wiring the new panel, gated to admin/superadmin custom claims.
+- [x] 4.5 Modify `web/styles.css`: admin-only visibility gate + estado color rules for the new tab (distinct from existing pill scheme). The PRIORIDAD badge itself is formulario/js/form.js's Phase 6, out of this PR's scope.
 
 ## Phase 5: Frontend tests
 
-- [ ] 5.1 RED `web/js/puntos_solicitados.test.mjs` (mirror `evaluaciones.test.mjs`): color-by-`estado_seguimiento`, sort, and filter helpers — Satisfies: puntos-solicitados requirements (list/detail rendering, not spec-scenario-mapped, matches Testing Strategy table's "node pure" row).
-- [ ] 5.2 GREEN: run `node --test "web/js/puntos_solicitados.test.mjs"`, zero failures.
+- [x] 5.1 RED `web/js/puntos_solicitados.test.mjs` (mirror `evaluaciones.test.mjs`): color-by-`estado_seguimiento`, sort, and filter helpers — Satisfies: puntos-solicitados requirements (list/detail rendering, not spec-scenario-mapped, matches Testing Strategy table's "node pure" row).
+- [x] 5.2 GREEN: run `node --test "web/js/puntos_solicitados.test.mjs"`, zero failures.
 
 ## Phase 6: Formulario — PRIORIDAD badge + sort
 
