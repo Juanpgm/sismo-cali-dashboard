@@ -490,6 +490,7 @@ function detailHtml(p) {
     ])}
     <div class="sticker-form-actions">
       <button type="button" class="btn-secondary" id="ps-detail-eliminar" data-ps-id="${escapeHtml(p.id)}">Eliminar punto</button>
+      <button type="button" class="btn-primary" id="ps-detail-editar" data-ps-id="${escapeHtml(p.id)}">Editar punto</button>
     </div>`;
 }
 
@@ -616,6 +617,7 @@ export function initPuntosSolicitados(section, { getToken }) {
 
   const crearBtn = section.querySelector('#ps-crear');
   const crearModal = section.querySelector('#ps-crear-modal');
+  const crearTitle = section.querySelector('#ps-crear-title');
   const crearForm = section.querySelector('#ps-crear-form');
   const crearError = section.querySelector('#ps-crear-error');
   const crearSubmit = section.querySelector('#ps-crear-submit');
@@ -636,7 +638,9 @@ export function initPuntosSolicitados(section, { getToken }) {
   let allPuntos = [];
   let comunaMap = new Map();
   let filters = { search: '', estado: '', comuna: '', barrio: '' };
-  let fotosSeleccionadas = []; // File[]
+  let fotosSeleccionadas = []; // File[] — newly picked, not yet uploaded
+  let fotosExistentes = []; // string[] — already-uploaded URLs, populated when editing
+  let editing = null; // { id, clave_integracion } while the create modal is in edit mode; null = create mode
   // Fingerprint of the last rendered dataset — same technique evaluaciones.js's
   // load() uses: a silent auto-refresh poll that returned exactly what is
   // already on screen skips the whole re-render (which would otherwise reset
@@ -662,6 +666,8 @@ export function initPuntosSolicitados(section, { getToken }) {
     });
     const delBtn = modalBody.querySelector('#ps-detail-eliminar');
     if (delBtn) delBtn.addEventListener('click', () => eliminarPunto(id));
+    const editBtn = modalBody.querySelector('#ps-detail-editar');
+    if (editBtn) editBtn.addEventListener('click', () => { closeModal(); abrirEditar(p); });
   }
 
   section.addEventListener('click', (ev) => {
@@ -817,19 +823,27 @@ export function initPuntosSolicitados(section, { getToken }) {
     if (match) { comunaComboInput.value = match; selectComuna(match); }
   });
 
-  // ---- create modal ----
+  // ---- create/edit modal ----
+  // The same modal + form serves both flows (design mirrors evaluaciones.js's
+  // reuse-over-duplicate convention): `editing` holds the point being edited,
+  // null in create mode. resetCrearForm() always returns to create-mode
+  // defaults; abrirEditar() runs it first, then overrides with the record.
   function resetCrearForm() {
     crearForm.reset();
     crearError.hidden = true;
     latInput.value = '';
     lngInput.value = '';
     fotosSeleccionadas = [];
+    fotosExistentes = [];
     fotosPreview.innerHTML = '';
     fotosCaption.textContent = 'Ningún archivo seleccionado';
     teardownCreateMap();
     barrioComboInput.disabled = true;
     barrioComboInput.placeholder = 'Elegí una comuna primero…';
     barrioCombo.setOptions([]);
+    editing = null;
+    crearTitle.textContent = 'Crear punto solicitado';
+    crearSubmit.textContent = 'Crear punto';
   }
 
   function openCrear() {
@@ -843,6 +857,36 @@ export function initPuntosSolicitados(section, { getToken }) {
     teardownCreateMap();
   }
   crearBtn.addEventListener('click', openCrear);
+
+  /** Opens the same modal pre-filled from an existing point, PATCHing on
+   *  submit instead of POSTing. Comuna/barrio go through the exact same
+   *  selectComuna() the combobox's own onSelect uses, so barrio's options
+   *  are populated identically whether a human picked the comuna or this did. */
+  function abrirEditar(p) {
+    resetCrearForm();
+    editing = { id: p.id, clave_integracion: p.clave_integracion };
+    crearTitle.textContent = 'Editar punto solicitado';
+    crearSubmit.textContent = 'Guardar cambios';
+    crearForm.elements.nombre.value = p.nombre || '';
+    crearForm.elements.nombre_solicitante.value = p.nombre_solicitante || '';
+    crearForm.elements.telefono_solicitante.value = p.telefono_solicitante || '';
+    crearForm.elements.justificacion.value = p.justificacion || '';
+    direccionInput.value = p.direccion || '';
+    if (p.comuna_corregimiento) {
+      comunaComboInput.value = p.comuna_corregimiento;
+      selectComuna(p.comuna_corregimiento);
+      if (p.barrio_vereda) barrioComboInput.value = p.barrio_vereda;
+    }
+    if (p.coords && Number.isFinite(p.coords.lat) && Number.isFinite(p.coords.lon)) {
+      latInput.value = p.coords.lat.toFixed(6);
+      lngInput.value = p.coords.lon.toFixed(6);
+      renderCreateMap(p.coords.lat, p.coords.lon, (nlat, nlng) => { latInput.value = nlat.toFixed(6); lngInput.value = nlng.toFixed(6); });
+    }
+    fotosExistentes = [...(p.fotos || [])];
+    renderFotosPreview();
+    crearModal.classList.add('is-open');
+    crearModal.setAttribute('aria-hidden', 'false');
+  }
   crearModal.querySelectorAll('[data-ps-crear-close]').forEach((el) => el.addEventListener('click', closeCrear));
 
   function syncCoordsFromInputs() {
@@ -884,19 +928,28 @@ export function initPuntosSolicitados(section, { getToken }) {
     }
   });
 
-  // Renders the caption/chips from `fotosSeleccionadas` (the source of
-  // truth once editing starts) — NOT from `fotosInput.files` (the native
-  // FileList), which can't have a single entry removed from it. The old
-  // code re-derived from `fotosInput.files` on every change, including the
-  // one it synthetically dispatched after a splice() — silently undoing
+  // Renders the caption/chips from `fotosExistentes` (already-uploaded URLs,
+  // only non-empty in edit mode) + `fotosSeleccionadas` (the source of
+  // truth for not-yet-uploaded files) — NOT from `fotosInput.files` (the
+  // native FileList), which can't have a single entry removed from it. The
+  // old code re-derived from `fotosInput.files` on every change, including
+  // the one it synthetically dispatched after a splice() — silently undoing
   // the removal, so "quitar" never actually shrank the upload set.
   function renderFotosPreview() {
-    const files = fotosSeleccionadas;
-    fotosCaption.textContent = files.length ? `${files.length}/${MAX_FOTOS} fotos seleccionadas` : 'Ningún archivo seleccionado';
-    fotosPreview.innerHTML = files.map((f, i) => `<span class="ps-foto-chip">${escapeHtml(f.name)} <button type="button" data-remove-foto="${i}" aria-label="Quitar">&times;</button></span>`).join('');
+    const total = fotosExistentes.length + fotosSeleccionadas.length;
+    fotosCaption.textContent = total ? `${total}/${MAX_FOTOS} fotos` : 'Ningún archivo seleccionado';
+    const existentesHtml = fotosExistentes.map((url, i) => `<span class="ps-foto-chip">Foto ${i + 1} <button type="button" data-remove-foto-existente="${i}" aria-label="Quitar">&times;</button></span>`).join('');
+    const nuevasHtml = fotosSeleccionadas.map((f, i) => `<span class="ps-foto-chip">${escapeHtml(f.name)} <button type="button" data-remove-foto="${i}" aria-label="Quitar">&times;</button></span>`).join('');
+    fotosPreview.innerHTML = existentesHtml + nuevasHtml;
     fotosPreview.querySelectorAll('[data-remove-foto]').forEach((btn) => {
       btn.addEventListener('click', () => {
         fotosSeleccionadas = removeFotoAt(fotosSeleccionadas, Number(btn.dataset.removeFoto));
+        renderFotosPreview();
+      });
+    });
+    fotosPreview.querySelectorAll('[data-remove-foto-existente]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        fotosExistentes = removeFotoAt(fotosExistentes, Number(btn.dataset.removeFotoExistente));
         renderFotosPreview();
       });
     });
@@ -909,12 +962,13 @@ export function initPuntosSolicitados(section, { getToken }) {
   // duration, instead of letting the UI lie about what's still queued.
   function setFotosLocked(locked) {
     fotosInput.disabled = locked;
-    fotosPreview.querySelectorAll('[data-remove-foto]').forEach((btn) => { btn.disabled = locked; });
+    fotosPreview.querySelectorAll('[data-remove-foto], [data-remove-foto-existente]').forEach((btn) => { btn.disabled = locked; });
   }
 
   fotosInput.addEventListener('change', () => {
-    const files = Array.from(fotosInput.files || []).slice(0, MAX_FOTOS);
-    if ((fotosInput.files || []).length > MAX_FOTOS) showToast(`Máximo ${MAX_FOTOS} fotos — se tomaron las primeras ${MAX_FOTOS}.`, 'error');
+    const room = Math.max(0, MAX_FOTOS - fotosExistentes.length);
+    const files = Array.from(fotosInput.files || []).slice(0, room);
+    if ((fotosInput.files || []).length > room) showToast(`Máximo ${MAX_FOTOS} fotos — se tomaron las primeras ${room}.`, 'error');
     fotosSeleccionadas = files;
     renderFotosPreview();
   });
@@ -939,53 +993,70 @@ export function initPuntosSolicitados(section, { getToken }) {
       justificacion: fd.get('justificacion') || '',
       direccion: fd.get('direccion') || '',
       lat, lng,
-      fotos: [],
     };
+    const isEdit = Boolean(editing);
+    const clave = isEdit ? editing.clave_integracion : null;
+    const idParaFotos = isEdit ? editing.id : null;
     crearSubmit.disabled = true;
-    crearSubmit.textContent = 'Creando…';
+    crearSubmit.textContent = isEdit ? 'Guardando…' : 'Creando…';
     setFotosLocked(true);
-    let created;
+    let record;
     try {
-      created = await apiCreate(getToken, body);
+      // Create writes fotos:[] up front (design.md ADR-1: id is minted
+      // server-side; the presigned upload flow needs an id that only exists
+      // once the point does). Edit only ever touches the fields actually
+      // changed — the PATCH body's shape (design.md ADR-4) already tolerates
+      // this since every field is optional.
+      record = isEdit ? await apiPatch(getToken, editing.id, body) : await apiCreate(getToken, { ...body, fotos: [] });
     } catch (err) {
-      // Nothing exists yet — same "form looks untouched" failure as before,
-      // and the admin can still edit the fotos set before retrying.
+      // Nothing was written — same "form looks untouched" failure either
+      // way, the admin can retry with the form intact.
       crearError.textContent = err.message;
       crearError.hidden = false;
       crearSubmit.disabled = false;
-      crearSubmit.textContent = 'Crear punto';
+      crearSubmit.textContent = isEdit ? 'Guardar cambios' : 'Crear punto';
       setFotosLocked(false);
       return;
     }
-    // The point now exists server-side. From here on, a failure must look
-    // DIFFERENT from "nothing was created" — otherwise an admin retries and
-    // creates a duplicate. Always closeCrear()+load() so they can see the
-    // point already in the list.
+    // The point now exists (or is already updated) server-side. From here
+    // on, a failure must look DIFFERENT from "nothing happened" — otherwise
+    // an admin retries a create and duplicates the point. Always
+    // closeCrear()+load() so they can see the current state in the list.
     try {
-      // Photos upload AFTER create (design.md ADR-1: id is minted server-side;
-      // the presigned flow needs an identifier that only exists once the point
-      // does). Best-effort: a failed photo never rolls back the point itself —
-      // photos are optional per spec.
-      if (fotosSeleccionadas.length) {
-        const urls = [];
-        for (let i = 0; i < fotosSeleccionadas.length; i += 1) {
-          try {
-            // eslint-disable-next-line no-await-in-loop -- sequential slots, same as formulario/js/form.js's own upload loop
-            urls.push(await subirFoto(fotosSeleccionadas[i], i + 1, created.clave_integracion, getToken));
-          } catch (err) {
-            showToast(`No se pudo subir una foto: ${err.message}`, 'error');
-          }
+      // Photo upload AFTER create/edit (same reasoning as create's ADR-1
+      // note — an edit's newly picked files need the point's existing
+      // clave_integracion, already known here). Best-effort: a failed photo
+      // never rolls back the point itself — photos are optional per spec.
+      // New files' slots continue after whatever existing photos survived
+      // the edit's "quitar" clicks, so an edit never reuses/overwrites an
+      // existing photo's S3 key.
+      const baseSlot = fotosExistentes.length;
+      const urls = [];
+      for (let i = 0; i < fotosSeleccionadas.length; i += 1) {
+        try {
+          // eslint-disable-next-line no-await-in-loop -- sequential slots, same as formulario/js/form.js's own upload loop
+          urls.push(await subirFoto(fotosSeleccionadas[i], baseSlot + i + 1, clave || record.clave_integracion, getToken));
+        } catch (err) {
+          showToast(`No se pudo subir una foto: ${err.message}`, 'error');
         }
-        if (urls.length) await apiPatch(getToken, created.id, { fotos: urls });
       }
-      showToast('Punto solicitado creado.');
+      const fotosFinales = [...fotosExistentes, ...urls];
+      // Edit mode also PATCHes fotos when a photo was REMOVED with no new
+      // upload to accompany it (urls.length === 0 but fotosExistentes
+      // shrank) — comparing lengths against the record's original count
+      // would need it threaded through; simplest correct condition is "the
+      // edit touched fotos at all", i.e. isEdit and the modal ever changed
+      // fotosExistentes/fotosSeleccionadas from what abrirEditar() loaded.
+      if (urls.length || isEdit) await apiPatch(getToken, idParaFotos || record.id, { fotos: fotosFinales });
+      showToast(isEdit ? 'Punto solicitado actualizado.' : 'Punto solicitado creado.');
     } catch (err) {
-      showToast(`El punto se creó (código ${created.clave_integracion}) pero hubo un problema guardando las fotos: ${err.message}. Abrilo desde la lista para reintentar.`, 'error');
+      const codigo = clave || record.clave_integracion;
+      showToast(`El punto se ${isEdit ? 'actualizó' : 'creó'} (código ${codigo}) pero hubo un problema guardando las fotos: ${err.message}. Abrilo desde la lista para reintentar.`, 'error');
     } finally {
       closeCrear();
       await load();
       crearSubmit.disabled = false;
-      crearSubmit.textContent = 'Crear punto';
+      crearSubmit.textContent = isEdit ? 'Guardar cambios' : 'Crear punto';
       setFotosLocked(false);
     }
   });
