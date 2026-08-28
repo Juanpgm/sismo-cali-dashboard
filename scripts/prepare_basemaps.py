@@ -57,6 +57,7 @@ from basemap_utils import (  # noqa: E402
     COMUNAS_FILE,
     build_reference_tokens,
     get_barrio_name,
+    get_comuna_key_for_barrio_row,
     get_comuna_name,
     repair_barrio_name,
     slugify,
@@ -155,6 +156,39 @@ def build_features(
     return out_features, repair_stats
 
 
+def build_comuna_barrios_catalog(source_path: Path, reference_tokens: list[str]) -> dict[str, list[str]]:
+    """{"COMUNA 03": ["San Antonio", ...], "Pance": [...], ...} — every
+    barrio/vereda name grouped by its comuna/corregimiento, keyed the same
+    way comunas.geojson's own `name` property is (get_comuna_key_for_barrio_row
+    mirrors get_comuna_name). Same name-repair pass as build_features so a
+    catalog entry always matches the polygon name the frontend joins on.
+    Geometry/simplification never enters here — this is a name lookup, not a
+    shape — so the sliver-drop/invalid-geometry handling in build_features
+    does not apply; a degenerate duplicate row just contributes the same
+    (deduplicated) name again."""
+    with source_path.open(encoding="utf-8") as f:
+        data = json.load(f)
+
+    catalog: dict[str, set[str]] = {}
+    dropped = []
+    for ft in data["features"]:
+        props = ft["properties"]
+        comuna_key = get_comuna_key_for_barrio_row(props)
+        raw_name = get_barrio_name(props)
+        if not comuna_key or not raw_name or not raw_name.strip():
+            print(f"  WARNING: dropping barrio row with comuna_key={comuna_key!r}, "
+                  f"raw_name={raw_name!r} — missing/blank required field.")
+            dropped.append(raw_name or comuna_key)
+            continue
+        name, _source = repair_barrio_name(raw_name, reference_tokens)
+        catalog.setdefault(comuna_key, set()).add(name)
+
+    if dropped:
+        print(f"  -> {len(dropped)} barrio row(s) dropped: {dropped}")
+
+    return {key: sorted(names) for key, names in sorted(catalog.items())}
+
+
 def write_geojson(features: list[dict], out_path: Path) -> int:
     payload = {"type": "FeatureCollection", "features": features}
     text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -190,6 +224,17 @@ def main() -> None:
         f"  -> {len(barrios_features)} features, "
         f"tolerance={BARRIOS_TOLERANCE}, size={barrios_size / 1024:.1f} KB "
         f"-> web/data/barrios.geojson"
+    )
+
+    print("Building comuna -> barrios catalog ...")
+    comuna_barrios = build_comuna_barrios_catalog(barrios_src, reference_tokens)
+    catalog_path = OUT_DIR / "comuna_barrios.json"
+    catalog_text = json.dumps(comuna_barrios, ensure_ascii=False, separators=(",", ":"))
+    catalog_path.write_text(catalog_text, encoding="utf-8")
+    print(
+        f"  -> {len(comuna_barrios)} comunas/corregimientos, "
+        f"{sum(len(v) for v in comuna_barrios.values())} barrio/vereda names "
+        f"-> web/data/comuna_barrios.json"
     )
 
     corrupted_total = sum(v for k, v in repair_stats.items() if k != "clean")

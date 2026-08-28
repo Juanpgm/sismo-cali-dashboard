@@ -240,6 +240,27 @@ def test_missing_required_field_is_rejected_with_zero_writes(monkeypatch, missin
     assert stores[PLANEACION_PUNTOS] == {}
 
 
+# ── Blank (present but empty/whitespace) required field is rejected, zero
+#    writes — the disabled-combobox/all-spaces gap FIX 1 closes ────────────
+
+
+@pytest.mark.parametrize(
+    "blank_field",
+    ["nombre", "comuna_corregimiento", "barrio_vereda", "nombre_solicitante",
+     "telefono_solicitante", "justificacion"],
+)
+@pytest.mark.parametrize("blank_value", ["", "   "])
+def test_blank_required_field_is_rejected_with_zero_writes(monkeypatch, blank_field, blank_value):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+    body = {**VALID_BODY, blank_field: blank_value}
+
+    resp = client.post("/puntos-solicitados", json=body)
+    assert resp.status_code == 422
+    assert stores[PUNTOS_SOLICITADOS] == {}
+    assert stores[PLANEACION_PUNTOS] == {}
+
+
 # ── All required fields, zero photos accepted (3.4) ─────────────────────────
 
 

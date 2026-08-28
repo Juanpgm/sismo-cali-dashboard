@@ -714,6 +714,89 @@ export function downloadStamp() {
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* Shared searchable single-select combobox                            */
+/* ------------------------------------------------------------------ */
+// Generalized from stickers-asignacion.js's and planeacion.js's own (near-
+// identical) `mountCombobox(comboEl, { inspectores, onSelect })` — those two
+// stay as-is (inspector-roster-specific: load counts/over-cap styling), this
+// is the reusable version for any {id, label} option list (e.g.
+// puntos_solicitados.js's comuna/barrio pickers). Same markup contract as
+// the two originals: an `<input role="combobox">` + a sibling
+// `<ul role="listbox">`, styled by the existing `.asignacion-combo*` rules
+// in styles.css (already generic, not inspector-specific).
+
+/** Default filter: case/accent-insensitive substring match on `label`. */
+export function filterOptionsByLabel(options, query) {
+  const q = normalize(query || '');
+  if (!q) return options;
+  return options.filter((o) => normalize(o.label).includes(q));
+}
+
+/**
+ * Mount a searchable single-select combobox on `input`/`listEl`.
+ * `options`: [{id, label}]. `onSelect(id, option)` fires on pick — the input
+ * is set to the picked option's label; the caller does NOT need to re-render
+ * the input itself (unlike the two per-row originals, which re-render from
+ * external state on every change). `filterFn(options, query)` overrides the
+ * default substring match. Returns `{ setOptions(newOptions) }` so a
+ * dependent combobox (e.g. barrio, scoped to a chosen comuna) can be
+ * repopulated without re-mounting/double-binding listeners.
+ */
+export function mountCombobox(input, listEl, { options = [], onSelect = () => {}, filterFn = filterOptionsByLabel } = {}) {
+  let allOptions = options;
+  let visible = []; // [{id, label}] in current render order
+  let active = -1;
+
+  const close = () => { listEl.hidden = true; input.setAttribute('aria-expanded', 'false'); active = -1; };
+
+  function render(query) {
+    visible = filterFn(allOptions, query === undefined ? input.value : query);
+    listEl.innerHTML = visible.map((o) => `<li role="option" class="asignacion-combo-option" data-id="${escapeHtml(o.id)}">
+        <span class="asignacion-combo-name">${escapeHtml(o.label)}</span></li>`).join('')
+      || '<li class="asignacion-combo-empty" aria-disabled="true">Sin coincidencias</li>';
+    active = -1;
+    listEl.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+  }
+
+  function highlight(i) {
+    const items = [...listEl.querySelectorAll('.asignacion-combo-option')];
+    if (!items.length || i < 0 || i >= visible.length) return;
+    active = i;
+    items.forEach((el, idx) => el.classList.toggle('is-active', idx === active));
+    items[active].scrollIntoView({ block: 'nearest' });
+  }
+
+  function choose(id) {
+    close();
+    const opt = allOptions.find((o) => o.id === id);
+    input.value = opt ? opt.label : '';
+    onSelect(id, opt);
+  }
+
+  input.addEventListener('focus', () => { input.select(); render(''); });
+  input.addEventListener('input', () => render());
+  input.addEventListener('keydown', (ev) => {
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); if (listEl.hidden) render(''); highlight(active < 0 ? 0 : active + 1); }
+    else if (ev.key === 'ArrowUp') { ev.preventDefault(); highlight(active < 0 ? visible.length - 1 : active - 1); }
+    else if (ev.key === 'Enter') { ev.preventDefault(); if (active >= 0 && visible[active]) choose(visible[active].id); }
+    else if (ev.key === 'Escape') { close(); }
+  });
+  listEl.addEventListener('mousedown', (ev) => {
+    // mousedown (not click) so it fires before the input's blur closes the list.
+    const li = ev.target.closest('.asignacion-combo-option');
+    if (!li) return;
+    ev.preventDefault();
+    choose(li.dataset.id);
+  });
+  input.addEventListener('blur', () => { setTimeout(close, 120); });
+
+  return {
+    setOptions(newOptions) { allOptions = newOptions; close(); },
+  };
+}
+
 // xlsx (SheetJS, ~1MB) is only needed by the download buttons — load it on
 // first click instead of blocking every page load with it.
 let xlsxPromise = null;

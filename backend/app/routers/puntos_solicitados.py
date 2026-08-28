@@ -62,7 +62,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.auth.deps import require_auth, require_role
 from app.credentials import clients as credentials
@@ -123,6 +123,20 @@ class CrearPuntoSolicitadoBody(BaseModel):
     # never call /geocode or type an address at all).
     direccion: str = ""
     fotos: list[str] = Field(default_factory=list)
+
+    # Blank/whitespace-only required strings pass Pydantic's plain `str` type
+    # check (a `disabled` form field or an all-spaces typed value both submit
+    # as `""`/`"   "`) — reject them the same way a missing key already 422s,
+    # so "zero writes" holds for both "field absent" and "field blank".
+    @field_validator(
+        "nombre", "comuna_corregimiento", "barrio_vereda",
+        "nombre_solicitante", "telefono_solicitante", "justificacion",
+    )
+    @classmethod
+    def _reject_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("no puede estar vacío")
+        return v
 
 
 class EditarPuntoSolicitadoBody(BaseModel):
