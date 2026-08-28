@@ -672,10 +672,36 @@ async function apiDelete(getToken, id) {
 // (puntos-solicitados-busqueda-asignacion F1) Admin-only search over
 // existing atencionsismo reports — read-only, same auth/error convention as
 // the rest of this file's REST calls.
-async function apiBuscar(getToken, q) {
+export async function apiBuscar(getToken, q) {
   const headers = await authHeaders(getToken);
   const data = await fetchJson(`${apiUrl('puntosSolicitados')}/buscar?q=${encodeURIComponent(q)}`, { headers });
   return data.resultados || [];
+}
+
+// ---- Buscar punto: stale-response guard (F1 race-condition fix) -----------
+//
+// CRITICAL fix: debounce() (utils.js) only coalesces calls fired within its
+// window — it does NOT cancel in-flight fetches. An admin who types, pauses
+// long enough for request A to fire, then types more before A resolves
+// (firing request B) has both requests racing independently; if A resolves
+// AFTER B, whoever renders last wins even though B is the newer query.
+// `runGuardedBuscar` fixes this with a monotonic request-id counter: the
+// caller bumps `state.current` on every keystroke/open/close and passes that
+// value as `requestId`; a response only renders if no newer request has
+// started since — otherwise it's silently discarded (no render, no error).
+// `search` is injectable so this is unit-testable without DOM/fetch.
+export async function runGuardedBuscar(query, requestId, state, { search, onResult, onError }) {
+  const q = (query || '').trim();
+  if (!q) {
+    if (requestId === state.current) onResult([]);
+    return;
+  }
+  try {
+    const resultados = await search(q);
+    if (requestId === state.current) onResult(resultados);
+  } catch (err) {
+    if (requestId === state.current) onError(err);
+  }
 }
 
 async function apiGeocode(getToken, direccion) {
@@ -1109,19 +1135,22 @@ export function initPuntosSolicitados(section, { getToken }) {
       : '<li class="eval-empty">Sin resultados. Podés crear un punto nuevo.</li>';
   }
 
-  const runBuscar = debounce(async (q) => {
-    const query = q.trim();
-    if (!query) { renderBuscarResultados([]); return; }
-    try {
-      const resultados = await apiBuscar(getToken, query);
-      renderBuscarResultados(resultados);
-    } catch (err) {
-      buscarListEl.innerHTML = `<li class="sticker-error" role="alert">No se pudo buscar: ${escapeHtml(err.message)}</li>`;
-    }
-  }, 300);
-  buscarInput.addEventListener('input', () => runBuscar(buscarInput.value));
+  // `buscarState.current` is bumped on every keystroke AND on open/close, so
+  // a response from a request started before the modal was closed/reopened
+  // can never render into it — see runGuardedBuscar above.
+  const buscarState = { current: 0 };
+  const runBuscar = debounce((q, requestId) => runGuardedBuscar(q, requestId, buscarState, {
+    search: (query) => apiBuscar(getToken, query),
+    onResult: renderBuscarResultados,
+    onError: (err) => { buscarListEl.innerHTML = `<li class="sticker-error" role="alert">No se pudo buscar: ${escapeHtml(err.message)}</li>`; },
+  }), 300);
+  buscarInput.addEventListener('input', () => {
+    buscarState.current += 1;
+    runBuscar(buscarInput.value, buscarState.current);
+  });
 
   function openBuscar() {
+    buscarState.current += 1; // invalidate any in-flight search from a previous session
     buscarInput.value = '';
     renderBuscarResultados([]);
     buscarModal.classList.add('is-open');
@@ -1129,6 +1158,7 @@ export function initPuntosSolicitados(section, { getToken }) {
     setTimeout(() => buscarInput.focus(), 0);
   }
   function closeBuscar() {
+    buscarState.current += 1; // invalidate any in-flight search so it can't land after close
     buscarModal.classList.remove('is-open');
     buscarModal.setAttribute('aria-hidden', 'true');
   }

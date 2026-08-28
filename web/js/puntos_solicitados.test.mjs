@@ -3,7 +3,7 @@
 import assert from 'node:assert';
 import {
   ESTADOS, estadoDe, contarPorEstado, applyFilters, sortPuntos, removeFotoAt, nombreInspectorPorUid,
-  prefillStepsFromResultado, prefillStepsFromQuery,
+  prefillStepsFromResultado, prefillStepsFromQuery, apiBuscar, runGuardedBuscar,
 } from './puntos_solicitados.js';
 
 // The derived lifecycle states (ADR-4 map's output values), in the order they
@@ -144,4 +144,78 @@ assert.deepStrictEqual(Object.fromEntries(prefillStepsFromQuery('  Calle 5  ')),
 assert.deepStrictEqual(Object.fromEntries(prefillStepsFromQuery('')), { direccion: '', nombre: '' });
 assert.deepStrictEqual(Object.fromEntries(prefillStepsFromQuery(undefined)), { direccion: '', nombre: '' });
 
-console.log('ok — puntos_solicitados.js estado classification, filters, sort, buscar prefill mapping');
+// apiBuscar — error path (403/401/502 → thrown Error carrying the backend's
+// `detail`, same contract as this file's other fetchJson-backed api* calls).
+// Mocks global.fetch so no real network call happens.
+{
+  const originalFetch = global.fetch;
+  const getToken = async () => 'fake-token';
+  for (const [status, detail] of [[403, 'Forbidden'], [401, 'Unauthorized'], [502, 'Bad Gateway']]) {
+    global.fetch = async () => ({ ok: false, status, json: async () => ({ detail }) });
+    // eslint-disable-next-line no-await-in-loop -- sequential status cases, deterministic
+    await assert.rejects(() => apiBuscar(getToken, 'calle 5'), { message: detail });
+  }
+  global.fetch = originalFetch;
+}
+
+// runGuardedBuscar — regression test for the stale/out-of-order race
+// (debounce() only coalesces calls fired within its window, it does NOT
+// cancel in-flight fetches). Two concurrent searches, id 1 ("stale") and id 2
+// ("newest"); id 2's promise resolves FIRST and id 1's resolves AFTER — the
+// exact out-of-order scenario the CRITICAL fix guards against. Deterministic:
+// no real timers/network, `search` is a mock returning caller-controlled
+// promises.
+{
+  const state = { current: 0 };
+  const rendered = [];
+  const errors = [];
+  let resolveStale;
+  let resolveNewest;
+  const pendingStale = new Promise((res) => { resolveStale = res; });
+  const pendingNewest = new Promise((res) => { resolveNewest = res; });
+  const search = (q) => (q === 'query-stale' ? pendingStale : pendingNewest);
+  const callbacks = { search, onResult: (list) => rendered.push(list), onError: (err) => errors.push(err) };
+
+  state.current = 1;
+  const callStale = runGuardedBuscar('query-stale', 1, state, callbacks);
+  state.current = 2; // admin typed again before the stale request resolved
+  const callNewest = runGuardedBuscar('query-newest', 2, state, callbacks);
+
+  resolveNewest(['resultado-newest']);
+  await callNewest;
+  resolveStale(['resultado-stale']); // arrives LAST, after the newer request already rendered
+  await callStale;
+
+  assert.deepStrictEqual(rendered, [['resultado-newest']], 'only the newest request may ever render — the stale response is silently discarded');
+  assert.deepStrictEqual(errors, []);
+}
+
+// runGuardedBuscar — a rejected search() routes into onError, never onResult
+// (this is what drives the real code's sticker-error render branch).
+{
+  const state = { current: 1 };
+  const rendered = [];
+  const errors = [];
+  await runGuardedBuscar('calle 5', 1, state, {
+    search: async () => { throw new Error('Error 502'); },
+    onResult: (list) => rendered.push(list),
+    onError: (err) => errors.push(err.message),
+  });
+  assert.deepStrictEqual(rendered, []);
+  assert.deepStrictEqual(errors, ['Error 502']);
+}
+
+// runGuardedBuscar — an empty/blank query clears results synchronously
+// without calling search() at all, and still respects the same stale guard.
+{
+  const state = { current: 5 };
+  const rendered = [];
+  await runGuardedBuscar('   ', 5, state, {
+    search: () => { throw new Error('search() must not be called for a blank query'); },
+    onResult: (list) => rendered.push(list),
+    onError: () => { throw new Error('unreachable'); },
+  });
+  assert.deepStrictEqual(rendered, [[]]);
+}
+
+console.log('ok — puntos_solicitados.js estado classification, filters, sort, buscar prefill mapping, stale-search guard');
