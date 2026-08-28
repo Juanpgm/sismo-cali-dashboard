@@ -2027,6 +2027,13 @@ details[open] > summary.card-title::before { transform: rotate(90deg); }
    contexts exist further up in whatever layout embeds this combo — no
    visual effect on its own, pure containment insurance. */
 .asignacion-combo { position: relative; min-width: 0; flex: 1 1 200px; isolation: isolate; }
+/* `flex-basis: 200px` above targets width in the horizontal toolbars this
+   class was built for (stickers-asignacion.js/planeacion.js). Inside the
+   puntos-solicitados create modal the parent (.sticker-field) is a *column*
+   flex container, so that same flex-basis sets the main axis — height —
+   instead, stretching the combo to 200px tall with the chevron floating in
+   empty space below the input. Reset it back to content-based height there. */
+.sticker-field .asignacion-combo { flex: none; }
 .asignacion-combo-input {
   width: 100%; padding: 8px 32px 8px 11px; border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm); background: var(--surface-2); color: var(--text-primary);
