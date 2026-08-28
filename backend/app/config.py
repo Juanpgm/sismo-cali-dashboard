@@ -13,7 +13,16 @@ CORS_ALLOW_ORIGINS: tuple[str, ...] = (
 # Local dev origins on any port.
 CORS_ALLOW_ORIGIN_REGEX = r"^http://(localhost|127\.0\.0\.1):\d+$"
 
-CORS_ALLOW_METHODS: tuple[str, ...] = ("GET", "POST", "OPTIONS")
+# PATCH/DELETE are real methods on several routers (edit/delete survey
+# records, editing or removing an admin-created point, dismissing a
+# representative panel entry) — omitting them here fails every such request
+# at the CORS preflight (OPTIONS 400) before it ever reaches the route, so
+# the browser never even attempts the real PATCH/DELETE. Found via the
+# admin-created-point edit/delete controls: the delete button was silently
+# broken in production, and so was PATCH-ing photo URLs onto a freshly
+# created point — both routes worked fine when called directly (curl/pytest
+# bypass the browser's own preflight), only the real browser UI was blocked.
+CORS_ALLOW_METHODS: tuple[str, ...] = ("GET", "POST", "PATCH", "DELETE", "OPTIONS")
 CORS_ALLOW_HEADERS: tuple[str, ...] = ("Authorization", "Content-Type")
 CORS_ALLOW_CREDENTIALS = False
 

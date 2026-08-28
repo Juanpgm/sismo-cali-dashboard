@@ -47,6 +47,30 @@ def test_localhost_dev_origin_is_allowed_via_regex(monkeypatch):
     assert resp.headers.get("access-control-allow-origin") == LOCALHOST_DEV_ORIGIN
 
 
+# Regression: CORS_ALLOW_METHODS omitted PATCH/DELETE despite real routes
+# using them (survey_cali.py, puntos_solicitados.py, panel_representante.py)
+# — every such request failed silently at the browser's OWN preflight
+# (OPTIONS 400) before ever reaching the route, so curl/pytest-against-the-
+# route-directly always looked fine while the actual browser UI (e.g.
+# puntos-solicitados' "Eliminar punto"/edit) was broken in production.
+# The real client-facing symptom is exactly this preflight, so assert THAT,
+# not just that config.py's tuple happens to contain the string.
+def test_preflight_allows_patch_and_delete(monkeypatch):
+    client = _client(monkeypatch)
+    for method in ("PATCH", "DELETE"):
+        resp = client.options(
+            "/puntos-solicitados/some-id",
+            headers={
+                "Origin": ALLOWED_ORIGIN,
+                "Access-Control-Request-Method": method,
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+        assert resp.status_code == 200, (method, resp.status_code, resp.text)
+        allowed = resp.headers.get("access-control-allow-methods", "")
+        assert method in allowed, (method, allowed)
+
+
 def test_cookie_only_request_is_rejected_on_authenticated_route(monkeypatch):
     monkeypatch.setenv("FIREBASE_SERVICE_ACCOUNT_JSON", '{"type": "service_account"}')
     monkeypatch.setenv("SIGNER_AWS_ACCESS_KEY_ID", "fake-access-key-id")
