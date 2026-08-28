@@ -606,10 +606,17 @@ function ocultarErrorTomarPunto() {
 async function onTomarPunto(p, btn) {
   if (btn) btn.disabled = true;
   ocultarErrorTomarPunto();
+  // iOS Safari (and most mobile WebKit) only allows window.open() to succeed
+  // when called synchronously inside the click handler — once the code below
+  // crosses an `await`, the tab no longer counts as user-gesture-triggered
+  // and the popup is silently blocked. Pre-open a blank tab HERE, still
+  // inside the gesture, and redirect it once the survey URL is known.
+  const surveyTab = p.campana !== 'sticker' ? window.open('', '_blank', 'noopener') : null;
   try {
     const res = await asignacionesApi({ action: 'tomarPunto', punto_id: p.id, campana: p.campana });
     const body = await res.json().catch(() => ({}));
     if (!res.ok || !body.ok) {
+      if (surveyTab) surveyTab.close();
       // A DEDICATED, independent error line (`#cercanos-claim-error`) — NOT
       // `#cercanos-status`, which the cargarPuntosCercanos() refresh below
       // is about to overwrite with the section's own loading/empty/listo
@@ -632,10 +639,13 @@ async function onTomarPunto(p, btn) {
     // Survey: hand the freshly prefilled Survey123 link when available.
     const propio = state.puntosPlaneacion.find((x) => x.id === p.id);
     const encuestaUrl = propio ? elegirEnlaceEncuesta(propio, esDispositivoMovil()) : '';
-    if (encuestaUrl) window.open(encuestaUrl, '_blank', 'noopener');
+    if (encuestaUrl && surveyTab) surveyTab.location.href = encuestaUrl;
+    else if (encuestaUrl) window.open(encuestaUrl, '_blank', 'noopener');
+    else if (surveyTab) surveyTab.close();
     state.tabAsigActiva = 'survey';
     renderAsignaciones();
   } catch (err) {
+    if (surveyTab) surveyTab.close();
     console.warn('tomarPunto falló:', err);
     mostrarErrorTomarPunto(mensajeErrorTomarPunto(''));
   } finally {
