@@ -111,6 +111,20 @@ exact-equality lookup layer instead, and hold unconditionally:
     collision can never pair a survey to the wrong building, which is
     the failure that would actually cost a wasted trip.
 
+## Camino formulario ATC-20 / stickers — `evaluaciones` cross-reference
+
+Alongside the Survey123 path above (`codigoapp` -> `build_key_index`), a
+point can also get field data via the formulario ATC-20/stickers app, which
+writes its own `evaluaciones/{codigo}` doc client-side and — when the
+record traces back to an assigned point — carries the SAME
+`clave_integracion` this module minted, propagated by `routers/
+planeacion_asignaciones.py`'s sticker-twin propagation and `formulario/js/
+form.js`'s own submit. `fetch_evaluaciones`/`build_evaluacion_index` cross-
+reference it EXACT-KEY ONLY (no geo/address cascade, unlike the Survey123
+path) and set `tiene_evaluacion`/`evaluacion_codigo`/`evaluacion_fecha` on
+the mirror, independently of `tiene_survey` — a point can be `True` on
+either, both, or neither.
+
     python -m app.jobs.planeacion_cruce --check     # offline self-check, no network
     python -m app.jobs.planeacion_cruce --dry       # real data, no Firestore write
     python -m app.jobs.planeacion_cruce             # real data, write planeacion_puntos
@@ -167,6 +181,13 @@ INSPECCIONES_ISRAEL_COLLECTION = "inspecciones_israel"
 # above for why this makes `planeacion_cruce.py` a flagged, read-only entry
 # in `tests/invariants/test_sole_writer.py`'s `ALLOWED_MODULES_SURVEY_CALI`.
 from app.services.survey_cali import SURVEY_CALI_COLLECTION  # noqa: E402
+# `evaluaciones` collection name, imported (never re-literaled) from
+# `cruce_sticker.py` — the module that already owns this constant for the
+# Panel-vs-evaluaciones cascade. Read-only here too (see `fetch_evaluaciones`
+# below) — this collection has no sole-writer allowlist to extend (unlike
+# `survey_cali`), it is genuinely writer-free from the backend's own side
+# (only `formulario/js/form.js`'s client-side Firestore SDK writes it).
+from app.jobs.cruce_sticker import EVALUACIONES_COLLECTION  # noqa: E402
 
 STATE_DOC = "_meta/planeacion_cruce_state"  # {"last_run_at": Timestamp} — incremental watermark
 BATCH_SIZE = 500  # Firestore batch-write / getAll chunk limit
@@ -238,7 +259,12 @@ PIPELINE_FIELDS = ("fuente", "registro_id", "clave_integracion", "tiene_survey",
                    "direccion", "barrio", "comuna", "coords", "afectacion",
                    "estado_verificacion", "tipo_inmueble", "habitabilidad",
                    "fecha_creacion", "prioridad_score", "prioridad", "matched_at",
-                   "dup_grupo_id", "dup_n", "es_representante")
+                   "dup_grupo_id", "dup_n", "es_representante",
+                   # formulario ATC-20 / stickers cross-reference (see module
+                   # docstring's "Camino formulario ATC-20 / stickers"
+                   # section): exact clave_integracion match against
+                   # `evaluaciones`, independent of the Survey123 path above.
+                   "tiene_evaluacion", "evaluacion_codigo", "evaluacion_fecha")
 ADMIN_DEFAULT_FIELDS = {"estado_asignacion": "pendiente", "cuadrilla_id": None,
                         "inspector_uid": None, "prioridad_override": None}
 
@@ -785,6 +811,45 @@ def fetch_israel(db) -> list[dict]:
     return out
 
 
+# ── evaluaciones (formulario ATC-20/stickers path) — READ-ONLY, exact
+# clave_integracion match only, no geo/address fallback ────────────────────
+def fetch_evaluaciones(db) -> list[dict]:
+    """`evaluaciones` docs, flattened to just what the exact-key
+    cross-reference below needs (module docstring's "Camino formulario
+    ATC-20 / stickers" section). Full scan, no watermark: unlike
+    `fetch_surveys`, this collection has no incremental cursor field wired
+    up yet, and it is a field-form collection, not the ~14.8k planeacion
+    universe — same scale precedent as `fetch_israel` above."""
+    out = []
+    for doc in db.collection(EVALUACIONES_COLLECTION).stream():
+        e = doc.to_dict() or {}
+        out.append({
+            "codigo": e.get("codigo_edificacion") or doc.id,
+            "clave_integracion": e.get("clave_integracion") or "",
+            "fecha": e.get("fecha_hora_dispositivo") or None,
+        })
+    return out
+
+
+def build_evaluacion_index(evaluaciones: list[dict]) -> dict[str, dict]:
+    """`clave_integracion` -> evaluación record, exact match only. Pure —
+    mirrors `build_key_index`'s own shape for the Survey123 path, one level
+    simpler (no `verify_clave_integracion` gate needed: this key was already
+    minted by THIS module for a known point and only ever propagated
+    verbatim — `routers/planeacion_asignaciones.py`'s sticker-twin
+    propagation and `formulario/js/form.js`'s own submit — never hand-typed
+    by a field crew the way a Survey123 `codigoapp` can be. ponytail: exact
+    match only, add a geo/address fallback if evaluaciones without a
+    clave_integracion (pre-dating this change) turn out common enough to
+    matter."""
+    out: dict[str, dict] = {}
+    for e in evaluaciones:
+        clave = e.get("clave_integracion")
+        if clave:
+            out[clave] = e
+    return out
+
+
 def read_watermark(db):
     """Timestamp of the last successful run, or `None` (first run, or a
     prior run that never reached the end) — meaning "process everything"."""
@@ -904,6 +969,17 @@ def _selfcheck() -> None:
     assert by_id[did2]["estado_asignacion"] == "pendiente"  # first write, seeded default
     assert set(by_id[did2]) == set(PIPELINE_FIELDS) | set(ADMIN_DEFAULT_FIELDS)
 
+    # evaluaciones cross-reference (formulario ATC-20/stickers path): exact
+    # clave_integracion match only, no geo/address fallback.
+    evals = [{"codigo": "76001-1-0010001", "clave_integracion": "PLN-1-AAAAAAAA",
+             "fecha": "2026-08-28T10:00:00"}]
+    eval_index = build_evaluacion_index(evals)
+    assert eval_index["PLN-1-AAAAAAAA"]["codigo"] == "76001-1-0010001"
+    assert "PLN-2-BBBBBBBB" not in eval_index
+    # evaluaciones missing clave_integracion never enter the index (nothing
+    # to key them on).
+    assert build_evaluacion_index([{"codigo": "x", "clave_integracion": ""}]) == {}
+
     # select_candidates: the incremental core.
     state = {did1: {"exists": True, "tiene_survey": True}}
     cands = select_candidates(points, state)
@@ -970,6 +1046,11 @@ def run_planeacion_cruce(top: int | None = None, dry: bool = False, full: bool =
           f"({len(surveys_cali)} survey_cali desde watermark + {len(surveys_israel)} israel full-scan; "
           f"{len(key_index)} con clave_integracion verificada)")
 
+    evaluaciones = fetch_evaluaciones(db)
+    evaluacion_index = build_evaluacion_index(evaluaciones)
+    print(f"evaluaciones (formulario ATC-20/stickers): {len(evaluacion_index)} con clave_integracion "
+          f"de {len(evaluaciones)} leídas")
+
     now = datetime.now(timezone.utc)
     to_write: list[dict] = []
     match_via_tally: dict[str, int] = {}
@@ -977,9 +1058,14 @@ def run_planeacion_cruce(top: int | None = None, dry: bool = False, full: bool =
         clave = clave_integracion(p["fuente"], p["registro_id"])
         r = cruce_punto(p["lat"], p["lon"], p["direccion"], clave,
                         key_index=key_index, surveys=surveys, addr_index=addr_index)
+        evaluacion = evaluacion_index.get(clave)
         did = doc_id(p["fuente"], p["registro_id"])
         is_new = not state.get(did, {"exists": False})["exists"]
-        if not full and not r["tiene_survey"] and not is_new:
+        # ponytail: a point matching an evaluación but never a survey gets
+        # rewritten every non-full run (the mirror write is a cheap
+        # merge:true) — a persisted tiene_evaluacion watermark would avoid
+        # that, add one if this collection's scale ever makes it matter.
+        if not full and not r["tiene_survey"] and evaluacion is None and not is_new:
             continue  # unchanged pending point -> nothing changed, don't rewrite (skipped on --full: it rewrites everything, dedup tags included)
 
         score = prioridad_score(p, now)
@@ -988,6 +1074,9 @@ def run_planeacion_cruce(top: int | None = None, dry: bool = False, full: bool =
             "clave_integracion": clave,
             "tiene_survey": r["tiene_survey"], "survey_globalid": r["survey_globalid"],
             "match_via": r["match_via"], "match_dist_m": r["match_dist_m"], "tier": r["tier"],
+            "tiene_evaluacion": evaluacion is not None,
+            "evaluacion_codigo": evaluacion.get("codigo") if evaluacion else None,
+            "evaluacion_fecha": evaluacion.get("fecha") if evaluacion else None,
             "prioridad_score": score, "prioridad": prioridad_de(score),
             "matched_at": now,
         })

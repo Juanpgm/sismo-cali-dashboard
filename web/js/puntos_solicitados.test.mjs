@@ -5,6 +5,7 @@ import {
   ESTADOS, estadoDe, contarPorEstado, applyFilters, sortPuntos, removeFotoAt, nombreInspectorPorUid,
   prefillStepsFromResultado, prefillStepsFromQuery, apiBuscar, runGuardedBuscar,
   contarCargaPorInspector, inspectorLabelConCarga, remountAsignarNodes,
+  markerBaseStyle, datosCapturadosLabel,
 } from './puntos_solicitados.js';
 import { mountCombobox } from './utils.js';
 
@@ -331,4 +332,33 @@ assert.strictEqual(inspectorLabelConCarga({ nombre_completo: 'Sin código' }, un
   assert.deepStrictEqual(calls, ['uid-1'], "onSelect (asignarInspector's write) must fire exactly once for one selection after open→close→open");
 }
 
-console.log('ok — puntos_solicitados.js estado classification, filters, sort, buscar prefill mapping, stale-search guard, inspector load-count tally, asignar-panel remount regression');
+// ---- markerBaseStyle / datosCapturadosLabel (formulario-armonizacion change) --
+// datos_capturados (survey123-y-o-formulario-atc20 change): a punto solicitado
+// can pick up field data via Survey123 (tiene_survey) and/or the formulario
+// ATC-20/stickers app (tiene_evaluacion) — puntos_solicitados.py's GET derives
+// datos_capturados = tiene_survey OR tiene_evaluacion from the mirror.
+
+// markerBaseStyle: accent ring only when datos_capturados is true; plain
+// default otherwise — never a crash on a missing/falsy point.
+assert.deepStrictEqual(markerBaseStyle({ datos_capturados: true }), { radius: 10, color: '#FFC400', weight: 3 });
+assert.deepStrictEqual(markerBaseStyle({ datos_capturados: false }), { radius: 8, color: '#0B1D33', weight: 1 });
+assert.deepStrictEqual(markerBaseStyle({}), { radius: 8, color: '#0B1D33', weight: 1 });
+assert.deepStrictEqual(markerBaseStyle(null), { radius: 8, color: '#0B1D33', weight: 1 });
+
+// datosCapturadosLabel: names the actual source(s); null when nothing to show.
+assert.strictEqual(datosCapturadosLabel({ datos_capturados: false }), null);
+assert.strictEqual(datosCapturadosLabel(null), null);
+assert.strictEqual(
+  datosCapturadosLabel({ datos_capturados: true, tiene_survey: true, tiene_evaluacion: false }),
+  'Datos capturados: Survey123',
+);
+assert.strictEqual(
+  datosCapturadosLabel({ datos_capturados: true, tiene_survey: false, tiene_evaluacion: true }),
+  'Datos capturados: Formulario ATC-20',
+);
+assert.strictEqual(
+  datosCapturadosLabel({ datos_capturados: true, tiene_survey: true, tiene_evaluacion: true }),
+  'Datos capturados: Survey123 + Formulario ATC-20',
+);
+
+console.log('ok — puntos_solicitados.js estado classification, filters, sort, buscar prefill mapping, stale-search guard, inspector load-count tally, asignar-panel remount regression, datos_capturados marker style/badge');

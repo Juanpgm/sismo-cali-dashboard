@@ -85,6 +85,35 @@ export function applyFilters(list, filters) {
   });
 }
 
+/** Base circle-marker style for a punto solicitado on the workspace map:
+ *  an accent ring when field data already exists for it (`datos_capturados`
+ *  — Survey123 and/or the formulario ATC-20 evaluación, set by
+ *  app/jobs/planeacion_cruce.py's cross-references), the plain default ring
+ *  otherwise. Fill colour still comes from estadoDe(p).color — this only
+ *  adds a distinctive border, same "keep the estado colour, add a marker"
+ *  language `setHighlight` below already uses for hover/focus. Exported and
+ *  pure so `setHighlight`'s off-state can restore exactly this (never a
+ *  hardcoded default that would erase the ring on pointerout) and so it is
+ *  unit-testable without Leaflet. */
+export function markerBaseStyle(p) {
+  return p && p.datos_capturados
+    ? { radius: 10, color: COLORS.accent, weight: 3 }
+    : { radius: 8, color: '#0B1D33', weight: 1 };
+}
+
+/** "Datos capturados" badge text for a punto with `datos_capturados` true —
+ *  names which source(s) already hold field data (Survey123, the formulario
+ *  ATC-20 evaluación, or both). `null` when neither flag is set — the
+ *  caller renders no badge in that case. Pure, exported for a direct unit
+ *  test. */
+export function datosCapturadosLabel(p) {
+  if (!p || !p.datos_capturados) return null;
+  const fuentes = [];
+  if (p.tiene_survey) fuentes.push('Survey123');
+  if (p.tiene_evaluacion) fuentes.push('Formulario ATC-20');
+  return `Datos capturados: ${fuentes.length ? fuentes.join(' + ') : 'sí'}`;
+}
+
 /** Pure removal: returns a NEW array with the file at `index` dropped,
  *  never mutating `files`. Extracted so the create modal's "quitar" handler
  *  stays a one-liner and this specific behaviour (order preservation, first/
@@ -497,7 +526,7 @@ function renderMap(puntos, onDetail) {
 
   for (const p of conCoords) {
     const marker = L.circleMarker([p.coords.lat, p.coords.lon], {
-      radius: 8, color: '#0B1D33', weight: 1, fillColor: estadoDe(p).color, fillOpacity: 0.9,
+      ...markerBaseStyle(p), fillColor: estadoDe(p).color, fillOpacity: 0.9,
     });
     marker.bindPopup(popupHtml(p), { maxWidth: 280 });
     marker.on('popupopen', (ev) => {
@@ -546,6 +575,7 @@ function renderMap(puntos, onDetail) {
 function listItemHtml(p) {
   const e = estadoDe(p);
   const fotos = (p.fotos || []).length ? `${p.fotos.length} foto${p.fotos.length === 1 ? '' : 's'}` : 'sin fotos';
+  const datosLabel = datosCapturadosLabel(p);
   return `<li class="ps-item">
     <div class="ps-row-wrap">
       <button type="button" class="eval-row" data-ps-detail="${escapeHtml(p.id)}">
@@ -554,6 +584,7 @@ function listItemHtml(p) {
         <span class="eval-pill" style="--eval-pill:${e.color}">${escapeHtml(e.label)}</span>
         <span class="eval-meta">${escapeHtml(p.comuna_corregimiento || 'Sin comuna')} · ${escapeHtml(p.barrio_vereda || 'Sin barrio')}</span>
         <span class="eval-meta">${escapeHtml(p.nombre_solicitante || 'Sin solicitante')} · ${fotos}</span>
+        ${datosLabel ? `<span class="eval-meta"><span class="badge" style="background:var(--accent-dim);color:var(--accent)">${escapeHtml(datosLabel)}</span></span>` : ''}
         <span class="eval-cta">Ver detalle &rsaquo;</span>
       </button>
       <button type="button" class="btn-link ps-asignar-btn" data-ps-asignar="${escapeHtml(p.id)}">Asignar</button>
@@ -974,7 +1005,11 @@ export function initPuntosSolicitados(section, { getToken }) {
 
   const setHighlight = (id, on) => {
     const marker = markerById.get(id);
-    if (marker) marker.setStyle(on ? { radius: 12, color: COLORS.accent, weight: 3 } : { radius: 8, color: '#0B1D33', weight: 1 });
+    if (!marker) return;
+    // Off-state restores THIS point's own base style (markerBaseStyle), not
+    // a hardcoded default — otherwise pointerout would erase the
+    // datos_capturados accent ring renderMap() gave it.
+    marker.setStyle(on ? { radius: 12, color: COLORS.accent, weight: 3 } : markerBaseStyle(byId.get(id)));
   };
   listEl.addEventListener('pointerover', (ev) => { const row = ev.target.closest('[data-ps-detail]'); if (row) setHighlight(row.dataset.psDetail, true); });
   listEl.addEventListener('pointerout', (ev) => { const row = ev.target.closest('[data-ps-detail]'); if (row) setHighlight(row.dataset.psDetail, false); });

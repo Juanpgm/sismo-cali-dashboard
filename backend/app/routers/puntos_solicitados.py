@@ -438,8 +438,15 @@ def listar_puntos_solicitados(claims: dict[str, Any] = Depends(require_role("adm
     puntos = []
     for d in docs:
         data = _jsonable(d.to_dict() or {})
-        mirror = mirror_by_id.get(_mirror_doc_id(d.id))
-        estado_asignacion = (mirror or {}).get("estado_asignacion") or "pendiente"
+        mirror = mirror_by_id.get(_mirror_doc_id(d.id)) or {}
+        estado_asignacion = mirror.get("estado_asignacion") or "pendiente"
+        # Both flags are set on the mirror by app/jobs/planeacion_cruce.py —
+        # tiene_survey by the existing Survey123 cascade, tiene_evaluacion by
+        # its formulario ATC-20/stickers cross-reference (module docstring's
+        # "Camino formulario ATC-20 / stickers"). datos_capturados spares the
+        # frontend from repeating the `or` itself.
+        tiene_survey = bool(mirror.get("tiene_survey"))
+        tiene_evaluacion = bool(mirror.get("tiene_evaluacion"))
         puntos.append({
             "id": d.id,
             **data,
@@ -447,8 +454,11 @@ def listar_puntos_solicitados(claims: dict[str, Any] = Depends(require_role("adm
             # Read-only passthrough of the mirror's assignment (never written
             # by this router — ADR-4); mirror_id spares the frontend from
             # re-deriving the `solicitado_{id}` convention itself.
-            "inspector_uid": (mirror or {}).get("inspector_uid"),
+            "inspector_uid": mirror.get("inspector_uid"),
             "mirror_id": _mirror_doc_id(d.id),
+            "tiene_survey": tiene_survey,
+            "tiene_evaluacion": tiene_evaluacion,
+            "datos_capturados": tiene_survey or tiene_evaluacion,
         })
     return JSONResponse({"ok": True, "puntos": puntos})
 

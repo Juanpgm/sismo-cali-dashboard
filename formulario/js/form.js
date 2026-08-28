@@ -368,7 +368,12 @@ function buildAsignacionCard(a, origen) {
 // Link the chosen point to the form: stash it, prefill what is clean to
 // prefill (address; GPS stays authoritative for coords), and open the form.
 function registrarSticker(a) {
-  state.asignacion = { id: a.id, coords: a.coords, direccion: a.direccion };
+  // clave_integracion rides along when misPuntos' sticker_matches doc has one
+  // (planeacion_asignaciones.py's sticker-twin propagation) — null otherwise.
+  // Carried through onSubmit so the evaluación can be cross-referenced back
+  // to its planeación point, same "traceability back to the assigned point"
+  // purpose sticker_match_id already serves.
+  state.asignacion = { id: a.id, coords: a.coords, direccion: a.direccion, clave_integracion: a.clave_integracion };
   $('#direccion').value = a.direccion || '';
   mostrarFormulario();
 }
@@ -1219,6 +1224,9 @@ async function onSubmit(e) {
 
     // Traceability back to the assigned point (when this record came from one).
     if (state.asignacion) data.sticker_match_id = state.asignacion.id;
+    // planeacion_cruce.py's evaluaciones cross-reference (module docstring's
+    // "Camino formulario ATC-20 / stickers") keys off this exact field.
+    if (state.asignacion && state.asignacion.clave_integracion) data.clave_integracion = state.asignacion.clave_integracion;
 
     // Create-only: the transaction fails if the doc already exists.
     const evalRef = doc(db, 'evaluaciones', state.codigo);
