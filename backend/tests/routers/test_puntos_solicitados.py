@@ -555,3 +555,202 @@ def test_geocode_route_maps_transport_error_to_502(monkeypatch):
     client = _viewer_client(monkeypatch, stores)
     resp = client.post("/geocode", json={"direccion": "Calle 1 # 2-3"})
     assert resp.status_code == 502
+
+
+# ── GET /puntos-solicitados/buscar (puntos-solicitados-busqueda-asignacion
+#    change, design.md ADR-1/ADR-2) ─────────────────────────────────────────
+#
+# Reads `reportes.json` via `_load_reportes()` (imported, never re-literaled)
+# joined to the private `puntos_contacto` collection on
+# `id (str) == registro_id`. Cache is reset before/after every test in this
+# module (autouse fixture below) so no test leaks a joined-rows snapshot or
+# a stale `at` timestamp into the next one.
+
+
+@pytest.fixture(autouse=True)
+def _reset_buscar_cache():
+    import app.routers.puntos_solicitados as router_mod
+    router_mod._BUSCAR_CACHE["rows"] = None
+    router_mod._BUSCAR_CACHE["at"] = 0.0
+    yield
+    router_mod._BUSCAR_CACHE["rows"] = None
+    router_mod._BUSCAR_CACHE["at"] = 0.0
+
+
+# ── 2.1: `_build_rows` join attaches name when present / None when missing ─
+
+
+def test_build_rows_joins_and_attaches_name_or_none():
+    import app.routers.puntos_solicitados as router_mod
+
+    reportes = [
+        {"id": "1", "direccion": "Calle 1", "barrio": "San Antonio",
+         "comuna": "Comuna 3", "lat": 3.1, "lng": -76.1},
+        {"id": "2", "direccion": "Calle 2", "barrio": "Otro",
+         "comuna": "Comuna 5", "lat": 3.2, "lng": -76.2},
+    ]
+    contacto_by_id = {
+        "1": {"registro_id": "1", "nombre_solicitante": "María Pérez",
+              "telefono_solicitante": "3001234567"},
+    }
+
+    rows = router_mod._build_rows(reportes, contacto_by_id)
+    assert len(rows) == 2
+
+    matched = next(r for r in rows if r["registro_id"] == "1")
+    assert matched["nombre_solicitante"] == "María Pérez"
+    assert matched["telefono_solicitante"] == "3001234567"
+    assert matched["direccion"] == "Calle 1"
+
+    unmatched = next(r for r in rows if r["registro_id"] == "2")
+    assert unmatched["nombre_solicitante"] is None
+    assert unmatched["telefono_solicitante"] is None
+
+
+# ── 2.2: case-insensitive substring filter over all 4 fields, top-20 cap ───
+
+
+def test_filter_rows_case_insensitive_substring_over_four_fields_and_top20_cap():
+    import app.routers.puntos_solicitados as router_mod
+
+    rows = [
+        {"registro_id": str(i), "direccion": f"Calle {i}", "barrio": "San Antonio",
+         "comuna": "Comuna 3", "lat": 0, "lng": 0,
+         "nombre_solicitante": None, "telefono_solicitante": None}
+        for i in range(25)
+    ]
+
+    matched = router_mod._filter_rows(rows, "SAN ANTONIO")
+    assert len(matched) == 20  # top-20 cap even though 25 rows match
+    assert all("san antonio" in (r["barrio"] or "").lower() for r in matched)
+
+    name_row = {"registro_id": "name-match", "direccion": "Otra dir", "barrio": "Otro",
+                "comuna": "Otra comuna", "lat": 0, "lng": 0,
+                "nombre_solicitante": "Pedro Gómez", "telefono_solicitante": "300"}
+    matched_by_name = router_mod._filter_rows(rows + [name_row], "pedro")
+    assert [r["registro_id"] for r in matched_by_name] == ["name-match"]
+
+    assert router_mod._filter_rows(rows, "") == []
+    assert router_mod._filter_rows(rows, "zzz-no-match-anywhere") == []
+
+
+# ── 2.3: TTL cache builds once, serves cached within TTL, rebuilds after ───
+
+
+def test_joined_rows_ttl_cache_builds_once_serves_cached_then_rebuilds_after_ttl(monkeypatch):
+    import app.routers.puntos_solicitados as router_mod
+
+    calls: list[int] = []
+
+    def _counting_load_reportes():
+        calls.append(1)
+        return [{"id": "1", "direccion": "Calle 1", "barrio": "B",
+                  "comuna": "C", "lat": 1.0, "lng": 2.0}]
+
+    monkeypatch.setattr(router_mod, "_load_reportes", _counting_load_reportes)
+    stores = _stores()
+    monkeypatch.setattr(router_mod.credentials, "sismo", lambda: _FakeSismoClients(stores, {}))
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(router_mod.time, "monotonic", lambda: clock["t"])
+
+    router_mod._joined_rows()
+    assert len(calls) == 1
+
+    clock["t"] = router_mod._BUSCAR_TTL_S - 1  # still within TTL
+    router_mod._joined_rows()
+    assert len(calls) == 1  # served from cache, no rebuild
+
+    clock["t"] = router_mod._BUSCAR_TTL_S + 1  # past TTL
+    router_mod._joined_rows()
+    assert len(calls) == 2  # rebuilt
+
+
+# ── 2.4: non-admin `GET /buscar` → 403, zero source reads ──────────────────
+
+
+def test_buscar_non_admin_is_403_with_zero_source_reads(monkeypatch):
+    import app.routers.puntos_solicitados as router_mod
+
+    calls: list[int] = []
+    monkeypatch.setattr(router_mod, "_load_reportes", lambda: calls.append(1) or [])
+    stores = _stores()
+    client = _viewer_client(monkeypatch, stores)
+
+    resp = client.get("/puntos-solicitados/buscar", params={"q": "san antonio"})
+    assert resp.status_code == 403
+    assert calls == []
+
+
+# ── 2.5: admin response never leaks puntos_contacto/raw-reportes PII fields ─
+#    when unmatched; the response only ever carries None for those fields,
+#    never a stray raw-reportes key even if the record were malformed/
+#    unstripped — proving PII cannot cross into the response by construction
+#    (the property "Public artifacts remain PII-free" is meant to protect).
+
+
+def test_buscar_response_never_leaks_raw_pii_fields_and_nulls_when_unmatched(monkeypatch):
+    import app.routers.puntos_solicitados as router_mod
+
+    reportes = [
+        {
+            "id": "9",
+            "direccion": "Calle 9",
+            "barrio": "San Antonio",
+            "comuna": "Comuna 3",
+            "lat": 3.1,
+            "lng": -76.1,
+            # Simulates a malformed/unstripped record — _build_rows must
+            # never forward these raw fields into the response even if
+            # present on the input, regardless of contacto match.
+            "nombre": "NO DEBERIA APARECER",
+            "telefono": "000",
+        },
+    ]
+    monkeypatch.setattr(router_mod, "_load_reportes", lambda: reportes)
+    stores = _stores()  # puntos_contacto stays empty: no match for id "9"
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.get("/puntos-solicitados/buscar", params={"q": "san antonio"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["resultados"]) == 1
+    row = body["resultados"][0]
+    assert row["nombre_solicitante"] is None
+    assert row["telefono_solicitante"] is None
+    assert "nombre" not in row
+    assert "telefono" not in row
+
+
+# ── empty/whitespace q → {ok:true, resultados:[]}, no source read (ADR-1) ──
+
+
+def test_buscar_empty_or_whitespace_q_returns_empty_resultados_no_source_read(monkeypatch):
+    import app.routers.puntos_solicitados as router_mod
+
+    calls: list[int] = []
+    monkeypatch.setattr(router_mod, "_load_reportes", lambda: calls.append(1) or [])
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.get("/puntos-solicitados/buscar", params={"q": "   "})
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "resultados": []}
+    assert calls == []
+
+
+# ── clean 502 on a source-fetch failure, same convention as sibling routes ─
+
+
+def test_buscar_source_failure_is_a_clean_502(monkeypatch):
+    import app.routers.puntos_solicitados as router_mod
+
+    def _raise():
+        raise RuntimeError("simulated reportes read failure")
+
+    monkeypatch.setattr(router_mod, "_load_reportes", _raise)
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.get("/puntos-solicitados/buscar", params={"q": "san antonio"})
+    assert resp.status_code == 502
