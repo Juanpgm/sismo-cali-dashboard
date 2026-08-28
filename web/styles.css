@@ -2043,7 +2043,7 @@ details[open] > summary.card-title::before { transform: rotate(90deg); }
 }
 .asignacion-combo-list {
   list-style: none; margin: 6px 0 0; padding: 4px; position: absolute; z-index: 20;
-  top: 100%; left: 0; right: 0; max-height: 260px; overflow-y: auto;
+  top: 100%; left: 0; right: 0; max-height: 220px; overflow-y: auto;
   background: var(--surface); border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm); box-shadow: var(--shadow-modal);
 }
@@ -2066,6 +2066,7 @@ details[open] > summary.card-title::before { transform: rotate(90deg); }
 .asignacion-combo-option.is-over-cap { opacity: .55; color: var(--text-muted); cursor: not-allowed; }
 .asignacion-combo-option.is-over-cap:hover { background: transparent; color: var(--text-muted); }
 .asignacion-combo-empty { padding: 8px 10px; color: var(--text-muted); font-size: .85rem; }
+.asignacion-combo-hint { padding: 6px 10px; color: var(--text-muted); font-size: .78rem; font-style: italic; }
 
 /* In-progress spinner for «Auto-agrupar» (reuses the accent). */
 .asignacion-spinner {

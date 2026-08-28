@@ -752,18 +752,31 @@ export function filterOptionsByLabel(options, query) {
  * dependent combobox (e.g. barrio, scoped to a chosen comuna) can be
  * repopulated without re-mounting/double-binding listeners.
  */
+// Before the user types anything, showing every option (e.g. 37 comunas,
+// 400+ barrios for a big comuna) makes the dropdown pop up disproportionately
+// tall right on focus. Cap that empty-query view; typing narrows it via the
+// normal filter, which is uncapped (a real search shouldn't hide matches).
+const EMPTY_QUERY_VISIBLE_LIMIT = 8;
+
 export function mountCombobox(input, listEl, { options = [], onSelect = () => {}, filterFn = filterOptionsByLabel } = {}) {
   let allOptions = options;
-  let visible = []; // [{id, label}] in current render order
+  let visible = []; // [{id, label}] in current render order — matches what's actually on screen
   let active = -1;
 
   const close = () => { listEl.hidden = true; input.setAttribute('aria-expanded', 'false'); active = -1; };
 
   function render(query) {
-    visible = filterFn(allOptions, query === undefined ? input.value : query);
-    listEl.innerHTML = visible.map((o) => `<li role="option" class="asignacion-combo-option" data-id="${escapeHtml(o.id)}">
+    const q = query === undefined ? input.value : query;
+    const matches = filterFn(allOptions, q);
+    const isEmptyQuery = !normalize(q);
+    visible = isEmptyQuery ? matches.slice(0, EMPTY_QUERY_VISIBLE_LIMIT) : matches;
+    const rows = visible.map((o) => `<li role="option" class="asignacion-combo-option" data-id="${escapeHtml(o.id)}">
         <span class="asignacion-combo-name">${escapeHtml(o.label)}</span></li>`).join('')
       || '<li class="asignacion-combo-empty" aria-disabled="true">Sin coincidencias</li>';
+    const hiddenCount = matches.length - visible.length;
+    const hint = isEmptyQuery && hiddenCount > 0
+      ? `<li class="asignacion-combo-hint" aria-disabled="true">Escribí para ver ${hiddenCount} más…</li>` : '';
+    listEl.innerHTML = rows + hint;
     active = -1;
     listEl.hidden = false;
     input.setAttribute('aria-expanded', 'true');
