@@ -73,6 +73,13 @@ Chain strategy: stacked-to-main
 - [ ] 7.1 RED `web/js/puntos_solicitados.test.mjs`: client-side count-tally helper (pure function, list → `{uid: count}`).
 - [ ] 7.2 GREEN: `node --test "web/js/puntos_solicitados.test.mjs"`.
 
+## Phase 1b: Backend — 4R polish pass (post-review, non-blocking WARNINGs)
+
+- [x] 1b.1 `_BUSCAR_CACHE` module dict → `BuscarCache` class on `app.state.puntos_solicitados_buscar_cache` (same pattern as `sticker_status.StickerStatusCache`); `_reset_buscar_cache` test fixture removed (natural per-test isolation via fresh `create_app()`).
+- [x] 1b.2 `_load_reportes` renamed to public `load_reportes` in `app/jobs/planeacion_cruce.py`; import updated.
+- [x] 1b.3 `_joined_rows` degrades to address-only rows (logged) on a `puntos_contacto`-only read failure; only `load_reportes()` failure still 502s. New test added alongside `test_buscar_source_failure_is_a_clean_502`.
+- [x] 1b.4 `_build_rows` dedupes duplicate `id`s (first occurrence wins), logged once in `_joined_rows`, mirroring `planeacion_cruce.load_puntos`'s own convention. New test added.
+
 ## Phase 8: Verification
 
 - [ ] 8.1 Full `python -m pytest backend/tests/`, zero failures.

@@ -682,7 +682,7 @@ def parse_fecha_creacion_es(raw: str | None) -> datetime | None:
 
 # ── Point loading (ADR-2: reportes.json, two-tier, same as cruce_sticker's
 # _load_ede()) ────────────────────────────────────────────────────────────
-def _load_reportes() -> list[dict]:
+def load_reportes() -> list[dict]:
     if REPORTES_JSON.exists():
         return json.loads(REPORTES_JSON.read_text(encoding="utf-8"))
     url = os.environ.get("REPORTES_URL", "").strip()
@@ -697,7 +697,7 @@ def load_puntos() -> list[dict]:
     """`web/data/reportes.json` (informe/json's full record set, ADR-2) ->
     the pipeline's own field names (ADR-1). One record per report; records
     with no `id` are skipped (nothing to key a doc on)."""
-    raw = _load_reportes()
+    raw = load_reportes()
     points = []
     seen_ids: set[str] = set()
     for rec in raw:

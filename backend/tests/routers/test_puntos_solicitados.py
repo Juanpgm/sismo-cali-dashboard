@@ -560,21 +560,13 @@ def test_geocode_route_maps_transport_error_to_502(monkeypatch):
 # ── GET /puntos-solicitados/buscar (puntos-solicitados-busqueda-asignacion
 #    change, design.md ADR-1/ADR-2) ─────────────────────────────────────────
 #
-# Reads `reportes.json` via `_load_reportes()` (imported, never re-literaled)
+# Reads `reportes.json` via `load_reportes()` (imported, never re-literaled)
 # joined to the private `puntos_contacto` collection on
-# `id (str) == registro_id`. Cache is reset before/after every test in this
-# module (autouse fixture below) so no test leaks a joined-rows snapshot or
-# a stale `at` timestamp into the next one.
-
-
-@pytest.fixture(autouse=True)
-def _reset_buscar_cache():
-    import app.routers.puntos_solicitados as router_mod
-    router_mod._BUSCAR_CACHE["rows"] = None
-    router_mod._BUSCAR_CACHE["at"] = 0.0
-    yield
-    router_mod._BUSCAR_CACHE["rows"] = None
-    router_mod._BUSCAR_CACHE["at"] = 0.0
+# `id (str) == registro_id`. The joined-rows cache (`BuscarCache`) lives on
+# `app.state`, one instance per `create_app()` call — same as
+# `test_sticker_status.py`'s `StickerStatusCache` tests, each test's fresh
+# `_admin_client`/`_viewer_client` call already gives natural per-test
+# isolation, no reset fixture needed.
 
 
 # ── 2.1: `_build_rows` join attaches name when present / None when missing ─
@@ -647,22 +639,23 @@ def test_joined_rows_ttl_cache_builds_once_serves_cached_then_rebuilds_after_ttl
         return [{"id": "1", "direccion": "Calle 1", "barrio": "B",
                   "comuna": "C", "lat": 1.0, "lng": 2.0}]
 
-    monkeypatch.setattr(router_mod, "_load_reportes", _counting_load_reportes)
+    monkeypatch.setattr(router_mod, "load_reportes", _counting_load_reportes)
     stores = _stores()
     monkeypatch.setattr(router_mod.credentials, "sismo", lambda: _FakeSismoClients(stores, {}))
 
     clock = {"t": 0.0}
     monkeypatch.setattr(router_mod.time, "monotonic", lambda: clock["t"])
 
-    router_mod._joined_rows()
+    cache = router_mod.BuscarCache()
+    router_mod._joined_rows(cache)
     assert len(calls) == 1
 
     clock["t"] = router_mod._BUSCAR_TTL_S - 1  # still within TTL
-    router_mod._joined_rows()
+    router_mod._joined_rows(cache)
     assert len(calls) == 1  # served from cache, no rebuild
 
     clock["t"] = router_mod._BUSCAR_TTL_S + 1  # past TTL
-    router_mod._joined_rows()
+    router_mod._joined_rows(cache)
     assert len(calls) == 2  # rebuilt
 
 
@@ -673,7 +666,7 @@ def test_buscar_non_admin_is_403_with_zero_source_reads(monkeypatch):
     import app.routers.puntos_solicitados as router_mod
 
     calls: list[int] = []
-    monkeypatch.setattr(router_mod, "_load_reportes", lambda: calls.append(1) or [])
+    monkeypatch.setattr(router_mod, "load_reportes", lambda: calls.append(1) or [])
     stores = _stores()
     client = _viewer_client(monkeypatch, stores)
 
@@ -707,7 +700,7 @@ def test_buscar_response_never_leaks_raw_pii_fields_and_nulls_when_unmatched(mon
             "telefono": "000",
         },
     ]
-    monkeypatch.setattr(router_mod, "_load_reportes", lambda: reportes)
+    monkeypatch.setattr(router_mod, "load_reportes", lambda: reportes)
     stores = _stores()  # puntos_contacto stays empty: no match for id "9"
     client = _admin_client(monkeypatch, stores)
 
@@ -729,7 +722,7 @@ def test_buscar_empty_or_whitespace_q_returns_empty_resultados_no_source_read(mo
     import app.routers.puntos_solicitados as router_mod
 
     calls: list[int] = []
-    monkeypatch.setattr(router_mod, "_load_reportes", lambda: calls.append(1) or [])
+    monkeypatch.setattr(router_mod, "load_reportes", lambda: calls.append(1) or [])
     stores = _stores()
     client = _admin_client(monkeypatch, stores)
 
@@ -739,7 +732,8 @@ def test_buscar_empty_or_whitespace_q_returns_empty_resultados_no_source_read(mo
     assert calls == []
 
 
-# ── clean 502 on a source-fetch failure, same convention as sibling routes ─
+# ── clean 502 on a load_reportes() failure (primary source), same
+#    convention as sibling routes ───────────────────────────────────────────
 
 
 def test_buscar_source_failure_is_a_clean_502(monkeypatch):
@@ -748,9 +742,53 @@ def test_buscar_source_failure_is_a_clean_502(monkeypatch):
     def _raise():
         raise RuntimeError("simulated reportes read failure")
 
-    monkeypatch.setattr(router_mod, "_load_reportes", _raise)
+    monkeypatch.setattr(router_mod, "load_reportes", _raise)
     stores = _stores()
     client = _admin_client(monkeypatch, stores)
 
     resp = client.get("/puntos-solicitados/buscar", params={"q": "san antonio"})
     assert resp.status_code == 502
+
+
+# ── a puntos_contacto-only failure degrades to address-only rows, NOT a 502 ─
+#    (Fix 3: load_reportes() and the puntos_contacto read are independent
+#    failure domains — only load_reportes() failing is fatal).
+
+
+def test_buscar_contacto_read_failure_degrades_to_address_only_rows_not_502(monkeypatch):
+    import app.routers.puntos_solicitados as router_mod
+
+    reportes = [
+        {"id": "9", "direccion": "Calle 9", "barrio": "San Antonio",
+         "comuna": "Comuna 3", "lat": 3.1, "lng": -76.1},
+    ]
+    monkeypatch.setattr(router_mod, "load_reportes", lambda: reportes)
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores, fail_flag={"fail_read": True})
+
+    resp = client.get("/puntos-solicitados/buscar", params={"q": "san antonio"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["resultados"]) == 1
+    row = body["resultados"][0]
+    assert row["direccion"] == "Calle 9"
+    assert row["nombre_solicitante"] is None
+    assert row["telefono_solicitante"] is None
+
+
+# ── 2.6: duplicate `id` in reportes.json collapses to one row, not two ─────
+
+
+def test_build_rows_dedupes_duplicate_id_keeping_first_occurrence():
+    import app.routers.puntos_solicitados as router_mod
+
+    reportes = [
+        {"id": "1", "direccion": "Calle 1 primera", "barrio": "San Antonio",
+         "comuna": "Comuna 3", "lat": 3.1, "lng": -76.1},
+        {"id": "1", "direccion": "Calle 1 duplicada", "barrio": "Otro",
+         "comuna": "Comuna 5", "lat": 3.2, "lng": -76.2},
+    ]
+
+    rows = router_mod._build_rows(reportes, {})
+    assert len(rows) == 1
+    assert rows[0]["direccion"] == "Calle 1 primera"
