@@ -20,8 +20,9 @@
 // comuna_corregimiento/barrio_vereda are typed admin fields on this record,
 // not resolved from a basemap polygon.
 import {
-  COLORS, escapeHtml, basemapTileUrl, normalize, showToast,
+  COLORS, escapeHtml, basemapTileUrl, normalize, showToast, mountCombobox,
 } from './utils.js';
+import { buildMiniMap } from './mapview.js';
 import { openLightbox } from './table.js';
 import { apiUrl } from './api-config.js';
 
@@ -128,6 +129,11 @@ function renderBarrioSelect(selectEl, comunaMap, comuna) {
 }
 
 // ---- KPIs -------------------------------------------------------------------
+// Same shape as evaluaciones.js's own kpisHtml/barHtml (% sub-row, neutral
+// total tile with a subtitle, one-line distribution strip) — tab-level parity
+// item from the puntos-solicitados-ux-polish change.
+
+const pct = (part, total) => (total ? Math.round((part / total) * 1000) / 10 : 0);
 
 function kpisHtml(puntos) {
   const total = puntos.length;
@@ -136,13 +142,32 @@ function kpisHtml(puntos) {
     <div class="kpi-tile" style="--kpi-accent:${e.color}">
       <span class="kpi-label kpi-label-lower">${e.label}</span>
       <span class="kpi-value">${counts[e.key]}</span>
+      <div class="kpi-sub-row"><span class="kpi-sub">${pct(counts[e.key], total)}% del total</span></div>
     </div>`).join('');
   return `
     <div class="kpi-tile is-neutral">
       <span class="kpi-label kpi-label-lower">puntos solicitados</span>
       <span class="kpi-value">${total}</span>
+      <div class="kpi-sub-row"><span class="kpi-sub">registros creados manualmente por el equipo administrador</span></div>
     </div>
     ${tiles}`;
+}
+
+/** One-line proportion strip under the tiles — same `.eval-bar`/`.hab-bar`
+ *  markup evaluaciones.js's own barHtml builds, segments in the same order
+ *  and colour as the tiles right above. */
+function barHtml(puntos) {
+  const total = puntos.length;
+  if (!total) return '';
+  const counts = contarPorEstado(puntos);
+  const segs = ESTADOS.map((e) => {
+    const share = pct(counts[e.key], total);
+    if (share <= 0) return '';
+    return `<div class="hab-bar-seg" style="width:${share}%;background:${e.color}" title="${escapeHtml(e.label)}: ${counts[e.key]}"></div>`;
+  }).join('');
+  return `
+    <span class="eval-bar-label">distribución</span>
+    <div class="hab-bar">${segs}</div>`;
 }
 
 // ---- Static markup ------------------------------------------------------------
@@ -157,6 +182,7 @@ export function sectionHtml() {
       </div>
 
       <div class="kpi-row eval-kpis" id="ps-kpis"></div>
+      <div class="eval-bar" id="ps-bar"></div>
 
       <div class="eval-filters" id="ps-filters">
         <div class="asignacion-search">
@@ -224,10 +250,20 @@ export function sectionHtml() {
                   <input name="nombre" required placeholder="Casa esquinera" autocomplete="off">
                 </label>
                 <label class="sticker-field"><span>Comuna / corregimiento *</span>
-                  <input name="comuna_corregimiento" required placeholder="Comuna 3" autocomplete="off">
+                  <div class="asignacion-combo">
+                    <input type="text" name="comuna_corregimiento" id="ps-comuna-input" class="asignacion-combo-input"
+                      role="combobox" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false"
+                      required placeholder="Buscar comuna o corregimiento…" aria-label="Buscar comuna o corregimiento">
+                    <ul class="asignacion-combo-list" id="ps-comuna-list" role="listbox" hidden></ul>
+                  </div>
                 </label>
                 <label class="sticker-field"><span>Barrio / vereda *</span>
-                  <input name="barrio_vereda" required placeholder="San Antonio" autocomplete="off">
+                  <div class="asignacion-combo">
+                    <input type="text" name="barrio_vereda" id="ps-barrio-input" class="asignacion-combo-input"
+                      role="combobox" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false"
+                      required disabled placeholder="Elegí una comuna primero…" aria-label="Buscar barrio o vereda">
+                    <ul class="asignacion-combo-list" id="ps-barrio-list" role="listbox" hidden></ul>
+                  </div>
                 </label>
                 <label class="sticker-field"><span>Nombre del solicitante *</span>
                   <input name="nombre_solicitante" required placeholder="María Pérez" autocomplete="off">
@@ -403,6 +439,7 @@ function detailHtml(p) {
       <span class="eval-detail-code">${escapeHtml(p.clave_integracion || '')}</span>
     </div>
     <div class="detail-media">
+      <div class="detail-minimap" id="ps-detail-map"></div>
       <div class="detail-photos" id="ps-detail-photos">${fotos}</div>
     </div>
     ${group('Punto', [
@@ -531,6 +568,7 @@ let autoRefreshTimer = null;
 export function initPuntosSolicitados(section, { getToken }) {
   section.innerHTML = sectionHtml();
   const kpis = section.querySelector('#ps-kpis');
+  const barEl = section.querySelector('#ps-bar');
   const listEl = section.querySelector('#ps-list');
   const listMeta = section.querySelector('#ps-list-meta');
   const mapMeta = section.querySelector('#ps-map-meta');
@@ -555,12 +593,21 @@ export function initPuntosSolicitados(section, { getToken }) {
   const lngInput = section.querySelector('#ps-lng');
   const fotosInput = section.querySelector('#ps-fotos-input');
   const fotosPreview = section.querySelector('#ps-fotos-preview');
+  const comunaComboInput = section.querySelector('#ps-comuna-input');
+  const comunaComboList = section.querySelector('#ps-comuna-list');
+  const barrioComboInput = section.querySelector('#ps-barrio-input');
+  const barrioComboList = section.querySelector('#ps-barrio-list');
 
   let byId = new Map();
   let allPuntos = [];
   let comunaMap = new Map();
   let filters = { search: '', estado: '', comuna: '', barrio: '' };
   let fotosSeleccionadas = []; // File[]
+  // Fingerprint of the last rendered dataset — same technique evaluaciones.js's
+  // load() uses: a silent auto-refresh poll that returned exactly what is
+  // already on screen skips the whole re-render (which would otherwise reset
+  // the map's pan/zoom mid-use).
+  let lastFingerprint = null;
 
   // ---- detail modal ----
   const closeModal = () => { modal.classList.remove('is-open'); modal.setAttribute('aria-hidden', 'true'); };
@@ -573,6 +620,9 @@ export function initPuntosSolicitados(section, { getToken }) {
     modalBody.innerHTML = detailHtml(p);
     modal.classList.add('is-open');
     modal.setAttribute('aria-hidden', 'false');
+    // buildMiniMap speaks the Panel's record shape (x = lng, y = lat) — same
+    // non-draggable mini-map evaluaciones.js's detail modal uses.
+    buildMiniMap(modalBody.querySelector('#ps-detail-map'), p.coords ? { x: p.coords.lon, y: p.coords.lat } : {});
     modalBody.querySelectorAll('[data-foto-idx]').forEach((btn) => {
       btn.addEventListener('click', () => openLightbox(p.fotos, Number(btn.dataset.fotoIdx)));
     });
@@ -598,6 +648,7 @@ export function initPuntosSolicitados(section, { getToken }) {
     const filtered = sortPuntos(applyFilters(allPuntos, filters));
     chipsEl.innerHTML = estadoChipsHtml(filters.estado);
     kpis.innerHTML = kpisHtml(filtered);
+    barEl.innerHTML = barHtml(filtered);
 
     if (!filtered.length) {
       listEl.innerHTML = allPuntos.length
@@ -614,13 +665,24 @@ export function initPuntosSolicitados(section, { getToken }) {
     mapMeta.textContent = sinCoords ? `${conCoords} en el mapa · ${sinCoords} sin coordenadas` : `${conCoords} en el mapa`;
   }
 
-  async function load() {
-    kpis.innerHTML = '<p class="sticker-loading">Cargando puntos solicitados…</p>';
-    listEl.innerHTML = '';
-    listMeta.textContent = '';
-    mapMeta.textContent = '';
+  async function load({ silent = false } = {}) {
+    if (!silent) {
+      kpis.innerHTML = '<p class="sticker-loading">Cargando puntos solicitados…</p>';
+      barEl.innerHTML = '';
+      listEl.innerHTML = '';
+      listMeta.textContent = '';
+      mapMeta.textContent = '';
+    }
     try {
-      allPuntos = await apiList(getToken);
+      const puntos = await apiList(getToken);
+      // Fingerprint from the raw fetch: an unchanged silent poll short-circuits
+      // here, before touching filters/selects/map — same shape as
+      // evaluaciones.js's load({ silent }).
+      const fingerprint = JSON.stringify(puntos.map((p) => [p.id, p.estado_seguimiento, (p.fotos || []).length]));
+      if (silent && fingerprint === lastFingerprint) return;
+      lastFingerprint = fingerprint;
+
+      allPuntos = puntos;
       byId = new Map(allPuntos.map((p) => [p.id, p]));
       comunaMap = comunaBarrioMap(allPuntos);
       renderComunaSelect(comunaSelect, comunaMap);
@@ -629,7 +691,11 @@ export function initPuntosSolicitados(section, { getToken }) {
       filters.barrio = barrioSelect.value;
       renderFiltered();
     } catch (err) {
+      // A failed silent poll keeps the last good render on screen; the next
+      // tick (or the manual button) retries.
+      if (silent) return;
       teardownMap();
+      barEl.innerHTML = '';
       kpis.innerHTML = `<p class="sticker-error" role="alert">No se pudieron cargar los puntos solicitados: ${escapeHtml(err.message)}</p>`;
     }
   }
@@ -663,6 +729,60 @@ export function initPuntosSolicitados(section, { getToken }) {
   });
   barrioSelect.addEventListener('change', () => { filters = { ...filters, barrio: barrioSelect.value }; renderFiltered(); });
 
+  // ---- create modal: comuna/barrio comboboxes ----
+  // comuna_barrios.json (built by scripts/prepare_basemaps.py from the same
+  // barrios_veredas basemap the choropleth join uses) fetched once and cached
+  // at module scope — every tab open/modal open after the first reuses it.
+  let comunaBarriosCache = null;
+  function fetchComunaBarrios() {
+    if (!comunaBarriosCache) {
+      comunaBarriosCache = fetch('data/comuna_barrios.json')
+        .then((res) => {
+          if (!res.ok) throw new Error('No se pudo cargar comuna_barrios.json');
+          return res.json();
+        })
+        .catch((err) => {
+          // Soft-fail: the combobox input is still a plain text field, so an
+          // admin can type a comuna/barrio manually even with zero suggestions
+          // — same fallback the free-text inputs gave before this change.
+          console.error(err);
+          return {};
+        });
+    }
+    return comunaBarriosCache;
+  }
+
+  let comunaBarrios = {};
+  const barrioCombo = mountCombobox(barrioComboInput, barrioComboList, { options: [] });
+  // Shared by the explicit list-pick (onSelect) and the typed-exact-match
+  // fallback below — both must unlock/populate barrio identically.
+  function selectComuna(comuna) {
+    const barrios = comunaBarrios[comuna] || [];
+    barrioComboInput.value = '';
+    barrioComboInput.disabled = false;
+    barrioComboInput.placeholder = 'Buscar barrio o vereda…';
+    barrioCombo.setOptions(barrios.map((b) => ({ id: b, label: b })));
+  }
+  const comunaCombo = mountCombobox(comunaComboInput, comunaComboList, {
+    options: [],
+    onSelect: selectComuna,
+  });
+  fetchComunaBarrios().then((catalog) => {
+    comunaBarrios = catalog;
+    comunaCombo.setOptions(Object.keys(catalog).sort().map((c) => ({ id: c, label: c })));
+  });
+  // FIX 1 (barrio required-field bypass): onSelect only fires on an explicit
+  // list click/Enter. An admin who types a valid comuna name and tabs/clicks
+  // away without picking from the dropdown must still unlock barrio instead
+  // of silently leaving it `disabled` (which drops it from both native
+  // `required` validation and FormData, submitting an empty barrio_vereda).
+  comunaComboInput.addEventListener('blur', () => {
+    const typed = comunaComboInput.value.trim();
+    if (!typed) return;
+    const match = Object.keys(comunaBarrios).find((c) => normalize(c) === normalize(typed));
+    if (match) { comunaComboInput.value = match; selectComuna(match); }
+  });
+
   // ---- create modal ----
   function resetCrearForm() {
     crearForm.reset();
@@ -672,6 +792,9 @@ export function initPuntosSolicitados(section, { getToken }) {
     fotosSeleccionadas = [];
     fotosPreview.innerHTML = '';
     teardownCreateMap();
+    barrioComboInput.disabled = true;
+    barrioComboInput.placeholder = 'Elegí una comuna primero…';
+    barrioCombo.setOptions([]);
   }
 
   function openCrear() {
@@ -714,7 +837,12 @@ export function initPuntosSolicitados(section, { getToken }) {
         geocodeNote.textContent = 'No se pudo ubicar la dirección con precisión suficiente — arrastrá el marcador o ingresá lat/lng manualmente.';
       }
     } catch (err) {
-      showToast(`No se pudo geocodificar: ${err.message}`, 'error');
+      // Raw backend error (502, missing API key, Google quota…) stays out of
+      // user-facing text — logged for debugging, replaced with a clean,
+      // persistent message in the SAME note element the "accepted:false" case
+      // uses (no auto-dismissing toast for something the admin needs to act on).
+      console.error('No se pudo geocodificar:', err);
+      geocodeNote.textContent = 'No se pudo conectar con el servicio de geocodificación — ingresá lat/lng manualmente o arrastrá el marcador.';
     } finally {
       geocodeBtn.disabled = false;
       geocodeBtn.textContent = 'Ubicar';
@@ -807,7 +935,7 @@ export function initPuntosSolicitados(section, { getToken }) {
   autoRefreshTimer = setInterval(() => {
     if (!section.isConnected) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; return; }
     if (document.visibilityState === 'hidden' || section.closest('[hidden]')) return;
-    load().catch(() => {});
+    load({ silent: true }).catch(() => {});
   }, AUTO_REFRESH_MS);
 
   return {

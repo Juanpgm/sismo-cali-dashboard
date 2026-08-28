@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import {
   normalizeAddressText, buildSearchIndex, barrioVeredaDisplay, resolveBarrioVereda, labelForField,
+  filterOptionsByLabel, mountCombobox,
 } from './utils.js';
 
 // Real variants seen in the dataset for the same building should normalize
@@ -118,5 +119,25 @@ assert.equal(labelForField('barrio_vereda'), 'Barrio / vereda (reportado)');
 assert.equal(labelForField('barrio_geo'), 'Barrio / vereda (geo)');
 assert.equal(labelForField('comuna'), 'Comuna / corregimiento');
 
+// --- filterOptionsByLabel: default filter behind the shared mountCombobox --
+// Pure logic only (this repo's web/js/*.test.mjs convention tests exported
+// pure functions, not DOM — mountCombobox's keyboard/mousedown wiring is
+// exercised by hand in the browser, same as the two pre-existing comboboxes
+// this one generalizes, stickers-asignacion.js/planeacion.js's own).
+const options = [
+  { id: 'a', label: 'San Antonio' },
+  { id: 'b', label: 'El Peñón' },
+  { id: 'c', label: 'Santa Mónica' },
+];
+assert.deepEqual(filterOptionsByLabel(options, ''), options);
+assert.deepEqual(filterOptionsByLabel(options, undefined), options);
+assert.deepEqual(filterOptionsByLabel(options, 'san').map((o) => o.id), ['a', 'c']); // Santa -> normalize 'santa' includes 'san'
+assert.deepEqual(filterOptionsByLabel(options, 'penon').map((o) => o.id), ['b']); // accent-insensitive
+assert.deepEqual(filterOptionsByLabel(options, 'PEÑÓN').map((o) => o.id), ['b']); // case-insensitive
+assert.deepEqual(filterOptionsByLabel(options, 'no-existe'), []);
+
+assert.equal(typeof mountCombobox, 'function');
+
 console.log('ok — address search normalization');
 console.log('ok — barrioVeredaDisplay + geo-first field labels');
+console.log('ok — filterOptionsByLabel (shared combobox default filter)');

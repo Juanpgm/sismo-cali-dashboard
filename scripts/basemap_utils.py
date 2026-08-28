@@ -73,6 +73,25 @@ def get_comuna_name(properties: dict) -> str | None:
     return correg.strip() if isinstance(correg, str) else correg
 
 
+def get_comuna_key_for_barrio_row(properties: dict) -> str | None:
+    """Comuna/corregimiento grouping key for one barrios_veredas.geojson row,
+    in the same "COMUNA NN" / corregimiento-name form as comunas.geojson's
+    own `name` property (get_comuna_name) — used to group barrio/vereda names
+    by comuna for the comuna_barrios.json catalog. Unlike
+    comunas_corregimientos.geojson, this layer has no NOMBRE field of its
+    own, but its COMUNA/CORREGIMIE columns (same property names, reused
+    here) are enough to rebuild the identical key."""
+    comuna_code = properties.get(COMUNA_NUMBER_PROPERTY)
+    if isinstance(comuna_code, str) and comuna_code.strip():
+        try:
+            n = int(comuna_code)
+        except ValueError:
+            return None
+        return f"COMUNA {n:02d}"
+    correg = properties.get(COMUNA_CORREGIMIENTO_PROPERTY)
+    return correg.strip() if isinstance(correg, str) and correg.strip() else None
+
+
 def get_barrio_name(properties: dict) -> str | None:
     """BARRIO when set (a real urban-barrio polygon) — 3/440 rows also carry a
     leftover VEREDA value from an upstream table join; BARRIO is the actual
