@@ -1692,6 +1692,13 @@ body:not([data-role="admin"]) .view-tab[data-view="puntos-solicitados"] { displa
 
 .sticker-empty, .sticker-loading { color: var(--text-muted); padding: 40px 20px; text-align: center; }
 
+/* Buscar punto modal (puntos-solicitados-busqueda-asignacion F1): result rows
+   have no dot/pill like .eval-row's detail rows, so they get their own small
+   flex layout instead of reusing .eval-row's 3-column grid. */
+.ps-buscar-list { max-height: 360px; margin: 12px 0; }
+.ps-buscar-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ps-buscar-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+
 /* Create modal (reuses .modal / .modal-panel from the detail modal) */
 .sticker-modal-panel { width: min(520px, 100%); }
 .sticker-form { display: flex; flex-direction: column; gap: 14px; }

@@ -3,6 +3,7 @@
 import assert from 'node:assert';
 import {
   ESTADOS, estadoDe, contarPorEstado, applyFilters, sortPuntos, removeFotoAt, nombreInspectorPorUid,
+  prefillStepsFromResultado, prefillStepsFromQuery,
 } from './puntos_solicitados.js';
 
 // The derived lifecycle states (ADR-4 map's output values), in the order they
@@ -102,4 +103,45 @@ assert.strictEqual(nombreInspectorPorUid(null, roster), null);
 assert.strictEqual(nombreInspectorPorUid('uid-1', []), null);
 assert.strictEqual(nombreInspectorPorUid('uid-1', undefined), null);
 
-console.log('ok — puntos_solicitados.js estado classification, filters, sort');
+// prefillStepsFromResultado — GET /buscar result → ordered [field, value]
+// steps for #ps-crear-modal (design.md "Prefill field mapping"). Comuna MUST
+// be applied before barrio: the barrio combobox stays disabled until a
+// comuna is set, so applying out of order would silently drop the value.
+const resultado = {
+  registro_id: 'r1', direccion: 'Calle 5 # 10-20', barrio: 'San Antonio', comuna: 'Comuna 3',
+  lat: 3.45, lng: -76.53, nombre_solicitante: 'María Pérez', telefono_solicitante: '3001234567',
+};
+const steps = prefillStepsFromResultado(resultado);
+assert.deepStrictEqual(Object.fromEntries(steps), {
+  direccion: 'Calle 5 # 10-20',
+  nombre: 'Calle 5 # 10-20',
+  comuna: 'Comuna 3',
+  barrio: 'San Antonio',
+  lat: 3.45,
+  lng: -76.53,
+  nombre_solicitante: 'María Pérez',
+  telefono_solicitante: '3001234567',
+});
+const stepFields = steps.map(([field]) => field);
+assert.ok(stepFields.indexOf('comuna') < stepFields.indexOf('barrio'), 'comuna must be applied before barrio');
+
+// Missing optional fields (no puntos_contacto match, no coords) degrade to
+// blank/null, never throw.
+assert.deepStrictEqual(Object.fromEntries(prefillStepsFromResultado({ direccion: 'Avenida 6N' })), {
+  direccion: 'Avenida 6N', nombre: 'Avenida 6N', comuna: '', barrio: '',
+  lat: null, lng: null, nombre_solicitante: '', telefono_solicitante: '',
+});
+assert.deepStrictEqual(Object.fromEntries(prefillStepsFromResultado(undefined)), {
+  direccion: '', nombre: '', comuna: '', barrio: '',
+  lat: null, lng: null, nombre_solicitante: '', telefono_solicitante: '',
+});
+
+// prefillStepsFromQuery — "Crear punto nuevo" fallback: ONLY direccion+nombre
+// from the typed search text, everything else stays blank/absent.
+assert.deepStrictEqual(Object.fromEntries(prefillStepsFromQuery('  Calle 5  ')), {
+  direccion: 'Calle 5', nombre: 'Calle 5',
+});
+assert.deepStrictEqual(Object.fromEntries(prefillStepsFromQuery('')), { direccion: '', nombre: '' });
+assert.deepStrictEqual(Object.fromEntries(prefillStepsFromQuery(undefined)), { direccion: '', nombre: '' });
+
+console.log('ok — puntos_solicitados.js estado classification, filters, sort, buscar prefill mapping');
