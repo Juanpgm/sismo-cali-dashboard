@@ -312,9 +312,12 @@ test('prioridadColor mapea alta a rojo, media a ambar, baja/desconocido a muted'
 
 // ---- elegirEnlaceEncuesta ----------------------------------------------------
 
-test('elegirEnlaceEncuesta prefiere el deep link de la app en movil cuando existe', () => {
+test('elegirEnlaceEncuesta usa el enlace web en movil aunque haya deep link de app', () => {
+  // El deep link arcgis-survey123:// solo resuelve con la app nativa
+  // instalada; sin ella el navegador falla duro (Safari: "address is
+  // invalid", Chrome Android: pestaña en blanco). El link web siempre abre.
   const punto = { survey_web: 'https://web.example/x', survey_app: 'arcgis-survey123:///x' };
-  assert.equal(elegirEnlaceEncuesta(punto, true), 'arcgis-survey123:///x');
+  assert.equal(elegirEnlaceEncuesta(punto, true), 'https://web.example/x');
 });
 
 test('elegirEnlaceEncuesta usa el enlace web en escritorio aunque haya app', () => {

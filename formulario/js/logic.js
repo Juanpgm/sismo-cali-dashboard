@@ -170,15 +170,20 @@ export function mapsDirUrl(coords) {
 // Which prefilled Survey123 link a "planeación" (EDAN) card's "Abrir
 // encuesta" button should open. `punto` carries `survey_web`/`survey_app`
 // as returned by misPuntosPlaneacion (app is null when
-// SURVEY123_FIELD_APP_ITEM_ID is not configured). On a mobile device the
-// field-app deep link is preferred when present — it opens Survey123's own
-// installed app rather than a mobile browser tab — falling back to the web
-// URL otherwise. Returns '' when neither link is available (missing
-// SURVEY123_FORM_URL), so the caller can disable/hide the button instead of
-// wiring up a dead link.
-export function elegirEnlaceEncuesta(punto, isMobile) {
+// SURVEY123_FIELD_APP_ITEM_ID is not configured). Always prefers `survey_web`:
+// `survey_app` is an `arcgis-survey123://` custom-scheme deep link that only
+// resolves if the device has the native Survey123 app installed — on any
+// other device the browser can't open it at all (Safari: "address is
+// invalid"; Android Chrome: blank tab showing the raw scheme), which is a
+// dead end with no client-side fallback once navigation has already
+// happened. The web URL works in any browser regardless of what's
+// installed, so it's the only link this app opens on its own; `survey_app`
+// is kept in the returned URLs (see logic.test.mjs) for a future explicit
+// "open in app" affordance, not as an automatic mobile default. Returns ''
+// when neither link is available (missing SURVEY123_FORM_URL), so the
+// caller can disable/hide the button instead of wiring up a dead link.
+export function elegirEnlaceEncuesta(punto, _isMobile) {
   if (!punto) return '';
-  if (isMobile && punto.survey_app) return punto.survey_app;
   return punto.survey_web || punto.survey_app || '';
 }
 
