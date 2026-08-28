@@ -14,7 +14,7 @@ offline batch script, still on Google, deliberately untouched.
 Pure: no Firestore access, no direct network call by default (an injectable
 `http_get` makes this testable offline against fixture responses) — same
 "pure function + injected side effect" shape `app/jobs/planeacion_cruce.py`
-already uses for `_load_reportes`/`fetch_surveys`.
+already uses for `load_reportes`/`fetch_surveys`.
 """
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ class GeocodeTransportError(RuntimeError):
 
 
 def _default_http_get(url: str, *, params: dict[str, Any], timeout: int) -> Any:
-    import requests  # deferred import — same convention as planeacion_cruce.py's _load_reportes
+    import requests  # deferred import — same convention as planeacion_cruce.py's load_reportes
 
     try:
         response = requests.get(url, params=params, timeout=timeout, headers={"User-Agent": USER_AGENT})

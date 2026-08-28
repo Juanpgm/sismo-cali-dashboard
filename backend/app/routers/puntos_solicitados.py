@@ -53,20 +53,44 @@ malformed response) maps to a 502.
 `ALLOWED_MODULES_PLANEACION_PUNTOS` (it writes the mirror) AND a NEW,
 independent `puntos_solicitados` collection literal check names this file
 (+ `app/main.py`, import/mount only) as its sole allowlisted module.
+
+**`puntos-solicitados-busqueda-asignacion` change (follow-up), ADR-1/ADR-2 —
+`GET /puntos-solicitados/buscar`.** Admin-only, read-only search joining
+`load_reportes()` (imported from `app.jobs.planeacion_cruce`, the same
+PII-free `reportes.json` reader the pipeline uses) to the private Firestore
+`puntos_contacto` collection on `id (str) == registro_id`, so a search can
+also match/display the requester's name without adding any new storage.
+`_build_rows`/`_filter_rows` are pure (no Firestore, no clock) — join and
+filter+top-20-cap are unit-tested directly. `_build_rows` dedupes by `id`
+(first occurrence wins, mirrors `planeacion_cruce.load_puntos`'s own
+dedup-by-first-seen on the same source). The joined (unfiltered) list is
+cached with a 5-minute TTL via `BuscarCache`, one instance per `create_app()`
+call attached to `app.state.puntos_solicitados_buscar_cache` — same
+process-lifetime, test-isolated pattern as `sticker_status.py`'s
+`StickerStatusCache`, not a bare module-level dict — so a debounced keystroke
+storm doesn't re-read Firestore/`reportes.json` per character; `q` is applied
+AFTER the cached build, never part of the cache key. `_joined_rows` treats
+`load_reportes()` (the primary source) and the `puntos_contacto` read as
+INDEPENDENT failure domains: a `puntos_contacto` read failure is logged and
+degrades to address-only rows (contact fields `None`), only a
+`load_reportes()` failure still 502s the request. This adds a READ (never
+write) of `puntos_contacto`, flagged in `tests/invariants/
+test_sole_writer.py`'s `ALLOWED_MODULES_PUNTOS_CONTACTO`.
 """
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app.auth.deps import require_auth, require_role
 from app.credentials import clients as credentials
-from app.jobs.planeacion_cruce import clave_integracion, doc_id
+from app.jobs.planeacion_cruce import clave_integracion, doc_id, load_reportes
 from app.services.geocode import GeocodeTransportError
 from app.services.geocode import geocode as geocode_service
 
@@ -78,8 +102,17 @@ PUNTOS_SOLICITADOS_COLLECTION = "puntos_solicitados"
 # the collection name planeacion_cruce.py/planeacion_asignaciones.py already
 # both hardcode independently (same literal, no shared owner module today).
 PLANEACION_PUNTOS_COLLECTION = "planeacion_puntos"
+# Same re-literal convention `inspector_asignaciones.py` already uses for
+# this collection — READ-ONLY here (see module docstring, ADR-1/ADR-2 of the
+# `puntos-solicitados-busqueda-asignacion` follow-up).
+PUNTOS_CONTACTO_COLLECTION = "puntos_contacto"
 
 FUENTE = "solicitado"
+
+# ADR-2: TTL snapshot of the JOINED (unfiltered) rows — `q` is applied after
+# the cached build, never part of the cache key.
+_BUSCAR_TTL_S = 300  # 5 min
+_BUSCAR_TOP_N = 20
 
 # `puntos_solicitados` required-field set (spec: "Admin-only creation with
 # required-field validation"). Enforced by CrearPuntoSolicitadoBody's plain
@@ -187,6 +220,129 @@ def _jsonable(value: Any) -> Any:
 
 def _not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Punto solicitado no encontrado.")
+
+
+# ---- GET /buscar helpers (ADR-1/ADR-2) ---------------------------------
+
+
+def _build_rows(reportes: list[dict], contacto_by_id: dict[str, dict]) -> list[dict]:
+    """Pure join: `reportes.json` records ⋈ `puntos_contacto` on
+    `id (str) == registro_id`. Only the fixed field set below ever crosses
+    into the output — a raw `reportes` record carrying stray/unstripped
+    fields (e.g. a malformed `nombre`/`telefono`) can never leak, by
+    construction, since those keys are simply never read here.
+    `nombre_solicitante`/`telefono_solicitante` are `None` when no
+    `puntos_contacto` doc matches (fail-soft write, not every reporte has
+    one). Records without an `id` are skipped — nothing to key a row on.
+    Duplicate `id`s are deduped, first occurrence wins — same
+    first-seen convention `planeacion_cruce.load_puntos` already uses for
+    this exact source (registro_id uniqueness is the one unenforced
+    assumption there too); this function stays pure/silent, the
+    found/dropped count is logged once by the caller (`_joined_rows`), not
+    per-row here."""
+    rows: list[dict] = []
+    seen_ids: set[str] = set()
+    for rep in reportes:
+        registro_id = rep.get("id")
+        if not registro_id:
+            continue
+        rid = str(registro_id)
+        if rid in seen_ids:
+            continue
+        seen_ids.add(rid)
+        contacto = contacto_by_id.get(rid) or {}
+        rows.append({
+            "registro_id": rid,
+            "direccion": rep.get("direccion"),
+            "barrio": rep.get("barrio"),
+            "comuna": rep.get("comuna"),
+            "lat": rep.get("lat"),
+            "lng": rep.get("lng"),
+            "nombre_solicitante": contacto.get("nombre_solicitante"),
+            "telefono_solicitante": contacto.get("telefono_solicitante"),
+        })
+    return rows
+
+
+def _filter_rows(rows: list[dict], q: str) -> list[dict]:
+    """Case-insensitive substring filter over
+    `direccion|barrio|comuna|nombre_solicitante`, top-`_BUSCAR_TOP_N` cap.
+    Blank `q` (already the route's empty-fast-path too) yields no rows —
+    this is never a full-dump."""
+    needle = q.strip().lower()
+    if not needle:
+        return []
+    fields = ("direccion", "barrio", "comuna", "nombre_solicitante")
+    matched = [
+        row for row in rows
+        if any(needle in str(row.get(field) or "").lower() for field in fields)
+    ]
+    return matched[:_BUSCAR_TOP_N]
+
+
+class BuscarCache:
+    """Process-lifetime TTL cache for `_joined_rows`' joined (unfiltered)
+    rows. One instance per `create_app()` call, attached to
+    `app.state.puntos_solicitados_buscar_cache` (matches
+    `sticker_status.py`'s `StickerStatusCache` convention) instead of a bare
+    module-level dict, so tests get a fresh cache per app instance rather
+    than leaking a joined-rows snapshot across tests via a module global."""
+
+    def __init__(self) -> None:
+        self._at: float | None = None
+        self._rows: list[dict] | None = None
+
+    def get_or_fetch(self, fetch: Any) -> list[dict]:
+        now = time.monotonic()
+        stale = self._rows is None or self._at is None or (now - self._at) > _BUSCAR_TTL_S
+        if stale:
+            self._rows = fetch()
+            self._at = now
+        assert self._rows is not None
+        return self._rows
+
+
+def _joined_rows(cache: BuscarCache) -> list[dict]:
+    """TTL-cached (via `cache`) joined (unfiltered) rows — one
+    `load_reportes()` + one full `puntos_contacto` collection read per TTL
+    window, never per keystroke. `contacto_by_id` is keyed by the doc id's
+    `registro_id` suffix (`atencionsismo_{registro_id}` — the SAME id
+    `dashboard_refresh._write_contactos` writes), matching `reportes[i].id`
+    by construction (both derive from the same raw `rep["id"]`, see the
+    module docstring's ADR-1).
+
+    `load_reportes()` (the primary source) and the `puntos_contacto` read
+    are independent failure domains: a `puntos_contacto` failure is logged
+    and degrades to address-only rows (empty `contacto_by_id`) instead of
+    failing the whole search — only a `load_reportes()` failure propagates
+    (the route handler turns that into the 502)."""
+
+    def _fetch() -> list[dict]:
+        reportes = load_reportes()
+        try:
+            db = credentials.sismo().firestore
+            contacto_by_id = {
+                d.id.removeprefix("atencionsismo_"): (d.to_dict() or {})
+                for d in db.collection(PUNTOS_CONTACTO_COLLECTION).get()
+            }
+        except Exception:  # noqa: BLE001 — secondary source, degrade not 502
+            logging.exception(
+                "puntos_solicitados.buscar: fallo leyendo puntos_contacto, "
+                "degradando a resultados sin datos de contacto"
+            )
+            contacto_by_id = {}
+
+        ids = [str(rep["id"]) for rep in reportes if rep.get("id")]
+        n_dupes = len(ids) - len(set(ids))
+        if n_dupes:
+            logging.warning(
+                "puntos_solicitados.buscar: %d registro_id duplicado(s) en "
+                "reportes.json, se conserva solo la primera ocurrencia",
+                n_dupes,
+            )
+        return _build_rows(reportes, contacto_by_id)
+
+    return cache.get_or_fetch(_fetch)
 
 
 # ---- Routes -----------------------------------------------------------
@@ -375,6 +531,32 @@ def eliminar_punto_solicitado(
         logging.exception("Fallo eliminando punto solicitado %s", id)
         raise HTTPException(status_code=502, detail=f"No se pudo eliminar el punto solicitado: {exc}") from exc
     return JSONResponse({"ok": True, "id": id})
+
+
+@router.get("/puntos-solicitados/buscar")
+def buscar_puntos_solicitados(
+    request: Request,
+    q: str = "",
+    claims: dict[str, Any] = Depends(require_role("admin")),
+) -> JSONResponse:
+    """ADR-1/ADR-2: admin-only search over `reportes.json` ⋈
+    `puntos_contacto`. Empty/whitespace `q` short-circuits to `resultados:
+    []` BEFORE touching either source — never a full-dump, never an
+    unneeded cache build. A `load_reportes()` failure (the primary source)
+    maps to the same clean 502 every sibling route in this file uses; a
+    `puntos_contacto`-only failure degrades instead (see `_joined_rows`)."""
+    query = q.strip()
+    if not query:
+        return JSONResponse({"ok": True, "resultados": []})
+
+    cache: BuscarCache = request.app.state.puntos_solicitados_buscar_cache
+    try:
+        rows = _joined_rows(cache)
+    except Exception as exc:  # noqa: BLE001 — clean 502, never an unhandled 500
+        logging.exception("Fallo buscando puntos solicitados")
+        raise HTTPException(status_code=502, detail=f"No se pudo buscar puntos solicitados: {exc}") from exc
+
+    return JSONResponse({"ok": True, "resultados": _filter_rows(rows, query)})
 
 
 @router.post("/geocode")

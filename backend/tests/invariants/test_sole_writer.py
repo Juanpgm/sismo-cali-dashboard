@@ -468,6 +468,15 @@ def test_planeacion_auditoria_literal_is_used_by_an_allowlisted_module():
 ALLOWED_MODULES_PUNTOS_CONTACTO = {
     APP_ROOT / "jobs" / "dashboard_refresh.py",
     APP_ROOT / "routers" / "inspector_asignaciones.py",
+    # `puntos-solicitados-busqueda-asignacion` change (2026-08-28), ADR-1/
+    # ADR-2: READ-ONLY. `routers/puntos_solicitados.py`'s new admin-only
+    # `GET /puntos-solicitados/buscar` reads this collection (one full
+    # `.get()`, TTL-cached) to join the requester's name/phone onto the
+    # PII-free `reportes.json` search results. It never calls
+    # `.set()`/`.update()`/`batch()` on it — same "legitimate new reader,
+    # flagged rather than hidden" precedent this file already established
+    # for `sticker_status.py`/`integracion.py` above.
+    APP_ROOT / "routers" / "puntos_solicitados.py",  # read-only, see note
 }
 
 

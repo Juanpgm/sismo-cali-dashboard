@@ -33,6 +33,7 @@ from app.routers import (
     usuarios,
 )
 from app.routers.planeacion_asignaciones import PlaneacionAggregatesCache
+from app.routers.puntos_solicitados import BuscarCache
 from app.routers.sticker_status import StickerStatusCache
 from app.services.snapshot import ReportadosSnapshot, refresh_loop, seed_from_blob
 
@@ -113,6 +114,10 @@ def create_app() -> FastAPI:
     # Same convention, `planeacion_asignaciones.py`'s own `resumen`/
     # `metricasProgreso` aggregate cache (speed follow-up, 2026-08-27).
     app.state.planeacion_aggregates_cache = PlaneacionAggregatesCache()
+
+    # Same convention, `puntos_solicitados.py`'s `GET /buscar` joined-rows
+    # cache (busqueda-asignacion follow-up, 4R polish pass).
+    app.state.puntos_solicitados_buscar_cache = BuscarCache()
 
     app.add_middleware(
         CORSMiddleware,
