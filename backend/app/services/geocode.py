@@ -45,7 +45,14 @@ _ROAD_EXPANSIONS = [
     (re.compile(r'\bTV\b\.?', re.IGNORECASE), 'Transversal'),
     (re.compile(r'\bNTE\b\.?', re.IGNORECASE), 'Norte'),
 ]
-_TRAILING_CALI = re.compile(r',\s*Cali\s*$', re.IGNORECASE)
+# Strips ANY trailing run of Cali/Valle del Cauca/Colombia tokens, not just a
+# bare ", Cali" — an address typed as "..., Cali, Colombia" (a completely
+# natural way to type one) used to survive this strip untouched and then get
+# ", Cali, Valle del Cauca, Colombia" appended on top of it anyway, producing
+# a duplicated query ("..., Cali, Colombia, Cali, Valle del Cauca, Colombia")
+# that Nominatim resolves to zero results even for well-known landmarks.
+_TRAILING_CALI = re.compile(
+    r'(,\s*(Cali|Valle del Cauca|Colombia))+\s*$', re.IGNORECASE)
 
 
 def to_nominatim_address(direccion: str | None) -> str:
@@ -178,6 +185,16 @@ def _selfcheck() -> None:
         "Carrera 39 # 12-34, Barrio El Peñón, Cali, Valle del Cauca, Colombia")
     assert to_nominatim_address("") == ""
     assert to_nominatim_address(None) == ""
+    # Regression: an address already ending in the city/country used to
+    # survive _TRAILING_CALI untouched and get the suffix appended AGAIN,
+    # producing a duplicated query Nominatim can't resolve (see this
+    # module's _TRAILING_CALI comment).
+    assert to_nominatim_address("Plaza de Caycedo, Cali, Colombia") == (
+        "Plaza de Caycedo, Cali, Valle del Cauca, Colombia")
+    assert to_nominatim_address("Avenida 6N con Calle 14, Cali, Valle del Cauca") == (
+        "Avenida 6N con Calle 14, Cali, Valle del Cauca, Colombia")
+    assert to_nominatim_address("Avenida 6N con Calle 14, Cali, Valle del Cauca, Colombia") == (
+        "Avenida 6N con Calle 14, Cali, Valle del Cauca, Colombia")
 
     def _fake_building(url, *, params, timeout):
         return [{
@@ -198,8 +215,10 @@ def _selfcheck() -> None:
                 "location_type": "suburb"}, r
 
     def _fake_outside_bbox(url, *, params, timeout):
+        # Needs a house_number, else _is_high_confidence rejects it before
+        # the bbox check this fixture exists to exercise ever runs.
         return [{"lat": "10.0", "lon": "-76.53", "class": "building", "type": "yes",
-                 "display_name": "somewhere else", "address": {}}]
+                 "display_name": "somewhere else", "address": {"house_number": "1"}}]
 
     r = geocode("CL 1 # 2-3", http_get=_fake_outside_bbox)
     assert r == {"ok": True, "accepted": False, "reason": "fuera_de_cali",
