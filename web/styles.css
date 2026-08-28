@@ -1590,7 +1590,8 @@ body:not([data-role="admin"]) .view-tab[data-view="acciones"],
 body:not([data-role="admin"]) .view-tab[data-view="stickers"],
 body:not([data-role="admin"]) .view-tab[data-view="planeacion"],
 body:not([data-role="admin"]) .view-tab[data-view="usuarios"],
-body:not([data-role="admin"]) .view-tab[data-view="analista"] { display: none !important; }
+body:not([data-role="admin"]) .view-tab[data-view="analista"],
+body:not([data-role="admin"]) .view-tab[data-view="puntos-solicitados"] { display: none !important; }
 
 /* TEMPORARY: the Acciones tab is suspended — visible but inert. Remove this
    rule (and the matching guard in main.js switchView) to reactivate it. */
@@ -2116,6 +2117,29 @@ details[open] > summary.card-title::before { transform: rotate(90deg); }
 .planeacion-row-actions .sticker-action { padding: 5px 8px; font-size: .74rem; }
 .planeacion-survey-links { align-items: center; }
 .planeacion-survey-links code { font-family: var(--font-mono); font-size: .82rem; }
+
+/* ---- Puntos Solicitados tab (puntos-solicitados change, Phase 4) --------
+   Reuses .kpi-row/.kpi-tile, .card/.card-toolbar, .eval-workspace/-map/
+   -aside/-list/-row/-dot/-pill/-meta, .sticker-*/.modal*/.detail-* as-is
+   (same precedent as the Planeación block above: reuse, don't duplicate).
+   Estado colouring is inline (--kpi-accent/--eval-pill), deliberately its
+   own palette — never the ATC-20 ramp or the alta/media/baja pill scheme.
+   Only the create modal's geocode/coords/photo bits are genuinely new. */
+.ps-geocode-row { display: flex; gap: 8px; }
+.ps-geocode-row input { flex: 1; }
+.ps-coords-map { height: 220px; border-radius: var(--radius-sm); overflow: hidden; background: var(--surface-3); margin: 4px 0; }
+.ps-fotos-preview { display: flex; flex-wrap: wrap; gap: 6px; }
+.ps-foto-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 8px; border-radius: 999px; font-size: .76rem;
+  background: var(--surface-2); border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+.ps-foto-chip button {
+  border: none; background: none; color: var(--text-muted); cursor: pointer;
+  font-size: .95rem; line-height: 1; padding: 0;
+}
+.ps-foto-chip button:hover { color: var(--sticker-off); }
 
 /* ---- Login overlay ---- */
 .auth-overlay {

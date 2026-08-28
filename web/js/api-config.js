@@ -40,6 +40,17 @@ export const API_CONFIG = {
   // Endpoint nuevo, sin gemelo legacy en Vercel: nace en Railway.
   panelRepresentante: `${RAILWAY_BASE_URL}/panel-representante`,
   planeacionAsignaciones: `${RAILWAY_BASE_URL}/planeacion-asignaciones`,
+  // `puntos-solicitados` change (Phase 4): REST-shaped CRUD (no `action`
+  // dispatch, unlike planeacionAsignaciones) — `backend/app/routers/
+  // puntos_solicitados.py`. New endpoint, no legacy Vercel twin, starts on
+  // Railway from day one (same rationale as planeacionAsignaciones above).
+  puntosSolicitados: `${RAILWAY_BASE_URL}/puntos-solicitados`,
+  geocode: `${RAILWAY_BASE_URL}/geocode`,
+  // Presigned S3 upload (`backend/app/routers/sign.py`), reused for punto
+  // solicitado photos. KNOWN GAP: sign.py's CODIGO_RE/key prefix were never
+  // extended for `clave_integracion` values — see puntos_solicitados.js's
+  // subirFoto() comment.
+  sign: `${RAILWAY_BASE_URL}/api/sign`,
 };
 
 // Small accessor so future consumers don't hand-index the map (typo-safety

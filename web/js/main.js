@@ -13,6 +13,7 @@ import { initTable, renderTable, setTotalRecords, openDetailModal, configurarRep
 import { renderAcciones } from './acciones.js';
 import { initStickers } from './stickers.js';
 import { initPlaneacion } from './planeacion.js';
+import { initPuntosSolicitados } from './puntos_solicitados.js';
 import { initUsuarios } from './usuarios.js';
 import { initAnalista } from './analista.js';
 import { initTheme } from './theme.js';
@@ -233,6 +234,11 @@ function switchView(view) {
   // its own inspector roster since nothing else has loaded it for this tab.
   if (view === 'planeacion') {
     initPlaneacion(document.getElementById('view-planeacion'), { getToken: getIdToken });
+  }
+  // Puntos Solicitados is a top-level tab (admin-only, same gate as
+  // Stickers/Usuarios/Planeación) — (re)initialize it each time it opens.
+  if (view === 'puntos-solicitados') {
+    initPuntosSolicitados(document.getElementById('view-puntos-solicitados'), { getToken: getIdToken });
   }
   // Usuarios pulls live data from /api/usuarios — (re)load it each time it opens.
   if (view === 'usuarios') {

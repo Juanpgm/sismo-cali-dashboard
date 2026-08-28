@@ -23,9 +23,13 @@ from fastapi.testclient import TestClient
 
 from app.auth.deps import current_claims
 from app.credentials import clients as credentials
+from app.jobs.planeacion_cruce import clave_integracion
 from app.main import create_app
 
 VALID_CODIGO = "76001-1-0040001"
+# Real shape minted by puntos_solicitados.crear_punto_solicitado (ADR-3):
+# clave_integracion('solicitado', sid) — same function, not hand-typed.
+VALID_SOLICITADO_CODIGO = clave_integracion("solicitado", "abc123XYZ0")
 FAKE_CLAIMS = {"sub": "uid-inspector", "email": "inspector@sismocali.gov.co"}
 
 
@@ -105,5 +109,46 @@ def test_zero_slot_is_rejected(monkeypatch):
     client = _authed_client(monkeypatch)
 
     resp = client.post("/api/sign", json={"codigo": VALID_CODIGO, "slot": 0})
+
+    assert resp.status_code == 400
+
+
+def test_puntos_solicitados_codigo_is_accepted_and_keyed_under_solicitados(monkeypatch):
+    """puntos-solicitados gap-fix: web/js/puntos_solicitados.js sends the
+    point's `clave_integracion` (PLN-<slug>-<digest>) as `codigo`."""
+    client = _authed_client(monkeypatch)
+
+    resp = client.post("/api/sign", json={"codigo": VALID_SOLICITADO_CODIGO, "slot": 1})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["uploadUrl"].startswith(
+        "https://test-sismo-fotos.s3.amazonaws.com/solicitados/"
+        f"{VALID_SOLICITADO_CODIGO}/foto_1.jpg"
+    )
+    assert body["publicUrl"] == (
+        f"https://test-sismo-fotos.s3.amazonaws.com/solicitados/{VALID_SOLICITADO_CODIGO}/foto_1.jpg"
+    )
+
+
+def test_evaluaciones_codigo_still_keyed_under_evaluaciones(monkeypatch):
+    """Regression: adding the puntos_solicitados shape must not touch the
+    existing evaluaciones key path."""
+    client = _authed_client(monkeypatch)
+
+    resp = client.post("/api/sign", json={"codigo": VALID_CODIGO, "slot": 1})
+
+    assert resp.status_code == 200
+    public_url = resp.json()["publicUrl"]
+    assert f"/evaluaciones/{VALID_CODIGO}/foto_1.jpg" in public_url
+    assert "/solicitados/" not in public_url
+
+
+def test_malformed_solicitado_shaped_codigo_is_still_rejected(monkeypatch):
+    """Right prefix, wrong digest length — fails both CODIGO_RE and the
+    puntos_solicitados structural check, so it must still 400."""
+    client = _authed_client(monkeypatch)
+
+    resp = client.post("/api/sign", json={"codigo": "PLN-ABC123-XYZ", "slot": 1})
 
     assert resp.status_code == 400
