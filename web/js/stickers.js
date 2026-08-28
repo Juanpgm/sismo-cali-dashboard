@@ -60,7 +60,17 @@ export function initStickers(root, { getToken }) {
   let asignacionHandle = null;
 
   const evaluacionesHandle = initEvaluaciones(root.querySelector('.eval-section'), {
-    fetchEvaluaciones: async () => (await callApi(getToken, { action: 'evaluaciones' })).evaluaciones,
+    // Read-only, safe to retry: intermittent "Failed to fetch" (network blip,
+    // cold serverless connection) shouldn't surface as an error when a second
+    // attempt half a second later would have worked.
+    fetchEvaluaciones: async () => {
+      try {
+        return (await callApi(getToken, { action: 'evaluaciones' })).evaluaciones;
+      } catch (err) {
+        await new Promise((r) => setTimeout(r, 500));
+        return (await callApi(getToken, { action: 'evaluaciones' })).evaluaciones;
+      }
+    },
   });
 
   function showSegment(name) {
