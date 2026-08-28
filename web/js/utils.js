@@ -726,11 +726,20 @@ export function downloadStamp() {
 // `<ul role="listbox">`, styled by the existing `.asignacion-combo*` rules
 // in styles.css (already generic, not inspector-specific).
 
-/** Default filter: case/accent-insensitive substring match on `label`. */
+/** Collapse leading zeros in digit runs ("03" -> "3") so an admin typing
+ *  "comuna 3" matches comuna_barrios.json's zero-padded "COMUNA 03". Local to
+ *  filterOptionsByLabel only — does NOT touch the shared normalize() used
+ *  for address/other search elsewhere. */
+function collapseLeadingZeros(str) {
+  return str.replace(/\d+/g, (run) => run.replace(/^0+(?=\d)/, ''));
+}
+
+/** Default filter: case/accent-insensitive substring match on `label`,
+ *  tolerant of missing leading zeros in numbers (e.g. "comuna 3" ⇄ "comuna 03"). */
 export function filterOptionsByLabel(options, query) {
-  const q = normalize(query || '');
+  const q = collapseLeadingZeros(normalize(query || ''));
   if (!q) return options;
-  return options.filter((o) => normalize(o.label).includes(q));
+  return options.filter((o) => collapseLeadingZeros(normalize(o.label)).includes(q));
 }
 
 /**

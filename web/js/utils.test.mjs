@@ -136,6 +136,20 @@ assert.deepEqual(filterOptionsByLabel(options, 'penon').map((o) => o.id), ['b'])
 assert.deepEqual(filterOptionsByLabel(options, 'PEÑÓN').map((o) => o.id), ['b']); // case-insensitive
 assert.deepEqual(filterOptionsByLabel(options, 'no-existe'), []);
 
+// Zero-padded numeric labels (e.g. comuna_barrios.json's "COMUNA 03") should
+// match a query typed without the leading zero, and vice versa — an admin
+// naturally types "comuna 3", not "comuna 03".
+const comunas = [
+  { id: '1', label: 'COMUNA 01' },
+  { id: '2', label: 'COMUNA 02' },
+  { id: '3', label: 'COMUNA 03' },
+  { id: 'x', label: 'CORREGIMIENTO EL SALADITO' },
+];
+assert.deepEqual(filterOptionsByLabel(comunas, 'comuna 3').map((o) => o.id), ['3']);
+assert.deepEqual(filterOptionsByLabel(comunas, 'comuna 03').map((o) => o.id), ['3']);
+assert.deepEqual(filterOptionsByLabel(comunas, 'comuna 3a'), []); // no false match on a suffixed query
+assert.deepEqual(filterOptionsByLabel(comunas, 'saladito').map((o) => o.id), ['x']); // non-numeric label unaffected
+
 assert.equal(typeof mountCombobox, 'function');
 
 console.log('ok — address search normalization');
