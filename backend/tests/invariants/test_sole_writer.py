@@ -322,6 +322,13 @@ ALLOWED_MODULES_PLANEACION_PUNTOS = {
     # of any kind. Flagged read-only entry, same precedent as this file's
     # other read-only additions.
     APP_ROOT / "routers" / "integracion.py",  # read-only interop reader, no write path
+    # `puntos-solicitados` change (2026-08-27), ADR-6: `routers/
+    # puntos_solicitados.py` writes the `planeacion_puntos` MIRROR doc
+    # (`solicitado_{sid}`, ADR-1's atomic batch) — a genuine second write
+    # path onto this collection, alongside the pipeline and the admin
+    # dispatcher above. It never touches `planeacion_cuadrillas`,
+    # `grupos_inspectores`, `vehiculos`, or `conductores`.
+    APP_ROOT / "routers" / "puntos_solicitados.py",
 }
 ALLOWED_MODULES_PLANEACION_CUADRILLAS = {
     APP_ROOT / "routers" / "planeacion_asignaciones.py",
@@ -469,6 +476,31 @@ def test_puntos_contacto_literal_is_used_by_an_allowlisted_module():
     unexpected = hits - ALLOWED_MODULES_PUNTOS_CONTACTO
     assert not unexpected, f"unexpected puntos_contacto reference(s): {sorted(unexpected)}"
     assert hits, "expected puntos_contacto to be referenced by an allowlisted module by now"
+
+
+# ── `puntos-solicitados` change (2026-08-27): `puntos_solicitados` ─────────
+#
+# A SEVENTH, INDEPENDENT collection — design.md ADR-6. TWO allowlisted
+# modules: `app/routers/puntos_solicitados.py` (the sole reader/writer:
+# create/list/edit/delete) and `app/main.py`, for the SAME reason
+# `survey_cali`'s own allowlist above already names `main.py` — this
+# router's MODULE NAME happens to equal the Firestore collection literal, so
+# `main.py`'s plain `from app.routers import (..., puntos_solicitados, ...)`
+# import + `_ROUTERS` mount line genuinely contains the substring, with zero
+# Firestore access of its own. Flagged read-only/import-only, not scrubbed —
+# the same "verified harmless" precedent already established for `main.py`
+# in `ALLOWED_MODULES_SURVEY_CALI`.
+ALLOWED_MODULES_PUNTOS_SOLICITADOS = {
+    APP_ROOT / "routers" / "puntos_solicitados.py",
+    APP_ROOT / "main.py",  # import/mount only, module name == collection name, see note above
+}
+
+
+def test_puntos_solicitados_literal_is_used_by_an_allowlisted_module():
+    hits = _files_containing("puntos_solicitados")
+    unexpected = hits - ALLOWED_MODULES_PUNTOS_SOLICITADOS
+    assert not unexpected, f"unexpected puntos_solicitados reference(s): {sorted(unexpected)}"
+    assert hits, "expected puntos_solicitados to be referenced by an allowlisted module by now"
 
 
 # Scanner precision ----------------------------------------------------------
