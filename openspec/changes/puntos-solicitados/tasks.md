@@ -66,19 +66,19 @@ Chain strategy: stacked-to-main
 
 ## Phase 6: Formulario — PRIORIDAD badge + sort
 
-- [ ] 6.1 Modify `formulario/js/form.js` `buildPlaneacionCard` (~379-421): read `es_solicitado` from the assigned-point record, sort solicited points first, render a distinct "PRIORIDAD" badge (own styling, not the alta/media/baja pill) — Satisfies: field-form-session/"Assigned-point card surfaces solicited points as PRIORIDAD, sorted first" (both scenarios).
-- [ ] 6.2 Manual/`node --check formulario/js/form.js`: mixed list sorts solicited-first with badge; solicited-only list unaffected; pipeline-only list keeps unchanged ordering/pill.
+- [x] 6.1 Modify `formulario/js/form.js` `buildPlaneacionCard` (~379-421): read `es_solicitado` from the assigned-point record, sort solicited points first, render a distinct "PRIORIDAD" badge (own styling, not the alta/media/baja pill) — Satisfies: field-form-session/"Assigned-point card surfaces solicited points as PRIORIDAD, sorted first" (both scenarios). Implemented via new pure `solicitadosPrimero()` in `formulario/js/logic.js` (stable partition, composed with `ordenarPorCercania`) + `.badge-prioridad` CSS class + `!p.es_solicitado` guard on the existing pill.
+- [x] 6.2 Manual/`node --check formulario/js/form.js`: mixed list sorts solicited-first with badge; solicited-only list unaffected; pipeline-only list keeps unchanged ordering/pill. `node --check` passed on `form.js`/`logic.js`; ordering covered by `solicitadosPrimero` RED/GREEN tests in `formulario/test/logic.test.mjs` (mixed, no-solicited-fallback, null-list).
 
 ## Phase 7: Planeación rename (copy-only)
 
-- [ ] 7.1 Modify `web/js/planeacion.js:497`: button label "Auto-agrupar" → "Crear Cluster".
-- [ ] 7.2 Confirm handler at `web/js/planeacion.js:2569` still dispatches unchanged `action:'autoAgrupar'` — Satisfies: puntos-solicitados/"Planeación cluster-creation rename is copy-only" (Scenario: renamed button still dispatches the unchanged action).
+- [x] 7.1 Modify `web/js/planeacion.js:497`: button label "Auto-agrupar" → "Crear Cluster".
+- [x] 7.2 Confirm handler at `web/js/planeacion.js:2569` still dispatches unchanged `action:'autoAgrupar'` — Satisfies: puntos-solicitados/"Planeación cluster-creation rename is copy-only" (Scenario: renamed button still dispatches the unchanged action). Confirmed unchanged (`body = { action: 'autoAgrupar' }`); `autoBtn.innerHTML` restore-after-spinner logic reads the label dynamically (`originalLabel = autoBtn.innerHTML`), so it needed no follow-up edit.
 
 ## Phase 8: Verification
 
-- [ ] 8.1 Full `python -m pytest backend/tests/`, zero failures.
-- [ ] 8.2 Full `node --test "web/js/**/*.test.mjs"`, zero failures.
-- [ ] 8.3 Manual: admin sees "Puntos Solicitados" tab, non-admin does not; create→assign via existing grupo/cuadrilla/inspector flow→formulario shows PRIORIDAD badge sorted first.
+- [x] 8.1 Full `python -m pytest backend/tests/`, zero failures. Result: 778 passed.
+- [x] 8.2 Full `node --test "web/js/**/*.test.mjs"`, zero failures. Result: 9 test files, 9 passed (includes PR1/PR2's `puntos_solicitados.test.mjs`). Also ran (per `openspec/config.yaml` `verify.test_command`): `formulario` `node --test "js/**/*.test.mjs" "test/**/*.test.mjs"` → 88 passed; `node test/refresh.test.js` → OK; `node api/stickers.test.js` → OK.
+- [ ] 8.3 Manual: admin sees "Puntos Solicitados" tab, non-admin does not; create→assign via existing grupo/cuadrilla/inspector flow→formulario shows PRIORIDAD badge sorted first. NOT performed — requires a live admin session/deployed environment; out of reach for this automated apply batch. Flagged for the user/operator before merge.
 
 ## Operator Tasks (no repo diff)
 

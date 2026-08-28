@@ -492,9 +492,9 @@ function shellHtml() {
     <div class="asignacion-workspace">
       <div class="asignacion-main">
         <div class="card">
-          ${cardHead('Paso 1 · Priorizar', 'Auto-agrupar los puntos pendientes por cercanía, o marcar filas en la tabla para crear una cuadrilla manual.')}
+          ${cardHead('Paso 1 · Priorizar', 'Crear Cluster con los puntos pendientes por cercanía, o marcar filas en la tabla para crear una cuadrilla manual.')}
           <div class="card-toolbar asignacion-actions-bar" id="planeacion-toolbar">
-            <button type="button" class="btn-primary" id="planeacion-auto">Auto-agrupar</button>
+            <button type="button" class="btn-primary" id="planeacion-auto">Crear Cluster</button>
             <label class="sticker-field asignacion-inline-field">
               <span>Comuna / Corregimiento</span>
               <select id="planeacion-auto-comuna"><option value="">— Todas —</option></select>
@@ -913,7 +913,7 @@ function _cuadrillaGrupoId(cuadrilla, grupoIdByPunto) {
 
 export function cuadrillasHtml(cuadrillas, inspectorById, gruposActivos, grupoIdByPunto = new Map()) {
   if (!cuadrillas.length) {
-    return '<p class="sticker-empty">Todavía no hay cuadrillas. Usar «Auto-agrupar» o crear una manualmente desde la tabla.</p>';
+    return '<p class="sticker-empty">Todavía no hay cuadrillas. Usar «Crear Cluster» o crear una manualmente desde la tabla.</p>';
   }
   const grupoById = new Map((gruposActivos || []).map((g) => [g.id, g]));
   const grupoOptionsFor = (selectedId) => (gruposActivos || [])
