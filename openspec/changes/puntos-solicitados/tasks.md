@@ -80,6 +80,13 @@ Chain strategy: stacked-to-main
 - [x] 8.2 Full `node --test "web/js/**/*.test.mjs"`, zero failures. Result: 9 test files, 9 passed (includes PR1/PR2's `puntos_solicitados.test.mjs`). Also ran (per `openspec/config.yaml` `verify.test_command`): `formulario` `node --test "js/**/*.test.mjs" "test/**/*.test.mjs"` → 88 passed; `node test/refresh.test.js` → OK; `node api/stickers.test.js` → OK.
 - [ ] 8.3 Manual: admin sees "Puntos Solicitados" tab, non-admin does not; create→assign via existing grupo/cuadrilla/inspector flow→formulario shows PRIORIDAD badge sorted first. NOT performed — requires a live admin session/deployed environment; out of reach for this automated apply batch. Flagged for the user/operator before merge.
 
+## Phase 9: UX polish — "Crear punto solicitado" modal (bounded follow-up)
+
+- [x] 9.1 `web/js/puntos_solicitados.js` `sectionHtml()`: group the create-modal fields into four labeled sections (`.sticker-form-section` + `.sticker-form-section-title`) — "Punto" (nombre/comuna/barrio), "Solicitante" (nombre_solicitante/telefono_solicitante/justificación), "Ubicación" (dirección+ubicar/map/lat-lng), "Fotos". Field `name`/`id`/`required`/markup unchanged, only wrapping/headers added.
+- [x] 9.2 `web/styles.css`: `.ps-coords-map:empty`/`:empty::before` bordered placeholder ("Buscá una dirección o ingresá coordenadas para ver el mapa acá") — zero-JS, relies on Leaflet's `map.remove()` emptying the container (`teardownCreateMap`). Lat/Lng rewrapped in `.ps-coords-inline`/`.ps-coords-field` (compact, secondary, IDs/names/required untouched).
+- [x] 9.3 `web/js/puntos_solicitados.js` + `web/styles.css`: photo picker restyled — native `#ps-fotos-input` visually hidden (`.ps-fotos-input-native`, clip technique, still focusable/keyboard-operable), triggered via its associated `<label class="btn-secondary" for="ps-fotos-input">` (native behavior, no JS), plus a `#ps-fotos-caption` selection-count readout (`"N/10 fotos seleccionadas"` / `"Ningún archivo seleccionado"`) wired in the existing `fotosInput` change handler and `resetCrearForm()`.
+- [x] 9.4 `node --test web/js/*.test.mjs` — 9/9 pass, no regressions (pure-function tests only; DOM/CSS not unit-tested, matches file's existing convention).
+
 ## Operator Tasks (no repo diff)
 
 - [ ] OP.1 Confirm `GOOGLE_MAPS_API_KEY` is set live on the Railway FastAPI service (currently consumed only by the offline `scripts/` container) — required for `/geocode` to function in production.

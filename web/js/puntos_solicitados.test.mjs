@@ -2,7 +2,7 @@
 // classification, counts, filters and sort. Run: node web/js/puntos_solicitados.test.mjs
 import assert from 'node:assert';
 import {
-  ESTADOS, estadoDe, contarPorEstado, applyFilters, sortPuntos,
+  ESTADOS, estadoDe, contarPorEstado, applyFilters, sortPuntos, removeFotoAt,
 } from './puntos_solicitados.js';
 
 // The derived lifecycle states (ADR-4 map's output values), in the order they
@@ -78,5 +78,14 @@ assert.deepStrictEqual(
   sortPuntos([{ id: 'sin-fecha' }, { id: 'con-fecha', creado_en: '2026-08-01T00:00:00Z' }]).map((p) => p.id),
   ['con-fecha', 'sin-fecha'],
 );
+
+// removeFotoAt — pure removal backing the create modal's "quitar" chip
+// button: order-preserving, and never mutates the array it's given.
+const fotos = [{ name: 'a.jpg' }, { name: 'b.jpg' }, { name: 'c.jpg' }];
+assert.deepStrictEqual(removeFotoAt(fotos, 1).map((f) => f.name), ['a.jpg', 'c.jpg']); // middle
+assert.deepStrictEqual(removeFotoAt(fotos, 2).map((f) => f.name), ['a.jpg', 'b.jpg']); // last
+assert.deepStrictEqual(removeFotoAt(fotos, 0).map((f) => f.name), ['b.jpg', 'c.jpg']); // first
+assert.strictEqual(fotos.length, 3); // input untouched — no in-place mutation
+assert.deepStrictEqual(removeFotoAt([{ name: 'only.jpg' }], 0), []); // down to empty
 
 console.log('ok — puntos_solicitados.js estado classification, filters, sort');
