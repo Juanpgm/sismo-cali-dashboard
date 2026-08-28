@@ -774,6 +774,22 @@ async function callPlaneacionApi(getToken, body) {
   return fetchJson(apiUrl('planeacionAsignaciones'), { method: 'POST', headers, body: JSON.stringify(body) });
 }
 
+/** Replaces a card-level Asignar panel's combobox input/list with fresh
+ *  clones (`cloneNode` never copies listeners) and returns them, so a
+ *  caller's subsequent `mountCombobox(input, list, ...)` always attaches to
+ *  brand-new nodes — see the "Card-level Asignar inline panel" comment in
+ *  `initPuntosSolicitados` for why this matters (mountCombobox has no
+ *  unmount, and re-mounting on the same node stacks listeners). */
+export function remountAsignarNodes(panel) {
+  const oldInput = panel.querySelector('.ps-asignar-input');
+  const oldList = panel.querySelector('.ps-asignar-list');
+  const input = oldInput.cloneNode(true);
+  const list = oldList.cloneNode(true);
+  oldInput.replaceWith(input);
+  oldList.replaceWith(list);
+  return { input, list };
+}
+
 // ---- Entry point -------------------------------------------------------------
 
 const AUTO_REFRESH_MS = 5 * 60 * 1000;
@@ -917,6 +933,18 @@ export function initPuntosSolicitados(section, { getToken }) {
   // open (not at list-render time) since renderFiltered() rebuilds the whole
   // list's innerHTML on every load/filter change, which would orphan any
   // eagerly-mounted combobox instance.
+  //
+  // closeAsignarPanels() only hides panels (`panel.hidden = true`) — it never
+  // touches their DOM, and a row's DOM survives close/reopen (only
+  // renderFiltered()'s full innerHTML rebuild replaces it). mountCombobox has
+  // no unmount and attaches focus/input/keydown/blur/mousedown listeners
+  // straight onto the input/list nodes it's given, so re-mounting on the SAME
+  // nodes every time a row's Asignar button is clicked stacks another set of
+  // listeners each time — reopening one row 3x means a selection fires
+  // onSelect (and the real backend write in asignarInspector) 3x for one
+  // click. remountAsignarNodes() below always hands mountCombobox brand-new
+  // nodes, so old listener sets die with the detached old nodes and never
+  // stack — no teardown step needed elsewhere.
   let openAsignarId = null;
   function closeAsignarPanels() {
     listEl.querySelectorAll('.ps-asignar-panel').forEach((panel) => { panel.hidden = true; });
@@ -932,8 +960,7 @@ export function initPuntosSolicitados(section, { getToken }) {
     if (!panel) return;
     panel.hidden = false;
     openAsignarId = id;
-    const input = panel.querySelector('.ps-asignar-input');
-    const list = panel.querySelector('.ps-asignar-list');
+    const { input, list } = remountAsignarNodes(panel);
     const p = byId.get(id);
     const carga = contarCargaPorInspector(allPuntos);
     mountCombobox(input, list, {
