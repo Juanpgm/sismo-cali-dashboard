@@ -474,7 +474,8 @@ async function subirFoto(file, slot, codigo, getToken) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || `Error ${res.status}`);
-  await fetch(data.uploadUrl, { method: 'PUT', headers: { 'Content-Type': 'image/jpeg' }, body: file });
+  const up = await fetch(data.uploadUrl, { method: 'PUT', headers: { 'Content-Type': 'image/jpeg' }, body: file });
+  if (!up.ok) throw new Error(`put-${up.status}`);
   return data.publicUrl;
 }
 
@@ -528,6 +529,7 @@ let autoRefreshTimer = null;
  *  detail/delete + geocode. Mirrors evaluaciones.js's init shape, extended
  *  with the create flow this tab owns and evaluaciones.js does not. */
 export function initPuntosSolicitados(section, { getToken }) {
+  section.innerHTML = sectionHtml();
   const kpis = section.querySelector('#ps-kpis');
   const listEl = section.querySelector('#ps-list');
   const listMeta = section.querySelector('#ps-list-meta');
@@ -595,7 +597,7 @@ export function initPuntosSolicitados(section, { getToken }) {
   function renderFiltered() {
     const filtered = sortPuntos(applyFilters(allPuntos, filters));
     chipsEl.innerHTML = estadoChipsHtml(filters.estado);
-    kpis.innerHTML = kpisHtml(applyFilters(allPuntos, { ...filters, estado: '' }));
+    kpis.innerHTML = kpisHtml(filtered);
 
     if (!filtered.length) {
       listEl.innerHTML = allPuntos.length
@@ -756,8 +758,22 @@ export function initPuntosSolicitados(section, { getToken }) {
     };
     crearSubmit.disabled = true;
     crearSubmit.textContent = 'Creando…';
+    let created;
     try {
-      const created = await apiCreate(getToken, body);
+      created = await apiCreate(getToken, body);
+    } catch (err) {
+      // Nothing exists yet — same "form looks untouched" failure as before.
+      crearError.textContent = err.message;
+      crearError.hidden = false;
+      crearSubmit.disabled = false;
+      crearSubmit.textContent = 'Crear punto';
+      return;
+    }
+    // The point now exists server-side. From here on, a failure must look
+    // DIFFERENT from "nothing was created" — otherwise an admin retries and
+    // creates a duplicate. Always closeCrear()+load() so they can see the
+    // point already in the list.
+    try {
       // Photos upload AFTER create (design.md ADR-1: id is minted server-side;
       // the presigned flow needs an identifier that only exists once the point
       // does). Best-effort: a failed photo never rolls back the point itself —
@@ -775,12 +791,11 @@ export function initPuntosSolicitados(section, { getToken }) {
         if (urls.length) await apiPatch(getToken, created.id, { fotos: urls });
       }
       showToast('Punto solicitado creado.');
+    } catch (err) {
+      showToast(`El punto se creó (código ${created.clave_integracion}) pero hubo un problema guardando las fotos: ${err.message}. Abrilo desde la lista para reintentar.`, 'error');
+    } finally {
       closeCrear();
       await load();
-    } catch (err) {
-      crearError.textContent = err.message;
-      crearError.hidden = false;
-    } finally {
       crearSubmit.disabled = false;
       crearSubmit.textContent = 'Crear punto';
     }

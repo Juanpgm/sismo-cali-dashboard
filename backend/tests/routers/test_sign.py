@@ -31,6 +31,7 @@ VALID_CODIGO = "76001-1-0040001"
 # clave_integracion('solicitado', sid) — same function, not hand-typed.
 VALID_SOLICITADO_CODIGO = clave_integracion("solicitado", "abc123XYZ0")
 FAKE_CLAIMS = {"sub": "uid-inspector", "email": "inspector@sismocali.gov.co"}
+ADMIN_CLAIMS = {"sub": "uid-admin", "email": "admin@example.com", "role": "admin"}
 
 
 def _app(monkeypatch) -> FastAPI:
@@ -50,6 +51,12 @@ def _client(monkeypatch) -> TestClient:
 def _authed_client(monkeypatch) -> TestClient:
     app = _app(monkeypatch)
     app.dependency_overrides[current_claims] = lambda: FAKE_CLAIMS
+    return TestClient(app)
+
+
+def _admin_client(monkeypatch) -> TestClient:
+    app = _app(monkeypatch)
+    app.dependency_overrides[current_claims] = lambda: ADMIN_CLAIMS
     return TestClient(app)
 
 
@@ -115,8 +122,10 @@ def test_zero_slot_is_rejected(monkeypatch):
 
 def test_puntos_solicitados_codigo_is_accepted_and_keyed_under_solicitados(monkeypatch):
     """puntos-solicitados gap-fix: web/js/puntos_solicitados.js sends the
-    point's `clave_integracion` (PLN-<slug>-<digest>) as `codigo`."""
-    client = _authed_client(monkeypatch)
+    point's `clave_integracion` (PLN-<slug>-<digest>) as `codigo`. This path
+    is admin-only (routers/puntos_solicitados.py's own routes), so it needs
+    admin claims, unlike the evaluaciones path."""
+    client = _admin_client(monkeypatch)
 
     resp = client.post("/api/sign", json={"codigo": VALID_SOLICITADO_CODIGO, "slot": 1})
 
@@ -129,6 +138,18 @@ def test_puntos_solicitados_codigo_is_accepted_and_keyed_under_solicitados(monke
     assert body["publicUrl"] == (
         f"https://test-sismo-fotos.s3.amazonaws.com/solicitados/{VALID_SOLICITADO_CODIGO}/foto_1.jpg"
     )
+
+
+def test_puntos_solicitados_codigo_rejects_non_admin(monkeypatch):
+    """Security: only admin can mint a presign URL for a solicitado-shaped
+    codigo — any other authenticated role (e.g. a field inspector) is
+    rejected with 403, matching every other puntos_solicitados route's
+    `require_role("admin")` gate."""
+    client = _authed_client(monkeypatch)
+
+    resp = client.post("/api/sign", json={"codigo": VALID_SOLICITADO_CODIGO, "slot": 1})
+
+    assert resp.status_code == 403
 
 
 def test_evaluaciones_codigo_still_keyed_under_evaluaciones(monkeypatch):

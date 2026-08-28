@@ -36,6 +36,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.auth.deps import require_auth
+from app.auth.roles import role_from_claims
 from app.credentials import clients as credentials
 from app.jobs.planeacion_cruce import verify_clave_integracion
 
@@ -77,6 +78,12 @@ def sign(
     es_solicitado = verify_clave_integracion(body.codigo)
     if not CODIGO_RE.match(body.codigo or "") and not es_solicitado:
         raise HTTPException(status_code=400, detail="bad-request")
+    # Solicited-point codes are admin-only everywhere else (every route in
+    # `routers/puntos-solicitados.py` is `require_role("admin")`); the
+    # evaluaciones path stays open to any authenticated role (field
+    # inspectors), intentionally unchanged.
+    if es_solicitado and role_from_claims(claims) != "admin":
+        raise HTTPException(status_code=403, detail="No autorizado.")
     if not (1 <= body.slot <= _max_slot()):
         raise HTTPException(status_code=400, detail="bad-request")
 
