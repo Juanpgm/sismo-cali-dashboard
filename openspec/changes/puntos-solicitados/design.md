@@ -15,8 +15,8 @@ allowlist pattern), `scripts/geocode_validate.py` (acceptance logic), `backend/a
 ```
 Browser (admin, "Puntos Solicitados" tab)                  FastAPI (puntos_solicitados.py)                 Firestore (sismo-agosto-sgred)
 ──────────────────────────────────────────                ────────────────────────────────                ─────────────────────────────
- create modal ── POST /geocode {direccion} ─────────────►  proxy → Google Geocoding (key server-side)
-   (draggable marker)  ◄── {lat,lng,accepted,reason} ────  ACCEPTED = ROOFTOP/RANGE_INTERPOLATED ∈ Cali bbox
+ create modal ── POST /geocode {direccion} ─────────────►  proxy → Nominatim (OSM, no API key)
+   (draggable marker)  ◄── {lat,lng,accepted,reason} ────  ACCEPTED = house_number present ∈ Cali bbox
    submit ── POST {nombre,contacto,coords,fotos…} ──────►  pre-gen id = puntos_solicitados.document().id
                                                              clave_integracion('solicitado', id)
                                                              ┌── db.batch() (ATOMIC, both writes) ──┐
@@ -131,26 +131,46 @@ is present. No sync job, no drift.
 
 ## ADR-5 — `POST /geocode`: live proxy, backend port of the acceptance logic
 
-**Decision.** New `POST /geocode`, `Depends(require_auth)`, key read from `GOOGLE_MAPS_API_KEY`
-server-side (never returned). Contract:
+**Supersedes:** this ADR originally specified the Google Geocoding API (key read from
+`GOOGLE_MAPS_API_KEY`). That key was never configured live in Railway, and rather than manage a
+Google API key/billing for a low-volume, per-admin-action live proxy, the decision was made to
+switch providers entirely to **Nominatim** (OpenStreetMap's free geocoding service, no API key).
+The section below reflects the CURRENT (Nominatim) design; the original Google decision is kept
+here as history, not silently rewritten.
+
+**Decision.** New `POST /geocode`, `Depends(require_auth)`, no API key (Nominatim is free/keyless).
+Contract:
 
 | dir | shape |
 |---|---|
 | request | `{ "direccion": str }` — bbox is fixed to Cali; no caller-supplied bbox (YAGNI) |
-| 200 accepted | `{ ok:true, accepted:true, lat, lng, formatted, location_type }` (`ROOFTOP`/`RANGE_INTERPOLATED` ∈ Cali bbox) |
+| 200 accepted | `{ ok:true, accepted:true, lat, lng, formatted, location_type }` (specific building/house-number match ∈ Cali bbox) |
 | 200 low-confidence | `{ ok:true, accepted:false, reason }` (`sin_resultado`\|`precision_insuficiente`\|`fuera_de_cali`) — no coords; frontend falls back to the draggable marker / manual lat-lng |
-| 502 | Google `REQUEST_DENIED`/`OVER_QUERY_LIMIT`/`INVALID_REQUEST` (key/quota problem, not an address rejection) |
+| 502 | Nominatim transport failure (timeout/connection error/bad HTTP status/malformed response) — Nominatim has no API-key concept, so there is no separate key/quota error class |
 
-The acceptance rule (`ACCEPTED = {ROOFTOP:15, RANGE_INTERPOLATED:40}`, `CALI_BBOX`,
-`to_google_address`) is the SAME as `scripts/geocode_validate.py`. It is copied into a small pure
-`backend/app/services/geocode.py`, **not** imported across `scripts/`: `geocode_validate.py` is
+The acceptance rule (`CALI_BBOX`, `to_nominatim_address`) reuses the SAME bbox/address-
+normalization `scripts/geocode_validate.py` uses (that script itself stays on Google — it is an
+offline batch job, out of scope for this change). It lives in a small pure
+`backend/app/services/geocode.py`, **not** imported from `scripts/`: `geocode_validate.py` is
 itself a documented "self-contained port" because the publish container clones a different repo
-subset, and the FastAPI image does not package `scripts/`. This is the second port of the same
-~30 lines for the same container-boundary reason, testable offline against fake responses.
+subset, and the FastAPI image does not package `scripts/`. Testable offline against fake responses.
 
-**Why surface `accepted:false` instead of silently accepting.** A `GEOMETRIC_CENTER`/`APPROXIMATE`
-result is hundreds of meters off; flagging it makes the modal lean on "drag the marker to adjust"
-rather than dropping a pin on the wrong block.
+Precision is now decided by Nominatim's `class`/`type`/`address.house_number` fields instead of
+Google's `location_type` tier (`ROOFTOP`/`RANGE_INTERPOLATED`/`GEOMETRIC_CENTER`/`APPROXIMATE`):
+a `class == 'building'` match, or any match with a populated `address.house_number` (Nominatim's
+equivalent of an interpolated house-number match), is high-confidence; a broad area match
+(suburb/city/state/etc, no house number) is not. `location_type` in the response is now sourced
+from Nominatim's `type` field, kept under the same key for contract stability (no frontend
+consumer reads it today).
+
+**Why surface `accepted:false` instead of silently accepting.** A broad-area match (e.g. a suburb
+or city centroid) can be hundreds of meters to kilometers off; flagging it makes the modal lean on
+"drag the marker to adjust" rather than dropping a pin on the wrong block.
+
+**Nominatim usage-policy compliance.** A descriptive `User-Agent` (not the requests-library
+default) is required per operations.osmfoundation.org/policies/nominatim/ — set once via a module
+constant. This proxy is triggered per-admin-action, not bulk, so no additional rate limiting was
+added (YAGNI) beyond not retry-storming on failure.
 
 ## ADR-6 — Sole-writer allowlist (two edits)
 
@@ -212,7 +232,7 @@ creado_por, creado_en`.
 | Layer | What | Approach |
 |-------|------|----------|
 | pytest unit | ADR-1 atomic batch (both docs / neither), id-before-batch ordering, mirror field shape, `clave_integracion('solicitado',…)` determinism | fake Firestore double, `TestClient` (mirror `test_planeacion_asignaciones.py`) |
-| pytest unit | `/geocode` accepted / low-confidence / 502 mapping; key never in response | fake Google responses |
+| pytest unit | `/geocode` accepted / low-confidence / 502 mapping | fake Nominatim responses |
 | pytest unit | ADR-4 estado mapping (`hecho→visitado`, `no_aplica→excluido`) | pure function |
 | pytest invariant | ADR-6: new `puntos_solicitados` allowlist + `puntos_solicitados.py` in planeacion_puntos set | existing literal scan |
 | pytest guard | non-admin `POST`/`PATCH`/`DELETE` → 403, zero writes | `TestClient` |
@@ -221,15 +241,15 @@ creado_por, creado_en`.
 ## Threat Matrix
 
 N/A — no routing, shell, subprocess, VCS/PR automation, or executable-file classification. `/geocode`
-is an outbound read-only HTTP proxy behind `require_auth` with the API key held server-side; the S3
-photo path reuses the existing presigned `sign.py` flow unchanged (only the key prefix differs).
+is an outbound read-only HTTP proxy behind `require_auth`, no API key (Nominatim is free/keyless);
+the S3 photo path reuses the existing presigned `sign.py` flow unchanged (only the key prefix differs).
 
 ## Migration / Rollout
 
 No migration. Both collections are additive. Rollback per proposal: revert frontend, unregister the
 router, revert the rename; `puntos_solicitados` docs are read by nothing else and `solicitado_*`
-mirror docs are safe to leave or bulk-delete. Requires `GOOGLE_MAPS_API_KEY` live in the backend env
-(new usage; already present for the offline script) and the S3 presign env already used by `sign.py`.
+mirror docs are safe to leave or bulk-delete. No API key required in the backend env (Nominatim is
+keyless); only the S3 presign env already used by `sign.py` is needed.
 
 ## Open Questions
 

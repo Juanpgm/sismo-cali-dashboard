@@ -479,16 +479,15 @@ def test_list_firestore_read_failure_is_a_clean_502(monkeypatch):
     assert resp.status_code == 502
 
 
-# ── POST /geocode: any authenticated caller, key never in response ─────────
+# ── POST /geocode: any authenticated caller (Nominatim, no API key) ────────
 
 
 def test_geocode_route_requires_authentication_not_admin(monkeypatch):
     stores = _stores()
-    monkeypatch.setenv("GOOGLE_MAPS_API_KEY", "fake-key")
 
     def _fake_geocode(direccion, **kwargs):
         return {"ok": True, "accepted": True, "lat": 3.42, "lng": -76.53,
-                "formatted": "x", "location_type": "ROOFTOP"}
+                "formatted": "x", "location_type": "yes"}
 
     import app.routers.puntos_solicitados as router_mod
     monkeypatch.setattr(router_mod, "geocode_service", _fake_geocode)
@@ -497,47 +496,24 @@ def test_geocode_route_requires_authentication_not_admin(monkeypatch):
     resp = client.post("/geocode", json={"direccion": "Calle 1 # 2-3"})
     assert resp.status_code == 200
     assert resp.json()["accepted"] is True
-    assert "fake-key" not in resp.text
 
 
-def test_geocode_route_maps_key_error_to_502(monkeypatch):
-    stores = _stores()
-
-    def _raise_key_error(direccion, **kwargs):
-        from app.services.geocode import GeocodeKeyError
-        raise GeocodeKeyError("Geocoding API said REQUEST_DENIED: bad key")
-
-    import app.routers.puntos_solicitados as router_mod
-    monkeypatch.setattr(router_mod, "geocode_service", _raise_key_error)
-
-    client = _viewer_client(monkeypatch, stores)
-    resp = client.post("/geocode", json={"direccion": "Calle 1 # 2-3"})
-    assert resp.status_code == 502
-
-
-def test_geocode_route_502_never_leaks_the_api_key_on_transport_failure(monkeypatch):
-    """Regression: full path through the REAL geocode_service (not a mocked
-    GeocodeTransportError) — a `requests.get` connection failure whose
-    message embeds the API key must not surface that key in the 502
-    response body, even though `_default_http_get` builds `params["key"]`
-    from this exact env var."""
+def test_geocode_route_maps_real_transport_failure_to_502(monkeypatch):
+    """Full path through the REAL geocode_service (not a mocked
+    GeocodeTransportError) — a `requests.get` connection failure must come
+    back as a clean 502."""
     import requests
 
     stores = _stores()
-    fake_key = "AIzaFAKE-SECRET-KEY-67890"
-    monkeypatch.setenv("GOOGLE_MAPS_API_KEY", fake_key)
 
-    def _raise_with_key_in_message(*args, **kwargs):
-        raise requests.exceptions.ConnectionError(
-            f"Max retries exceeded with url: /maps/api/geocode/json?key={fake_key}"
-        )
+    def _raise_connection_error(*args, **kwargs):
+        raise requests.exceptions.ConnectionError("connection refused")
 
-    monkeypatch.setattr(requests, "get", _raise_with_key_in_message)
+    monkeypatch.setattr(requests, "get", _raise_connection_error)
 
     client = _viewer_client(monkeypatch, stores)
     resp = client.post("/geocode", json={"direccion": "Calle 1 # 2-3"})
     assert resp.status_code == 502
-    assert fake_key not in resp.text
 
 
 def test_geocode_route_maps_transport_error_to_502(monkeypatch):

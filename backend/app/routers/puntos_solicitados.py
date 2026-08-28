@@ -42,11 +42,11 @@ name/address/location never goes stale on the assignment board;
 
 **ADR-5 — `POST /geocode`: live proxy, `Depends(require_auth)`** (any
 authenticated caller, not admin-only — creating a point still IS
-admin-only). Delegates to the pure `app.services.geocode.geocode`; a
-`GeocodeKeyError` (bad key/quota) or `GeocodeTransportError` (timeout/
-connection failure/malformed response) both map to the same 502. The API
-key never appears in any response — `geocode()` reads it from the
-environment itself.
+admin-only). Delegates to the pure `app.services.geocode.geocode`, backed by
+Nominatim (OpenStreetMap, no API key — see that module's docstring for why
+this superseded the original Google Geocoding API design). A
+`GeocodeTransportError` (timeout/connection failure/bad HTTP status/
+malformed response) maps to a 502.
 
 **ADR-6 — sole-writer allowlist**: this module is added to
 `tests/invariants/test_sole_writer.py`'s existing
@@ -67,7 +67,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.auth.deps import require_auth, require_role
 from app.credentials import clients as credentials
 from app.jobs.planeacion_cruce import clave_integracion, doc_id
-from app.services.geocode import GeocodeKeyError, GeocodeTransportError
+from app.services.geocode import GeocodeTransportError
 from app.services.geocode import geocode as geocode_service
 
 REQUIRED_CLIENTS: tuple[str, ...] = ("sismo",)
@@ -377,14 +377,13 @@ def geocode_route(
     body: GeocodeBody,
     claims: dict[str, Any] = Depends(require_auth),
 ) -> JSONResponse:
-    """ADR-5: live proxy, any authenticated caller. Google
-    REQUEST_DENIED/OVER_QUERY_LIMIT/INVALID_REQUEST, transport failures
-    (timeout/connection error), and malformed responses all map to the
-    SAME clean 502 (key/quota problem or upstream failure, never an
+    """ADR-5: live proxy, any authenticated caller, backed by Nominatim (no
+    API key). Transport failures (timeout/connection error/bad HTTP status)
+    and malformed responses map to a clean 502 (upstream failure, never an
     address rejection); everything else comes back as `geocode()`'s own
     `{ok, accepted, ...}` shape unchanged."""
     try:
         result = geocode_service(body.direccion)
-    except (GeocodeKeyError, GeocodeTransportError) as exc:
+    except GeocodeTransportError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return JSONResponse(result)

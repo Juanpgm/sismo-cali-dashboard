@@ -84,6 +84,16 @@ export function applyFilters(list, filters) {
   });
 }
 
+/** Pure removal: returns a NEW array with the file at `index` dropped,
+ *  never mutating `files`. Extracted so the create modal's "quitar" handler
+ *  stays a one-liner and this specific behaviour (order preservation, first/
+ *  last/only-item removal, non-mutation) is unit-testable without the DOM. */
+export function removeFotoAt(files, index) {
+  const copy = files.slice();
+  copy.splice(index, 1);
+  return copy;
+}
+
 /** Newest creado_en first — same "most recent first" convention as
  *  evaluaciones.js's list. Missing/unparseable dates sort last, never throw. */
 export function sortPuntos(list) {
@@ -245,67 +255,84 @@ export function sectionHtml() {
           </div>
           <div class="modal-body">
             <form id="ps-crear-form" class="sticker-form">
-              <label class="sticker-field"><span>Nombre *</span>
-                <input name="nombre" required placeholder="Casa esquinera" autocomplete="off">
-              </label>
-              <!-- Full-width, one per row (not inside .sticker-form-grid): the
-                   comuna/barrio combos share .asignacion-combo's CSS with the
-                   wide inspector comboboxes (stickers-asignacion.js/
-                   planeacion.js) — squeezing them into a 233px 2-col grid
-                   cell let the open dropdown bleed onto the "Nombre del
-                   solicitante" field directly below in the same column. -->
-              <label class="sticker-field"><span>Comuna / corregimiento *</span>
-                <div class="asignacion-combo">
-                  <input type="text" name="comuna_corregimiento" id="ps-comuna-input" class="asignacion-combo-input"
-                    role="combobox" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false"
-                    required placeholder="Buscar comuna o corregimiento…" aria-label="Buscar comuna o corregimiento">
-                  <ul class="asignacion-combo-list" id="ps-comuna-list" role="listbox" hidden></ul>
-                </div>
-              </label>
-              <label class="sticker-field"><span>Barrio / vereda *</span>
-                <div class="asignacion-combo">
-                  <input type="text" name="barrio_vereda" id="ps-barrio-input" class="asignacion-combo-input"
-                    role="combobox" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false"
-                    required disabled placeholder="Elegí una comuna primero…" aria-label="Buscar barrio o vereda">
-                  <ul class="asignacion-combo-list" id="ps-barrio-list" role="listbox" hidden></ul>
-                </div>
-              </label>
-              <div class="sticker-form-grid">
-                <label class="sticker-field"><span>Nombre del solicitante *</span>
-                  <input name="nombre_solicitante" required placeholder="María Pérez" autocomplete="off">
+              <div class="sticker-form-section">
+                <h4 class="sticker-form-section-title">Punto</h4>
+                <label class="sticker-field"><span>Nombre *</span>
+                  <input name="nombre" required placeholder="Casa esquinera" autocomplete="off">
                 </label>
-                <label class="sticker-field"><span>Teléfono del solicitante *</span>
-                  <input name="telefono_solicitante" required placeholder="3001234567" autocomplete="off">
+                <!-- Full-width, one per row (not inside .sticker-form-grid): the
+                     comuna/barrio combos share .asignacion-combo's CSS with the
+                     wide inspector comboboxes (stickers-asignacion.js/
+                     planeacion.js) — squeezing them into a 233px 2-col grid
+                     cell let the open dropdown bleed onto the "Nombre del
+                     solicitante" field directly below in the same column. -->
+                <label class="sticker-field"><span>Comuna / corregimiento *</span>
+                  <div class="asignacion-combo">
+                    <input type="text" name="comuna_corregimiento" id="ps-comuna-input" class="asignacion-combo-input"
+                      role="combobox" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false"
+                      required placeholder="Buscar comuna o corregimiento…" aria-label="Buscar comuna o corregimiento">
+                    <ul class="asignacion-combo-list" id="ps-comuna-list" role="listbox" hidden></ul>
+                  </div>
                 </label>
-              </div>
-              <label class="sticker-field"><span>Justificación *</span>
-                <textarea name="justificacion" required rows="3" placeholder="Motivo de la solicitud"></textarea>
-              </label>
-
-              <div class="sticker-field">
-                <span>Dirección</span>
-                <div class="ps-geocode-row">
-                  <input name="direccion" id="ps-direccion" placeholder="Calle 5 # 10-20" autocomplete="off">
-                  <button type="button" class="btn-secondary" id="ps-geocode-btn">Ubicar</button>
-                </div>
-                <p class="sticker-note" id="ps-geocode-note">Ubicá por dirección o arrastrá el marcador / ingresá lat/lng manualmente.</p>
-              </div>
-
-              <div class="ps-coords-map" id="ps-coords-map"></div>
-              <div class="sticker-form-grid">
-                <label class="sticker-field"><span>Latitud *</span>
-                  <input name="lat" id="ps-lat" type="number" step="any" required>
-                </label>
-                <label class="sticker-field"><span>Longitud *</span>
-                  <input name="lng" id="ps-lng" type="number" step="any" required>
+                <label class="sticker-field"><span>Barrio / vereda *</span>
+                  <div class="asignacion-combo">
+                    <input type="text" name="barrio_vereda" id="ps-barrio-input" class="asignacion-combo-input"
+                      role="combobox" aria-expanded="false" aria-autocomplete="list" autocomplete="off" spellcheck="false"
+                      required disabled placeholder="Elegí una comuna primero…" aria-label="Buscar barrio o vereda">
+                    <ul class="asignacion-combo-list" id="ps-barrio-list" role="listbox" hidden></ul>
+                  </div>
                 </label>
               </div>
 
-              <label class="sticker-field">
-                <span>Fotos (hasta ${MAX_FOTOS})</span>
-                <input type="file" id="ps-fotos-input" accept="image/*" multiple>
-              </label>
-              <div class="ps-fotos-preview" id="ps-fotos-preview"></div>
+              <div class="sticker-form-section">
+                <h4 class="sticker-form-section-title">Solicitante</h4>
+                <div class="sticker-form-grid">
+                  <label class="sticker-field"><span>Nombre del solicitante *</span>
+                    <input name="nombre_solicitante" required placeholder="María Pérez" autocomplete="off">
+                  </label>
+                  <label class="sticker-field"><span>Teléfono del solicitante *</span>
+                    <input name="telefono_solicitante" required placeholder="3001234567" autocomplete="off">
+                  </label>
+                </div>
+                <label class="sticker-field"><span>Justificación *</span>
+                  <textarea name="justificacion" required rows="3" placeholder="Motivo de la solicitud"></textarea>
+                </label>
+              </div>
+
+              <div class="sticker-form-section">
+                <h4 class="sticker-form-section-title">Ubicación</h4>
+                <div class="sticker-field">
+                  <span>Dirección</span>
+                  <div class="ps-geocode-row">
+                    <input name="direccion" id="ps-direccion" placeholder="Calle 5 # 10-20" autocomplete="off">
+                    <button type="button" class="btn-secondary" id="ps-geocode-btn">Ubicar</button>
+                  </div>
+                  <p class="sticker-note" id="ps-geocode-note">Ubicá por dirección o arrastrá el marcador / ingresá lat/lng manualmente.</p>
+                </div>
+
+                <div class="ps-coords-map" id="ps-coords-map"></div>
+                <div class="ps-coords-inline">
+                  <label class="sticker-field ps-coords-field"><span>Latitud *</span>
+                    <input name="lat" id="ps-lat" type="number" step="any" required>
+                  </label>
+                  <label class="sticker-field ps-coords-field"><span>Longitud *</span>
+                    <input name="lng" id="ps-lng" type="number" step="any" required>
+                  </label>
+                </div>
+              </div>
+
+              <div class="sticker-form-section">
+                <h4 class="sticker-form-section-title">Fotos</h4>
+                <div class="sticker-field">
+                  <span>Fotos (hasta ${MAX_FOTOS})</span>
+                  <div class="ps-fotos-picker">
+                    <input type="file" id="ps-fotos-input" class="ps-fotos-input-native" accept="image/*" multiple>
+                    <label for="ps-fotos-input" class="btn-secondary">Elegir fotos</label>
+                    <span class="ps-fotos-caption" id="ps-fotos-caption">Ningún archivo seleccionado</span>
+                  </div>
+                </div>
+                <div class="ps-fotos-preview" id="ps-fotos-preview"></div>
+              </div>
 
               <p class="sticker-error" id="ps-crear-error" role="alert" hidden></p>
               <div class="sticker-form-actions">
@@ -599,6 +626,7 @@ export function initPuntosSolicitados(section, { getToken }) {
   const lngInput = section.querySelector('#ps-lng');
   const fotosInput = section.querySelector('#ps-fotos-input');
   const fotosPreview = section.querySelector('#ps-fotos-preview');
+  const fotosCaption = section.querySelector('#ps-fotos-caption');
   const comunaComboInput = section.querySelector('#ps-comuna-input');
   const comunaComboList = section.querySelector('#ps-comuna-list');
   const barrioComboInput = section.querySelector('#ps-barrio-input');
@@ -797,6 +825,7 @@ export function initPuntosSolicitados(section, { getToken }) {
     lngInput.value = '';
     fotosSeleccionadas = [];
     fotosPreview.innerHTML = '';
+    fotosCaption.textContent = 'Ningún archivo seleccionado';
     teardownCreateMap();
     barrioComboInput.disabled = true;
     barrioComboInput.placeholder = 'Elegí una comuna primero…';
@@ -855,17 +884,39 @@ export function initPuntosSolicitados(section, { getToken }) {
     }
   });
 
+  // Renders the caption/chips from `fotosSeleccionadas` (the source of
+  // truth once editing starts) — NOT from `fotosInput.files` (the native
+  // FileList), which can't have a single entry removed from it. The old
+  // code re-derived from `fotosInput.files` on every change, including the
+  // one it synthetically dispatched after a splice() — silently undoing
+  // the removal, so "quitar" never actually shrank the upload set.
+  function renderFotosPreview() {
+    const files = fotosSeleccionadas;
+    fotosCaption.textContent = files.length ? `${files.length}/${MAX_FOTOS} fotos seleccionadas` : 'Ningún archivo seleccionado';
+    fotosPreview.innerHTML = files.map((f, i) => `<span class="ps-foto-chip">${escapeHtml(f.name)} <button type="button" data-remove-foto="${i}" aria-label="Quitar">&times;</button></span>`).join('');
+    fotosPreview.querySelectorAll('[data-remove-foto]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        fotosSeleccionadas = removeFotoAt(fotosSeleccionadas, Number(btn.dataset.removeFoto));
+        renderFotosPreview();
+      });
+    });
+  }
+
+  // FIX (mid-upload removal doesn't cancel the in-flight upload): once the
+  // submit/upload flow starts, the already-captured File references in
+  // `fotosSeleccionadas` are what gets uploaded regardless of what the admin
+  // clicks — so lock both the picker and every "quitar" button for the
+  // duration, instead of letting the UI lie about what's still queued.
+  function setFotosLocked(locked) {
+    fotosInput.disabled = locked;
+    fotosPreview.querySelectorAll('[data-remove-foto]').forEach((btn) => { btn.disabled = locked; });
+  }
+
   fotosInput.addEventListener('change', () => {
     const files = Array.from(fotosInput.files || []).slice(0, MAX_FOTOS);
     if ((fotosInput.files || []).length > MAX_FOTOS) showToast(`Máximo ${MAX_FOTOS} fotos — se tomaron las primeras ${MAX_FOTOS}.`, 'error');
     fotosSeleccionadas = files;
-    fotosPreview.innerHTML = files.map((f, i) => `<span class="ps-foto-chip">${escapeHtml(f.name)} <button type="button" data-remove-foto="${i}" aria-label="Quitar">&times;</button></span>`).join('');
-    fotosPreview.querySelectorAll('[data-remove-foto]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        fotosSeleccionadas.splice(Number(btn.dataset.removeFoto), 1);
-        fotosInput.dispatchEvent(new Event('change'));
-      });
-    });
+    renderFotosPreview();
   });
 
   crearForm.addEventListener('submit', async (ev) => {
@@ -892,15 +943,18 @@ export function initPuntosSolicitados(section, { getToken }) {
     };
     crearSubmit.disabled = true;
     crearSubmit.textContent = 'Creando…';
+    setFotosLocked(true);
     let created;
     try {
       created = await apiCreate(getToken, body);
     } catch (err) {
-      // Nothing exists yet — same "form looks untouched" failure as before.
+      // Nothing exists yet — same "form looks untouched" failure as before,
+      // and the admin can still edit the fotos set before retrying.
       crearError.textContent = err.message;
       crearError.hidden = false;
       crearSubmit.disabled = false;
       crearSubmit.textContent = 'Crear punto';
+      setFotosLocked(false);
       return;
     }
     // The point now exists server-side. From here on, a failure must look
@@ -932,6 +986,7 @@ export function initPuntosSolicitados(section, { getToken }) {
       await load();
       crearSubmit.disabled = false;
       crearSubmit.textContent = 'Crear punto';
+      setFotosLocked(false);
     }
   });
 
