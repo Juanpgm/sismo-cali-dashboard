@@ -238,6 +238,29 @@ export function ordenarPorCercania(puntos, origen) {
   });
 }
 
+// puntos-solicitados, field-form-session delta: solicited points ("PRIORIDAD")
+// MUST render before every other assigned point. Stable partition — points
+// keep whatever relative order they already had (e.g. from
+// ordenarPorCercania) within their own group, so composing
+// solicitadosPrimero(ordenarPorCercania(puntos, origen)) keeps nearest-first
+// WITHIN each group while still putting the whole solicited group first.
+export function solicitadosPrimero(puntos) {
+  const lista = puntos || [];
+  return [...lista].sort((x, y) => (y && y.es_solicitado ? 1 : 0) - (x && x.es_solicitado ? 1 : 0));
+}
+
+// puntos-solicitados, field-form-session delta: a solicited point gets its
+// own "PRIORIDAD" badge instead of the alta/media/baja pill — it is a
+// different KIND of priority (admin-flagged special case), not another
+// severity level, so the two never render together for the same point.
+export function prioridadVisual(p) {
+  const esSolicitado = Boolean(p && p.es_solicitado);
+  return {
+    badge: esSolicitado,
+    pill: Boolean(p && p.prioridad) && !esSolicitado,
+  };
+}
+
 // Field-readable distance for a point card: null -> em dash (unavailable),
 // sub-km rounds to whole metres, 1 km and above uses one decimal with a
 // Spanish decimal comma (this app is Spanish-only).

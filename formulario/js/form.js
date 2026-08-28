@@ -13,7 +13,7 @@ import {
   siguienteDesdeMax, plegarConsecutivoGuardado, consecutivosExistentes,
   habitabilidadColor, colapsoLabel, mapsDirUrl,
   prioridadColor, elegirEnlaceEncuesta,
-  ordenarPorCercania, distanciaM, formatDistancia,
+  ordenarPorCercania, distanciaM, formatDistancia, solicitadosPrimero, prioridadVisual,
   etiquetaCampana, etiquetaAccionCercano, mensajeEstadoCercanos, cercanosMuestraLista,
   mensajeTomarPunto, mensajeErrorTomarPunto,
   CERCANOS_ESPERANDO, CERCANOS_SIN_GPS, CERCANOS_CARGANDO, CERCANOS_VACIO, CERCANOS_LISTO, CERCANOS_ERROR,
@@ -231,7 +231,9 @@ function mostrarFormulario() {
 // default the first time (state.tabAsigActiva starts null).
 function renderAsignaciones() {
   const stickersOrdenados = ordenarPorCercania(state.asignaciones, state.origenAsignaciones);
-  const planeacionOrdenados = ordenarPorCercania(state.puntosPlaneacion, state.origenAsignaciones);
+  // puntos-solicitados, field-form-session delta: solicited points ("PRIORIDAD")
+  // sort before every other point, keeping nearest-first within each group.
+  const planeacionOrdenados = solicitadosPrimero(ordenarPorCercania(state.puntosPlaneacion, state.origenAsignaciones));
 
   const cont = $('#asignaciones-lista');
   cont.innerHTML = '';
@@ -384,6 +386,17 @@ function buildPlaneacionCard(p, origen) {
 
   card.append(buildDistanciaLinea(p.coords, origen));
 
+  // Badge vs. pill decision is a pure function (formulario/js/logic.js,
+  // prioridadVisual) so it has real test coverage instead of only being
+  // exercised by eyeballing a deployed session.
+  const visual = prioridadVisual(p);
+  if (visual.badge) {
+    const badge = document.createElement('span');
+    badge.className = 'badge-prioridad';
+    badge.textContent = 'PRIORIDAD';
+    card.append(badge);
+  }
+
   const dir = document.createElement('h3');
   dir.className = 'asignacion-dir';
   dir.textContent = p.direccion || 'Dirección no registrada';
@@ -391,7 +404,7 @@ function buildPlaneacionCard(p, origen) {
 
   const pills = document.createElement('div');
   pills.className = 'asignacion-pills';
-  if (p.prioridad) {
+  if (visual.pill) {
     const pr = document.createElement('span');
     pr.className = 'pill';
     pr.style.background = prioridadColor(p.prioridad);

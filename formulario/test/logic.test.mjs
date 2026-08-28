@@ -8,7 +8,7 @@ import {
   plegarConsecutivoGuardado, siguienteDesdeMax, consecutivosExistentes,
   filtrarPendientes, habitabilidadColor, colapsoLabel, mapsDirUrl,
   elegirEnlaceEncuesta, prioridadColor,
-  distanciaM, ordenarPorCercania, formatDistancia,
+  distanciaM, ordenarPorCercania, formatDistancia, solicitadosPrimero, prioridadVisual,
   etiquetaCampana, etiquetaAccionCercano, mensajeEstadoCercanos, cercanosMuestraLista,
   mensajeTomarPunto, mensajeErrorTomarPunto,
   CERCANOS_ESPERANDO, CERCANOS_SIN_GPS, CERCANOS_CARGANDO, CERCANOS_VACIO, CERCANOS_LISTO, CERCANOS_ERROR,
@@ -398,6 +398,53 @@ test('ordenarPorCercania sin origen (GPS denegado) devuelve la lista sin reorden
 
 test('ordenarPorCercania con lista nula devuelve lista vacia', () => {
   assert.deepEqual(ordenarPorCercania(null, { lat: 1, lng: 1 }), []);
+});
+
+// ---- solicitadosPrimero (puntos-solicitados: PRIORIDAD sort) -----------------
+
+test('solicitadosPrimero ordena los puntos solicitados antes que el resto, preservando el orden relativo', () => {
+  const a = { id: 'a', es_solicitado: false };
+  const b = { id: 'b', es_solicitado: true };
+  const c = { id: 'c', es_solicitado: false };
+  const d = { id: 'd', es_solicitado: true };
+  const out = solicitadosPrimero([a, b, c, d]);
+  assert.deepEqual(out.map((p) => p.id), ['b', 'd', 'a', 'c']);
+});
+
+test('solicitadosPrimero sin puntos solicitados no altera el orden (fallback)', () => {
+  const a = { id: 'a', es_solicitado: false };
+  const b = { id: 'b' }; // sin el campo = no solicitado
+  const c = { id: 'c', es_solicitado: false };
+  const out = solicitadosPrimero([a, b, c]);
+  assert.deepEqual(out.map((p) => p.id), ['a', 'b', 'c']);
+});
+
+test('solicitadosPrimero con lista nula devuelve lista vacia', () => {
+  assert.deepEqual(solicitadosPrimero(null), []);
+});
+
+// ---- prioridadVisual (puntos-solicitados: badge vs. pill decision) --------------
+
+test('prioridadVisual: punto solicitado muestra badge y suprime el pill, aunque tenga prioridad', () => {
+  const out = prioridadVisual({ es_solicitado: true, prioridad: 'alta' });
+  assert.deepEqual(out, { badge: true, pill: false });
+});
+
+test('prioridadVisual: punto normal con prioridad muestra el pill, no el badge', () => {
+  const out = prioridadVisual({ es_solicitado: false, prioridad: 'media' });
+  assert.deepEqual(out, { badge: false, pill: true });
+});
+
+test('prioridadVisual: punto normal sin prioridad no muestra ni badge ni pill', () => {
+  assert.deepEqual(prioridadVisual({ es_solicitado: false }), { badge: false, pill: false });
+});
+
+test('prioridadVisual: punto sin el campo es_solicitado se trata como no solicitado', () => {
+  assert.deepEqual(prioridadVisual({ prioridad: 'baja' }), { badge: false, pill: true });
+});
+
+test('prioridadVisual: entrada nula no revienta', () => {
+  assert.deepEqual(prioridadVisual(null), { badge: false, pill: false });
 });
 
 // ---- formatDistancia ------------------------------------------------------------
