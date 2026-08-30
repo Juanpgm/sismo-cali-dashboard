@@ -199,6 +199,9 @@ a { color: var(--accent); }
   color: var(--text-secondary);
   font-size: 0.85rem;
   margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .event-badge {
@@ -1406,10 +1409,16 @@ td { padding: 10px 14px; vertical-align: top; color: var(--text-primary); max-wi
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
 }
+.view-tabs::-webkit-scrollbar { display: none; }
 
 .view-tab {
   appearance: none;
+  flex-shrink: 0;
   border: 0;
   background: transparent;
   color: var(--text-secondary);
@@ -1425,6 +1434,37 @@ td { padding: 10px 14px; vertical-align: top; color: var(--text-primary); max-wi
   background: var(--accent);
   color: var(--accent-ink);
 }
+
+/* Mobile simplified tab bar: on phones, default to showing only the
+   visualization tabs (Panel, Analista) and hide the operational ones behind a
+   toggle button (see initMobileTabs in main.js). Pure decluttering default —
+   the role-gating rules below still win via !important, so this never reveals a
+   tab a role can't see. `.is-expanded` (set by the toggle) shows the full set. */
+.view-tabs-toggle {
+  display: none;
+  appearance: none;
+  border: 0;
+  background: var(--surface-2);
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 0.9rem;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+@media (max-width: 640px) {
+  .view-tabs-toggle { display: inline-flex; align-items: center; }
+  .view-tabs:not(.is-expanded) .view-tab[data-view="acciones"],
+  .view-tabs:not(.is-expanded) .view-tab[data-view="stickers"],
+  .view-tabs:not(.is-expanded) .view-tab[data-view="planeacion"],
+  .view-tabs:not(.is-expanded) .view-tab[data-view="puntos-solicitados"],
+  .view-tabs:not(.is-expanded) .view-tab[data-view="usuarios"] { display: none; }
+}
+/* Only admins have operational tabs to reveal, so non-admins never see the
+   toggle (they only ever have Panel). */
+body:not([data-role="admin"]) .view-tabs-toggle { display: none !important; }
 
 /* Collapse the filters sidebar when the Assignments view is active. */
 .app-shell.asig-active { grid-template-columns: 1fr; }
@@ -2130,7 +2170,7 @@ details[open] > summary.card-title::before { transform: rotate(90deg); }
 
 /* ---- Planeación tab (planeacion-asignaciones change, Phase 4) ----------
    Reuses .kpi-row/.kpi-tile, .card/.card-toolbar, .asignacion-workspace/
-   -main/-aside/-map*/-chip/-combo*/-cuadrilla*, .sticker-*, .table-scroll,
+   -main/-aside/-map/-chip/-combo/-cuadrilla, .sticker-*, .table-scroll,
    .eval-pill and .modal* as-is (design.md ADR-10, task 4.9's own precedent
    of reusing rather than duplicating). Only what genuinely differs gets a
    `.planeacion-*` class below. */
@@ -2150,7 +2190,7 @@ details[open] > summary.card-title::before { transform: rotate(90deg); }
 
 /* ---- Puntos Solicitados tab (puntos-solicitados change, Phase 4) --------
    Reuses .kpi-row/.kpi-tile, .card/.card-toolbar, .eval-workspace/-map/
-   -aside/-list/-row/-dot/-pill/-meta, .sticker-*/.modal*/.detail-* as-is
+   -aside/-list/-row/-dot/-pill/-meta, .sticker-, .modal, .detail- as-is
    (same precedent as the Planeación block above: reuse, don't duplicate).
    Estado colouring is inline (--kpi-accent/--eval-pill), deliberately its
    own palette — never the ATC-20 ramp or the alta/media/baja pill scheme.

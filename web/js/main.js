@@ -219,6 +219,9 @@ function switchView(view) {
     btn.classList.toggle('is-active', active);
     btn.setAttribute('aria-selected', String(active));
   });
+  // Keep the active tab visible in the horizontally-scrollable tab bar on mobile.
+  const activeTab = document.querySelector('.view-tab.is-active');
+  if (activeTab) activeTab.scrollIntoView({ inline: 'nearest', block: 'nearest', behavior: 'smooth' });
   document.querySelectorAll('[data-view-panel]').forEach((panel) => {
     panel.hidden = panel.dataset.viewPanel !== view;
   });
@@ -262,6 +265,29 @@ function wireViewTabs() {
   document.querySelectorAll('.view-tab').forEach((btn) => {
     btn.addEventListener('click', () => switchView(btn.dataset.view));
   });
+  initMobileTabs();
+}
+
+// Mobile decluttering: on phones the tab bar defaults to showing only the
+// visualization tabs (Panel/Analista) via CSS; a toggle button reveals the
+// operational tabs on demand. Choice persists per session (resets on reload).
+// This is a presentation default only — role-gating still governs real access.
+function initMobileTabs() {
+  const nav = document.querySelector('.view-tabs');
+  if (!nav || nav.querySelector('.view-tabs-toggle')) return;
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'view-tabs-toggle';
+  const apply = (expanded) => {
+    nav.classList.toggle('is-expanded', expanded);
+    toggle.textContent = expanded ? 'Menos' : 'Más funciones';
+    toggle.setAttribute('aria-expanded', String(expanded));
+    sessionStorage.setItem('mobileTabsExpanded', expanded ? '1' : '0');
+  };
+  toggle.addEventListener('click', () => apply(!nav.classList.contains('is-expanded')));
+  nav.appendChild(toggle);
+  // Default collapsed (simplified) per session; restore an explicit expand.
+  apply(sessionStorage.getItem('mobileTabsExpanded') === '1');
 }
 
 async function loadAndRender({ isRefresh = false, bust = false } = {}) {
