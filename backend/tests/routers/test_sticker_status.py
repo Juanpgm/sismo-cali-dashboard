@@ -118,6 +118,30 @@ def test_unauthenticated_is_rejected(monkeypatch):
     assert resp.status_code == 401
 
 
+def test_firestore_exception_becomes_502_not_a_bare_crash(monkeypatch):
+    """A 429/ResourceExhausted (or any other) Firestore exception must
+    surface as a normal HTTPException (502, CORS headers intact) — not
+    propagate unhandled into a bare 500 that Starlette's default error
+    handler serves with NO CORS headers, which the browser then
+    misreports as "blocked by CORS policy" instead of the real cause."""
+    calls: list[int] = []
+    app = _app(monkeypatch, calls)
+    app.dependency_overrides[current_claims] = lambda: FAKE_CLAIMS_VIEWER
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    from app.routers import sticker_status as sticker_status_module
+
+    monkeypatch.setattr(sticker_status_module, "_read_coverage", lambda db: boom())
+    client = TestClient(app)
+
+    resp = client.get("/sticker-status")
+
+    assert resp.status_code == 502
+    assert "Quota exceeded" in resp.json()["detail"]
+
+
 def test_cached_response_served_without_new_firestore_read(monkeypatch):
     calls: list[int] = []
     app = _app(monkeypatch, calls)

@@ -23,7 +23,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.auth.deps import require_auth
@@ -83,5 +83,16 @@ def get_sticker_status(
     claims: dict[str, Any] = Depends(require_auth),
 ) -> JSONResponse:
     cache: StickerStatusCache = request.app.state.sticker_status_cache
-    payload = cache.get_or_fetch(lambda: _read_coverage(credentials.sismo().firestore))
+    try:
+        payload = cache.get_or_fetch(lambda: _read_coverage(credentials.sismo().firestore))
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - fail-open surface, mirrors
+        # planeacion_asignaciones.py's own catch-all: an uncaught Firestore
+        # exception here (e.g. a 429 quota error) was previously reaching
+        # Starlette's default error handler as a bare 500 with NO CORS
+        # headers attached, which the browser then reports as a misleading
+        # "blocked by CORS policy" / "Failed to fetch" instead of the real
+        # cause. A normal HTTPException always carries CORS headers.
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return JSONResponse({"ok": True, **payload})

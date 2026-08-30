@@ -389,5 +389,16 @@ def get_evaluaciones(
     a 5-min TTL cache on app.state. Reuses `list_evaluaciones` verbatim."""
     cache: EvaluacionesCache = request.app.state.stickers_evaluaciones_cache
     db = credentials.sismo().firestore
-    evaluaciones = cache.get_or_fetch(lambda: list_evaluaciones(db))
+    try:
+        evaluaciones = cache.get_or_fetch(lambda: list_evaluaciones(db))
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - fail-open surface, mirrors
+        # planeacion_asignaciones.py's own catch-all: an uncaught Firestore
+        # exception here (e.g. a 429 quota error) was previously reaching
+        # Starlette's default error handler as a bare 500 with NO CORS
+        # headers attached, which the browser then reports as a misleading
+        # "blocked by CORS policy" / "Failed to fetch" instead of the real
+        # cause. A normal HTTPException always carries CORS headers.
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return JSONResponse({"ok": True, "evaluaciones": evaluaciones})

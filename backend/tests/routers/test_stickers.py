@@ -441,6 +441,26 @@ def test_get_evaluaciones_is_cached_across_consecutive_calls(monkeypatch):
     assert calls["n"] == 1  # TTL cache serves the second call without refetching
 
 
+def test_get_evaluaciones_firestore_exception_becomes_502_not_a_bare_crash(monkeypatch):
+    """A 429/ResourceExhausted (or any other) Firestore exception must
+    surface as a normal HTTPException (502, CORS headers intact) — not
+    propagate unhandled into a bare 500 that Starlette's default error
+    handler serves with NO CORS headers, which the browser then
+    misreports as "blocked by CORS policy" instead of the real cause."""
+    fake_auth = _FakeAuth()
+    client = _admin_client(monkeypatch, fake_auth)
+
+    def boom(db):
+        raise RuntimeError("429 Quota exceeded.")
+
+    monkeypatch.setattr(stickers, "list_evaluaciones", boom)
+
+    resp = client.get("/evaluaciones")
+
+    assert resp.status_code == 502
+    assert "Quota exceeded" in resp.json()["detail"]
+
+
 def test_get_evaluaciones_non_admin_is_403(monkeypatch):
     fake_auth = _FakeAuth()
     client = _viewer_client(monkeypatch, fake_auth)
