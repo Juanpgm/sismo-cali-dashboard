@@ -719,6 +719,92 @@ def test_read_last_run_returns_none_when_no_run_has_ever_completed():
     assert job.read_last_run(db) is None
 
 
+# ── read_punto_state: batched getAll, throttled between chunks (30-ago-2026,
+# a burst of ~30 back-to-back get_all() calls over the full ~14.8k-doc
+# collection was tripping Firestore's per-project read-RATE quota) ─────────
+
+
+class _FakePuntoSnap:
+    def __init__(self, doc_id, data):
+        self.id = doc_id
+        self._data = data
+        self.exists = data is not None
+
+    def to_dict(self):
+        return self._data
+
+
+class _FakePuntoRef:
+    def __init__(self, doc_id):
+        self.id = doc_id
+
+
+class _FakePuntoCollection:
+    def document(self, doc_id):
+        return _FakePuntoRef(doc_id)
+
+
+class _FakePuntoDb:
+    """Records every get_all() call's ref count, so the test can assert the
+    chunking (BATCH_SIZE) and throttle (sleep between, never before/after)
+    without a real Firestore client."""
+
+    def __init__(self, known_ids):
+        self._known_ids = set(known_ids)
+        self.get_all_calls: list[int] = []  # ref count per call
+
+    def collection(self, name):
+        return _FakePuntoCollection()
+
+    def get_all(self, refs, field_paths=None):
+        self.get_all_calls.append(len(refs))
+        return [
+            _FakePuntoSnap(
+                ref.id,
+                {"tiene_survey": True, "clave_integracion": f"k-{ref.id}", "estado_asignacion": "pendiente"}
+                if ref.id in self._known_ids
+                else None,
+            )
+            for ref in refs
+        ]
+
+
+def test_read_punto_state_chunks_at_batch_size_and_merges_all_results(monkeypatch):
+    monkeypatch.setattr(job, "BATCH_READ_THROTTLE_S", 0)  # keep the test instant
+    doc_ids = [f"id-{i}" for i in range(job.BATCH_SIZE + 1)]  # forces exactly 2 chunks
+    db = _FakePuntoDb(known_ids=doc_ids[:1])
+
+    result = job.read_punto_state(db, doc_ids)
+
+    assert db.get_all_calls == [job.BATCH_SIZE, 1]  # chunked, not one giant call
+    assert len(result) == len(doc_ids)
+    assert result["id-0"]["exists"] is True
+    assert result["id-0"]["tiene_survey"] is True
+    assert result[f"id-{job.BATCH_SIZE}"]["exists"] is False
+
+
+def test_read_punto_state_sleeps_between_chunks_but_not_before_the_first_or_after_the_last(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(job.time, "sleep", lambda s: sleeps.append(s))
+    monkeypatch.setattr(job, "BATCH_READ_THROTTLE_S", 0.15)
+    doc_ids = [f"id-{i}" for i in range(job.BATCH_SIZE * 3)]  # 3 chunks -> 2 gaps
+    db = _FakePuntoDb(known_ids=[])
+
+    job.read_punto_state(db, doc_ids)
+
+    assert sleeps == [0.15, 0.15]
+
+
+def test_read_punto_state_single_chunk_never_sleeps(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(job.time, "sleep", lambda s: sleeps.append(s))
+    db = _FakePuntoDb(known_ids=[])
+
+    job.read_punto_state(db, ["id-0", "id-1"])
+
+    assert sleeps == []
+
+
 # ── main() argv shim — --top/--dry/--full forwarded as kwargs ──────────────
 
 

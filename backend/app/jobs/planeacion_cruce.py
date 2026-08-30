@@ -154,6 +154,7 @@ import logging
 import os
 import re
 import sys
+import time
 import traceback
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
@@ -191,6 +192,17 @@ from app.jobs.cruce_sticker import EVALUACIONES_COLLECTION  # noqa: E402
 
 STATE_DOC = "_meta/planeacion_cruce_state"  # {"last_run_at": Timestamp} — incremental watermark
 BATCH_SIZE = 500  # Firestore batch-write / getAll chunk limit
+# `read_punto_state` fires one get_all() per BATCH_SIZE chunk. Over the full
+# ~14.8k-doc planeacion_puntos collection that is ~30 chunks — with zero
+# delay between them (as it was before), those land back-to-back in a
+# tight burst that can trip Firestore's per-project READ RATE quota (a
+# request-rate safety limit Google applies regardless of Spark/Blaze
+# billing — separate from Spark's daily-volume cap). This is especially
+# likely right after a fresh process start, when it can overlap with
+# `PlaneacionPuntosSnapshot._full_load`'s own one-time full read. A small
+# inter-chunk pause spreads the burst out; 0 in tests (BATCH_READ_THROTTLE_S
+# is monkeypatchable) since fixtures never exercise more than one chunk.
+BATCH_READ_THROTTLE_S = 0.15
 
 FUENTE = "atencionsismo"
 KEY_PREFIX = "PLN"
@@ -982,7 +994,10 @@ def read_punto_state(db, doc_ids: list[str]) -> dict:
     `-> 'hecho'` transition, and this is the cheapest place to read it."""
     col = db.collection(PLANEACION_PUNTOS_COLLECTION)
     out: dict[str, dict] = {}
-    for start in range(0, len(doc_ids), BATCH_SIZE):
+    starts = range(0, len(doc_ids), BATCH_SIZE)
+    for i, start in enumerate(starts):
+        if i > 0 and BATCH_READ_THROTTLE_S:
+            time.sleep(BATCH_READ_THROTTLE_S)
         chunk = doc_ids[start:start + BATCH_SIZE]
         refs = [col.document(did) for did in chunk]
         for snap in db.get_all(refs, field_paths=["tiene_survey", "clave_integracion",
