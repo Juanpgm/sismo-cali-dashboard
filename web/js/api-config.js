@@ -28,6 +28,10 @@ export const API_CONFIG = {
   stickerStatus: `${RAILWAY_BASE_URL}/sticker-status`,
   refresh: '/api/refresh',
   stickers: '/api/stickers',
+  // Evaluaciones ATC-20 list — moved off the Vercel /api/stickers
+  // {action:'evaluaciones'} full read onto the cached Railway route
+  // (backend/app/routers/stickers.py GET /evaluaciones), 5-min TTL.
+  evaluaciones: `${RAILWAY_BASE_URL}/evaluaciones`,
   stickerAsignaciones: '/api/sticker-asignaciones',
   usuarios: '/api/usuarios',
   sourceStatus: `${RAILWAY_BASE_URL}/source-status`,

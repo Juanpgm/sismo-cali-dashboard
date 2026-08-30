@@ -30,10 +30,11 @@ Two Firebase surfaces, both memoized/named per ADR-4:
 from __future__ import annotations
 
 import re
+import time
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from firebase_admin import auth as fb_auth
 from pydantic import BaseModel
@@ -57,6 +58,30 @@ CODIGO_MAX = 999
 
 _CEDULA_RE = re.compile(r"^\d{5,12}$")
 _CODIGO_RE = re.compile(r"^\d{3}$")
+
+EVALUACIONES_CACHE_TTL_SECONDS = 5 * 60
+
+
+class EvaluacionesCache:
+    """Process-lifetime 5-min TTL cache for the flattened evaluaciones list —
+    same app.state / test-isolated pattern as sticker_status.py's
+    StickerStatusCache. The dashboard's Evaluaciones tab reads this on every
+    open AND on a 5-min poll while visible; caching collapses that to at most
+    one full `evaluaciones` collection read per TTL window per process."""
+
+    def __init__(self) -> None:
+        self._at: float | None = None
+        self._payload: list[dict[str, Any]] | None = None
+
+    def get_or_fetch(self, fetch: Any) -> list[dict[str, Any]]:
+        now = time.monotonic()
+        stale = self._payload is None or self._at is None or (now - self._at) > EVALUACIONES_CACHE_TTL_SECONDS
+        if stale:
+            self._payload = fetch()
+            self._at = now
+        assert self._payload is not None
+        return self._payload
+
 
 router = APIRouter()
 
@@ -351,3 +376,18 @@ def stickers(
         # Surface Firebase's own messages (e.g. email-already-exists) to the
         # admin, same 502 fallback api/stickers.js's catch-all used.
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/evaluaciones")
+def get_evaluaciones(
+    request: Request,
+    claims: dict[str, Any] = Depends(require_role("admin")),
+) -> JSONResponse:
+    """Cached read of the flattened ATC-20 evaluaciones list (dashboard
+    Evaluaciones tab). Replaces the legacy Vercel `POST /api/stickers
+    {action:'evaluaciones'}` full-collection read on every tab open/poll with
+    a 5-min TTL cache on app.state. Reuses `list_evaluaciones` verbatim."""
+    cache: EvaluacionesCache = request.app.state.stickers_evaluaciones_cache
+    db = credentials.sismo().firestore
+    evaluaciones = cache.get_or_fetch(lambda: list_evaluaciones(db))
+    return JSONResponse({"ok": True, "evaluaciones": evaluaciones})

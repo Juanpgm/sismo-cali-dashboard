@@ -415,6 +415,41 @@ def test_admin_set_enabled_flips_auth_and_firestore(monkeypatch):
     assert stores["inspectores"]["uid-1"]["activo"] is False
 
 
+def test_get_evaluaciones_is_cached_across_consecutive_calls(monkeypatch):
+    fake_auth = _FakeAuth()
+    stores = {
+        "inspectores": {},
+        "evaluaciones": {"ev-1": {"codigo_edificacion": "76001-1-0010001"}},
+    }
+    client = _admin_client(monkeypatch, fake_auth, stores)
+
+    calls = {"n": 0}
+    original = stickers.list_evaluaciones
+
+    def counting_stub(db):
+        calls["n"] += 1
+        return original(db)
+
+    monkeypatch.setattr(stickers, "list_evaluaciones", counting_stub)
+
+    resp1 = client.get("/evaluaciones")
+    resp2 = client.get("/evaluaciones")
+
+    assert resp1.status_code == 200
+    assert resp2.status_code == 200
+    assert resp1.json() == resp2.json()
+    assert calls["n"] == 1  # TTL cache serves the second call without refetching
+
+
+def test_get_evaluaciones_non_admin_is_403(monkeypatch):
+    fake_auth = _FakeAuth()
+    client = _viewer_client(monkeypatch, fake_auth)
+
+    resp = client.get("/evaluaciones")
+
+    assert resp.status_code == 403
+
+
 def test_unrecognized_action_is_rejected(monkeypatch):
     fake_auth = _FakeAuth()
     client = _admin_client(monkeypatch, fake_auth)

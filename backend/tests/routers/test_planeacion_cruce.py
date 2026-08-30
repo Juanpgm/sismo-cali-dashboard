@@ -157,6 +157,7 @@ def _stub_sismo(monkeypatch) -> None:
 def test_status_reports_not_running_and_no_prior_run(monkeypatch):
     _stub_sismo(monkeypatch)
     monkeypatch.setattr(planeacion_cruce, "read_last_run", lambda db: None)
+    monkeypatch.setattr(planeacion_cruce, "read_last_checked", lambda db: None)
     client = _admin_client(monkeypatch)
 
     resp = client.get("/planeacion-cruce/status")
@@ -171,6 +172,7 @@ def test_status_reports_the_last_run_summary(monkeypatch):
     last_run = {"total_puntos": 100, "a_escribir": 5, "full": False, "finished_at": "2026-08-27T00:00:00+00:00"}
     _stub_sismo(monkeypatch)
     monkeypatch.setattr(planeacion_cruce, "read_last_run", lambda db: last_run)
+    monkeypatch.setattr(planeacion_cruce, "read_last_checked", lambda db: None)
     client = _admin_client(monkeypatch)
 
     resp = client.get("/planeacion-cruce/status")
@@ -182,6 +184,7 @@ def test_status_reports_the_last_run_summary(monkeypatch):
 def test_status_reports_running_true_while_the_lock_is_held(monkeypatch):
     _stub_sismo(monkeypatch)
     monkeypatch.setattr(planeacion_cruce, "read_last_run", lambda db: None)
+    monkeypatch.setattr(planeacion_cruce, "read_last_checked", lambda db: None)
     client = _admin_client(monkeypatch)
 
     acquired = planeacion_cruce._lock.acquire(blocking=False)
@@ -191,3 +194,21 @@ def test_status_reports_running_true_while_the_lock_is_held(monkeypatch):
         assert resp.json()["running"] is True
     finally:
         planeacion_cruce._lock.release()
+
+
+def test_status_surfaces_last_checked_at_from_a_noop_run(monkeypatch):
+    """`last_checked_at` advances on a no-op (gated) run even when
+    `last_run` is still `None` — proves the endpoint shows the job is
+    alive during a quiet period, not just after a run that did real work."""
+    _stub_sismo(monkeypatch)
+    monkeypatch.setattr(planeacion_cruce, "read_last_run", lambda db: None)
+    monkeypatch.setattr(planeacion_cruce, "read_last_checked",
+                        lambda db: "2026-08-29T00:00:00+00:00")
+    client = _admin_client(monkeypatch)
+
+    resp = client.get("/planeacion-cruce/status")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["last_run"] is None
+    assert body["last_checked_at"] == "2026-08-29T00:00:00+00:00"

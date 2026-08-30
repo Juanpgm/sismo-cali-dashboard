@@ -455,11 +455,14 @@ def _marcar_hecho_planeacion(db: Any, uid: str, punto_id: str) -> dict[str, Any]
         raise HTTPException(
             status_code=403, detail="Ese punto no está asignado a este inspector."
         )
+    from google.cloud import firestore as _fs
+
     ref.set(
         {
             "estado_asignacion": DONE_ESTADO,
             "completado_por": uid,
             "completado_en": datetime.now(timezone.utc),
+            "actualizado_en": _fs.SERVER_TIMESTAMP,
         },
         merge=True,
     )
@@ -502,12 +505,15 @@ def _marcar_survey_hecho(db: Any, uid: str, punto_id: str) -> dict[str, Any]:
             status_code=403, detail="Ese punto no está asignado a este inspector."
         )
 
+    from google.cloud import firestore as _fs
+
     now = datetime.now(timezone.utc)
     ref.set(
         {
             "estado_asignacion": DONE_ESTADO,
             "completado_por": uid,
             "completado_en": now,
+            "actualizado_en": _fs.SERVER_TIMESTAMP,
         },
         merge=True,
     )
@@ -762,11 +768,19 @@ def _tomar_punto(db: Any, uid: str, punto_id: str, campana: str) -> dict[str, An
             if gemelo_snap.exists and _disponible(gemelo_snap.to_dict() or {}, otra_campana):
                 gemelo_id = gemelo_snap.id
 
+        from google.cloud import firestore as _fs
+
         now = datetime.now(timezone.utc)
         campos = {
             "inspector_uid": uid,
             "asignado_en": now,
             "estado_asignacion": "asignado",
+            # Speed follow-up: stamped unconditionally even though `ref`/
+            # `gemelo_ref` may land on a sticker_matches doc in this
+            # cross-campaign claim — an extra unused field there is
+            # harmless, and this is the only write shared by both
+            # collections in this transaction.
+            "actualizado_en": _fs.SERVER_TIMESTAMP,
         }
         transaction.set(ref, campos, merge=True)
         asignados = {campana: punto_id}
@@ -791,6 +805,16 @@ def _clear_planeacion_cache(request: Request) -> None:
     try/except-swallow shape `planeacion_cruce.py`'s own post-run clear
     uses: a cache-clear failure must never surface as if the actual write
     (already committed) had failed."""
+    # Stage 2: also best-effort mark the in-process planeacion_puntos
+    # snapshot dirty, so an inspector's own claim/completion shows up in the
+    # admin board on its next read instead of waiting for the snapshot's TTL.
+    snapshot = getattr(request.app.state, "planeacion_puntos_snapshot", None)
+    if snapshot is not None:
+        try:
+            snapshot.mark_dirty()
+        except Exception:  # noqa: BLE001 - best-effort
+            pass
+
     cache = getattr(request.app.state, "planeacion_aggregates_cache", None)
     if cache is None:
         return

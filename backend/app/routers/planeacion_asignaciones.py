@@ -21,16 +21,18 @@ the SOLE module allowlisted for `PLANEACION_CUADRILLAS_COLLECTION`.
 ## Scale (ADR-9) — this is NOT the sticker template's "load everything"
 
 `planeacion_puntos` holds ~14.8k documents (roughly an order of magnitude
-more than the sticker campaign's own lean collection). `listPuntos` is
-therefore a BOUNDED, INDEXED query (`LIMIT_DEFAULT`/`LIMIT_MAX`), never a
-full-collection read, and `resumen` returns aggregate tallies instead of
-the working set. `resumen`'s tallies are computed by one bounded read of
-`planeacion_puntos` aggregated in Python, not a true Firestore `count()`
-aggregation query — a deliberate simplification for testability against
-this repo's own fake-Firestore-double test convention (design.md ADR-9
-allows `count()` aggregation "where possible", not as a hard requirement);
-flagged in this change's apply-progress.md as a follow-up if per-request
-read cost ever becomes a concern at the full ~14.8k scale.
+more than the sticker campaign's own lean collection). `resumen` returns
+aggregate tallies instead of the working set.
+
+**Stage 2 speed follow-up:** `listPuntos`/`resumen`/`metricas_progreso` no
+longer each run their own bounded/live Firestore query against
+`planeacion_puntos` — they all read `PlaneacionPuntosSnapshot`
+(`app.state.planeacion_puntos_snapshot`), an in-process working copy that
+pays ONE full projected collection read per process lifetime, then stays
+fresh via bounded delta queries on the indexed `actualizado_en` field
+(stamped on every write by `_with_actualizado()`, stage 1). `truncado` is
+therefore now an EXACT computation over the complete in-memory set, not an
+over-fetch heuristic. See `PlaneacionPuntosSnapshot`'s own docstring.
 
 ## `estado_asignacion` ownership — ONE pipeline exception, ONE admin
 ## counterpart (binding user decisions, 2026-08-26)
@@ -244,8 +246,9 @@ import json
 import logging
 import math
 import re
+import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Any, Callable
 
@@ -579,6 +582,14 @@ def _doc_to_dict(doc: Any, *, with_id: bool = True) -> dict[str, Any]:
     return {"id": doc.id, **data} if with_id else data
 
 
+def _with_actualizado(fields: dict[str, Any]) -> dict[str, Any]:
+    """Speed follow-up: stamp actualizado_en (SERVER_TIMESTAMP) onto every
+    planeacion_puntos write payload so the in-process snapshot's delta query
+    can find admin-changed docs. Deferred firestore import per module convention."""
+    from google.cloud import firestore as _fs
+    return {**fields, "actualizado_en": _fs.SERVER_TIMESTAMP}
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -606,9 +617,9 @@ class PlaneacionAggregatesCache:
     module-level dict."""
 
     def __init__(self) -> None:
-        self._entries: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._entries: dict[str, tuple[float, Any]] = {}
 
-    def get_or_fetch(self, key: str, fetch: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    def get_or_fetch(self, key: str, fetch: Callable[[], Any]) -> Any:
         now = time.monotonic()
         cached = self._entries.get(key)
         if cached is not None and (now - cached[0]) <= CACHE_TTL_SECONDS:
@@ -623,61 +634,144 @@ class PlaneacionAggregatesCache:
         stale tallies after their own change."""
         self._entries.clear()
 
+    def invalidate_after_mutation(self) -> None:
+        """Post-mutation invalidation (speed follow-up 2026-08-29): drop ONLY
+        the mutation-sensitive keys — `assignedPuntos` and every
+        `listPuntos:*` raw-page entry — so the table stays correct
+        immediately after an admin's own change. `resumen`/`metricasProgreso`
+        deliberately keep serving their TTL-cached aggregate for up to
+        CACHE_TTL_SECONDS: a <=5-min-stale KPI tile is acceptable, and busting
+        them on every mutation was the bulk of the redundant full-collection
+        reads this change removes."""
+        self._entries.pop("assignedPuntos", None)
+        for key in [k for k in self._entries if k.startswith("listPuntos:")]:
+            self._entries.pop(key, None)
+
+
+# ---- In-process planeacion_puntos snapshot (stage 2 speed follow-up) ------
+#
+# Stage 1 stamped `actualizado_en` (SERVER_TIMESTAMP) onto every
+# `planeacion_puntos` write. This stage spends that stamp: one full
+# projected collection read per process lifetime, then bounded delta
+# queries (`actualizado_en > watermark`) to stay fresh — instead of
+# `list_puntos`/`resumen`/`metricas_progreso` each re-scanning the whole
+# ~14.8k-doc collection on their own TTL/cache schedules.
+DELTA_OVERLAP_SECONDS = 60
+SNAPSHOT_FIELDS: tuple[str, ...] = PUNTOS_LIST_FIELDS + ("dup_grupo_id", "registro_id", "actualizado_en")
+
+# Fallback watermark for a full load where NOT ONE doc carries
+# `actualizado_en` yet (a fresh collection, or one that predates stage 1).
+# Deliberately the epoch, not "now": the very next write's SERVER_TIMESTAMP
+# must compare greater than the watermark for the delta query to find it.
+# `_now()` (real wall-clock) would look correct against production Firestore
+# timestamps, but this repo's own test fake resolves SERVER_TIMESTAMP against
+# a fixed synthetic clock (`_FAKE_TS_BASE`, see test module) that can sit
+# BEFORE real wall-clock "now" — an epoch floor is correct under both clocks.
+_WATERMARK_FLOOR = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+class PlaneacionPuntosSnapshot:
+    """In-process working copy of `planeacion_puntos`. Pays ONE full
+    projected read per process lifetime (`_full_load`); after that, only
+    bounded delta queries on the indexed `actualizado_en` field
+    (`_delta`) — a single-field inequality, auto-indexed by Firestore by
+    default, so this never needs a composite index.
+
+    Thread-safe: FastAPI runs these sync endpoints in a worker threadpool,
+    so `docs()`/`mark_dirty()`/`remove()` can race across requests.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._docs: dict[str, dict[str, Any]] | None = None
+        self._watermark: datetime | None = None
+        self._last_refresh: float = 0.0
+        self._dirty: bool = False
+
+    def _full_load(self, db: Any) -> None:
+        watermark: datetime | None = None
+        new_docs: dict[str, dict[str, Any]] = {}
+        query = db.collection(PLANEACION_PUNTOS_COLLECTION).select(list(SNAPSHOT_FIELDS))
+        for d in query.get():
+            raw = d.to_dict() or {}
+            ts = raw.get("actualizado_en")
+            if isinstance(ts, datetime) and (watermark is None or ts > watermark):
+                watermark = ts
+            new_docs[d.id] = _doc_to_dict(d)
+        self._docs = new_docs
+        self._watermark = watermark or _WATERMARK_FLOOR
+        self._last_refresh = time.monotonic()
+        self._dirty = False
+
+    def _delta(self, db: Any) -> None:
+        assert self._docs is not None and self._watermark is not None
+        cutoff = self._watermark - timedelta(seconds=DELTA_OVERLAP_SECONDS)
+        # Single indexed inequality (`actualizado_en > cutoff`) — no
+        # composite index needed, unlike a query mixing an inequality with
+        # an `order_by` on a different field.
+        query = (
+            db.collection(PLANEACION_PUNTOS_COLLECTION)
+            .where("actualizado_en", ">", cutoff)
+            .select(list(SNAPSHOT_FIELDS))
+        )
+        for d in query.get():
+            raw = d.to_dict() or {}
+            ts = raw.get("actualizado_en")
+            if isinstance(ts, datetime) and ts > self._watermark:
+                self._watermark = ts
+            self._docs[d.id] = _doc_to_dict(d)
+        self._last_refresh = time.monotonic()
+        self._dirty = False
+
+    def _ensure_fresh_locked(self, db: Any) -> None:
+        if self._docs is None:
+            self._full_load(db)
+        elif self._dirty or (time.monotonic() - self._last_refresh) > CACHE_TTL_SECONDS:
+            self._delta(db)
+
+    def docs(self, db: Any) -> list[dict[str, Any]]:
+        # ponytail: single global lock held across the Firestore refresh
+        # I/O; fine because refresh is at most once per TTL (5 min) or after
+        # a mutation, and between refreshes docs() only does a cheap dict
+        # copy under the lock. Per-collection sharding only if this ever
+        # shows up in a profile.
+        with self._lock:
+            self._ensure_fresh_locked(db)
+            return list(self._docs.values())
+
+    def mark_dirty(self) -> None:
+        with self._lock:
+            self._dirty = True
+
+    def remove(self, doc_id: str) -> None:
+        """Best-effort explicit removal for deletes — a delta query can only
+        ever find CHANGED docs, never GONE ones, so a hard delete must be
+        reflected here explicitly."""
+        with self._lock:
+            if self._docs is not None:
+                self._docs.pop(doc_id, None)
+
 
 # ---- Firestore-backed actions ----------------------------------------------
 
 
-def _fetch_assigned_puntos(db: Any) -> dict[str, dict[str, Any]]:
-    """The three single-field-inequality reads `list_puntos`'s "always
-    include assigned points" widening needs — extracted so it can be routed
-    through `PlaneacionAggregatesCache` (see the call site's own comment).
-    Each field is auto-indexed (no composite index), and a point matching
-    more than one is only kept once (first field wins; same projected
-    fields regardless of which query matched, so no data is lost)."""
-    assigned: dict[str, dict[str, Any]] = {}
-    for field in ("grupo_id", "inspector_uid", "cuadrilla_id"):
-        for d in db.collection(PLANEACION_PUNTOS_COLLECTION).where(field, "!=", None).select(list(PUNTOS_LIST_FIELDS)).get():
-            if d.id not in assigned:
-                assigned[d.id] = _doc_to_dict(d)
-    return assigned
-
-
-def list_puntos(db: Any, params: dict[str, Any], cache: "PlaneacionAggregatesCache") -> dict[str, Any]:
-    """Bounded, prioritized working set (ADR-9) — never the full
-    collection. Default filter excludes surveyed points and points marked
+def list_puntos(db: Any, params: dict[str, Any], cache: "PlaneacionAggregatesCache", snapshot: "PlaneacionPuntosSnapshot") -> dict[str, Any]:
+    """Bounded, prioritized working set (ADR-9) — never a live Firestore
+    scan. Default filter excludes surveyed points and points marked
     `no_aplica`; ordering uses the OVERRIDE-aware effective priority
     (`prioridad_override` if set, else the computed `prioridad`), with the
     raw `prioridad_score` as the tiebreak.
 
-    Over-fetches to `LIMIT_MAX + 1` raw candidates (ordered by the raw
-    `prioridad_score` at the Firestore level) so `truncado` can be reported
-    without a second, separate count query — the same "filter the harder
-    conditions in code" tradeoff `autoAgrupar`/the sticker dispatcher's own
-    `run_auto_agrupar` already documents (Firestore permits only one
-    inequality field per query, and `estado_asignacion != 'no_aplica'`
-    would conflict with ordering by `prioridad_score`).
-
-    Speed follow-up (2026-08-27): that `LIMIT_MAX + 1` over-fetch (5001 docs)
-    used to run on EVERY call, including the plain default call with none of
-    the in-code narrowing filters below -- paying a ~5000-doc read for a
-    300-row page. When `estado`/`prioridad`/`comuna`/`soloPendientes` are ALL
-    absent, the only in-code exclusion left is the rare `estado_asignacion !=
-    'no_aplica'` one, so `effective_limit * 2 + 1` is enough headroom to
-    absorb that exclusion AND still detect `truncado` -- no need for the full
-    `LIMIT_MAX` ceiling. The moment any of those filters IS present, the
-    in-code filtering can drop an arbitrary fraction of the page, so the
-    over-fetch falls back to the original `LIMIT_MAX + 1` for correctness.
-    `truncado` semantics are unchanged in both paths: it is set whenever the
-    over-fetch yields more than `effective_limit` rows after in-code
-    filtering.
-
-    Item 5 (2026-08-27): the frontend now requests `limit: 4500` (top-4500
-    critical working set) by default, not the previous smaller default.
-    `effective_limit * 2 + 1` for 4500 would be 9001 -- over LIMIT_MAX+1
-    (5001). The dynamic over-fetch is therefore capped at LIMIT_MAX+1 no
-    matter how large `limit` gets."""
-    from google.cloud import firestore as _fs  # deferred import, credentials/clients.py's own convention
-
+    Stage 2 speed follow-up: reads the in-process `PlaneacionPuntosSnapshot`
+    (one full projected read per process lifetime, then bounded deltas) as
+    its FULL in-memory working set, instead of a per-call bounded/over-fetch
+    Firestore query. `truncado` is therefore now EXACT (computed against the
+    complete pending set, not an over-fetched page), and the "always include
+    assigned points" widen below is a plain in-memory filter over the same
+    snapshot rather than a separate cached three-query fetch. Every returned
+    punto also carries `dup_grupo_id`/`registro_id`/`actualizado_en` (part of
+    `SNAPSHOT_FIELDS`, needed by `resumen`) — harmless extra JSON-safe keys,
+    not projected out."""
     effective_limit = _clamp_limit(params.get("limit"))
     estado = params.get("estado")
     # `incluirLevantados` widens the set to points that ALREADY have a survey,
@@ -709,60 +803,41 @@ def list_puntos(db: Any, params: dict[str, Any], cache: "PlaneacionAggregatesCac
             return False
         return True
 
-    # Speed follow-up (2026-08-27): only over-fetch the full LIMIT_MAX+1 when
-    # an in-code narrowing filter can actually drop an arbitrary fraction of
-    # the page; the plain default call has no such filter (see docstring).
-    narrowing_filters_present = bool(estado or prioridad or comuna or solo_pendientes)
-    over_fetch_limit = (LIMIT_MAX + 1) if narrowing_filters_present else min(effective_limit * 2 + 1, LIMIT_MAX + 1)
-
-    query = db.collection(PLANEACION_PUNTOS_COLLECTION)
-    if not incluir_levantados:
-        query = query.where("tiene_survey", "==", False)
-    query = (
-        query.select(list(PUNTOS_LIST_FIELDS))
-        .order_by("prioridad_score", direction=_fs.Query.DESCENDING)
-        .limit(over_fetch_limit)
-    )
-    puntos = [p for p in (_doc_to_dict(d) for d in query.get()) if _passes(p)]
-
+    all_docs = snapshot.docs(db)
+    puntos = [p for p in all_docs if _passes(p)]
     puntos.sort(key=_sort_key)
     truncado = len(puntos) > effective_limit
     page = puntos[:effective_limit]
     page_ids = {p["id"] for p in page}
 
-    # "Always include assigned points" (user decision 2026-08-27): a point with
-    # a grupo/inspector/cuadrilla assignment MUST appear even when it ranks
-    # below the top-N priority page — otherwise a low-priority assigned point
-    # is invisible in the table and unmanageable (can't desasignar it, it
-    # blocks its group's deletion, and it is missing from the Grupo column).
-    #
-    # Speed follow-up (2026-08-27): the three-query fetch below used to run
-    # fresh on EVERY listPuntos call — the tab's own reload() calls it on
-    # every open AND again after every mutation (autoAgrupar included), so an
-    # admin paid for three sequential full-field-set reads over and over in
-    # the same few seconds. It is now routed through the SAME
-    # `PlaneacionAggregatesCache` `resumen`/`metricasProgreso` already use:
-    # 5-minute TTL, unconditionally busted after any mutating action (see the
-    # dispatcher's `cache.clear()`), so an admin never sees a stale assigned
-    # set after their own change — only repeat reads within that window get
-    # cheaper. The cached value is filter-independent (raw merged docs, same
-    # PUNTOS_LIST_FIELDS regardless of the caller's params); `_passes`/
-    # `page_ids` narrowing still runs per-call below on top of it.
-    assigned = cache.get_or_fetch("assignedPuntos", lambda: _fetch_assigned_puntos(db))
-    extra = [p for pid, p in assigned.items() if pid not in page_ids and _passes(p)]
-    if extra:
-        page = page + extra
+    # "Always include assigned points" (user decision 2026-08-27): a point
+    # with a grupo/inspector/cuadrilla assignment MUST appear even when it
+    # ranks below the top-N priority page — otherwise a low-priority
+    # assigned point is invisible in the table and unmanageable (can't
+    # desasignar it, it blocks its group's deletion, and it is missing from
+    # the Grupo column). Stage 2: this widening is now a plain in-memory
+    # filter over the SAME snapshot `all_docs` above (no separate query).
+    assigned_extra = [
+        p for p in all_docs
+        if p["id"] not in page_ids
+        and (p.get("grupo_id") or p.get("inspector_uid") or p.get("cuadrilla_id"))
+        and _passes(p)
+    ]
+    if assigned_extra:
+        page = page + assigned_extra
         page.sort(key=_sort_key)
 
     return {"puntos": page, "truncado": truncado}
 
 
-def resumen(db: Any) -> dict[str, Any]:
-    """Aggregate tallies only — no per-point payload (ADR-9). See the
-    module docstring for why this is a bounded, aggregated-in-code read
-    rather than a true Firestore `count()` aggregation query."""
-    docs = db.collection(PLANEACION_PUNTOS_COLLECTION).get()
-    puntos = [_doc_to_dict(d, with_id=False) for d in docs]
+def resumen(db: Any, snapshot: "PlaneacionPuntosSnapshot") -> dict[str, Any]:
+    """Aggregate tallies only — no per-point payload (ADR-9). Stage 2: reads
+    the in-process snapshot (see `PlaneacionPuntosSnapshot`) instead of its
+    own live collection scan, so it now reflects any mutation on the very
+    next call (the dispatcher's post-mutation `snapshot.mark_dirty()`), not
+    a separate TTL-cached aggregate. The extra `id` key each snapshot dict
+    carries is harmless here."""
+    puntos = snapshot.docs(db)
 
     total = len(puntos)
     levantados = sum(1 for p in puntos if p.get("tiene_survey"))
@@ -945,7 +1020,7 @@ def run_auto_agrupar(db: Any, body: dict[str, Any]) -> list[dict[str, Any]]:
     batch = db.batch()
     batch.set(ref, data)
     for punto_id in punto_ids:
-        batch.set(db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id), {"cuadrilla_id": ref.id}, merge=True)
+        batch.set(db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id), _with_actualizado({"cuadrilla_id": ref.id}), merge=True)
     batch.commit()
     return [{"id": ref.id, **data}]
 
@@ -1015,7 +1090,11 @@ def crear_cuadrilla(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     batch = db.batch()
     batch.set(ref, data)
     for punto_id in puntos:
-        batch.set(db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id), {"cuadrilla_id": ref.id}, merge=True)
+        batch.set(
+            db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id),
+            _with_actualizado({"cuadrilla_id": ref.id}),
+            merge=True,
+        )
     batch.commit()
     return {"id": ref.id}
 
@@ -1068,9 +1147,17 @@ def editar_cuadrilla(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     batch = db.batch()
     batch.set(ref, {"puntos": next_puntos}, merge=True)
     for punto_id in add:
-        batch.set(db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id), {"cuadrilla_id": cuadrilla_id}, merge=True)
+        batch.set(
+            db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id),
+            _with_actualizado({"cuadrilla_id": cuadrilla_id}),
+            merge=True,
+        )
     for punto_id in remove:
-        batch.set(db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id), {"cuadrilla_id": None}, merge=True)
+        batch.set(
+            db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id),
+            _with_actualizado({"cuadrilla_id": None}),
+            merge=True,
+        )
     batch.commit()
     return {"id": cuadrilla_id, "puntos": next_puntos}
 
@@ -1124,7 +1211,7 @@ def asignar_inspector(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     for punto_id in asignables:
         batch.set(
             db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id),
-            {"inspector_uid": inspector_uid, "asignado_en": now, "estado_asignacion": "asignado"},
+            _with_actualizado({"inspector_uid": inspector_uid, "asignado_en": now, "estado_asignacion": "asignado"}),
             merge=True,
         )
     batch.commit()
@@ -1151,7 +1238,7 @@ def desasignar_inspector(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     for punto_id in puntos:
         batch.set(
             db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id),
-            {"inspector_uid": None, "asignado_en": None, "estado_asignacion": "pendiente"},
+            _with_actualizado({"inspector_uid": None, "asignado_en": None, "estado_asignacion": "pendiente"}),
             merge=True,
         )
     batch.commit()
@@ -1182,7 +1269,7 @@ def reasignar_punto(db: Any, body: dict[str, Any]) -> dict[str, Any]:
         )
 
     prev_inspector_uid = data.get("inspector_uid")
-    ref.set({"inspector_uid": nuevo_inspector_uid, "reasignado_de": prev_inspector_uid}, merge=True)
+    ref.set(_with_actualizado({"inspector_uid": nuevo_inspector_uid, "reasignado_de": prev_inspector_uid}), merge=True)
     return {"id": punto_id, "inspector_uid": nuevo_inspector_uid, "reasignado_de": prev_inspector_uid}
 
 
@@ -1224,7 +1311,7 @@ def eliminar_cuadrilla(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     def _clear_point(batch: Any, punto_id: str) -> None:
         batch.set(
             db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id),
-            {"cuadrilla_id": None, "inspector_uid": None, "grupo_id": None},
+            _with_actualizado({"cuadrilla_id": None, "inspector_uid": None, "grupo_id": None}),
             merge=True,
         )
 
@@ -1273,7 +1360,9 @@ def reiniciar_agrupacion(db: Any) -> dict[str, Any]:
     def _clear_point(batch: Any, punto_id: str) -> None:
         batch.set(
             db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id),
-            {"cuadrilla_id": None, "inspector_uid": None, "asignado_en": None, "estado_asignacion": "pendiente"},
+            _with_actualizado(
+                {"cuadrilla_id": None, "inspector_uid": None, "asignado_en": None, "estado_asignacion": "pendiente"}
+            ),
             merge=True,
         )
 
@@ -1315,7 +1404,10 @@ def editar_asignacion(db: Any, body: dict[str, Any], claims: dict[str, Any]) -> 
     now = _now()
     fields["editado_en"] = now
     fields["editado_por"] = claims.get("sub")
-    ref.set(fields, merge=True)
+    # actualizado_en is stamped on the WRITE payload only, never merged into
+    # `fields` itself — `fields` also feeds the response below, and a raw
+    # SERVER_TIMESTAMP sentinel there would break `_jsonable`.
+    ref.set(_with_actualizado(fields), merge=True)
 
     # `_jsonable` the WHOLE response: the point doc can carry OTHER Firestore
     # timestamps besides `editado_en` (e.g. `asignado_en` on any assigned
@@ -1359,7 +1451,9 @@ def marcar_no_aplica(db: Any, body: dict[str, Any], claims: dict[str, Any]) -> d
             "editado_por": claims.get("sub"),
         }
 
-    ref.set(fields, merge=True)
+    # actualizado_en is stamped on the WRITE payload only, kept out of
+    # `fields` (also used for the response below) — see editar_asignacion.
+    ref.set(_with_actualizado(fields), merge=True)
     # See editar_asignacion: `_jsonable` the whole response so a stray
     # Firestore timestamp (asignado_en, ...) never 502s the JSONResponse.
     punto = _jsonable({**(snap.to_dict() or {}), **fields})
@@ -1392,7 +1486,9 @@ def reopen_punto(db: Any, body: dict[str, Any], claims: dict[str, Any]) -> dict[
         "editado_en": now,
         "editado_por": claims.get("sub"),
     }
-    ref.set(fields, merge=True)
+    # actualizado_en is stamped on the WRITE payload only, kept out of
+    # `fields` (also used for the response below) — see editar_asignacion.
+    ref.set(_with_actualizado(fields), merge=True)
     # See editar_asignacion: `_jsonable` the whole response so a stray
     # Firestore timestamp (asignado_en, ...) never 502s the JSONResponse.
     punto = _jsonable({**current, **fields})
@@ -1766,7 +1862,11 @@ def asignar_grupo_a_puntos(db: Any, body: dict[str, Any]) -> dict[str, Any]:
         )
 
     def _apply(batch: Any, punto_id: str) -> None:
-        batch.set(db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id), {"grupo_id": grupo_id}, merge=True)
+        batch.set(
+            db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id),
+            _with_actualizado({"grupo_id": grupo_id}),
+            merge=True,
+        )
 
     commit_in_chunks(db, puntos, _apply)
 
@@ -1814,7 +1914,11 @@ def desasignar_grupo(db: Any, body: dict[str, Any]) -> dict[str, Any]:
     ]
 
     def _apply(batch: Any, punto_id: str) -> None:
-        batch.set(db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id), {"grupo_id": None}, merge=True)
+        batch.set(
+            db.collection(PLANEACION_PUNTOS_COLLECTION).document(punto_id),
+            _with_actualizado({"grupo_id": None}),
+            merge=True,
+        )
 
     commit_in_chunks(db, puntos, _apply)
 
@@ -2161,13 +2265,25 @@ def _tally(puntos: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def metricas_progreso(db: Any) -> dict[str, Any]:
+def metricas_progreso(
+    db: Any, cache: "PlaneacionAggregatesCache", snapshot: "PlaneacionPuntosSnapshot"
+) -> dict[str, Any]:
     """Per-group and per-inspector progress, BOTH campaigns combined AND
     broken out per campaign (spec: `metricasProgreso`). See this module's
     own docstring ("puntos-disponibles change") for the scale/roster
-    reasoning."""
-    sticker_puntos = [_doc_to_dict(d, with_id=False) for d in db.collection(STICKER_MATCHES_COLLECTION).get()]
-    planeacion_puntos = [_doc_to_dict(d, with_id=False) for d in db.collection(PLANEACION_PUNTOS_COLLECTION).get()]
+    reasoning.
+
+    Stage 2: `planeacion_puntos` now comes from the in-process snapshot
+    (same one `list_puntos`/`resumen` use). `sticker_matches` is a much
+    smaller collection with no delta-query stamping of its own, so it stays
+    on a plain 5-minute TTL cache instead of getting its own snapshot.
+    `grupos_inspectores` stays a live per-call read — small collection, not
+    worth caching."""
+    sticker_puntos = cache.get_or_fetch(
+        "metricasStickerMatches",
+        lambda: [_doc_to_dict(d, with_id=False) for d in db.collection(STICKER_MATCHES_COLLECTION).get()],
+    )
+    planeacion_puntos = snapshot.docs(db)
     grupos = [_doc_to_dict(d) for d in db.collection(GRUPOS_INSPECTORES_COLLECTION).get()]
 
     por_campana = {"stickers": sticker_puntos, "survey": planeacion_puntos}
@@ -2296,6 +2412,7 @@ def _dispatch(
     claims: dict[str, Any],
     db: Any,
     cache: "PlaneacionAggregatesCache",
+    snapshot: "PlaneacionPuntosSnapshot",
 ) -> JSONResponse:
     """The dispatcher's own `if body.action == ...` chain — extracted
     verbatim (mechanical move, no branch body changes) so
@@ -2303,9 +2420,9 @@ def _dispatch(
     post-mutation audit hook at ONE call site (design.md ADR-2)."""
     try:
         if body.action == "listPuntos":
-            return JSONResponse({"ok": True, **list_puntos(db, payload, cache)})
+            return JSONResponse({"ok": True, **list_puntos(db, payload, cache, snapshot)})
         if body.action == "resumen":
-            return JSONResponse({"ok": True, "resumen": cache.get_or_fetch("resumen", lambda: resumen(db))})
+            return JSONResponse({"ok": True, "resumen": resumen(db, snapshot)})
         if body.action == "listCuadrillas":
             return JSONResponse({"ok": True, _CUADRILLAS_KEY: list_cuadrilla_docs(db)})
         if body.action == "autoAgrupar":
@@ -2365,9 +2482,7 @@ def _dispatch(
         if body.action == "eliminarConductor":
             return JSONResponse({"ok": True, **eliminar_conductor(db, payload)})
         if body.action == "metricasProgreso":
-            return JSONResponse(
-                {"ok": True, "metricas": cache.get_or_fetch("metricasProgreso", lambda: metricas_progreso(db))}
-            )
+            return JSONResponse({"ok": True, "metricas": metricas_progreso(db, cache, snapshot)})
         if body.action == "listAuditoria":
             page_size = _positive_int(payload.get("limit"), planeacion_audit.PAGE_SIZE_DEFAULT)
             return JSONResponse({
@@ -2420,8 +2535,9 @@ def planeacion_asignaciones(
     db = credentials.sismo().firestore
     payload = body.model_dump()
     cache: PlaneacionAggregatesCache = request.app.state.planeacion_aggregates_cache
+    snapshot: PlaneacionPuntosSnapshot = request.app.state.planeacion_puntos_snapshot
 
-    resp = _dispatch(body, payload, claims, db, cache)
+    resp = _dispatch(body, payload, claims, db, cache, snapshot)
 
     if body.action in planeacion_audit.MUTATING_ACTIONS:
         # ADR-1: best-effort, strictly AFTER the mutation already committed
@@ -2435,9 +2551,16 @@ def planeacion_asignaciones(
             params=payload,
             resultado=resultado,
         )
-        # Speed follow-up (2026-08-27): bust the resumen/metricasProgreso
-        # cache on ANY successful mutation — unconditional, outside the
-        # best-effort audit call above, so an admin never sees stale
-        # tallies after their own change even if audit logging itself fails.
-        cache.clear()
+        # Speed follow-up (2026-08-29): after ANY successful mutation,
+        # invalidate ONLY the assignedPuntos + listPuntos raw-page caches —
+        # unconditional, outside the best-effort audit call above, so the
+        # table never shows a stale assignment/list after an admin's own
+        # change even if audit logging itself fails.
+        cache.invalidate_after_mutation()
+        # Stage 2: also mark the in-process planeacion_puntos snapshot dirty
+        # so the NEXT read (list_puntos/resumen/metricasProgreso, whichever
+        # this admin hits first) runs one bounded delta query and reflects
+        # their own change immediately, instead of waiting up to
+        # CACHE_TTL_SECONDS for the snapshot's own TTL to expire.
+        snapshot.mark_dirty()
     return resp

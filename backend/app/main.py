@@ -32,8 +32,9 @@ from app.routers import (
     survey_cali,
     usuarios,
 )
-from app.routers.planeacion_asignaciones import PlaneacionAggregatesCache
+from app.routers.planeacion_asignaciones import PlaneacionAggregatesCache, PlaneacionPuntosSnapshot
 from app.routers.puntos_solicitados import BuscarCache
+from app.routers.stickers import EvaluacionesCache
 from app.routers.sticker_status import StickerStatusCache
 from app.services.snapshot import ReportadosSnapshot, refresh_loop, seed_from_blob
 
@@ -111,9 +112,22 @@ def create_app() -> FastAPI:
     # the legacy warm-lambda-only cache).
     app.state.sticker_status_cache = StickerStatusCache()
 
+    # Same convention — stickers.py's evaluaciones list cache (speed
+    # follow-up 2026-08-29; moves the Evaluaciones tab's full-collection read
+    # off Vercel onto this cached backend route).
+    app.state.stickers_evaluaciones_cache = EvaluacionesCache()
+
     # Same convention, `planeacion_asignaciones.py`'s own `resumen`/
     # `metricasProgreso` aggregate cache (speed follow-up, 2026-08-27).
     app.state.planeacion_aggregates_cache = PlaneacionAggregatesCache()
+
+    # Stage 2 speed follow-up: in-process working-set snapshot backing
+    # list_puntos/resumen/metricas_progreso (see PlaneacionPuntosSnapshot's
+    # own docstring, `routers/planeacion_asignaciones.py`). One instance per
+    # app, same synchronous-attach convention as the caches above. Not a new
+    # write path — read-only, purely an in-memory cache in front of the
+    # existing allowlisted collection.
+    app.state.planeacion_puntos_snapshot = PlaneacionPuntosSnapshot()
 
     # Same convention, `puntos_solicitados.py`'s `GET /buscar` joined-rows
     # cache (busqueda-asignacion follow-up, 4R polish pass).

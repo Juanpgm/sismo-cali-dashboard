@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -317,6 +318,117 @@ def test_write_contactos_noop_on_empty_list():
     job._write_contactos([], db=db)
 
     assert db.stores == {}
+
+
+# --- Blob hash-map diff-gate (quota fix): skip unchanged records, fail --
+# --- open (write everything) on ANY Blob problem -- a bug that makes -----
+# --- contacts silently STOP being written is worse than the quota issue. -
+
+
+def _contact(rid, nombre, telefono):
+    return {"registro_id": rid, "nombre_solicitante": nombre, "telefono_solicitante": telefono}
+
+
+def test_write_contactos_skips_unchanged_records_when_hashmap_available(monkeypatch):
+    db = _FakeContactDb()
+    contactos = [_contact("1", "Juan", "300"), _contact("2", "Ana", "301")]
+    old_hashes = {
+        "1": job._contacto_hash(contactos[0]),
+        "2": job._contacto_hash(contactos[1]),
+    }
+    monkeypatch.setattr(job, "_load_contacto_hashes", lambda: old_hashes)
+    published: list[dict] = []
+    monkeypatch.setattr(job, "_publish_contacto_hashes", lambda h: published.append(h))
+
+    job._write_contactos(contactos, db=db)
+
+    assert db.stores.get("puntos_contacto", {}) == {}
+    assert published == []
+
+
+def test_write_contactos_writes_only_changed_and_new_records(monkeypatch):
+    db = _FakeContactDb()
+    unchanged = _contact("1", "Juan", "300")
+    changed = _contact("2", "Ana", "301")
+    new = _contact("3", "Luis", "302")
+    old_hashes = {
+        "1": job._contacto_hash(unchanged),
+        "2": "stale-hash-does-not-match",
+        # "3" absent -> new
+    }
+    monkeypatch.setattr(job, "_load_contacto_hashes", lambda: old_hashes)
+    published: list[dict] = []
+    monkeypatch.setattr(job, "_publish_contacto_hashes", lambda h: published.append(h))
+
+    job._write_contactos([unchanged, changed, new], db=db)
+
+    written = db.stores["puntos_contacto"]
+    assert set(written.keys()) == {"atencionsismo_2", "atencionsismo_3"}
+    assert len(published) == 1
+    assert set(published[0].keys()) == {"1", "2", "3"}
+
+
+def test_write_contactos_writes_all_when_hashmap_fetch_fails(monkeypatch):
+    db = _FakeContactDb()
+    contactos = [_contact("1", "Juan", "300"), _contact("2", "Ana", "301")]
+    monkeypatch.setattr(job, "_load_contacto_hashes", lambda: None)
+    published: list[dict] = []
+    monkeypatch.setattr(job, "_publish_contacto_hashes", lambda h: published.append(h))
+
+    job._write_contactos(contactos, db=db)
+
+    written = db.stores["puntos_contacto"]
+    assert set(written.keys()) == {"atencionsismo_1", "atencionsismo_2"}
+    assert len(published) == 1
+
+
+def test_load_contacto_hashes_returns_none_on_blob_failure(monkeypatch, tmp_path):
+    def _sys_exit_download(pathname, local_path):
+        raise SystemExit("no token")
+
+    monkeypatch.setattr(job.blob_sync, "download", _sys_exit_download)
+    assert job._load_contacto_hashes() is None
+
+    def _generic_exception_download(pathname, local_path):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(job.blob_sync, "download", _generic_exception_download)
+    assert job._load_contacto_hashes() is None
+
+    def _malformed_json_download(pathname, local_path):
+        Path(local_path).write_text("not json{{{", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(job.blob_sync, "download", _malformed_json_download)
+    assert job._load_contacto_hashes() is None
+
+    # Syntactically valid JSON but the wrong shape (not a {id: str} map) must
+    # also fall back to None instead of propagating a non-dict downstream.
+    for wrong_shaped_payload in ("[]", "0", '"x"', '{"1": 123}'):
+
+        def _wrong_shape_download(pathname, local_path, payload=wrong_shaped_payload):
+            Path(local_path).write_text(payload, encoding="utf-8")
+            return True
+
+        monkeypatch.setattr(job.blob_sync, "download", _wrong_shape_download)
+        assert job._load_contacto_hashes() is None
+
+
+def test_malformed_hashmap_payload_triggers_full_fallback_write(monkeypatch):
+    def _wrong_shape_download(pathname, local_path):
+        Path(local_path).write_text("[]", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(job.blob_sync, "download", _wrong_shape_download)
+    published: list[dict] = []
+    monkeypatch.setattr(job, "_publish_contacto_hashes", lambda h: published.append(h))
+    db = _FakeContactDb()
+
+    job._write_contactos([_contact("1", "Juan", "300"), _contact("2", "Ana", "301")], db=db)
+
+    written = db.stores["puntos_contacto"]
+    assert set(written.keys()) == {"atencionsismo_1", "atencionsismo_2"}
+    assert len(published) == 1
 
 
 async def _fake_day_walk_one_record(client, user, password, desde, *, until_ms=None, mapper=None):

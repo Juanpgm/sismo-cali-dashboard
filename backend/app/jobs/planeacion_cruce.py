@@ -649,12 +649,17 @@ def build_write_ops(points: list[dict], existing_ids: set[str],
 def write_planeacion_puntos(db, ops: list[tuple[str, dict]]) -> int:
     """Batched `merge:true` set, <= BATCH_SIZE ops per commit (Firestore's
     own cap)."""
+    from google.cloud import firestore as _fs
+
     col = db.collection(PLANEACION_PUNTOS_COLLECTION)
     n = 0
     for start in range(0, len(ops), BATCH_SIZE):
         batch = db.batch()
         for did, fields in ops[start:start + BATCH_SIZE]:
-            batch.set(col.document(did), fields, merge=True)
+            # Speed follow-up: stamp actualizado_en so the in-process
+            # planeacion_puntos snapshot's delta query can find
+            # pipeline-changed docs.
+            batch.set(col.document(did), {**fields, "actualizado_en": _fs.SERVER_TIMESTAMP}, merge=True)
             n += 1
         batch.commit()
     return n
@@ -859,7 +864,63 @@ def read_watermark(db):
     return (doc.to_dict() or {}).get("last_run_at")
 
 
-def write_state(db, when: datetime, summary: dict, *, full: bool = False) -> None:
+def read_state(db) -> dict:
+    """The full STATE_DOC dict (or `{}` if it has never been written) — one
+    Firestore get, reused for the watermark AND the early-exit gate fields
+    below (`puntos_hash`/`evaluaciones_count`), instead of re-reading the
+    same doc several times per run."""
+    doc = db.document(STATE_DOC).get()
+    return (doc.to_dict() or {}) if doc.exists else {}
+
+
+def _hash_puntos(puntos: list[dict]) -> str:
+    """sha256 of a stable JSON serialization of `load_puntos()`'s own
+    output — changes iff the local `reportes.json` point set changes.
+    Cheap: hashes a value already computed for `run_planeacion_cruce`'s
+    own use, never a second read of the file."""
+    blob = json.dumps(puntos, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _evaluaciones_count(db) -> int:
+    """`COUNT()` aggregate over `evaluaciones` — a cheap server-side count,
+    NOT a full read of every doc (unlike `fetch_evaluaciones` itself)."""
+    agg = db.collection(EVALUACIONES_COLLECTION).count()
+    for row in agg.get():
+        for res in row:
+            return int(res.value)
+    return 0
+
+
+def _israel_count(db) -> int:
+    """`COUNT()` aggregate over `inspecciones_israel` — a cheap server-side
+    count, NOT a full read (unlike `fetch_israel`). israel docs carry no
+    timestamp/watermark field (out-of-backend ingestor, see `fetch_israel`),
+    so a count is the cheapest change signal available for Feature D.
+    ponytail: count-based — misses an in-place edit of an existing israel
+    doc that leaves the count unchanged, same approximation as
+    `_evaluaciones_count`; fine while the ingestor is effectively
+    append-only over a near-static set."""
+    agg = db.collection(INSPECCIONES_ISRAEL_COLLECTION).count()
+    for row in agg.get():
+        for res in row:
+            return int(res.value)
+    return 0
+
+
+def touch_last_checked(db, when: datetime) -> None:
+    """No-op run (the early-exit gate fired): stamp only `last_checked_at`,
+    leaving the watermark and the persisted gate fields (`puntos_hash`/
+    `evaluaciones_count`) untouched — nothing was actually processed, so
+    there is nothing new to compare future runs against."""
+    coll, name = STATE_DOC.split("/")
+    db.collection(coll).document(name).set({"last_checked_at": when}, merge=True)
+
+
+def write_state(db, when: datetime, summary: dict, *, full: bool = False,
+                puntos_hash: str | None = None,
+                evaluaciones_count: int | None = None,
+                israel_count: int | None = None) -> None:
     """Advances the incremental watermark AND persists a `last_run` summary
     snapshot on the same doc (A4: the router's `GET /planeacion-cruce/
     status` reads this back via `read_last_run` so an operator can see the
@@ -867,9 +928,26 @@ def write_state(db, when: datetime, summary: dict, *, full: bool = False) -> Non
     is the same dict `run_planeacion_cruce` already builds for its own
     print/runlog output — `full` is passed separately because that dict
     does not carry it. Dry runs never call this (their own early return in
-    `run_planeacion_cruce` happens before the write path)."""
+    `run_planeacion_cruce` happens before the write path).
+
+    `puntos_hash`/`evaluaciones_count`/`israel_count` (when not `None`) are
+    ALSO persisted as top-level fields on the state doc, alongside
+    `last_run_at`/`last_run` — the early-exit gate's own inputs, so the
+    NEXT run can compare against what THIS run actually processed.
+
+    `last_checked_at` is stamped here too (not just by `touch_last_checked`
+    on the no-op path) so a REAL run also advances it — it means "last time
+    the job ran at all" (no-op or real), while `last_run` means "last run
+    that did real work"."""
     coll, name = STATE_DOC.split("/")
-    payload = {"last_run_at": when, "last_run": {**summary, "finished_at": when, "full": full}}
+    payload = {"last_run_at": when, "last_checked_at": when,
+              "last_run": {**summary, "finished_at": when, "full": full}}
+    if puntos_hash is not None:
+        payload["puntos_hash"] = puntos_hash
+    if evaluaciones_count is not None:
+        payload["evaluaciones_count"] = evaluaciones_count
+    if israel_count is not None:
+        payload["israel_count"] = israel_count
     db.collection(coll).document(name).set(payload, merge=True)
 
 
@@ -880,6 +958,17 @@ def read_last_run(db) -> dict | None:
     if not doc.exists:
         return None
     return (doc.to_dict() or {}).get("last_run")
+
+
+def read_last_checked(db):
+    """`last_checked_at`, stamped on EVERY run (no-op via `touch_last_checked`
+    or real via `write_state`) — unlike `last_run`, this advances even
+    during a quiet period where the early-exit gate fires routinely, so the
+    status endpoint can prove the cron is still alive rather than dead."""
+    doc = db.document(STATE_DOC).get()
+    if not doc.exists:
+        return None
+    return (doc.to_dict() or {}).get("last_checked_at")
 
 
 def read_punto_state(db, doc_ids: list[str]) -> dict:
@@ -1021,12 +1110,48 @@ def run_planeacion_cruce(top: int | None = None, dry: bool = False, full: bool =
     every survey, `fetch_surveys(db, None)`) and re-selects every point
     regardless of its current match state (`select_candidates(...,
     full=True)`), so a full run also re-tags dedup on the entire existing
-    set — see the module docstring's "Dedup tagging" section."""
-    puntos = tag_duplicados(load_puntos())
+    set — see the module docstring's "Dedup tagging" section. `full=True`
+    also bypasses the early-exit gate below entirely (all new gate logic
+    lives under `if not full:`)."""
+    puntos_raw = load_puntos()
+    puntos = tag_duplicados(puntos_raw)
     if top is not None:
         puntos = puntos[:top]
 
     db = credentials.sismo().firestore
+    now = datetime.now(timezone.utc)
+
+    # Cheap change-detection inputs, computed FIRST — a local-file hash, the
+    # already-watermarked survey_cali query (kept: it's cheap, `.stream()`
+    # from a cursor, not a full scan), and a COUNT() aggregate. None of
+    # these is the expensive ~14.8k-doc get_all / full-collection scans the
+    # gate below exists to skip.
+    state_doc = {} if full else read_state(db)
+    watermark = None if full else state_doc.get("last_run_at")
+    surveys_cali = fetch_surveys(db, watermark)
+    puntos_hash = _hash_puntos(puntos_raw)
+    evaluaciones_count = _evaluaciones_count(db)
+    israel_count = _israel_count(db)
+
+    # Early-exit gate: 0 new surveys AND unchanged point set AND unchanged
+    # evaluaciones count AND unchanged israel_count since the last real run
+    # -> skip read_punto_state (batched get_all over ALL ~14.8k doc ids),
+    # fetch_evaluaciones (full ~1k-doc scan), and fetch_israel (full scan)
+    # entirely.
+    # ponytail: the evaluaciones/israel gates are COUNT()-based
+    # approximations — they would miss an in-place edit of an existing doc
+    # that leaves the document count unchanged. Acceptable: both collections
+    # are effectively append-only in practice.
+    if not full and not surveys_cali \
+            and state_doc.get("puntos_hash") == puntos_hash \
+            and state_doc.get("evaluaciones_count") == evaluaciones_count \
+            and state_doc.get("israel_count") == israel_count:
+        print("planeacion_cruce no-op: 0 surveys nuevos, puntos_hash, "
+              "evaluaciones_count e israel_count sin cambios; salida temprana (sin "
+              "read_punto_state/fetch_evaluaciones/fetch_israel).")
+        touch_last_checked(db, now)
+        return {"noop": True, "total_puntos": len(puntos),
+                "candidatos": 0, "a_escribir": 0}
 
     doc_ids = [doc_id(p["fuente"], p["registro_id"]) for p in puntos]
     state = read_punto_state(db, doc_ids)
@@ -1035,9 +1160,7 @@ def run_planeacion_cruce(top: int | None = None, dry: bool = False, full: bool =
     print(f"Puntos: {len(puntos)} | ya con survey (sin re-escanear): {ya_con_survey} | "
           f"candidatos este run: {len(candidates)}")
 
-    watermark = None if full else read_watermark(db)
     print(f"watermark: {watermark or '(ninguno — primera corrida o --full, procesa todo survey_cali)'}")
-    surveys_cali = fetch_surveys(db, watermark)
     surveys_israel = fetch_israel(db)  # feature D: full-scan, no watermark (see fetch_israel)
     surveys = surveys_cali + surveys_israel
     key_index = build_key_index(surveys)
@@ -1051,7 +1174,6 @@ def run_planeacion_cruce(top: int | None = None, dry: bool = False, full: bool =
     print(f"evaluaciones (formulario ATC-20/stickers): {len(evaluacion_index)} con clave_integracion "
           f"de {len(evaluaciones)} leídas")
 
-    now = datetime.now(timezone.utc)
     to_write: list[dict] = []
     match_via_tally: dict[str, int] = {}
     for p in candidates:
@@ -1100,7 +1222,9 @@ def run_planeacion_cruce(top: int | None = None, dry: bool = False, full: bool =
     estado_actual = {did: s.get("estado_asignacion") for did, s in state.items()}
     ops = build_write_ops(to_write, existing_ids, estado_actual)
     n = write_planeacion_puntos(db, ops)
-    write_state(db, now, summary, full=full)
+    write_state(db, now, summary, full=full,
+               puntos_hash=puntos_hash, evaluaciones_count=evaluaciones_count,
+               israel_count=israel_count)
     print(f"escritos {n} docs -> {db.project}/{PLANEACION_PUNTOS_COLLECTION}; "
           f"watermark avanzado a {now.isoformat()}")
     summary["escritos"] = n

@@ -16,8 +16,11 @@ raising job never leaves it stuck.
 `GET /planeacion-cruce/status` surfaces whether a run is currently in
 flight (`lock.locked()`) plus the LAST completed run's summary
 (`read_last_run` — the job's own `write_state` persists it on every
-non-dry run) — the same visibility an operator would otherwise only get by
-tailing Railway cron logs.
+non-dry run) AND `last_checked_at` (`read_last_checked` — stamped on
+EVERY run, no-op or real), so an operator can tell "healthy quiet period"
+(the early-exit gate keeps firing, `last_checked_at` keeps advancing) from
+"cron died" (neither field advances) — the same visibility an operator
+would otherwise only get by tailing Railway cron logs.
 
 ## Encapsulation note
 
@@ -51,7 +54,7 @@ from pydantic import BaseModel
 
 from app.auth.deps import require_role
 from app.credentials import clients as credentials
-from app.jobs.planeacion_cruce import read_last_run, run_planeacion_cruce
+from app.jobs.planeacion_cruce import read_last_checked, read_last_run, run_planeacion_cruce
 
 REQUIRED_CLIENTS: tuple[str, ...] = ("sismo",)
 
@@ -111,4 +114,5 @@ async def planeacion_cruce_status(
     claims: dict[str, Any] = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     db = credentials.sismo().firestore
-    return {"running": _lock.locked(), "last_run": read_last_run(db)}
+    return {"running": _lock.locked(), "last_run": read_last_run(db),
+            "last_checked_at": read_last_checked(db)}

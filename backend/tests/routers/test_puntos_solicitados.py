@@ -776,6 +776,33 @@ def test_buscar_contacto_read_failure_degrades_to_address_only_rows_not_502(monk
     assert row["telefono_solicitante"] is None
 
 
+# ── happy-path: only the current page's rows get contact-enriched, via one
+#    batched get_all (not a full puntos_contacto scan) ─────────────────────
+
+
+def test_buscar_enriches_only_page_rows_with_contact_via_get_all(monkeypatch):
+    import app.routers.puntos_solicitados as router_mod
+
+    reportes = [
+        {"id": "9", "direccion": "Calle 9 San Antonio", "barrio": "San Antonio",
+         "comuna": "Comuna 3", "lat": 3.1, "lng": -76.1},
+    ]
+    monkeypatch.setattr(router_mod, "load_reportes", lambda: reportes)
+    stores = _stores()
+    stores["puntos_contacto"] = {
+        "atencionsismo_9": {"nombre_solicitante": "María Pérez", "telefono_solicitante": "3001234567"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.get("/puntos-solicitados/buscar", params={"q": "san antonio"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["resultados"]) == 1
+    row = body["resultados"][0]
+    assert row["nombre_solicitante"] == "María Pérez"
+    assert row["telefono_solicitante"] == "3001234567"
+
+
 # ── 2.6: duplicate `id` in reportes.json collapses to one row, not two ─────
 
 

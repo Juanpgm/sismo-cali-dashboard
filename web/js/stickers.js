@@ -11,20 +11,20 @@
 // "Inspectores" segment) — it is no longer part of this tab.
 import { sectionHtml as evalSectionHtml, initEvaluaciones } from './evaluaciones.js';
 import { initStickersAsignacion } from './stickers-asignacion.js';
+import { apiUrl } from './api-config.js';
 
-const ENDPOINT = '/api/stickers';
-
-async function callApi(getToken, body) {
+// Cached backend read (backend/app/routers/stickers.py GET /evaluaciones,
+// 5-min TTL) — replaces the legacy POST /api/stickers {action:'evaluaciones'}
+// full-collection read.
+async function fetchEvaluacionesOnce(getToken) {
   const token = await getToken();
   if (!token) throw new Error('Sesión no válida. Volvé a iniciar sesión.');
-  const res = await fetch(ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify(body),
+  const res = await fetch(apiUrl('evaluaciones'), {
+    headers: { Authorization: `Bearer ${token}` },
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
-  return data;
+  return data.evaluaciones;
 }
 
 // Rendered once per tab open. Two-way segmented control (Evaluaciones ·
@@ -65,10 +65,10 @@ export function initStickers(root, { getToken }) {
     // attempt half a second later would have worked.
     fetchEvaluaciones: async () => {
       try {
-        return (await callApi(getToken, { action: 'evaluaciones' })).evaluaciones;
+        return await fetchEvaluacionesOnce(getToken);
       } catch (err) {
         await new Promise((r) => setTimeout(r, 500));
-        return (await callApi(getToken, { action: 'evaluaciones' })).evaluaciones;
+        return await fetchEvaluacionesOnce(getToken);
       }
     },
   });

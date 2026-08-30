@@ -55,26 +55,36 @@ independent `puntos_solicitados` collection literal check names this file
 (+ `app/main.py`, import/mount only) as its sole allowlisted module.
 
 **`puntos-solicitados-busqueda-asignacion` change (follow-up), ADR-1/ADR-2 —
-`GET /puntos-solicitados/buscar`.** Admin-only, read-only search joining
+`GET /puntos-solicitados/buscar`.** Admin-only, read-only search over
 `load_reportes()` (imported from `app.jobs.planeacion_cruce`, the same
-PII-free `reportes.json` reader the pipeline uses) to the private Firestore
-`puntos_contacto` collection on `id (str) == registro_id`, so a search can
-also match/display the requester's name without adding any new storage.
-`_build_rows`/`_filter_rows` are pure (no Firestore, no clock) — join and
+PII-free `reportes.json` reader the pipeline uses). `_build_rows`/
+`_filter_rows` are pure (no Firestore, no clock) — join and
 filter+top-20-cap are unit-tested directly. `_build_rows` dedupes by `id`
 (first occurrence wins, mirrors `planeacion_cruce.load_puntos`'s own
-dedup-by-first-seen on the same source). The joined (unfiltered) list is
-cached with a 5-minute TTL via `BuscarCache`, one instance per `create_app()`
-call attached to `app.state.puntos_solicitados_buscar_cache` — same
-process-lifetime, test-isolated pattern as `sticker_status.py`'s
+dedup-by-first-seen on the same source). The (unfiltered) address-only list
+is cached with a 5-minute TTL via `BuscarCache`, one instance per
+`create_app()` call attached to `app.state.puntos_solicitados_buscar_cache`
+— same process-lifetime, test-isolated pattern as `sticker_status.py`'s
 `StickerStatusCache`, not a bare module-level dict — so a debounced keystroke
-storm doesn't re-read Firestore/`reportes.json` per character; `q` is applied
-AFTER the cached build, never part of the cache key. `_joined_rows` treats
-`load_reportes()` (the primary source) and the `puntos_contacto` read as
-INDEPENDENT failure domains: a `puntos_contacto` read failure is logged and
-degrades to address-only rows (contact fields `None`), only a
-`load_reportes()` failure still 502s the request. This adds a READ (never
-write) of `puntos_contacto`, flagged in `tests/invariants/
+storm doesn't re-read `reportes.json` per character; `q` is applied AFTER
+the cached build, never part of the cache key.
+
+**Follow-up perf fix — contact join moved OUT of the cached build, INTO
+the route, scoped to the page.** `_joined_rows` used to also do a FULL
+`puntos_contacto` collection scan (~14.8k docs) to enrich every cached row;
+that full scan is gone. `_joined_rows` now returns address-only rows
+(`_build_rows(reportes, {})`, contact fields always `None`). The route
+handler `buscar_puntos_solicitados` joins `puntos_contacto` AFTER
+`_filter_rows`'s top-20 cap, via ONE batched `db.get_all` keyed by
+`atencionsismo_{registro_id}` — never more than 20 doc reads per search.
+`load_reportes()` (the primary source) and the per-page `puntos_contacto`
+read remain INDEPENDENT failure domains: a `puntos_contacto` read failure
+is logged and degrades that page to address-only rows (contact fields
+`None`), only a `load_reportes()` failure still 502s the request. Tradeoff:
+searching BY requester name (`nombre_solicitante`) no longer matches
+anything, since the cached rows the filter runs over never carry contact
+data — see the comment at the enrichment site. This still reads (never
+writes) `puntos_contacto`, flagged in `tests/invariants/
 test_sole_writer.py`'s `ALLOWED_MODULES_PUNTOS_CONTACTO`.
 """
 from __future__ import annotations
@@ -303,35 +313,19 @@ class BuscarCache:
 
 
 def _joined_rows(cache: BuscarCache) -> list[dict]:
-    """TTL-cached (via `cache`) joined (unfiltered) rows — one
-    `load_reportes()` + one full `puntos_contacto` collection read per TTL
-    window, never per keystroke. `contacto_by_id` is keyed by the doc id's
-    `registro_id` suffix (`atencionsismo_{registro_id}` — the SAME id
-    `dashboard_refresh._write_contactos` writes), matching `reportes[i].id`
-    by construction (both derive from the same raw `rep["id"]`, see the
-    module docstring's ADR-1).
-
-    `load_reportes()` (the primary source) and the `puntos_contacto` read
-    are independent failure domains: a `puntos_contacto` failure is logged
-    and degrades to address-only rows (empty `contacto_by_id`) instead of
-    failing the whole search — only a `load_reportes()` failure propagates
-    (the route handler turns that into the 502)."""
+    """TTL-cached (via `cache`) ADDRESS-ONLY rows — one `load_reportes()`
+    call per TTL window, never per keystroke. No Firestore read happens
+    here anymore: `puntos_contacto` used to be scanned in full (~14.8k
+    docs) just to enrich a 20-row page, so that join was moved OUT of the
+    cached/unfiltered build and INTO the route handler, where it can be
+    done with one batched `db.get_all` scoped to the current result page
+    only (see `buscar_puntos_solicitados`). `_build_rows(reportes, {})`
+    means `nombre_solicitante`/`telefono_solicitante` are always `None` on
+    these cached rows; contact enrichment happens per-page, after
+    filtering, in the route handler."""
 
     def _fetch() -> list[dict]:
         reportes = load_reportes()
-        try:
-            db = credentials.sismo().firestore
-            contacto_by_id = {
-                d.id.removeprefix("atencionsismo_"): (d.to_dict() or {})
-                for d in db.collection(PUNTOS_CONTACTO_COLLECTION).get()
-            }
-        except Exception:  # noqa: BLE001 — secondary source, degrade not 502
-            logging.exception(
-                "puntos_solicitados.buscar: fallo leyendo puntos_contacto, "
-                "degradando a resultados sin datos de contacto"
-            )
-            contacto_by_id = {}
-
         ids = [str(rep["id"]) for rep in reportes if rep.get("id")]
         n_dupes = len(ids) - len(set(ids))
         if n_dupes:
@@ -340,7 +334,7 @@ def _joined_rows(cache: BuscarCache) -> list[dict]:
                 "reportes.json, se conserva solo la primera ocurrencia",
                 n_dupes,
             )
-        return _build_rows(reportes, contacto_by_id)
+        return _build_rows(reportes, {})
 
     return cache.get_or_fetch(_fetch)
 
@@ -348,13 +342,31 @@ def _joined_rows(cache: BuscarCache) -> list[dict]:
 # ---- Routes -----------------------------------------------------------
 
 
+def _mark_planeacion_snapshot_dirty(request: Request) -> None:
+    """Best-effort: tells `PlaneacionPuntosSnapshot` a mirror write just
+    happened so the admin board's next read picks it up promptly instead of
+    waiting for the snapshot's own TTL. Never raises — a cache-freshness
+    miss must never surface as if the actual (already-committed) write had
+    failed."""
+    snapshot = getattr(request.app.state, "planeacion_puntos_snapshot", None)
+    if snapshot is None:
+        return
+    try:
+        snapshot.mark_dirty()
+    except Exception:  # noqa: BLE001 - best-effort
+        pass
+
+
 @router.post("/puntos-solicitados", status_code=201)
 def crear_punto_solicitado(
+    request: Request,
     body: CrearPuntoSolicitadoBody,
     claims: dict[str, Any] = Depends(require_role("admin")),
 ) -> JSONResponse:
     if len(body.fotos) > MAX_FOTOS:
         raise HTTPException(status_code=400, detail=f"Máximo {MAX_FOTOS} fotos.")
+
+    from google.cloud import firestore as _fs
 
     db = credentials.sismo().firestore
 
@@ -402,6 +414,9 @@ def crear_punto_solicitado(
         "cuadrilla_id": None,
         "inspector_uid": None,
         "matched_at": now,
+        # Speed follow-up: stamp actualizado_en so the in-process
+        # planeacion_puntos snapshot's delta query can find this write.
+        "actualizado_en": _fs.SERVER_TIMESTAMP,
     }
 
     try:
@@ -413,6 +428,7 @@ def crear_punto_solicitado(
         logging.exception("Fallo creando punto solicitado")
         raise HTTPException(status_code=502, detail=f"No se pudo crear el punto solicitado: {exc}") from exc
 
+    _mark_planeacion_snapshot_dirty(request)
     return JSONResponse({"ok": True, "id": sid, "clave_integracion": clave}, status_code=201)
 
 
@@ -466,6 +482,7 @@ def listar_puntos_solicitados(claims: dict[str, Any] = Depends(require_role("adm
 @router.patch("/puntos-solicitados/{id}")
 def editar_punto_solicitado(
     id: str,
+    request: Request,
     body: EditarPuntoSolicitadoBody,
     claims: dict[str, Any] = Depends(require_role("admin")),
 ) -> JSONResponse:
@@ -506,6 +523,13 @@ def editar_punto_solicitado(
 
     try:
         if mirror_changes:
+            from google.cloud import firestore as _fs
+
+            # Speed follow-up: stamp actualizado_en on the mirror write only
+            # (never on `changes`, which is puntos_solicitados' own payload)
+            # so the in-process planeacion_puntos snapshot's delta query can
+            # find this admin edit.
+            mirror_changes["actualizado_en"] = _fs.SERVER_TIMESTAMP
             mirror_ref = db.collection(PLANEACION_PUNTOS_COLLECTION).document(_mirror_doc_id(id))
             batch = db.batch()
             batch.set(ref, changes, merge=True)
@@ -516,12 +540,17 @@ def editar_punto_solicitado(
     except Exception as exc:  # noqa: BLE001 — clean 502, never an unhandled 500
         logging.exception("Fallo actualizando punto solicitado %s", id)
         raise HTTPException(status_code=502, detail=f"No se pudo actualizar el punto solicitado: {exc}") from exc
+    if mirror_changes:
+        # Only a mirror write bumps `actualizado_en` — nothing for the
+        # snapshot's delta query to see otherwise.
+        _mark_planeacion_snapshot_dirty(request)
     return JSONResponse({"ok": True, "id": id})
 
 
 @router.delete("/puntos-solicitados/{id}")
 def eliminar_punto_solicitado(
     id: str,
+    request: Request,
     claims: dict[str, Any] = Depends(require_role("admin")),
 ) -> JSONResponse:
     """Deletes both the request doc AND its mirror — the inverse of the
@@ -540,6 +569,15 @@ def eliminar_punto_solicitado(
     except Exception as exc:  # noqa: BLE001 — clean 502, never an unhandled 500
         logging.exception("Fallo eliminando punto solicitado %s", id)
         raise HTTPException(status_code=502, detail=f"No se pudo eliminar el punto solicitado: {exc}") from exc
+
+    # The delta query can only ever find CHANGED docs, never GONE ones — the
+    # mirror must be explicitly removed from the snapshot here.
+    snapshot = getattr(request.app.state, "planeacion_puntos_snapshot", None)
+    if snapshot is not None:
+        try:
+            snapshot.remove(_mirror_doc_id(id))
+        except Exception:  # noqa: BLE001 - best-effort
+            pass
     return JSONResponse({"ok": True, "id": id})
 
 
@@ -549,12 +587,13 @@ def buscar_puntos_solicitados(
     q: str = "",
     claims: dict[str, Any] = Depends(require_role("admin")),
 ) -> JSONResponse:
-    """ADR-1/ADR-2: admin-only search over `reportes.json` ⋈
-    `puntos_contacto`. Empty/whitespace `q` short-circuits to `resultados:
-    []` BEFORE touching either source — never a full-dump, never an
-    unneeded cache build. A `load_reportes()` failure (the primary source)
-    maps to the same clean 502 every sibling route in this file uses; a
-    `puntos_contacto`-only failure degrades instead (see `_joined_rows`)."""
+    """ADR-1/ADR-2: admin-only search over `reportes.json`, then a
+    per-page `puntos_contacto` join. Empty/whitespace `q` short-circuits to
+    `resultados: []` BEFORE touching either source — never a full-dump,
+    never an unneeded cache build. A `load_reportes()` failure (the
+    primary source) maps to the same clean 502 every sibling route in this
+    file uses; a `puntos_contacto` failure degrades to address-only rows
+    for the page instead (see the enrichment block below)."""
     query = q.strip()
     if not query:
         return JSONResponse({"ok": True, "resultados": []})
@@ -566,7 +605,50 @@ def buscar_puntos_solicitados(
         logging.exception("Fallo buscando puntos solicitados")
         raise HTTPException(status_code=502, detail=f"No se pudo buscar puntos solicitados: {exc}") from exc
 
-    return JSONResponse({"ok": True, "resultados": _filter_rows(rows, query)})
+    resultados = _filter_rows(rows, query)
+
+    # Contact is now joined AFTER the search filter (only for the top-20
+    # page), never against the full reportes/cache set — this is what
+    # replaces the old full-collection `puntos_contacto` scan. Tradeoff:
+    # `_filter_rows` still lists `nombre_solicitante` as a searchable
+    # field, but the cached rows always carry `None` there (see
+    # `_joined_rows`), so searching BY requester name no longer matches
+    # anything. Accepted cost of dropping the full-collection scan.
+    if resultados:
+        db = credentials.sismo().firestore
+        try:
+            refs = [
+                db.collection(PUNTOS_CONTACTO_COLLECTION).document(f"atencionsismo_{row['registro_id']}")
+                for row in resultados
+            ]
+            contacto_by_id = {
+                snap.id.removeprefix("atencionsismo_"): (snap.to_dict() or {})
+                for snap in db.get_all(refs)
+                if snap.exists
+            }
+        except Exception:  # noqa: BLE001 — secondary source, degrade not 502
+            logging.exception(
+                "puntos_solicitados.buscar: fallo leyendo puntos_contacto "
+                "para la página de resultados, degradando a resultados sin "
+                "datos de contacto"
+            )
+            contacto_by_id = {}
+
+        # Copy each row before mutating — `resultados` items came from the
+        # SAME cached `rows` list (reused across requests via `BuscarCache`),
+        # so writing enrichment in place would bleed one request's contact
+        # data into every later request's cached rows.
+        enriched = []
+        for row in resultados:
+            row = dict(row)
+            contacto = contacto_by_id.get(row["registro_id"])
+            if contacto:
+                row["nombre_solicitante"] = contacto.get("nombre_solicitante")
+                row["telefono_solicitante"] = contacto.get("telefono_solicitante")
+            enriched.append(row)
+        resultados = enriched
+
+    return JSONResponse({"ok": True, "resultados": resultados})
 
 
 @router.post("/geocode")

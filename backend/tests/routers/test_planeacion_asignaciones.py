@@ -18,17 +18,38 @@ sticker template).
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from google.cloud import firestore as _fs_real
 
 from app.auth.deps import current_claims
 from app.credentials import clients as credentials
 from app.main import create_app
 from app.routers import planeacion_asignaciones as pa
+
+# `actualizado_en` speed follow-up (stage 1): the fake store keeps raw
+# values, so a literal `firestore.SERVER_TIMESTAMP` sentinel would be stored
+# as-is instead of a real timestamp. Resolve it to a real, strictly
+# increasing UTC datetime on write, mimicking a real Firestore server
+# timestamp closely enough for a later stage's delta query to sort on it.
+_FAKE_TS_BASE = datetime(2026, 1, 1, tzinfo=timezone.utc)
+_fake_ts_counter = 0
+
+
+def _resolve_server_timestamps(data: dict[str, Any]) -> dict[str, Any]:
+    global _fake_ts_counter
+    out = {}
+    for k, v in data.items():
+        if v is _fs_real.SERVER_TIMESTAMP:
+            _fake_ts_counter += 1
+            out[k] = _FAKE_TS_BASE + timedelta(microseconds=_fake_ts_counter)
+        else:
+            out[k] = v
+    return out
 
 UID_ADMIN = "uid-admin"
 FAKE_CLAIMS_ADMIN = {"sub": UID_ADMIN, "email": "admin@example.com", "role": "admin"}
@@ -71,6 +92,7 @@ class _FakeDocRef:
         return snap
 
     def set(self, data: dict[str, Any], merge: bool = False) -> None:
+        data = _resolve_server_timestamps(data)
         current = dict(self._store.get(self.id, {})) if merge else {}
         current.update(data)
         self._store[self.id] = current
@@ -111,6 +133,9 @@ class _FakeQuery:
         elif op == ">=":
             matched = [i for i in self._ids if self._store.get(i, {}).get(field) is not None
                        and self._store[i][field] >= value]
+        elif op == ">":
+            matched = [i for i in self._ids if self._store.get(i, {}).get(field) is not None
+                       and self._store[i][field] > value]
         elif op == "<":
             matched = [i for i in self._ids if self._store.get(i, {}).get(field) is not None
                        and self._store[i][field] < value]
@@ -579,15 +604,15 @@ def test_list_puntos_assigned_point_still_honors_active_comuna_filter(monkeypatc
 
 
 def test_list_puntos_reflects_a_new_assignment_after_the_widen_cache_was_warm(monkeypatch):
-    """Root-cause repro for "las asignaciones no se están persistiendo":
-    `efec5f1` routed the "always include assigned points" widen fetch
-    (`_fetch_assigned_puntos`) through `PlaneacionAggregatesCache` (5-minute
-    TTL). The UI's own `reload()` warms that cache on every tab open/reload
-    BEFORE an admin makes a change. If a low-priority point (outside the
-    top-N page) is then assigned via `asignarGrupoAPuntos`, the very next
-    `listPuntos` call — the reload the UI fires right after the write — MUST
-    see it, not the pre-assignment cached snapshot. `cache.clear()` in the
-    dispatcher's post-mutation block is what is supposed to guarantee this."""
+    """Root-cause repro for "las asignaciones no se están persistiendo",
+    still valid under the stage 2 `PlaneacionPuntosSnapshot`: the UI's own
+    `reload()` warms the snapshot on every tab open/reload BEFORE an admin
+    makes a change. If a low-priority point (outside the top-N page) is
+    then assigned via `asignarGrupoAPuntos`, the very next `listPuntos`
+    call — the reload the UI fires right after the write — MUST see it, not
+    the pre-assignment snapshot. `snapshot.mark_dirty()` in the dispatcher's
+    post-mutation block is what is supposed to guarantee this (via one
+    bounded delta query on the next `snapshot.docs()` call)."""
     stores = _stores()
     stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
     stores[PLANEACION_PUNTOS] = {
@@ -629,73 +654,6 @@ def test_list_puntos_limit_above_hard_max_is_clamped_not_failed(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
-
-
-def _capture_fake_query_limits(monkeypatch) -> list[int]:
-    """Instruments `_FakeQuery.limit()` for this test only (monkeypatch
-    auto-restores) so `list_puntos`'s dynamic over-fetch (2026-08-27 speed
-    follow-up) can be asserted on directly, instead of inferring it from doc
-    counts."""
-    captured: list[int] = []
-    original_limit = _FakeQuery.limit
-
-    def _tracking_limit(self, n):
-        captured.append(n)
-        return original_limit(self, n)
-
-    monkeypatch.setattr(_FakeQuery, "limit", _tracking_limit)
-    return captured
-
-
-def test_list_puntos_default_call_does_not_overfetch_the_hard_max(monkeypatch):
-    """2026-08-27 speed follow-up: the default call (no estado/prioridad/
-    comuna/soloPendientes) has no in-code narrowing filter left besides the
-    rare `no_aplica` exclusion, so it must NOT pay the full LIMIT_MAX+1
-    (5001-doc) read every time."""
-    stores = _stores()
-    stores[PLANEACION_PUNTOS] = {"p1": _punto()}
-    client = _admin_client(monkeypatch, stores)
-    captured = _capture_fake_query_limits(monkeypatch)
-
-    resp = client.post("/planeacion-asignaciones", json={"action": "listPuntos"})
-
-    assert resp.status_code == 200
-    assert captured, "expected .limit() to be called"
-    assert captured[-1] <= pa.LIMIT_DEFAULT * 2 + 1
-    assert captured[-1] < pa.LIMIT_MAX + 1
-
-
-def test_list_puntos_with_prioridad_filter_keeps_the_large_overfetch(monkeypatch):
-    """A narrowing in-code filter (prioridad here) can drop an arbitrary
-    fraction of the over-fetched page, so it must keep the original
-    LIMIT_MAX+1 over-fetch for correctness."""
-    stores = _stores()
-    stores[PLANEACION_PUNTOS] = {"p1": _punto(prioridad="alta")}
-    client = _admin_client(monkeypatch, stores)
-    captured = _capture_fake_query_limits(monkeypatch)
-
-    resp = client.post(
-        "/planeacion-asignaciones", json={"action": "listPuntos", "prioridad": "alta"}
-    )
-
-    assert resp.status_code == 200
-    assert captured[-1] == pa.LIMIT_MAX + 1
-
-
-def test_list_puntos_large_limit_caps_overfetch_at_the_hard_max(monkeypatch):
-    """Item 5 (2026-08-27): the frontend now requests `limit: 4500` (top-4500
-    critical working set). `effective_limit * 2 + 1` for 4500 would be 9001 --
-    over LIMIT_MAX+1 (5001). The dynamic over-fetch must be CAPPED at
-    LIMIT_MAX+1, never exceed it, regardless of how large `limit` is."""
-    stores = _stores()
-    stores[PLANEACION_PUNTOS] = {"p1": _punto()}
-    client = _admin_client(monkeypatch, stores)
-    captured = _capture_fake_query_limits(monkeypatch)
-
-    resp = client.post("/planeacion-asignaciones", json={"action": "listPuntos", "limit": 4500})
-
-    assert resp.status_code == 200
-    assert captured[-1] == pa.LIMIT_MAX + 1
 
 
 # ── resumen (task 3.5/3.6) ───────────────────────────────────────────────
@@ -3135,11 +3093,28 @@ def test_metricas_progreso_totales_combinados(monkeypatch):
     assert metricas["survey"]["asignados"] == 2
 
 
-# ── aggregate cache: resumen/metricasProgreso perf fix (2026-08-27) ────────
-# Both actions used to scan the full `planeacion_puntos` collection on EVERY
-# call, and the Planeación tab calls BOTH on every reload. Same TTL-cache-
-# on-`app.state` fix `routers/sticker_status.py` already established for
-# `/sticker-status` — see `PlaneacionAggregatesCache`'s own docstring.
+# ── in-process snapshot: resumen/metricasProgreso/listPuntos perf fix ──────
+# Stage 1 stamped `actualizado_en` on every write; stage 2 spends it:
+# `PlaneacionPuntosSnapshot` pays one full projected read per process
+# lifetime, then bounded delta queries on `actualizado_en`. `resumen`/
+# `metricas_progreso` no longer have their own dispatch-level TTL cache —
+# the snapshot IS the cost/freshness authority now (see that class's own
+# docstring in planeacion_asignaciones.py).
+
+
+def _capture_fake_query_where(monkeypatch) -> list[tuple[str, str, Any]]:
+    """Instruments `_FakeQuery.where()` for this test only (monkeypatch
+    auto-restores) so a snapshot delta refresh (`actualizado_en > cutoff`)
+    can be asserted on directly, distinguishing it from a full rescan."""
+    captured: list[tuple[str, str, Any]] = []
+    original_where = _FakeQuery.where
+
+    def _tracking_where(self, field, op, value):
+        captured.append((field, op, value))
+        return original_where(self, field, op, value)
+
+    monkeypatch.setattr(_FakeQuery, "where", _tracking_where)
+    return captured
 
 
 def test_resumen_is_cached_across_consecutive_calls(monkeypatch):
@@ -3169,17 +3144,26 @@ def test_metricas_progreso_is_cached_across_consecutive_calls(monkeypatch):
     assert first.status_code == 200
     assert second.status_code == 200
     assert first.json() == second.json()
+    # planeacion_puntos comes from the snapshot (one full load, no reason to
+    # refresh again seconds later) and sticker_matches from its own 5-min
+    # TTL cache — both stay at 1. grupos_inspectores is intentionally NOT
+    # cached (small collection, task decision) so it is read fresh every call.
     assert calls[PLANEACION_PUNTOS] == 1
     assert calls[STICKER_MATCHES] == 1
-    assert calls[GRUPOS_INSPECTORES] == 1
+    assert calls[GRUPOS_INSPECTORES] == 2
 
 
-def test_mutating_action_busts_resumen_and_metricas_cache(monkeypatch):
+def test_mutation_marks_snapshot_dirty_for_exactly_one_bounded_delta(monkeypatch):
+    """crearGrupo (a mutation that doesn't even touch `planeacion_puntos`)
+    still marks the snapshot dirty unconditionally, so the NEXT read pays
+    exactly one MORE `planeacion_puntos` query — and that query is a bounded
+    delta (`actualizado_en > cutoff`), never a second full rescan."""
     stores = _stores()
     stores[PLANEACION_PUNTOS] = {"p1": _punto()}
     stores[STICKER_MATCHES] = {}
     stores[GRUPOS_INSPECTORES] = {}
     client, calls = _admin_client_with_calls(monkeypatch, stores)
+    where_calls = _capture_fake_query_where(monkeypatch)
 
     client.post("/planeacion-asignaciones", json={"action": "resumen"})
     client.post("/planeacion-asignaciones", json={"action": "metricasProgreso"})
@@ -3191,23 +3175,33 @@ def test_mutating_action_busts_resumen_and_metricas_cache(monkeypatch):
     client.post("/planeacion-asignaciones", json={"action": "metricasProgreso"})
 
     assert crear.status_code == 201
-    # crearGrupo never touches these collections itself — the SECOND read of
-    # each (after the busting call) can only come from the cache having been
-    # cleared, not from crearGrupo's own writes. planeacion_puntos is read by
-    # BOTH resumen and metricasProgreso (2 distinct cache keys), so it gets
-    # 2 reads per round; sticker_matches/grupos_inspectores are read only by
-    # metricasProgreso, so 1 read per round.
-    assert calls[PLANEACION_PUNTOS] == 4
-    assert calls[STICKER_MATCHES] == 2
+    # Round 1: resumen triggers the snapshot's one full load (1 read).
+    # metricasProgreso reuses the warm snapshot (0 more) + sticker_matches
+    # (1) + grupos_inspectores (1, live). crearGrupo marks the snapshot
+    # dirty. Round 2: resumen's snapshot.docs() sees dirty=True and runs
+    # exactly ONE bounded delta query (+1 == 2 total) instead of a full
+    # rescan; metricasProgreso then finds the snapshot already fresh again
+    # (0 more). sticker_matches stays cached; grupos_inspectores is read
+    # again (uncached).
+    assert calls[PLANEACION_PUNTOS] == 2
+    assert calls[STICKER_MATCHES] == 1
     assert calls[GRUPOS_INSPECTORES] == 2
+    # Prove the second planeacion_puntos read was a bounded delta, not a
+    # full rescan: an inequality filter on actualizado_en was applied.
+    assert any(field == "actualizado_en" and op == ">" for field, op, _ in where_calls), (
+        f"expected a delta query filtering on actualizado_en > cutoff, got {where_calls}"
+    )
 
 
 def test_resumen_cache_expires_after_ttl(monkeypatch):
-    """Monkeypatches the named `pa.CACHE_TTL_SECONDS` constant to force
-    immediate staleness, NOT `time.monotonic` itself — that stdlib function
-    is shared process-wide with httpx/anyio's own transport-timeout clock,
-    and faking it out from under `TestClient` hangs the request instead of
-    the intended cache-miss behavior."""
+    """Monkeypatches the named `pa.CACHE_TTL_SECONDS` constant to force the
+    SNAPSHOT (not a dispatch-level cache — that no longer exists for
+    resumen/metricasProgreso, stage 2) into treating itself as stale on
+    every subsequent call, so each `resumen` call after the first pays one
+    more (bounded delta) `planeacion_puntos` read. NOT `time.monotonic`
+    itself — that stdlib function is shared process-wide with httpx/anyio's
+    own transport-timeout clock, and faking it out from under `TestClient`
+    hangs the request instead of the intended cache-miss behavior."""
     stores = _stores()
     stores[PLANEACION_PUNTOS] = {"p1": _punto()}
     client, calls = _admin_client_with_calls(monkeypatch, stores)
@@ -3217,6 +3211,102 @@ def test_resumen_cache_expires_after_ttl(monkeypatch):
     client.post("/planeacion-asignaciones", json={"action": "resumen"})
 
     assert calls[PLANEACION_PUNTOS] == 2
+
+
+def test_snapshot_cold_start_reads_planeacion_puntos_exactly_once(monkeypatch):
+    """Cold start: the very first read (whichever action hits it first)
+    triggers exactly ONE full `planeacion_puntos` read; further reads of any
+    action, within the TTL and with no mutation in between, add ZERO more."""
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {f"p{i}": _punto(prioridad_score=i) for i in range(5)}
+    stores[STICKER_MATCHES] = {}
+    stores[GRUPOS_INSPECTORES] = {}
+    client, calls = _admin_client_with_calls(monkeypatch, stores)
+
+    first = client.post("/planeacion-asignaciones", json={"action": "listPuntos"})
+    assert first.status_code == 200
+    assert calls[PLANEACION_PUNTOS] == 1
+
+    client.post("/planeacion-asignaciones", json={"action": "resumen"})
+    client.post("/planeacion-asignaciones", json={"action": "metricasProgreso"})
+
+    # metricasProgreso reads grupos_inspectores/sticker_matches too, but
+    # neither is what this test is about — only planeacion_puntos matters.
+    assert calls[PLANEACION_PUNTOS] == 1
+
+
+def test_mutation_is_reflected_in_resumen_and_metricas_on_next_call(monkeypatch):
+    """`marcarNoAplica` excludes a point from resumen's `pendientes` and
+    from metricasProgreso's per-group tally on the VERY NEXT call — proof
+    `snapshot.mark_dirty()` actually busts the snapshot; resumen/
+    metricasProgreso have no TTL cache of their own left to hide behind."""
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "Norte", "miembros": ["u1"], "activo": True}}
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {**_punto(), "grupo_id": "g1"},
+        "p2": {**_punto(), "grupo_id": "g1"},
+    }
+    stores[STICKER_MATCHES] = {}
+    client = _admin_client(monkeypatch, stores)
+
+    before = client.post("/planeacion-asignaciones", json={"action": "resumen"}).json()["resumen"]
+    assert before["pendientes"] == 2
+
+    marcar = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "marcarNoAplica", "punto_id": "p1", "motivo_exclusion": "duplicado"},
+    )
+    assert marcar.status_code == 200
+
+    after = client.post("/planeacion-asignaciones", json={"action": "resumen"}).json()["resumen"]
+    assert after["pendientes"] == 1
+
+    metricas = client.post("/planeacion-asignaciones", json={"action": "metricasProgreso"}).json()["metricas"]
+    assert metricas["grupos"]["g1"]["survey"]["no_aplica"] == 1
+
+
+def test_puntos_solicitados_delete_removes_mirror_without_a_full_rescan(monkeypatch):
+    """Deleting a punto solicitado (a DIFFERENT router, same app/snapshot
+    instance) removes its `planeacion_puntos` mirror via `snapshot.remove()`
+    — a delta query can only ever find CHANGED docs, never GONE ones. The
+    next planeacion read must not show the mirror, and must NOT pay a
+    second full collection read to notice its absence (`remove()`, unlike
+    `mark_dirty()`, does not force a refresh)."""
+    stores = _stores()
+    sid = "sid1"
+    mirror_id = f"solicitado_{sid}"
+    stores["puntos_solicitados"] = {sid: {"nombre": "Casa X", "estado_seguimiento": "pendiente"}}
+    stores[PLANEACION_PUNTOS] = {
+        mirror_id: {**_punto(), "fuente": "solicitado", "registro_id": sid, "es_solicitado": True},
+    }
+    client, calls = _admin_client_with_calls(monkeypatch, stores)
+
+    warm = client.post("/planeacion-asignaciones", json={"action": "resumen"})
+    assert warm.json()["resumen"]["total"] == 1
+    assert calls[PLANEACION_PUNTOS] == 1
+
+    delete_resp = client.delete(f"/puntos-solicitados/{sid}")
+    assert delete_resp.status_code == 200
+
+    after = client.post("/planeacion-asignaciones", json={"action": "resumen"})
+    assert after.json()["resumen"]["total"] == 0
+    assert calls[PLANEACION_PUNTOS] == 1, "expected the removal to be served from the in-memory snapshot, not a rescan"
+
+
+def test_snapshot_sequential_reads_never_see_a_partial_set(monkeypatch):
+    """No new concurrency harness (the suite has none): a plain sequential
+    check that the full load always completes before `docs()` returns
+    anything — a cold read never sees an empty/partial dict, and a repeat
+    read still sees the complete seeded set."""
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {f"p{i}": _punto(prioridad_score=i) for i in range(10)}
+    client = _admin_client(monkeypatch, stores)
+
+    first = client.post("/planeacion-asignaciones", json={"action": "resumen"}).json()["resumen"]
+    assert first["total"] == 10
+
+    second = client.post("/planeacion-asignaciones", json={"action": "resumen"}).json()["resumen"]
+    assert second["total"] == 10
 
 
 # ── feature H: conductores (drivers) CRUD + link vehiculo->conductor ─────────

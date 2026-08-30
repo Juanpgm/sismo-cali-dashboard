@@ -787,3 +787,220 @@ def test_a_survey_key_never_pairs_with_a_different_point():
     index = job.build_key_index([{"GlobalID": "g-other", "codigoapp": theirs}])
 
     assert index.get(mine) is None
+
+
+# ── run_planeacion_cruce early-exit gate: skip the expensive reads when
+# nothing changed since the last run ────────────────────────────────────────
+
+
+class _FakeAggRow:
+    def __init__(self, value):
+        self.value = value
+
+
+class _FakeAggQuery:
+    def __init__(self, count):
+        self._count = count
+
+    def get(self):
+        return [[_FakeAggRow(self._count)]]
+
+
+class _FakeGateCol:
+    def __init__(self, count):
+        self._count = count
+
+    def count(self):
+        return _FakeAggQuery(self._count)
+
+
+class _FakeGateDb:
+    """Minimal fake for `run_planeacion_cruce`'s gate path — only
+    `.collection(EVALUACIONES_COLLECTION).count().get()` needs to be real;
+    every other Firestore call the FULL path would make is monkeypatched
+    away at the module-function level in the tests below (ponytail: no
+    heavier fake db than the gate itself actually touches)."""
+    project = "fake-project"
+
+    def __init__(self, evaluaciones_count):
+        self._evaluaciones_count = evaluaciones_count
+
+    def collection(self, name):
+        if name == job.EVALUACIONES_COLLECTION:
+            return _FakeGateCol(self._evaluaciones_count)
+        raise AssertionError(f"unexpected collection() call in gate test: {name}")
+
+
+def _never_called(name):
+    def _fake(*a, **kw):
+        raise AssertionError(f"{name} must not be called when the gate fires")
+    return _fake
+
+
+def test_evaluaciones_count_reads_the_count_aggregate_shape():
+    class _Row:
+        value = 42
+
+    class _Agg:
+        def get(self_inner):
+            return [[_Row()]]
+
+    class _Col:
+        def count(self_inner):
+            return _Agg()
+
+    class _Db:
+        def collection(self_inner, name):
+            return _Col()
+
+    assert job._evaluaciones_count(_Db()) == 42
+
+
+def test_run_is_a_noop_when_nothing_changed(monkeypatch):
+    puntos = [{"fuente": "atencionsismo", "registro_id": "1", "lat": 3.42, "lon": -76.53,
+              "direccion": "CL 1", "barrio": None, "comuna": None, "coords": None,
+              "afectacion": None, "estado_verificacion": None, "tipo_inmueble": None,
+              "habitabilidad": None, "fecha_creacion": None}]
+    expected_hash = job._hash_puntos(puntos)
+    when = datetime(2026, 8, 28, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(job, "load_puntos", lambda: puntos)
+    monkeypatch.setattr(job.credentials, "sismo",
+                        lambda: type("C", (), {"firestore": _FakeGateDb(7)})())
+    monkeypatch.setattr(job, "read_state", lambda db: {
+        "last_run_at": when, "puntos_hash": expected_hash, "evaluaciones_count": 7,
+        "israel_count": 3,
+    })
+    monkeypatch.setattr(job, "fetch_surveys", lambda db, watermark: [])
+    monkeypatch.setattr(job, "_evaluaciones_count", lambda db: 7)
+    monkeypatch.setattr(job, "_israel_count", lambda db: 3)
+    monkeypatch.setattr(job, "read_punto_state", _never_called("read_punto_state"))
+    monkeypatch.setattr(job, "fetch_evaluaciones", _never_called("fetch_evaluaciones"))
+    monkeypatch.setattr(job, "fetch_israel", _never_called("fetch_israel"))
+    touched = []
+    monkeypatch.setattr(job, "touch_last_checked", lambda db, now: touched.append(now))
+
+    summary = job.run_planeacion_cruce()
+
+    assert summary["noop"] is True
+    assert touched, "touch_last_checked must stamp the doc on a no-op run"
+
+
+def test_run_executes_fully_when_puntos_hash_changed(monkeypatch):
+    puntos = [{"fuente": "atencionsismo", "registro_id": "1", "lat": 3.42, "lon": -76.53,
+              "direccion": "CL 1", "barrio": None, "comuna": None, "coords": None,
+              "afectacion": None, "estado_verificacion": None, "tipo_inmueble": None,
+              "habitabilidad": None, "fecha_creacion": None}]
+    when = datetime(2026, 8, 28, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(job, "load_puntos", lambda: puntos)
+    monkeypatch.setattr(job.credentials, "sismo",
+                        lambda: type("C", (), {"firestore": _FakeGateDb(7)})())
+    monkeypatch.setattr(job, "read_state", lambda db: {
+        "last_run_at": when, "puntos_hash": "stale-hash", "evaluaciones_count": 7,
+        "israel_count": 3,
+    })
+    monkeypatch.setattr(job, "fetch_surveys", lambda db, watermark: [])
+    monkeypatch.setattr(job, "_evaluaciones_count", lambda db: 7)
+    monkeypatch.setattr(job, "_israel_count", lambda db: 3)
+
+    calls = []
+    monkeypatch.setattr(job, "read_punto_state", lambda db, ids: calls.append("read_punto_state") or {})
+    monkeypatch.setattr(job, "fetch_evaluaciones", lambda db: calls.append("fetch_evaluaciones") or [])
+    monkeypatch.setattr(job, "fetch_israel", lambda db: calls.append("fetch_israel") or [])
+    monkeypatch.setattr(job, "write_planeacion_puntos", lambda db, ops: len(ops))
+    write_state_calls = []
+    monkeypatch.setattr(job, "write_state",
+                        lambda db, now, summary, **kw: write_state_calls.append(kw))
+
+    summary = job.run_planeacion_cruce()
+
+    assert {"read_punto_state", "fetch_evaluaciones", "fetch_israel"} <= set(calls)
+    assert "noop" not in summary
+    assert write_state_calls[-1]["puntos_hash"] == job._hash_puntos(puntos)
+    assert write_state_calls[-1]["evaluaciones_count"] == 7
+    assert write_state_calls[-1]["israel_count"] == 3
+
+
+def test_run_executes_fully_when_new_surveys_arrive(monkeypatch):
+    puntos = [{"fuente": "atencionsismo", "registro_id": "1", "lat": 3.42, "lon": -76.53,
+              "direccion": "CL 1", "barrio": None, "comuna": None, "coords": None,
+              "afectacion": None, "estado_verificacion": None, "tipo_inmueble": None,
+              "habitabilidad": None, "fecha_creacion": None}]
+    expected_hash = job._hash_puntos(puntos)
+    when = datetime(2026, 8, 28, tzinfo=timezone.utc)
+    nueva_survey = {"GlobalID": "g1", "Y": 3.42, "X": -76.53, "DIRECCION": "CL 1", "codigoapp": ""}
+
+    monkeypatch.setattr(job, "load_puntos", lambda: puntos)
+    monkeypatch.setattr(job.credentials, "sismo",
+                        lambda: type("C", (), {"firestore": _FakeGateDb(7)})())
+    monkeypatch.setattr(job, "read_state", lambda db: {
+        "last_run_at": when, "puntos_hash": expected_hash, "evaluaciones_count": 7,
+        "israel_count": 3,
+    })
+    monkeypatch.setattr(job, "fetch_surveys", lambda db, watermark: [nueva_survey])
+    monkeypatch.setattr(job, "_evaluaciones_count", lambda db: 7)
+    monkeypatch.setattr(job, "_israel_count", lambda db: 3)
+
+    calls = []
+    monkeypatch.setattr(job, "read_punto_state", lambda db, ids: calls.append("read_punto_state") or {})
+    monkeypatch.setattr(job, "fetch_evaluaciones", lambda db: calls.append("fetch_evaluaciones") or [])
+    monkeypatch.setattr(job, "fetch_israel", lambda db: calls.append("fetch_israel") or [])
+    monkeypatch.setattr(job, "write_planeacion_puntos", lambda db, ops: len(ops))
+    monkeypatch.setattr(job, "write_state", lambda db, now, summary, **kw: None)
+
+    summary = job.run_planeacion_cruce()
+
+    assert {"read_punto_state", "fetch_evaluaciones", "fetch_israel"} <= set(calls)
+    assert "noop" not in summary
+
+
+def test_run_executes_fully_when_israel_count_changes(monkeypatch):
+    puntos = [{"fuente": "atencionsismo", "registro_id": "1", "lat": 3.42, "lon": -76.53,
+              "direccion": "CL 1", "barrio": None, "comuna": None, "coords": None,
+              "afectacion": None, "estado_verificacion": None, "tipo_inmueble": None,
+              "habitabilidad": None, "fecha_creacion": None}]
+    expected_hash = job._hash_puntos(puntos)
+    when = datetime(2026, 8, 28, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(job, "load_puntos", lambda: puntos)
+    monkeypatch.setattr(job.credentials, "sismo",
+                        lambda: type("C", (), {"firestore": _FakeGateDb(7)})())
+    monkeypatch.setattr(job, "read_state", lambda db: {
+        "last_run_at": when, "puntos_hash": expected_hash, "evaluaciones_count": 7,
+        "israel_count": 3,
+    })
+    monkeypatch.setattr(job, "fetch_surveys", lambda db, watermark: [])
+    monkeypatch.setattr(job, "_evaluaciones_count", lambda db: 7)
+    monkeypatch.setattr(job, "_israel_count", lambda db: 4)  # only the changed signal
+
+    calls = []
+    monkeypatch.setattr(job, "read_punto_state", lambda db, ids: calls.append("read_punto_state") or {})
+    monkeypatch.setattr(job, "fetch_evaluaciones", lambda db: calls.append("fetch_evaluaciones") or [])
+    monkeypatch.setattr(job, "fetch_israel", lambda db: calls.append("fetch_israel") or [])
+    monkeypatch.setattr(job, "write_planeacion_puntos", lambda db, ops: len(ops))
+    monkeypatch.setattr(job, "write_state", lambda db, now, summary, **kw: None)
+
+    summary = job.run_planeacion_cruce()
+
+    assert {"read_punto_state", "fetch_evaluaciones", "fetch_israel"} <= set(calls)
+    assert "noop" not in summary
+
+
+def test_israel_count_reads_the_count_aggregate_shape():
+    class _Row:
+        value = 101
+
+    class _Agg:
+        def get(self_inner):
+            return [[_Row()]]
+
+    class _Col:
+        def count(self_inner):
+            return _Agg()
+
+    class _Db:
+        def collection(self_inner, name):
+            return _Col()
+
+    assert job._israel_count(_Db()) == 101

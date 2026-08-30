@@ -1387,7 +1387,7 @@ export function initPlaneacion(root, { getToken }) {
   let inspectorById = new Map();
   let inspectoresLoaded = false;
   // Item 5 (2026-08-27): no prioridad preselected — the top-2500 points BY
-  // SCORE (see reload()'s own `limit: 2500`) already ARE the critical
+  // SCORE (see reload()'s own `limit: 500`) already ARE the critical
   // working material, so narrowing to 'alta' by default would hide the
   // rest of that same top-2500 set instead of widening it. The
   // "Alta"/Media/Baja chips still narrow client-side + re-fetch.
@@ -2431,7 +2431,7 @@ export function initPlaneacion(root, { getToken }) {
     showOverlay();
     try {
       const incluirLevantados = !!root.querySelector('#planeacion-incluir-levantados')?.checked;
-      const listPuntosBody = { action: 'listPuntos', incluirLevantados, limit: 2500 };
+      const listPuntosBody = { action: 'listPuntos', incluirLevantados, limit: 500 };
       if (filters.prioridad) listPuntosBody.prioridad = filters.prioridad;
       const [listResp, cuadrillasResp] = await Promise.all([
         callApi(getToken, listPuntosBody),
@@ -2479,7 +2479,7 @@ export function initPlaneacion(root, { getToken }) {
       const incluirLevantados = !!root.querySelector('#planeacion-incluir-levantados')?.checked;
       // top-N critical working set by score (backend's own listPuntos
       // ordering); `prioridad` only when a chip actually narrows it.
-      const listPuntosBody = { action: 'listPuntos', incluirLevantados, limit: 2500 };
+      const listPuntosBody = { action: 'listPuntos', incluirLevantados, limit: 500 };
       if (filters.prioridad) listPuntosBody.prioridad = filters.prioridad;
 
       // WAVE 1 — the table and everything cheap enough to render with it.

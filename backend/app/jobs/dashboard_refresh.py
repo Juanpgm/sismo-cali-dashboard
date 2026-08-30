@@ -38,6 +38,7 @@ family's own convention side by side.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -92,6 +93,7 @@ HEAVY_FIELDS = {"fotografiasEvaluacion", "mensajes"}
 # `ALLOWED_MODULES_PUNTOS_CONTACTO` (write side).
 PUNTOS_CONTACTO_COLLECTION = "puntos_contacto"
 _CONTACTO_BATCH_SIZE = 500  # Firestore batch-write chunk cap, house style
+_CONTACTO_HASHES_BLOB = "data/puntos_contacto_hashes.json"  # {registro_id: sha256} diff-gate map
 
 # (local file under web/data/, blob pathname, max-age) — verbatim from
 # deploy/refresh.sh's up() calls, uniform --max-age 60 for every file.
@@ -157,23 +159,94 @@ def _make_raw_mapper(contactos: list[dict]):
     return _mapper
 
 
+def _contacto_hash(fields: dict) -> str:
+    """Hash over ONLY the fields actually written to puntos_contacto
+    (nombre_solicitante, telefono_solicitante) — never a timestamp or other
+    volatile value, or every record would read as 'changed' every run."""
+    payload = [fields.get("nombre_solicitante"), fields.get("telefono_solicitante")]
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _load_contacto_hashes() -> dict | None:
+    """Fetch the {registro_id: hash} map from Blob. Returns None on ANY
+    failure (missing blob, network, malformed JSON, wrong-shaped (non-dict /
+    non-string values) payload, missing token, timeout) so the caller falls
+    back to writing every record — a Blob problem must NEVER cause contacts
+    to silently not be written."""
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        if not blob_sync.download(_CONTACTO_HASHES_BLOB, tmp):
+            return None  # 404 -> first run, no map yet
+        data = json.loads(Path(tmp).read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or not all(isinstance(v, str) for v in data.values()):
+            print(f"  puntos_contacto: hash-map de Blob con forma inválida ({type(data).__name__}); escribo TODOS (fallback).")
+            return None
+        return data
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - fallback is write-all
+        print(f"  puntos_contacto: no pude leer el hash-map de Blob ({exc}); escribo TODOS (fallback).")
+        return None
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _publish_contacto_hashes(hashes: dict) -> None:
+    """Republish the full updated map after a successful write. Best-effort:
+    if this fails, the next run just fails-open and writes everything again."""
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
+            json.dump(hashes, fh)
+            tmp = fh.name
+        blob_sync.upload(tmp, _CONTACTO_HASHES_BLOB, 0, "application/json")
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - non-critical, next run fails open
+        print(f"  puntos_contacto: no pude publicar el hash-map ({exc}); no es crítico.")
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
 def _write_contactos(contactos: list[dict], *, db=None) -> None:
     """Batched `merge:true` write of reporter contact into
-    `puntos_contacto/atencionsismo_{registro_id}`. Propagates on error —
-    the call site in `fetch_reportes()` wraps this fail-soft (design.md
-    ADR-2), same convention as `ingest_survey_cali()`."""
+    `puntos_contacto/atencionsismo_{registro_id}`, gated by a Blob-hosted
+    {registro_id: sha256} hash map so only records whose written fields
+    actually CHANGED get rewritten (~14.8k unconditional writes/15-min run
+    otherwise). Any Blob failure (missing token, network, malformed map)
+    makes `_load_contacto_hashes()` return None, and this function falls
+    back to writing every record — a quota problem must never be worse
+    than a Blob problem silently dropping contacts. Propagates on Firestore
+    error — the call site in `fetch_reportes()` wraps this fail-soft
+    (design.md ADR-2), same convention as `ingest_survey_cali()`."""
     if not contactos:
         return
     db = db or credentials.sismo().firestore
-    col = db.collection(PUNTOS_CONTACTO_COLLECTION)
     # First-occurrence dedup would also be fine (merge:true either way);
     # last-wins here mirrors "latest record in this run is the freshest
     # source data" rather than favoring window-overlap arrival order.
     by_id = {c["registro_id"]: c for c in contactos}
-    items = list(by_id.items())
-    for start in range(0, len(items), _CONTACTO_BATCH_SIZE):
+
+    old_hashes = _load_contacto_hashes()  # None on ANY failure -> write all
+    new_hashes = {rid: _contacto_hash(f) for rid, f in by_id.items()}
+
+    if old_hashes is None:
+        to_write = list(by_id.items())
+        print(f"  puntos_contacto: sin hash-map disponible, escribo {len(to_write)} registros (fallback).")
+    else:
+        to_write = [(rid, f) for rid, f in by_id.items() if new_hashes[rid] != old_hashes.get(rid)]
+        print(f"  puntos_contacto: {len(to_write)} de {len(by_id)} cambiaron; escribo solo esos.")
+
+    col = db.collection(PUNTOS_CONTACTO_COLLECTION)
+    for start in range(0, len(to_write), _CONTACTO_BATCH_SIZE):
         batch = db.batch()
-        for registro_id, fields in items[start:start + _CONTACTO_BATCH_SIZE]:
+        for registro_id, fields in to_write[start:start + _CONTACTO_BATCH_SIZE]:
             doc_id = f"atencionsismo_{registro_id}"
             batch.set(
                 col.document(doc_id),
@@ -185,6 +258,11 @@ def _write_contactos(contactos: list[dict], *, db=None) -> None:
                 merge=True,
             )
         batch.commit()
+
+    # Republish the full map only after the writes above succeeded. Skip it
+    # when nothing changed AND a map already existed (map is already current).
+    if to_write or old_hashes is None:
+        _publish_contacto_hashes(new_hashes)
 
 
 def _dedupe_sorted(records: list[dict]) -> list[dict]:
