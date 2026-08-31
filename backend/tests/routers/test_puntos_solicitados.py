@@ -670,6 +670,42 @@ def test_get_or_fetch_cold_start_falls_back_to_blob_last_good(monkeypatch):
     assert cache.get_or_fetch(boom) == blob_payload
 
 
+def test_seed_from_blob_warms_the_cache_before_any_request(monkeypatch):
+    """31-ago-2026 fix: without this warm-up, a freshly-deployed process's
+    FIRST failed fetch has no payload and no Blob-read attempt has happened
+    yet either — `seed_from_blob()` pre-loads whatever Blob already holds so
+    that gap only exists on the very first deploy of this feature, never on
+    any deploy after."""
+    from app.routers import puntos_solicitados as mod
+
+    blob_payload = {"puntos": [{"id": "p1"}]}
+    monkeypatch.setattr(mod.blob_lkg, "load_json", lambda pathname, expected_type: blob_payload)
+    cache = mod.PuntosSolicitadosCache()
+
+    assert cache.seed_from_blob() is True
+    assert cache._payload == blob_payload
+    assert cache._at is None  # still "stale" — next request attempts a live fetch
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    # A live fetch failure now serves the seeded payload instead of raising,
+    # WITHOUT a second Blob round trip (blob_lkg would raise if called again).
+    monkeypatch.setattr(mod.blob_lkg, "load_json",
+                        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("Blob hit twice")))
+    assert cache.get_or_fetch(boom) == blob_payload
+
+
+def test_seed_from_blob_is_a_noop_when_nothing_persisted_yet(monkeypatch):
+    from app.routers import puntos_solicitados as mod
+
+    monkeypatch.setattr(mod.blob_lkg, "load_json", lambda pathname, expected_type: None)
+    cache = mod.PuntosSolicitadosCache()
+
+    assert cache.seed_from_blob() is False
+    assert cache._payload is None
+
+
 def test_get_or_fetch_cold_start_rejects_malformed_blob_payload(monkeypatch):
     from pathlib import Path
 

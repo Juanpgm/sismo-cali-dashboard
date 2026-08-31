@@ -75,6 +75,14 @@ async def _lifespan(app: FastAPI):
     """
     snapshot = app.state.reportados_snapshot
     await seed_from_blob(snapshot)  # best-effort, never raises
+    # Firestore-quota-outage fix (31-ago-2026): warm PuntosSolicitadosCache
+    # from its own last-known-good Blob too — a pure Blob read (never
+    # Firestore), so it costs nothing extra against the quota. Without this,
+    # a freshly-deployed process's cache starts empty and its FIRST failed
+    # fetch has nothing to serve-stale (same gap `seed_from_blob` above
+    # already closes for `reportados_snapshot`). Runs off the event loop
+    # (`blob_lkg.load_json` is a blocking urllib call) via `to_thread`.
+    await asyncio.to_thread(app.state.puntos_solicitados_cache.seed_from_blob)
     task = asyncio.create_task(refresh_loop(snapshot))
     try:
         yield

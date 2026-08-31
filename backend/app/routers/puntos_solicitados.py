@@ -423,6 +423,27 @@ class PuntosSolicitadosCache:
         into a cold one)."""
         self._at = None
 
+    def seed_from_blob(self) -> bool:
+        """Best-effort cold-start warm-up (31-ago-2026): a freshly-deployed
+        process has an EMPTY cache, so its very first `get_or_fetch` failure
+        has nothing to fall back to yet — `_payload is None` still means "no
+        Blob has ever been written" the first time this class ever ran, and
+        the caller sees the raw Firestore error same as before this fix
+        existed. Pre-loading whatever Blob already holds (if anything) at
+        startup — same idea as `app.services.snapshot.seed_from_blob`, a
+        pure Blob read, never touches Firestore — closes that gap for every
+        deploy AFTER the first successful write. Sets `_payload`/`_blob_hash`
+        only; leaves `_at` untouched (None) so the next request still
+        attempts a live fetch, exactly like a normal stale cache, but now
+        has something to serve-stale if that live fetch also fails. Never
+        raises; returns True iff a payload was restored."""
+        restored = blob_lkg.load_json(PUNTOS_SOLICITADOS_LKG_BLOB, dict)
+        if restored is None:
+            return False
+        self._payload = restored
+        self._blob_hash = blob_lkg.payload_hash(restored)
+        return True
+
 
 def _joined_rows(cache: BuscarCache) -> list[dict]:
     """TTL-cached (via `cache`) ADDRESS-ONLY rows — one `load_reportes()`
