@@ -123,6 +123,19 @@ test.describe('Código de la edificación', () => {
   });
 });
 
+test.describe('Resiliencia ante cuota de Firestore agotada', () => {
+  test('2 fallas resource-exhausted al generar código se reintentan y el código se genera igual', async ({ page }) => {
+    const seed = defaultSeed();
+    seed.flags.getDocsFailQueue = ['resource-exhausted', 'resource-exhausted'];
+    await boot(page, seed);
+    await loginAndWaitForm(page);
+    await page.selectOption('#area', '1');
+    await page.click('#btn-codigo');
+    await expect(page.locator('#codigo-prefijo')).toHaveText('76001-1-004');
+    await expect(page.locator('#codigo-consecutivo')).toHaveValue('0001');
+  });
+});
+
 test.describe('Consecutivo derivado de registros', () => {
   test('con un salto en los registros previos, el siguiente código es 0004', async ({ page }) => {
     const seed = defaultSeed();

@@ -106,6 +106,14 @@ const MOCK_FIRESTORE = `
     return path.split('.').reduce(function (acc, key) { return acc == null ? acc : acc[key]; }, obj);
   }
   export function getDocs(q) {
+    // Same fail-queue shape as getDoc above, for form.js's evaluaciones
+    // query in siguienteConsecutivoSesion (the retryTransient consumer).
+    if (window.__fb.flags.getDocsFailQueue && window.__fb.flags.getDocsFailQueue.length) {
+      const code = window.__fb.flags.getDocsFailQueue.shift();
+      const e = new Error('mock-getdocs-fail: ' + code);
+      e.code = code;
+      return Promise.reject(e);
+    }
     const c = window.__fb.firestore[q._coll] || {};
     const docs = Object.keys(c)
       .filter(function (id) {

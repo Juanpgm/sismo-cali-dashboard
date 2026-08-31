@@ -91,24 +91,39 @@ function sleep(ms) {
   return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
 
-// Reads the inspector-profile doc with up to 3 attempts, retrying only
-// transient failures with backoff. A fatal classification (permission-denied,
-// not-found) is re-thrown immediately — retrying it would never succeed and
-// would only delay the sign-out.
-async function readProfileWithRetry(db, uid) {
+// Retries a Firestore call up to 3 attempts with backoff, but ONLY for
+// genuine Firestore errors (transient per clasificarErrorFirestore, e.g. a
+// `resource-exhausted` quota 429 — this project's recurring failure mode).
+// Anything without a `.code` (a plain app error, like onSubmit's own
+// 'codigo-duplicado') is not a Firestore error at all and is re-thrown
+// immediately — retrying it would never succeed and would only delay a
+// result the caller already knows how to handle. Originally just the
+// inspector-profile read below; generalized so form.js's own unretried
+// getDoc/getDocs/runTransaction calls (code generation, submit) share the
+// same resilience instead of surfacing quota exhaustion as a generic
+// "no se pudo enviar" error.
+export async function retryTransient(fn) {
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       // eslint-disable-next-line no-await-in-loop -- retries are inherently sequential
-      return await getDoc(doc(db, 'inspectores', uid));
+      return await fn();
     } catch (err) {
       lastErr = err;
-      if (clasificarErrorFirestore(err) === 'fatal') throw err;
+      if (!err || !err.code || clasificarErrorFirestore(err) === 'fatal') throw err;
       // eslint-disable-next-line no-await-in-loop -- backoff between retries is sequential by design
       if (attempt < 3) await sleep(backoffDelay(attempt));
     }
   }
   throw lastErr;
+}
+
+// Reads the inspector-profile doc with up to 3 attempts, retrying only
+// transient failures with backoff. A fatal classification (permission-denied,
+// not-found) is re-thrown immediately — retrying it would never succeed and
+// would only delay the sign-out.
+async function readProfileWithRetry(db, uid) {
+  return retryTransient(() => getDoc(doc(db, 'inspectores', uid)));
 }
 
 function friendlyError(err) {

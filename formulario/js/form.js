@@ -5,7 +5,7 @@
 // boundary, per design "import dedupe") instead of importing the gstatic
 // CDN modules a second time here.
 import {
-  initAuth, getApp, getDb, getAuth,
+  initAuth, getApp, getDb, getAuth, retryTransient,
   collection, doc, getDoc, getDocs, query, runTransaction, serverTimestamp, where,
 } from './auth.js';
 import {
@@ -937,7 +937,9 @@ async function siguienteConsecutivoSesion() {
   if (state.maxConsecutivo == null) {
     const db = getDb();
     const q = query(collection(db, 'evaluaciones'), where('inspector.uid', '==', state.inspector.uid));
-    const snap = await getDocs(q);
+    // retryTransient: a Firestore quota 429 (`resource-exhausted`) here must
+    // not surface as "no se pudo generar el código" on the first hiccup.
+    const snap = await retryTransient(() => getDocs(q));
     const codigos = [];
     snap.forEach((d) => codigos.push(d.id));
     state.maxConsecutivo = siguienteConsecutivo(codigos, state.inspector.codigo) - 1;
@@ -1184,7 +1186,7 @@ async function onSubmit(e) {
     // Friendly early guard: catch an existing code before spending time on
     // photo uploads. The create-only transaction below is the authoritative,
     // fail-closed backstop (also catches a race between two devices).
-    const preSnap = await getDoc(doc(db, 'evaluaciones', state.codigo));
+    const preSnap = await retryTransient(() => getDoc(doc(db, 'evaluaciones', state.codigo)));
     if (preSnap.exists()) throw new Error('codigo-duplicado');
 
     // Upload photos to S3 first (signer presigns per photo); URLs go inside
@@ -1239,12 +1241,15 @@ async function onSubmit(e) {
     if (state.asignacion && state.asignacion.clave_integracion) data.clave_integracion = state.asignacion.clave_integracion;
 
     // Create-only: the transaction fails if the doc already exists.
+    // retryTransient only retries a genuine Firestore error (`.code` set);
+    // 'codigo-duplicado' has none, so it still surfaces on the first hit —
+    // only a quota/transient failure around the transaction gets retried.
     const evalRef = doc(db, 'evaluaciones', state.codigo);
-    await runTransaction(db, async (tx) => {
+    await retryTransient(() => runTransaction(db, async (tx) => {
       const snap = await tx.get(evalRef);
       if (snap.exists()) throw new Error('codigo-duplicado');
       tx.set(evalRef, data);
-    });
+    }));
 
     // Fold the ACTUALLY saved consecutive into the session cache (max(), not
     // a blind assignment) so the next generated code derives from what was
