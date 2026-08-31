@@ -2527,6 +2527,106 @@ def test_asignar_grupo_radius_sweep_failure_never_fails_the_survey_side_write(mo
     assert resp.json()["stickers_asignados"] == 0
 
 
+# ── Pairing-key propagation (2026-08-31): asignarInspector / reasignarPunto
+# persist the SAME `clave_integracion`/`planeacion_punto_id` linkage the
+# grupo path already writes — linkage-only (never `grupo_id`, no radius
+# sweep), same fail-soft/first-link-wins helper. ─────────────────────────
+
+
+def test_asignar_inspector_propagates_pairing_keys_never_grupo_id(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_CUADRILLAS] = {"c1": {"puntos": ["p1"], "inspector_uid": None, "origen": "manual"}}
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1", "clave_integracion": "PLN-1-ABC"},
+    }
+    stores[STICKER_MATCHES] = {
+        "s1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1"},
+        # Within DEFAULT_MAX_RADIUS_M but NOT the exact twin: linkage-only
+        # propagation must skip the radius sweep entirely.
+        "s2": {"coords": {"lat": 3.4045, "lon": -76.50}, "direccion": "Otra calle sin relacion"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarInspector", "cuadrilla_id": "c1", "inspector_uid": "insp-1"},
+    )
+
+    assert resp.status_code == 200
+    assert stores[STICKER_MATCHES]["s1"]["clave_integracion"] == "PLN-1-ABC"
+    assert stores[STICKER_MATCHES]["s1"]["planeacion_punto_id"] == "p1"
+    assert "grupo_id" not in stores[STICKER_MATCHES]["s1"]
+    assert stores[STICKER_MATCHES]["s2"] == {"coords": {"lat": 3.4045, "lon": -76.50},
+                                             "direccion": "Otra calle sin relacion"}
+
+
+def test_asignar_inspector_does_not_overwrite_a_twin_linked_to_a_different_clave(monkeypatch):
+    """First-link-wins: a twin already carrying a DIFFERENT clave_integracion
+    is a different planeacion point's pairing -- never overwritten."""
+    stores = _stores()
+    stores[PLANEACION_CUADRILLAS] = {"c1": {"puntos": ["p1"], "inspector_uid": None, "origen": "manual"}}
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1", "clave_integracion": "PLN-NEW"},
+    }
+    stores[STICKER_MATCHES] = {
+        "s1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1", "clave_integracion": "PLN-OLD"},
+    }
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarInspector", "cuadrilla_id": "c1", "inspector_uid": "insp-1"},
+    )
+
+    assert resp.status_code == 200
+    assert stores[STICKER_MATCHES]["s1"]["clave_integracion"] == "PLN-OLD"
+    assert "planeacion_punto_id" not in stores[STICKER_MATCHES]["s1"]
+
+
+def test_asignar_inspector_succeeds_even_if_sticker_propagation_raises(monkeypatch):
+    """FAIL-SOFT: a sticker-side failure must NEVER fail the inspector
+    assignment that already committed."""
+    stores = _stores()
+    stores[PLANEACION_CUADRILLAS] = {"c1": {"puntos": ["p1"], "inspector_uid": None, "origen": "manual"}}
+    stores[PLANEACION_PUNTOS] = {"p1": {"coords": {"lat": 3.40, "lon": -76.50}}}
+    stores[STICKER_MATCHES] = {"s1": {"coords": {"lat": 3.40, "lon": -76.50}}}
+    client = _admin_client(monkeypatch, stores)
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("sticker store unavailable")
+
+    monkeypatch.setattr(pa, "_doc_to_dict", _boom)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarInspector", "cuadrilla_id": "c1", "inspector_uid": "insp-1"},
+    )
+
+    assert resp.status_code == 200
+    assert stores[PLANEACION_PUNTOS]["p1"]["inspector_uid"] == "insp-1"
+
+
+def test_reasignar_punto_propagates_pairing_keys_never_grupo_id(monkeypatch):
+    stores = _stores()
+    stores[PLANEACION_PUNTOS] = {
+        "p1": {"inspector_uid": "insp-old", "coords": {"lat": 3.40, "lon": -76.50},
+               "direccion": "Calle 1", "clave_integracion": "PLN-1-ABC"},
+    }
+    stores[STICKER_MATCHES] = {"s1": {"coords": {"lat": 3.40, "lon": -76.50}, "direccion": "Calle 1"}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "reasignarPunto", "punto_id": "p1", "nuevo_inspector_uid": "insp-new"},
+    )
+
+    assert resp.status_code == 200
+    assert stores[PLANEACION_PUNTOS]["p1"]["inspector_uid"] == "insp-new"
+    assert stores[STICKER_MATCHES]["s1"]["clave_integracion"] == "PLN-1-ABC"
+    assert stores[STICKER_MATCHES]["s1"]["planeacion_punto_id"] == "p1"
+    assert "grupo_id" not in stores[STICKER_MATCHES]["s1"]
+
+
 def test_desasignar_grupo_clears_only_grupo_id_keeps_linkage_on_twin(monkeypatch):
     stores = _stores()
     stores[PLANEACION_PUNTOS] = {

@@ -1220,6 +1220,78 @@ def test_tomar_punto_stamps_inspector_uid_and_asignado_en(monkeypatch):
     assert "asignado_en" in sticker["sk-1"]
 
 
+# ---- tomarPunto pairing-key propagation (2026-08-31) -----------------------
+# The twin claim copies `clave_integracion`/`planeacion_punto_id` across the
+# gemelo in BOTH directions (same two fields `_marcar_survey_hecho` already
+# writes), first-link-wins, so `misPuntos` returns a non-null clave and the
+# formulario can stamp the evaluación.
+
+
+def test_tomar_punto_planeacion_claim_stamps_pairing_keys_on_sticker_gemelo(monkeypatch):
+    sticker = {"sk-1": _sticker_punto(direccion="Calle 1 #2-3")}
+    planeacion = {"pl-1": _planeacion_punto(lat=BASE_LAT + 0.00001, direccion="Calle 1 #2-3")}
+    client = _cercanos_client(monkeypatch, sticker, planeacion)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "tomarPunto", "punto_id": "pl-1", "campana": "survey"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["asignados"] == {"survey": "pl-1", "sticker": "sk-1"}
+    assert sticker["sk-1"]["clave_integracion"] == "PLN-AAAAAA-11111111"
+    assert sticker["sk-1"]["planeacion_punto_id"] == "pl-1"
+
+
+def test_tomar_punto_sticker_claim_pulls_pairing_keys_from_planeacion_gemelo(monkeypatch):
+    sticker = {"sk-1": _sticker_punto(direccion="Calle 1 #2-3")}
+    planeacion = {"pl-1": _planeacion_punto(lat=BASE_LAT + 0.00001, direccion="Calle 1 #2-3")}
+    client = _cercanos_client(monkeypatch, sticker, planeacion)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "tomarPunto", "punto_id": "sk-1", "campana": "sticker"},
+    )
+
+    assert resp.status_code == 200
+    assert sticker["sk-1"]["clave_integracion"] == "PLN-AAAAAA-11111111"
+    assert sticker["sk-1"]["planeacion_punto_id"] == "pl-1"
+    # The planeacion side never receives its own id as a linkage field.
+    assert "planeacion_punto_id" not in planeacion["pl-1"]
+
+
+def test_tomar_punto_sin_gemelo_no_escribe_claves_de_pareo(monkeypatch):
+    sticker = {"sk-1": _sticker_punto(direccion="Calle 1 #2-3")}
+    client = _cercanos_client(monkeypatch, sticker)  # no planeacion store at all
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "tomarPunto", "punto_id": "sk-1", "campana": "sticker"},
+    )
+
+    assert resp.status_code == 200
+    assert "clave_integracion" not in sticker["sk-1"]
+    assert "planeacion_punto_id" not in sticker["sk-1"]
+
+
+def test_tomar_punto_first_link_wins_no_pisa_una_clave_distinta(monkeypatch):
+    """A sticker gemelo already linked to a DIFFERENT clave keeps its
+    linkage — the claim itself still succeeds."""
+    sticker = {"sk-1": _sticker_punto(direccion="Calle 1 #2-3", clave_integracion="PLN-OLD",
+                                      planeacion_punto_id="pl-otro")}
+    planeacion = {"pl-1": _planeacion_punto(lat=BASE_LAT + 0.00001, direccion="Calle 1 #2-3")}
+    client = _cercanos_client(monkeypatch, sticker, planeacion)
+
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "tomarPunto", "punto_id": "pl-1", "campana": "survey"},
+    )
+
+    assert resp.status_code == 200
+    assert sticker["sk-1"]["clave_integracion"] == "PLN-OLD"
+    assert sticker["sk-1"]["planeacion_punto_id"] == "pl-otro"
+
+
 # ---- marcarSurveyHecho -----------------------------------------------------
 # `survey-sticker-sync` change, Phase 2. `specs/survey-sticker-realtime-sync/
 # spec.md`'s full contract: marks the survey point `hecho` (own-uid or active

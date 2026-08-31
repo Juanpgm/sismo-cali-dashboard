@@ -763,10 +763,12 @@ def _tomar_punto(db: Any, uid: str, punto_id: str, campana: str) -> dict[str, An
 
         gemelo_ref = _buscar_gemelo(db, otra_campana, data)
         gemelo_id: str | None = None
+        gemelo_data: dict[str, Any] = {}
         if gemelo_ref is not None:
             gemelo_snap = gemelo_ref.get(transaction=transaction)
             if gemelo_snap.exists and _disponible(gemelo_snap.to_dict() or {}, otra_campana):
                 gemelo_id = gemelo_snap.id
+                gemelo_data = gemelo_snap.to_dict() or {}
 
         from google.cloud import firestore as _fs
 
@@ -782,10 +784,36 @@ def _tomar_punto(db: Any, uid: str, punto_id: str, campana: str) -> dict[str, An
             # collections in this transaction.
             "actualizado_en": _fs.SERVER_TIMESTAMP,
         }
-        transaction.set(ref, campos, merge=True)
+        # Pairing-key propagation (2026-08-31): copy `clave_integracion`/
+        # `planeacion_punto_id` across the twin so the formulario can stamp
+        # the evaluación — same two fields `_marcar_survey_hecho` already
+        # writes from this router. First-link-wins: only when the
+        # destination's existing clave is empty or equal.
+        campos_ref = dict(campos)
+        campos_gemelo = dict(campos)
+        if gemelo_id is not None:
+            if campana == CAMPANA_SURVEY:
+                # Planeación-claim: stamp the sticker gemelo with this
+                # point's own pairing keys.
+                existente = gemelo_data.get("clave_integracion")
+                clave = data.get("clave_integracion")
+                if not existente or existente == clave:
+                    campos_gemelo.update(
+                        {"clave_integracion": clave, "planeacion_punto_id": punto_id}
+                    )
+            else:
+                # Sticker-claim: pull the keys from the planeación gemelo
+                # into this sticker doc's own write.
+                existente = data.get("clave_integracion")
+                clave = gemelo_data.get("clave_integracion")
+                if not existente or existente == clave:
+                    campos_ref.update(
+                        {"clave_integracion": clave, "planeacion_punto_id": gemelo_id}
+                    )
+        transaction.set(ref, campos_ref, merge=True)
         asignados = {campana: punto_id}
         if gemelo_id is not None:
-            transaction.set(gemelo_ref, campos, merge=True)
+            transaction.set(gemelo_ref, campos_gemelo, merge=True)
             asignados[otra_campana] = gemelo_id
         return asignados
 

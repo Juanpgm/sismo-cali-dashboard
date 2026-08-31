@@ -64,6 +64,7 @@ from pathlib import Path
 
 from app.credentials import clients as credentials
 from app.integracion import runlog
+from app.integracion.coords import haversine_m
 from app.integracion.cruce_gestor import (addr_key, build_addr_index,
                                           match_by_direccion, nearest,
                                           _eval_latlon)
@@ -180,6 +181,9 @@ def fetch_evaluaciones(db, watermark=None) -> list[dict]:
             "CODIGO_EDIFICACION": e.get("codigo_edificacion") or doc.id,
             "Y": coords.get("lat"), "X": coords.get("lng"),
             "DIRECCION": desc.get("direccion") or "",
+            # Exact-key rung: the formulario stamps the sticker_matches doc id
+            # it was assigned from — when present, no geo/address cascade needed.
+            "sticker_match_id": e.get("sticker_match_id"),
         })
     return out
 
@@ -270,6 +274,23 @@ def _tier(dist_m: float | None, direccion_panel, direccion_sticker) -> str | Non
     return "sospechoso"
 
 
+def cruce_exacto(did: str, lat, lon, por_match_id: dict[str, dict]) -> dict | None:
+    """Exact-key rung, BEFORE the geo/address cascade: an evaluación whose
+    `sticker_match_id` names this very sticker_matches doc id is the
+    formulario's own app-minted pairing — matched directly, no cascade.
+    `sticker_dist_m` via haversine when both sides have coords, else None.
+    tier stays "alta" deliberately: status surfaces consume the 3-value enum
+    and an exact key is the strongest signal — no 4th value is minted.
+    Pure — no Firestore access, testable offline."""
+    e = por_match_id.get(did)
+    if e is None:
+        return None
+    dist_m = None
+    if lat is not None and lon is not None and e.get("Y") is not None and e.get("X") is not None:
+        dist_m = round(haversine_m((lat, lon), (e["Y"], e["X"])), 1)
+    return {"tiene_sticker": True, "sticker_dist_m": dist_m, "tier": "alta"}
+
+
 def cruce_sticker_punto(lat, lon, direccion, evaluaciones: list[dict],
                         addr_index: list[tuple[str, dict]]) -> dict:
     """Panel -> evaluaciones cascade: geo (<= MATCH_MAX_M) then address
@@ -342,6 +363,17 @@ def _selfcheck() -> None:
 
     r = cruce_sticker_punto(3.9, -76.9, "DG 99 # 1-1", evaluaciones, addr_index)  # neither signal
     assert not r["tiene_sticker"] and r["tier"] is None, r
+
+    # Exact-key rung: sticker_match_id names the doc id directly — matches
+    # even far away with no address agreement (tier stays "alta", 3-value
+    # enum); an id absent from the index falls through (None -> geo cascade).
+    por_match_id = {"ede_1234": {"CODIGO_EDIFICACION": "X", "Y": 3.4500, "X": -76.5600,
+                                 "DIRECCION": "DG 99 # 1-1", "sticker_match_id": "ede_1234"}}
+    r = cruce_exacto("ede_1234", 3.42, -76.53, por_match_id)
+    assert r["tiene_sticker"] and r["tier"] == "alta" and r["sticker_dist_m"] > MATCH_MAX_M, r
+    assert cruce_exacto("ede_9999", 3.42, -76.53, por_match_id) is None
+    r = cruce_exacto("ede_1234", None, None, por_match_id)  # sin coords -> dist None, match igual
+    assert r["tiene_sticker"] and r["sticker_dist_m"] is None and r["tier"] == "alta", r
 
     # (a) Re-run on an existing doc: the write dict never carries an
     # admin-owned key, so a merge:true set leaves estado_asignacion/
@@ -450,10 +482,12 @@ def run_cruce_sticker() -> dict:
           f"candidatos este run: {len(candidates)}")
 
     addr_index = build_addr_index(evaluaciones)
+    por_match_id = {e["sticker_match_id"]: e for e in evaluaciones if e.get("sticker_match_id")}
     to_write = []
     for p in candidates:
-        r = cruce_sticker_punto(p["lat"], p["lon"], p["direccion"], evaluaciones, addr_index)
         did = doc_id(p["fuente"], p["registro_id"])
+        r = (cruce_exacto(did, p["lat"], p["lon"], por_match_id)
+             or cruce_sticker_punto(p["lat"], p["lon"], p["direccion"], evaluaciones, addr_index))
         is_new = not state.get(did, {"exists": False})["exists"]
         if not r["tiene_sticker"] and not is_new:
             continue  # ya tenía doc 'pendiente'; sigue sin match -> nada cambió, no se reescribe

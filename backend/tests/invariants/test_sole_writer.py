@@ -120,6 +120,13 @@ ALLOWED_MODULES = {
     # framing at the top of this file (Slice 8/task 8.4) is superseded by
     # this later, explicit user decision. Flagged honestly here rather than
     # worked around, same precedent this whole file already follows.
+    # UPDATE (2026-08-31, pairing-key propagation): the propagating action
+    # set WIDENED — `asignarInspector` and `reasignarPunto` now also write
+    # the linkage keys (`clave_integracion`/`planeacion_punto_id`, never
+    # `grupo_id`) onto the sticker twin via the same fail-soft helper, and
+    # `inspector_asignaciones.py`'s `tomarPunto` copies the same two keys
+    # across the twin in both claim directions. No NEW writer modules —
+    # both routers were already annotated writers of this collection.
     APP_ROOT / "routers" / "planeacion_asignaciones.py",  # JSON key + twin-propagation writer, see note
     # `planeacion-auditoria` change (2026-08-26): same JSON-key-only reason as
     # the entry directly above — `planeacion_audit.py`'s `MUTATING_ACTIONS`

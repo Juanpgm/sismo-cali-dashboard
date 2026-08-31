@@ -339,3 +339,87 @@ def test_full_flag_bypasses_the_early_exit_gate(monkeypatch):
     assert "noop" not in summary
     assert "read_tiene_sticker_state" in calls
     assert fetch_watermarks == [None]
+
+
+# --- exact-key rung (2026-08-31): evaluaciones stamped with sticker_match_id
+# by the formulario match their sticker_matches doc DIRECTLY, before (and
+# regardless of) the geo/address cascade. -----------------------------------
+
+
+class _FakeEvalDoc:
+    def __init__(self, doc_id, data):
+        self.id = doc_id
+        self._data = data
+
+    def to_dict(self):
+        return dict(self._data)
+
+
+class _FakeEvalQuery:
+    def __init__(self, docs):
+        self._docs = docs
+
+    def order_by(self, field):
+        return self
+
+    def stream(self):
+        return iter(self._docs)
+
+
+class _FakeEvalDb:
+    def __init__(self, docs):
+        self._docs = docs
+
+    def collection(self, name):
+        assert name == job.EVALUACIONES_COLLECTION
+        return _FakeEvalQuery(self._docs)
+
+
+def test_fetch_evaluaciones_projects_sticker_match_id():
+    docs = [_FakeEvalDoc("EV-1", {
+        "codigo_edificacion": "EV-1",
+        "coords": {"lat": 3.42, "lng": -76.53},
+        "descripcion": {"direccion": "CL 1 # 2-3"},
+        "sticker_match_id": "ede_1234",
+    })]
+
+    out = job.fetch_evaluaciones(_FakeEvalDb(docs), watermark=None)
+
+    assert out[0]["sticker_match_id"] == "ede_1234"
+
+
+def test_cruce_exacto_wins_even_far_away_without_address_agreement():
+    """>40 m away AND no address agreement — the geo cascade would miss, but
+    the app-minted key names the doc, so the match lands (tier "alta",
+    3-value enum kept deliberately)."""
+    por_match_id = {"ede_1234": {"CODIGO_EDIFICACION": "X", "Y": 3.4500, "X": -76.5600,
+                                 "DIRECCION": "DG 99 # 1-1", "sticker_match_id": "ede_1234"}}
+
+    r = job.cruce_exacto("ede_1234", 3.42, -76.53, por_match_id)
+
+    assert r["tiene_sticker"] is True
+    assert r["tier"] == "alta"
+    assert r["sticker_dist_m"] > job.MATCH_MAX_M
+
+
+def test_cruce_exacto_dist_is_none_when_coords_are_missing():
+    por_match_id = {"ede_1234": {"CODIGO_EDIFICACION": "X", "Y": None, "X": None,
+                                 "DIRECCION": "", "sticker_match_id": "ede_1234"}}
+
+    r = job.cruce_exacto("ede_1234", 3.42, -76.53, por_match_id)
+
+    assert r["tiene_sticker"] is True and r["sticker_dist_m"] is None and r["tier"] == "alta"
+
+
+def test_cruce_exacto_falls_through_for_unkeyed_evaluacion():
+    """An evaluación without sticker_match_id never enters por_match_id —
+    the candidate falls through to the geo/address cascade unchanged."""
+    evaluaciones = _evaluaciones()  # no sticker_match_id on either
+    por_match_id = {e["sticker_match_id"]: e for e in evaluaciones if e.get("sticker_match_id")}
+
+    assert por_match_id == {}
+    assert job.cruce_exacto("ede_1234", 3.42, -76.53, por_match_id) is None
+    # ...and the geo cascade still behaves exactly as before.
+    addr_index = job.build_addr_index(evaluaciones)
+    r = job.cruce_sticker_punto(3.42001, -76.53001, "Calle 1 # 2-3", evaluaciones, addr_index)
+    assert r["tiene_sticker"] is True and r["tier"] == "alta"

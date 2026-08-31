@@ -1215,6 +1215,23 @@ def asignar_inspector(db: Any, body: dict[str, Any]) -> dict[str, Any]:
             merge=True,
         )
     batch.commit()
+
+    # Pairing-key propagation (2026-08-31): individual assignment persists the
+    # SAME `clave_integracion`/`planeacion_punto_id` linkage the grupo path
+    # already writes (`asignar_grupo_a_puntos`), so `misPuntos` returns a
+    # non-null clave and the formulario can stamp the evaluación. Linkage-only
+    # (`grupo_id=None`): no radius sweep. Best-effort, never fails the commit.
+    puntos_twin_data = [
+        {
+            "id": s.id,
+            "coords": (s.to_dict() or {}).get("coords"),
+            "direccion": (s.to_dict() or {}).get("direccion"),
+            "clave_integracion": (s.to_dict() or {}).get("clave_integracion"),
+        }
+        for s in punto_snaps
+        if s.exists and s.id in set(asignables)
+    ]
+    _propagar_grupo_a_stickers(db, None, puntos_twin_data)
     return {"id": cuadrilla_id, "asignados": len(asignables), "omitidos": len(locked)}
 
 
@@ -1270,6 +1287,16 @@ def reasignar_punto(db: Any, body: dict[str, Any]) -> dict[str, Any]:
 
     prev_inspector_uid = data.get("inspector_uid")
     ref.set(_with_actualizado({"inspector_uid": nuevo_inspector_uid, "reasignado_de": prev_inspector_uid}), merge=True)
+    # Pairing-key propagation, linkage-only — same rationale as
+    # `asignar_inspector`'s call above. Best-effort, never fails the write.
+    _propagar_grupo_a_stickers(db, None, [
+        {
+            "id": punto_id,
+            "coords": data.get("coords"),
+            "direccion": data.get("direccion"),
+            "clave_integracion": data.get("clave_integracion"),
+        }
+    ])
     return {"id": punto_id, "inspector_uid": nuevo_inspector_uid, "reasignado_de": prev_inspector_uid}
 
 
@@ -1732,15 +1759,19 @@ def _sticker_radius_libre(data: dict[str, Any]) -> bool:
     return True
 
 
-def _propagar_grupo_a_stickers(db: Any, grupo_id: str, puntos_data: list[dict[str, Any]]) -> int:
+def _propagar_grupo_a_stickers(db: Any, grupo_id: str | None, puntos_data: list[dict[str, Any]]) -> int:
     """Best-effort twin propagation onto `sticker_matches` — module
     docstring's "REVERSAL" section. Persists the pairing, not just the
     grupo: `grupo_id` + `clave_integracion` + `planeacion_punto_id`.
     Additionally sweeps every ELIGIBLE `sticker_matches` doc within
     `DEFAULT_MAX_RADIUS_M` of the point (survey-sticker-sync) — `grupo_id`
     ONLY, no capacity cap, first-link-wins shared with the exact twin via
-    `consumidos`. FAIL-SOFT: any error here (including the initial read)
-    must NEVER fail the survey-side assignment that already committed."""
+    `consumidos`. With `grupo_id=None` (linkage-only: `asignarInspector`/
+    `reasignarPunto`) the twin write carries ONLY the pairing keys
+    (`clave_integracion` + `planeacion_punto_id`) and the radius sweep is
+    skipped entirely — the sweep only ever spreads `grupo_id`. FAIL-SOFT:
+    any error here (including the initial read) must NEVER fail the
+    survey-side assignment that already committed."""
     try:
         candidatos = [_doc_to_dict(d) for d in db.collection(STICKER_MATCHES_COLLECTION).get()]
         consumidos: set[str] = set()
@@ -1752,12 +1783,16 @@ def _propagar_grupo_a_stickers(db: Any, grupo_id: str, puntos_data: list[dict[st
             twin = _encontrar_twin_sticker(p, libres)
             if twin is not None:
                 consumidos.add(twin["id"])
-                fields: dict[str, Any] = {"grupo_id": grupo_id, "planeacion_punto_id": p["id"]}
+                fields: dict[str, Any] = {"planeacion_punto_id": p["id"]}
+                if grupo_id is not None:
+                    fields["grupo_id"] = grupo_id
                 if clave:
                     fields["clave_integracion"] = clave
                 batch.set(db.collection(STICKER_MATCHES_COLLECTION).document(twin["id"]), fields, merge=True)
                 count += 1
 
+            if grupo_id is None:
+                continue  # linkage-only: sin radius sweep, el sweep solo esparce grupo_id
             coords_p = p.get("coords")
             if not coords_p:
                 continue
