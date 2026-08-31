@@ -135,6 +135,17 @@ _BUSCAR_TOP_N = 20
 # admin-created) and changes more often via admin create/edit/delete than
 # sticker coverage does, so staleness needs a tighter ceiling.
 PUNTOS_SOLICITADOS_CACHE_TTL_SECONDS = 60
+# Cooldown after a FAILED fetch (31-ago-2026 Firestore quota outage): the
+# frontend's scheduled auto-refresh is only every 5 min, but during the outage
+# Railway logs showed a request every ~20-40s — concurrent admin sessions plus
+# manual reloads — and each one re-attempted the full Firestore fetch (which
+# retries with backoff internally, taking seconds) before serving stale,
+# hammering the already-tripped rate limiter and logging a full traceback per
+# attempt for the whole outage. Within this window a failing cache serves what
+# it has (or fails fast on a truly cold cache) without touching Firestore; the
+# first request AFTER the window attempts a live fetch again, so recovery is
+# automatic once Firestore comes back.
+FETCH_FAIL_COOLDOWN_SECONDS = 60
 PUNTOS_SOLICITADOS_LKG_BLOB = "data/puntos_solicitados_last_good.json"  # last-known-good payload, see services/blob_lkg.py
 
 # `puntos_solicitados` required-field set (spec: "Admin-only creation with
@@ -343,6 +354,7 @@ class PuntosSolicitadosCache:
     def __init__(self) -> None:
         self._at: float | None = None
         self._payload: dict[str, Any] | None = None
+        self._failed_at: float | None = None  # monotonic time of the last FAILED fetch (cooldown gate)
         self._blob_hash: str | None = None  # hash of the last payload persisted to Blob
         self._persist_thread: threading.Thread | None = None  # last persist worker (tests join it)
 
@@ -354,11 +366,28 @@ class PuntosSolicitadosCache:
             or (now - self._at) > PUNTOS_SOLICITADOS_CACHE_TTL_SECONDS
         )
         if stale:
+            if (
+                self._failed_at is not None
+                and (now - self._failed_at) <= FETCH_FAIL_COOLDOWN_SECONDS
+            ):
+                # Failure cooldown (see FETCH_FAIL_COOLDOWN_SECONDS): don't
+                # re-attempt the fetch on every 20s poll while the last one
+                # just failed — serve what we have, or fail fast (503,
+                # retryable; the route re-raises HTTPException as-is) on a
+                # truly cold cache instead of a slow guaranteed failure.
+                if self._payload is not None:
+                    return self._payload
+                raise HTTPException(
+                    status_code=503,
+                    detail="Firestore no disponible, en pausa de reintentos tras un fallo reciente",
+                )
             try:
                 self._payload = fetch()
                 self._at = now
+                self._failed_at = None
                 self._persist_last_good()
             except Exception:
+                self._failed_at = now
                 # Serve-stale-on-error: a Firestore 429/ResourceExhausted
                 # degrading this route to a raw 502 is worse than showing a
                 # slightly-old puntos-solicitados list — the admin board has
@@ -420,8 +449,11 @@ class PuntosSolicitadosCache:
         `get_or_fetch` treats a `None` timestamp as stale and re-fetches, but
         keeps the last-good payload available to serve-stale if THAT
         re-fetch also hits a 429 (a mutation must never turn a working cache
-        into a cold one)."""
+        into a cold one). Also clears the failure cooldown: a write just
+        SUCCEEDED, so Firestore is reachable again and the next GET must
+        attempt a live fetch, not sit out the rest of the cooldown."""
         self._at = None
+        self._failed_at = None
 
     def seed_from_blob(self) -> bool:
         """Best-effort cold-start warm-up (31-ago-2026): a freshly-deployed

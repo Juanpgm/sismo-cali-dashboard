@@ -775,6 +775,80 @@ def test_get_or_fetch_blob_write_failure_never_breaks_the_request(monkeypatch):
     assert cache._blob_hash is None  # failed upload never advances the hash
 
 
+def test_get_or_fetch_failure_cooldown_serves_stale_without_refetching(monkeypatch):
+    """31-ago-2026 cooldown: after a failed fetch, the ~20s frontend polls
+    within the cooldown window must serve the stale payload WITHOUT
+    re-attempting the (slow, rate-limiter-hammering) Firestore fetch."""
+    from app.routers import puntos_solicitados as mod
+
+    cache = mod.PuntosSolicitadosCache()
+    clock = {"t": 0.0}
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock["t"])
+
+    good_payload = {"puntos": [{"id": "p1"}]}
+    assert cache.get_or_fetch(lambda: good_payload) == good_payload
+
+    clock["t"] += mod.PUNTOS_SOLICITADOS_CACHE_TTL_SECONDS + 1
+    calls: list[int] = []
+
+    def boom():
+        calls.append(1)
+        raise RuntimeError("429 Quota exceeded.")
+
+    assert cache.get_or_fetch(boom) == good_payload  # failure recorded, stale served
+    clock["t"] += 20  # a frontend poll, still inside the cooldown
+    assert cache.get_or_fetch(boom) == good_payload
+    assert len(calls) == 1  # the poll never touched Firestore
+
+
+def test_get_or_fetch_reattempts_a_live_fetch_after_the_cooldown_expires(monkeypatch):
+    """Recovery is automatic: the first request AFTER the cooldown window
+    attempts a live fetch again, no manual intervention needed."""
+    from app.routers import puntos_solicitados as mod
+
+    cache = mod.PuntosSolicitadosCache()
+    clock = {"t": 0.0}
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock["t"])
+
+    assert cache.get_or_fetch(lambda: {"puntos": [{"id": "p1"}]})["puntos"][0]["id"] == "p1"
+    clock["t"] += mod.PUNTOS_SOLICITADOS_CACHE_TTL_SECONDS + 1
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    cache.get_or_fetch(boom)  # trips the cooldown
+    clock["t"] += mod.FETCH_FAIL_COOLDOWN_SECONDS + 1
+
+    recovered = {"puntos": [{"id": "p2"}]}
+    assert cache.get_or_fetch(lambda: recovered) == recovered  # live fetch attempted again
+
+
+def test_cold_cache_failure_cooldown_fails_fast_without_refetching(monkeypatch):
+    """Cold start (no payload, nothing in Blob) within the cooldown: fail
+    fast with a 503 HTTPException — which the route re-raises as-is —
+    instead of re-running the doomed multi-second Firestore fetch."""
+    from app.routers import puntos_solicitados as mod
+
+    monkeypatch.setattr(mod.blob_lkg, "load_json", lambda pathname, expected_type: None)
+    cache = mod.PuntosSolicitadosCache()
+    clock = {"t": 0.0}
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock["t"])
+    calls: list[int] = []
+
+    def boom():
+        calls.append(1)
+        raise RuntimeError("429 Quota exceeded.")
+
+    with pytest.raises(RuntimeError, match="Quota exceeded"):
+        cache.get_or_fetch(boom)
+
+    clock["t"] += 20  # a frontend poll, still inside the cooldown
+    with pytest.raises(mod.HTTPException) as excinfo:
+        cache.get_or_fetch(boom)
+    assert excinfo.value.status_code == 503
+    assert len(calls) == 1  # the poll never touched Firestore
+
+
 # ── POST /geocode: any authenticated caller (Nominatim, no API key) ────────
 
 

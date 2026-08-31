@@ -38,6 +38,17 @@ from app.services import blob_lkg
 REQUIRED_CLIENTS: tuple[str, ...] = ("sismo",)
 
 CACHE_TTL_SECONDS = 5 * 60
+# Cooldown after a FAILED fetch (31-ago-2026 Firestore quota outage): the
+# frontend's scheduled auto-refresh is only every 15 min, but during the outage
+# Railway logs showed a request every ~20-40s — concurrent admin sessions plus
+# manual reloads — and each one re-attempted the full Firestore fetch (which
+# retries with backoff internally, taking seconds) before serving stale,
+# hammering the already-tripped rate limiter and logging a full traceback per
+# attempt for the whole outage. Within this window a failing cache serves what
+# it has (or fails fast on a truly cold cache) without touching Firestore; the
+# first request AFTER the window attempts a live fetch again, so recovery is
+# automatic once Firestore comes back.
+FETCH_FAIL_COOLDOWN_SECONDS = 60
 STICKER_STATUS_LKG_BLOB = "data/sticker_status_last_good.json"  # last-known-good payload, see services/blob_lkg.py
 
 
@@ -58,6 +69,7 @@ class StickerStatusCache:
     def __init__(self) -> None:
         self._at: float | None = None
         self._payload: dict[str, Any] | None = None
+        self._failed_at: float | None = None  # monotonic time of the last FAILED fetch (cooldown gate)
         self._blob_hash: str | None = None  # hash of the last payload persisted to Blob
         self._persist_thread: threading.Thread | None = None  # last persist worker (tests join it)
 
@@ -65,11 +77,28 @@ class StickerStatusCache:
         now = time.monotonic()
         stale = self._payload is None or self._at is None or (now - self._at) > CACHE_TTL_SECONDS
         if stale:
+            if (
+                self._failed_at is not None
+                and (now - self._failed_at) <= FETCH_FAIL_COOLDOWN_SECONDS
+            ):
+                # Failure cooldown (see FETCH_FAIL_COOLDOWN_SECONDS): don't
+                # re-attempt the fetch on every 20s poll while the last one
+                # just failed — serve what we have, or fail fast (503,
+                # retryable; the route re-raises HTTPException as-is) on a
+                # truly cold cache instead of a slow guaranteed failure.
+                if self._payload is not None:
+                    return self._payload
+                raise HTTPException(
+                    status_code=503,
+                    detail="Firestore no disponible, en pausa de reintentos tras un fallo reciente",
+                )
             try:
                 self._payload = fetch()
                 self._at = now
+                self._failed_at = None
                 self._persist_last_good()
             except Exception:
+                self._failed_at = now
                 # Serve-stale-on-error (30-ago-2026): a Firestore 429/
                 # ResourceExhausted degrading this route to a raw 502 is
                 # worse than showing slightly-old coverage numbers — the
