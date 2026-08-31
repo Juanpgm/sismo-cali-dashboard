@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import config
 from app.credentials import clients as credentials
 from app.routers import (
+    cruce_sticker,
     health,
     integracion,
     inspector_asignaciones,
@@ -52,6 +53,7 @@ _ROUTERS = (
     sticker_asignaciones,
     planeacion_asignaciones,
     planeacion_cruce,
+    cruce_sticker,
     survey_cali,
     usuarios,
     panel_representante,

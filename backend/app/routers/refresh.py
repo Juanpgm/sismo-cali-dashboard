@@ -19,12 +19,11 @@ what the frontend (`main.js`'s `triggerRefresh()`) already treats as
 before this change but the old endpoint never actually returned 409; it
 does now, no frontend change needed for this part).
 
-`cruce-sticker`/`cruce-gestion` are NOT absorbed into this backend yet (see
-`app/jobs/dashboard_refresh.py`'s own docstring) — they're still triggered
-the old Railway-redeploy way, best-effort and fail-soft: a hiccup there is
-surfaced in `errors` but never blocks the 202, because the in-process
-primary run is the thing the "Actualizar datos" button is actually waiting
-on (it polls `meta.json`, which only the primary run publishes).
+This endpoint used to ALSO best-effort-redeploy the `cruce-sticker`/
+`cruce-gestion` Railway cron adjuncts on every click. That machinery is
+gone (2026-08-31): both services were deleted from Railway (decision:
+cross-reference jobs run on-demand only, in-process — see
+`routers/cruce_sticker.py`), so the redeploys could only ever log errors.
 
 Frontend wiring: `web/js/api-config.js`'s `refresh` entry points here
 (`${RAILWAY_BASE_URL}/refresh`) per the per-endpoint parity-flip pattern
@@ -35,32 +34,14 @@ convention ADR-7 documents for `reportados`/`sticker-status`/etc.
 """
 from __future__ import annotations
 
-import os
 import threading
 import traceback
 from typing import Any
 
-import httpx
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from app.auth.deps import require_role
 from app.jobs.dashboard_refresh import run_refresh
-
-RAILWAY_API = "https://backboard.railway.com/graphql/v2"
-
-# The two NOT-YET-absorbed 15-min cron adjuncts in the `normalizador-sismo-
-# cali` Railway project (confirmed live 2026-08-26). `dashboard-refresh`
-# itself is no longer redeployed here — it runs in-process (see module
-# docstring).
-DEFAULT_STICKER_SERVICE_ID = "b18c74c8-0b7a-459c-ada5-5e5df6db8050"  # cruce-sticker
-DEFAULT_CRUCE_SERVICE_ID = "b4c8fd15-aa3b-4157-b787-2034c89a108b"    # cruce-gestion
-DEFAULT_ENVIRONMENT_ID = "4418f451-bd97-4d96-ba6e-b5ecbbd49c9b"
-
-REDEPLOY_MUTATION = """
-mutation($s: String!, $e: String!) {
-  serviceInstanceRedeploy(serviceId: $s, environmentId: $e)
-}
-"""
 
 router = APIRouter()
 
@@ -68,77 +49,6 @@ router = APIRouter()
 # clicks can't both slip past the 409 guard before either background task
 # starts), released by the background task once run_refresh() returns.
 _refresh_lock = threading.Lock()
-
-
-async def _railway_graphql(token: str, query: str, variables: dict[str, Any]) -> dict[str, Any]:
-    """Dual-header auth fallback, ported verbatim from `api/refresh.js`'s
-    `railway()` helper: Railway authenticates account/team tokens via
-    `Authorization: Bearer` and project tokens via the `Project-Access-Token`
-    header. Try Bearer first, fall back to the project header so either
-    token type works transparently — same convention
-    `integracion_F1/scripts/railway_setup.py`'s `gql()` uses."""
-    auth_headers = (
-        {"Authorization": f"Bearer {token}"},
-        {"Project-Access-Token": token},
-    )
-    last_error: str | None = None
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        for auth in auth_headers:
-            resp = await client.post(
-                RAILWAY_API,
-                json={"query": query, "variables": variables},
-                headers={
-                    "Content-Type": "application/json",
-                    "User-Agent": "sismo-cali-dashboard/1.0",
-                    **auth,
-                },
-            )
-            try:
-                body = resp.json()
-            except ValueError:
-                body = {}
-            if resp.status_code < 300 and not body.get("errors"):
-                return body.get("data") or {}
-            last_error = f"Railway API {resp.status_code}: {body.get('errors') or body}"
-    raise RuntimeError(last_error or "Railway API request failed")
-
-
-def _cron_adjuncts() -> list[tuple[str, str]]:
-    """(name, service_id) for the two 15-min crons NOT yet absorbed into this
-    backend. Each id is env-overridable, same fallback pattern the legacy
-    RAILWAY_*_SERVICE_ID vars used."""
-    return [
-        (
-            "cruce-sticker",
-            os.environ.get("RAILWAY_STICKER_SERVICE_ID", "").strip()
-            or DEFAULT_STICKER_SERVICE_ID,
-        ),
-        (
-            "cruce-gestion",
-            os.environ.get("RAILWAY_CRUCE_SERVICE_ID", "").strip()
-            or DEFAULT_CRUCE_SERVICE_ID,
-        ),
-    ]
-
-
-async def _redeploy_adjuncts() -> dict[str, str]:
-    """Best-effort redeploy of the two not-yet-absorbed crons. Returns a
-    name -> error-message map (empty when everything succeeded); never
-    raises — a Railway hiccup here must not affect the in-process primary
-    run this endpoint already dispatched."""
-    token = os.environ.get("RAILWAY_API_TOKEN", "").strip()
-    if not token:
-        return {"railway": "RAILWAY_API_TOKEN no configurado; cruce-sticker/cruce-gestion no se dispararon."}
-    environment_id = (
-        os.environ.get("RAILWAY_ENVIRONMENT_ID", "").strip() or DEFAULT_ENVIRONMENT_ID
-    )
-    errors: dict[str, str] = {}
-    for name, service_id in _cron_adjuncts():
-        try:
-            await _railway_graphql(token, REDEPLOY_MUTATION, {"s": service_id, "e": environment_id})
-        except Exception as exc:  # noqa: BLE001 - fail-soft adjunct
-            errors[name] = str(exc)
-    return errors
 
 
 def _run_refresh_and_release() -> None:
@@ -166,6 +76,4 @@ async def trigger_refresh(
     if not _refresh_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="Ya hay una actualización en curso.")
     background_tasks.add_task(_run_refresh_and_release)
-
-    errors = await _redeploy_adjuncts()
-    return {"ok": True, "errors": errors}
+    return {"ok": True, "errors": {}}

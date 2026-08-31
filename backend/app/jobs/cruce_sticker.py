@@ -422,9 +422,16 @@ def _selfcheck() -> None:
 
 
 # ── Pipeline (absorbed from the legacy module's `main()`) ──────────────────
-def run_cruce_sticker() -> dict:
+def run_cruce_sticker(*, dry: bool | None = None, full: bool | None = None) -> dict:
+    """`dry`/`full` default to the CLI flags when not given, so the cron
+    entrypoint keeps its exact argv contract while an in-process caller
+    (`routers/cruce_sticker.py`) can pass them as plain kwargs — same
+    dual-caller shape as `planeacion_cruce.run_planeacion_cruce`."""
+    if dry is None:
+        dry = "--dry" in sys.argv
+    if full is None:
+        full = "--full" in sys.argv
     top = int(sys.argv[sys.argv.index("--top") + 1]) if "--top" in sys.argv else None
-    full = "--full" in sys.argv
 
     panel = load_panel()
     if top is not None:
@@ -466,7 +473,7 @@ def run_cruce_sticker() -> dict:
             and state_doc.get("panel_hash") == panel_hash:
         print("cruce_sticker no-op: 0 evaluaciones nuevas y panel_hash sin cambios; "
               "salida temprana (sin read_tiene_sticker_state).")
-        if "--dry" in sys.argv:
+        if dry:
             print("[dry] sin escritura de last_checked_at")
         else:
             # --dry honors its "no Firestore write" contract even here.
@@ -508,7 +515,7 @@ def run_cruce_sticker() -> dict:
               "candidatos": len(candidates), "a_escribir": len(to_write),
               "nuevos_match": n_nuevos_match}
 
-    if "--dry" in sys.argv:
+    if dry:
         print(f"[dry] no Firestore write; {len(to_write)} docs listos para {STICKER_MATCHES_COLLECTION}")
         return summary
 

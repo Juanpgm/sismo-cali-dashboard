@@ -1,25 +1,25 @@
-"""Provision and configure the consolidated Railway job services
-(`dashboard-refresh` scheduled; `cruce-sticker`/`planeacion-cruce` dormant,
-on-demand only — see the SERVICES comment) on the consolidated backend image
+"""Provision and configure the consolidated Railway job fleet — now just
+`dashboard-refresh` (see the SERVICES comment: the two cruce jobs were
+DELETED from Railway 2026-08-31) on the consolidated backend image
 (design.md ADR-6, task 7.12).
 
 **Replaces `integracion_F1/scripts/railway_setup.py` as the source of
-truth for these two jobs only** — that script keeps owning
+truth for this job only** — that script keeps owning
 `normalizador`/`integracion-f3`/`asignaciones`/`cruce-gestion` (excluded
 from migration, see tasks.md 7.7/7.10/7.11) until their slice 9
 decommission. Port of the exact same drift-only pattern
 (LIST/INSTANCE/UPDATE GraphQL, `desired()` diff, dry-run), scoped to
-`SERVICES`'s two rows instead of the legacy fleet of six.
+`SERVICES`'s rows instead of the legacy fleet of six.
 
 Unlike `railway_setup.py`, every service here is GIT-CONNECTED (design.md
 ADR-1: same pinned `dockerfilePath = backend/Dockerfile`, root = repo root)
-— there is no `railway up --path-as-root .` step for these two jobs; code
-ships via git push, this script only owns `cronSchedule`/`startCommand`.
+— there is no `railway up --path-as-root .` step; code ships via git push,
+this script only owns `cronSchedule`/`startCommand`.
 
-    python backend/scripts/railway_services.py            # apply the two rows
+    python backend/scripts/railway_services.py            # apply SERVICES
     python backend/scripts/railway_services.py --show     # report only, change nothing
     python backend/scripts/railway_services.py --dry      # print the plan, create/update nothing
-    python backend/scripts/railway_services.py --only cruce-sticker   # one service
+    python backend/scripts/railway_services.py --only dashboard-refresh   # one service
 
 Auth: `RAILWAY_API_TOKEN` env var (project-scoped token, same convention
 `railway_setup.py`'s `_token()` used).
@@ -51,12 +51,13 @@ ENVIRONMENT_ID = "4418f451-bd97-4d96-ba6e-b5ecbbd49c9b"
 # (ground truth over any module docstring).
 EVERY_15 = "*/15 13-23,0 * * *"
 
-# Desired fleet. The two cruce jobs are DORMANT by decision (2026-08-31):
-# their automatic runs caused Firestore 429s and the app does not need them
-# to function — key-driven native state covers in-app flows in real time.
-# `cron: None` keeps them unscheduled; runs are on-demand only (POST
-# /planeacion-cruce/run, or a service redeploy which runs the job once).
-# Re-scheduling one is a deliberate edit of its `cron` here, not a rerun.
+# Desired fleet. The `cruce-sticker`/`planeacion-cruce` cron services were
+# DELETED from Railway (2026-08-31): their automatic runs caused Firestore
+# 429s and the app does not need them to function — key-driven native state
+# covers in-app flows in real time. Cross-reference runs are on-demand only
+# now, in-process on the web service: POST /planeacion-cruce/run and POST
+# /cruce-sticker/run. Their rows are gone from SERVICES on purpose — a
+# script run would otherwise recreate the deleted services by name.
 SERVICES = [
     # Already provisioned (task 6.2's redeploy trigger already targets this
     # exact service_id) — this script repoints it from the legacy
@@ -64,16 +65,6 @@ SERVICES = [
     # on the consolidated image (git-connected, backend/Dockerfile).
     {"name": "dashboard-refresh", "start_command": "python -m app.jobs.dashboard_refresh",
      "cron": EVERY_15, "service_id": "156e97a2-596b-4861-95f4-4060dab408e2"},
-    # Dormant since 2026-08-31 (see fleet comment above). Previous schedule,
-    # if ever re-enabled: "7,22,37,52 13-23,0 * * *".
-    {"name": "cruce-sticker", "start_command": "python -m app.jobs.cruce_sticker",
-     "cron": None, "service_id": "b18c74c8-0b7a-459c-ada5-5e5df6db8050"},
-    # Dormant since 2026-08-31 (see fleet comment above). Previously managed
-    # by ad-hoc GraphQL mutations only (fase 0 cleanup); owned here now so a
-    # script run cannot silently resurrect its cron. Previous schedule, if
-    # ever re-enabled: "10,40 13-23,0 * * *".
-    {"name": "planeacion-cruce", "start_command": "python -m app.jobs.planeacion_cruce",
-     "cron": None, "service_id": "3db766ea-ac14-4922-bce5-1eacf3dd5bf1"},
 ]
 
 # builder: None (unset) lets Railway auto-detect the Dockerfile — same
