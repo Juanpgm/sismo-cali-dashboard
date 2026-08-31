@@ -65,6 +65,53 @@ _CODIGO_RE = re.compile(r"^\d{3}$")
 EVALUACIONES_CACHE_TTL_SECONDS = 5 * 60
 EVALUACIONES_LKG_BLOB = "data/evaluaciones_last_good.json"  # last-known-good payload, see services/blob_lkg.py
 
+INSPECTORES_CACHE_TTL_SECONDS = 5 * 60
+
+
+class InspectoresCache:
+    """Process-lifetime TTL cache for `list_inspectores`' roster payload —
+    same app.state / test-isolated pattern as `EvaluacionesCache` above.
+    `action:"list"` had NO cache at all (31-ago-2026 gap): every open of the
+    dashboard's roster picker (Puntos Solicitados' inspector dropdown,
+    Stickers tab) triggered `list_inspectores`'s own N Firestore reads (one
+    `where(inspector.uid==uid)` scan per inspector via `_registros_count`),
+    so a burst of opens during a Firestore-quota outage turned into a raw
+    502 `RESOURCE_EXHAUSTED` — same class of bug `EvaluacionesCache` above
+    and the Puntos Solicitados router's own list cache were built to close.
+
+    Deliberately NO Blob last-known-good persistence (unlike those two): the
+    roster carries cédula/nombre_completo, and the Blob store is PUBLIC
+    (`EvaluacionesCache`'s own RISK-001 comment) — persisting it there would
+    need a redaction allowlist that doesn't exist yet. In-memory serve-stale
+    already fixes the reported 502; a cold-start (fresh deploy mid-outage)
+    still 502s once, same as before this fix."""
+
+    def __init__(self) -> None:
+        self._at: float | None = None
+        self._payload: list[dict[str, Any]] | None = None
+
+    def get_or_fetch(self, fetch: Any) -> list[dict[str, Any]]:
+        now = time.monotonic()
+        stale = self._payload is None or self._at is None or (now - self._at) > INSPECTORES_CACHE_TTL_SECONDS
+        if stale:
+            try:
+                self._payload = fetch()
+                self._at = now
+            except Exception:
+                if self._payload is None:
+                    raise
+                logging.exception("inspectores: fetch fallo, sirviendo el ultimo payload en cache (stale)")
+        assert self._payload is not None
+        return self._payload
+
+    def invalidate(self) -> None:
+        """Post-mutation invalidation (create/setEnabled) so an admin's own
+        change to the roster shows up on the next list call instead of
+        waiting out the TTL — same `PuntosSolicitadosCache.invalidate()`
+        idea. Clears only the timestamp, keeping the last-good payload
+        available to serve-stale if the forced re-fetch also hits a 429."""
+        self._at = None
+
 
 class EvaluacionesCache:
     """Process-lifetime 5-min TTL cache for the flattened evaluaciones list —
@@ -451,23 +498,28 @@ class StickersRequest(BaseModel):
 
 @router.post("/stickers")
 def stickers(
+    request: Request,
     body: StickersRequest,
     claims: dict[str, Any] = Depends(require_role("admin")),
 ) -> JSONResponse:
     sismo = credentials.sismo()
     db, app = sismo.firestore, sismo.app
     payload = body.model_dump()
+    cache: InspectoresCache = request.app.state.stickers_inspectores_cache
 
     try:
         if body.action == "list":
-            return JSONResponse({"ok": True, "inspectores": list_inspectores(db, app)})
+            inspectores = cache.get_or_fetch(lambda: list_inspectores(db, app))
+            return JSONResponse({"ok": True, "inspectores": inspectores})
         if body.action == "evaluaciones":
             return JSONResponse({"ok": True, "evaluaciones": list_evaluaciones(db)})
         if body.action == "create":
             result = create_inspector(db, app, payload)
+            cache.invalidate()
             return JSONResponse({"ok": True, **result}, status_code=201)
         if body.action == "setEnabled":
             result = set_enabled(db, app, payload)
+            cache.invalidate()
             return JSONResponse({"ok": True, **result})
         raise bad_request(f"Acción desconocida: {body.action}")
     except HTTPException:

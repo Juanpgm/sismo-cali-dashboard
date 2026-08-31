@@ -35,7 +35,7 @@ from app.routers import (
 )
 from app.routers.planeacion_asignaciones import PlaneacionAggregatesCache, PlaneacionPuntosSnapshot
 from app.routers.puntos_solicitados import BuscarCache, PuntosSolicitadosCache
-from app.routers.stickers import EvaluacionesCache
+from app.routers.stickers import EvaluacionesCache, InspectoresCache
 from app.routers.sticker_status import StickerStatusCache
 from app.services.snapshot import ReportadosSnapshot, refresh_loop, seed_from_blob
 
@@ -126,6 +126,10 @@ def create_app() -> FastAPI:
     # follow-up 2026-08-29; moves the Evaluaciones tab's full-collection read
     # off Vercel onto this cached backend route).
     app.state.stickers_evaluaciones_cache = EvaluacionesCache()
+
+    # Same convention — stickers.py's roster (`action:"list"`) cache
+    # (31-ago-2026 quota-outage follow-up: this action had no cache at all).
+    app.state.stickers_inspectores_cache = InspectoresCache()
 
     # Same convention, `planeacion_asignaciones.py`'s own `resumen`/
     # `metricasProgreso` aggregate cache (speed follow-up, 2026-08-27).

@@ -176,9 +176,11 @@ class _FakeAuth:
         self.create_calls: list[tuple[str, str]] = []
         self.delete_calls: list[str] = []
         self.update_calls: list[tuple[str, bool]] = []
+        self.list_users_calls = 0
         self.fail_create: Exception | None = None
 
     def list_users(self, max_results: int = 1000, app: Any = None) -> _FakeListUsersPage:
+        self.list_users_calls += 1
         return _FakeListUsersPage(list(self._users.values()))
 
     def create_user(self, *, email: str, password: str, app: Any = None) -> _FakeUserRecord:
@@ -323,6 +325,62 @@ def test_admin_list_returns_inspectores_sorted_by_cedula(monkeypatch):
     assert by_cedula["1000000000"]["registrado"] is False
     assert by_cedula["1000000000"]["disabled"] is True
     assert by_cedula["1000000000"]["activo"] is True  # missing doc -> counts active
+
+
+def test_admin_list_is_cached_across_requests(monkeypatch):
+    """31-ago-2026 quota-outage follow-up: `action:"list"` had no cache at
+    all, so every roster picker open re-ran `list_users` (plus one Firestore
+    read per inspector). A second `list` call within the TTL must not hit
+    `fb_auth.list_users` again."""
+    fake_auth = _FakeAuth(users=[_FakeUserRecord("uid-1", "1000000000@sismocali.gov.co")])
+    client = _admin_client(monkeypatch, fake_auth, {"inspectores": {}, "evaluaciones": {}})
+
+    client.post("/stickers", json={"action": "list"})
+    client.post("/stickers", json={"action": "list"})
+
+    assert fake_auth.list_users_calls == 1
+
+
+def test_admin_list_cache_is_invalidated_after_mutation(monkeypatch):
+    """An admin's own `create`/`setEnabled` must show up on the very next
+    `list` call, not wait out the TTL."""
+    fake_auth = _FakeAuth(users=[_FakeUserRecord("uid-1", "1000000000@sismocali.gov.co")])
+    client = _admin_client(monkeypatch, fake_auth, {"inspectores": {}, "evaluaciones": {}})
+
+    client.post("/stickers", json={"action": "list"})
+    client.post("/stickers", json={"action": "setEnabled", "uid": "uid-1", "enabled": False})
+    client.post("/stickers", json={"action": "list"})
+
+    assert fake_auth.list_users_calls == 2  # list, then re-fetched after the mutation
+
+
+def test_inspectores_cache_serves_stale_payload_when_a_later_fetch_fails(monkeypatch):
+    clock = {"t": 0.0}
+    good_payload = [{"cedula": "1000000000"}]
+
+    cache = stickers.InspectoresCache()
+    monkeypatch.setattr(stickers.time, "monotonic", lambda: clock["t"])
+
+    result = cache.get_or_fetch(lambda: good_payload)
+    assert result == good_payload
+
+    clock["t"] += stickers.INSPECTORES_CACHE_TTL_SECONDS + 1  # force staleness
+
+    def boom():
+        raise RuntimeError("8 RESOURCE_EXHAUSTED: Quota exceeded.")
+
+    result_during_outage = cache.get_or_fetch(boom)
+    assert result_during_outage == good_payload  # served stale, no 502
+
+
+def test_inspectores_cache_still_raises_on_a_cold_cache_with_no_prior_success(monkeypatch):
+    cache = stickers.InspectoresCache()
+
+    def boom():
+        raise RuntimeError("8 RESOURCE_EXHAUSTED: Quota exceeded.")
+
+    with pytest.raises(RuntimeError):
+        cache.get_or_fetch(boom)
 
 
 def test_admin_evaluaciones_returns_flattened_list(monkeypatch):
