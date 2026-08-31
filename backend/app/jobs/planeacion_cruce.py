@@ -154,6 +154,7 @@ import logging
 import os
 import re
 import sys
+import tempfile
 import time
 import traceback
 from datetime import datetime, timezone
@@ -171,6 +172,11 @@ REQUIRED_CLIENTS: tuple[str, ...] = ("sismo",)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 REPORTES_JSON = REPO_ROOT / "web" / "data" / "reportes.json"
+
+DEPLOY_DIR = REPO_ROOT / "deploy"
+if str(DEPLOY_DIR) not in sys.path:
+    sys.path.insert(0, str(DEPLOY_DIR))
+import blob_sync  # noqa: E402  (path must be set up first)
 
 PLANEACION_PUNTOS_COLLECTION = "planeacion_puntos"
 # feature D: israel "done" source, READ-ONLY here. Mirrored into the sismo
@@ -191,6 +197,13 @@ from app.services.survey_cali import SURVEY_CALI_COLLECTION  # noqa: E402
 from app.jobs.cruce_sticker import EVALUACIONES_COLLECTION  # noqa: E402
 
 STATE_DOC = "_meta/planeacion_cruce_state"  # {"last_run_at": Timestamp} — incremental watermark
+# Durable "known-resolved" cache (doc_ids already tiene_survey=True as of the
+# last real run), published to Blob NOT the Firestore state doc: the full
+# ~14.8k doc_id array is ~800KB and grows daily, too close to Firestore's
+# ~1MiB per-document cap — and Blob doesn't consume the Firestore read quota
+# this whole fix exists to protect. Same substrate/fail-open precedent as
+# dashboard_refresh.py's contact-hash diff-gate map.
+_RESOLVED_BLOB = "data/planeacion_cruce_resolved.json"
 BATCH_SIZE = 500  # Firestore batch-write / getAll chunk limit
 # `read_punto_state` fires one get_all() per BATCH_SIZE chunk. Over the full
 # ~14.8k-doc planeacion_puntos collection that is ~30 chunks — with zero
@@ -983,6 +996,58 @@ def read_last_checked(db):
     return (doc.to_dict() or {}).get("last_checked_at")
 
 
+def load_resolved_cache() -> set[str]:
+    """doc_ids confirmed tiene_survey=True as of the last real run, from Blob
+    (see `_RESOLVED_BLOB`). Returns an EMPTY set on ANY failure (missing blob,
+    network, malformed/wrong-shaped JSON, missing token, timeout) so the
+    caller falls back to reading every doc_id — exactly today's behavior. A
+    Blob problem can only ever revert to the full read, NEVER cause a wrong
+    match: the cache is a pure read-reduction optimization, never a source of
+    truth for matching."""
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        if not blob_sync.download(_RESOLVED_BLOB, tmp):
+            return set()  # 404 -> first run, no cache yet
+        data = json.loads(Path(tmp).read_text(encoding="utf-8"))
+        if not isinstance(data, list) or not all(isinstance(x, str) for x in data):
+            print(f"  planeacion_cruce: cache resuelta de Blob con forma inválida "
+                  f"({type(data).__name__}); uso lectura completa (fallback).")
+            return set()
+        return set(data)
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - fallback is full read
+        print(f"  planeacion_cruce: no pude leer la cache resuelta de Blob ({exc}); "
+              f"uso lectura completa (fallback).")
+        return set()
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def publish_resolved_cache(ids: set[str]) -> None:
+    """Best-effort republish of the known-resolved doc_id set after a
+    successful real run. On failure the next run just fails open (full read),
+    so this is non-critical — swallow and log in Spanish, never raise."""
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
+            json.dump(sorted(ids), fh)
+            tmp = fh.name
+        blob_sync.upload(tmp, _RESOLVED_BLOB, 0, "application/json")
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - non-critical, next run fails open
+        print(f"  planeacion_cruce: no pude publicar la cache resuelta ({exc}); no es crítico.")
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
 def read_punto_state(db, doc_ids: list[str]) -> dict:
     """{doc_id: {'exists','tiene_survey','clave_integracion',
     'estado_asignacion'}} via batched, PROJECTED `get_all` — cheap
@@ -1169,9 +1234,27 @@ def run_planeacion_cruce(top: int | None = None, dry: bool = False, full: bool =
                 "candidatos": 0, "a_escribir": 0}
 
     doc_ids = [doc_id(p["fuente"], p["registro_id"]) for p in puntos]
-    state = read_punto_state(db, doc_ids)
+    # Read-reduction (30-ago-2026): only get_all() the doc_ids that could
+    # plausibly change state this run — i.e. NOT already known-resolved
+    # (tiene_survey=True) from the durable Blob cache. A resolved point is
+    # never a candidate (select_candidates excludes tiene_survey=True) and
+    # never re-matched, so skipping its read is behavior-preserving: we
+    # synthesize its state entry as resolved below (consumed only by the
+    # ya_con_survey stat and candidacy exclusion). --full ignores the cache
+    # entirely and re-reads everything, preserving the "--full re-selects
+    # every point" contract. First run / Blob failure -> empty cache -> reads
+    # everything, exactly the pre-cache behavior.
+    known_resolved = set() if full else load_resolved_cache()
+    ids_to_check = [d for d in doc_ids if d not in known_resolved]
+    state = read_punto_state(db, ids_to_check)
+    for d in doc_ids:
+        if d not in state:  # skipped as known-resolved -> synthesize
+            state[d] = {"exists": True, "tiene_survey": True,
+                        "clave_integracion": None, "estado_asignacion": None}
     ya_con_survey = sum(1 for s in state.values() if s["tiene_survey"])
     candidates = select_candidates(puntos, state, full=full)
+    print(f"read-reduction: {len(doc_ids)} doc_ids, {len(doc_ids) - len(ids_to_check)} "
+          f"omitidos por cache resuelta, {len(ids_to_check)} leídos por read_punto_state")
     print(f"Puntos: {len(puntos)} | ya con survey (sin re-escanear): {ya_con_survey} | "
           f"candidatos este run: {len(candidates)}")
 
@@ -1240,6 +1323,16 @@ def run_planeacion_cruce(top: int | None = None, dry: bool = False, full: bool =
     write_state(db, now, summary, full=full,
                puntos_hash=puntos_hash, evaluaciones_count=evaluaciones_count,
                israel_count=israel_count)
+    # Refresh the durable known-resolved cache for next run: every doc_id now
+    # tiene_survey=True (already-resolved synthesized/read True, plus points
+    # that matched THIS run), intersected with the live universe so the cache
+    # stays bounded and never accumulates ids that dropped out of
+    # load_puntos(). A --full run rebuilds it from a complete read (self-heals
+    # any drift). Best-effort; a publish failure just makes next run fail open.
+    live = set(doc_ids)
+    resolved_now = {d for d, s in state.items() if s.get("tiene_survey")}
+    resolved_now |= {doc_id(x["fuente"], x["registro_id"]) for x in to_write if x["tiene_survey"]}
+    publish_resolved_cache(resolved_now & live)
     print(f"escritos {n} docs -> {db.project}/{PLANEACION_PUNTOS_COLLECTION}; "
           f"watermark avanzado a {now.isoformat()}")
     summary["escritos"] = n

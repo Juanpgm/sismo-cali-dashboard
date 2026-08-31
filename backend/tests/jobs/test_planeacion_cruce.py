@@ -998,6 +998,8 @@ def test_run_executes_fully_when_puntos_hash_changed(monkeypatch):
     write_state_calls = []
     monkeypatch.setattr(job, "write_state",
                         lambda db, now, summary, **kw: write_state_calls.append(kw))
+    monkeypatch.setattr(job, "load_resolved_cache", lambda: set())
+    monkeypatch.setattr(job, "publish_resolved_cache", lambda ids: None)
 
     summary = job.run_planeacion_cruce()
 
@@ -1034,6 +1036,8 @@ def test_run_executes_fully_when_new_surveys_arrive(monkeypatch):
     monkeypatch.setattr(job, "fetch_israel", lambda db: calls.append("fetch_israel") or [])
     monkeypatch.setattr(job, "write_planeacion_puntos", lambda db, ops: len(ops))
     monkeypatch.setattr(job, "write_state", lambda db, now, summary, **kw: None)
+    monkeypatch.setattr(job, "load_resolved_cache", lambda: set())
+    monkeypatch.setattr(job, "publish_resolved_cache", lambda ids: None)
 
     summary = job.run_planeacion_cruce()
 
@@ -1066,6 +1070,8 @@ def test_run_executes_fully_when_israel_count_changes(monkeypatch):
     monkeypatch.setattr(job, "fetch_israel", lambda db: calls.append("fetch_israel") or [])
     monkeypatch.setattr(job, "write_planeacion_puntos", lambda db, ops: len(ops))
     monkeypatch.setattr(job, "write_state", lambda db, now, summary, **kw: None)
+    monkeypatch.setattr(job, "load_resolved_cache", lambda: set())
+    monkeypatch.setattr(job, "publish_resolved_cache", lambda ids: None)
 
     summary = job.run_planeacion_cruce()
 
@@ -1090,3 +1096,145 @@ def test_israel_count_reads_the_count_aggregate_shape():
             return _Col()
 
     assert job._israel_count(_Db()) == 101
+
+
+# ── read-reduction: known-resolved Blob cache narrows read_punto_state ─────
+
+
+def _puntos_minimos(*registro_ids: str) -> list[dict]:
+    """Minimal `load_puntos()`-shaped points, one per given registro_id —
+    reused across the read-reduction tests below."""
+    return [{"fuente": "atencionsismo", "registro_id": rid, "lat": 3.42, "lon": -76.53,
+             "direccion": f"CL {rid}", "barrio": None, "comuna": None, "coords": None,
+             "afectacion": None, "estado_verificacion": None, "tipo_inmueble": None,
+             "habitabilidad": None, "fecha_creacion": None}
+            for rid in registro_ids]
+
+
+def _setup_read_reduction_run(monkeypatch, puntos, *, cache_ids, state_by_id=None):
+    """Common monkeypatching for the read-reduction tests: the gate never
+    early-exits (stale `puntos_hash`), no surveys/evaluaciones/israel, and
+    `read_punto_state`/`write_planeacion_puntos` are recorded rather than
+    hitting Firestore. `load_resolved_cache` returns `cache_ids`;
+    `publish_resolved_cache` is a no-op by default (a test that needs to
+    inspect the published set overrides it AFTER calling this helper).
+    Returns (ids_seen, ops_seen) — lists of, respectively, the doc_ids passed
+    to each `read_punto_state` call and the ops passed to each
+    `write_planeacion_puntos` call."""
+    when = datetime(2026, 8, 28, tzinfo=timezone.utc)
+    state_by_id = state_by_id or {}
+
+    monkeypatch.setattr(job, "load_puntos", lambda: puntos)
+    monkeypatch.setattr(job.credentials, "sismo",
+                        lambda: type("C", (), {"firestore": _FakeGateDb(7)})())
+    monkeypatch.setattr(job, "read_state", lambda db: {
+        "last_run_at": when, "puntos_hash": "stale-hash", "evaluaciones_count": 7,
+        "israel_count": 3,
+    })
+    monkeypatch.setattr(job, "fetch_surveys", lambda db, watermark: [])
+    monkeypatch.setattr(job, "_evaluaciones_count", lambda db: 7)
+    monkeypatch.setattr(job, "_israel_count", lambda db: 3)
+    monkeypatch.setattr(job, "fetch_evaluaciones", lambda db: [])
+    monkeypatch.setattr(job, "fetch_israel", lambda db: [])
+    monkeypatch.setattr(job, "write_state", lambda db, now, summary, **kw: None)
+    monkeypatch.setattr(job, "load_resolved_cache", lambda: set(cache_ids))
+    monkeypatch.setattr(job, "publish_resolved_cache", lambda ids: None)
+
+    ids_seen: list[list[str]] = []
+
+    def _fake_read_punto_state(db, ids):
+        ids_seen.append(list(ids))
+        default = {"exists": False, "tiene_survey": False,
+                   "clave_integracion": None, "estado_asignacion": None}
+        return {d: dict(state_by_id.get(d, default)) for d in ids}
+
+    monkeypatch.setattr(job, "read_punto_state", _fake_read_punto_state)
+
+    ops_seen: list[list[tuple[str, dict]]] = []
+
+    def _fake_write_ops(db, ops):
+        ops_seen.append(ops)
+        return len(ops)
+
+    monkeypatch.setattr(job, "write_planeacion_puntos", _fake_write_ops)
+
+    return ids_seen, ops_seen
+
+
+def test_first_run_empty_cache_reads_all_ids(monkeypatch):
+    puntos = _puntos_minimos("1", "2")
+    ids_seen, _ = _setup_read_reduction_run(monkeypatch, puntos, cache_ids=set())
+
+    job.run_planeacion_cruce()
+
+    expected = {job.doc_id("atencionsismo", "1"), job.doc_id("atencionsismo", "2")}
+    assert set(ids_seen[0]) == expected
+
+
+def test_second_run_only_rechecks_unresolved_ids(monkeypatch):
+    puntos = _puntos_minimos("1", "2")
+    cache = {job.doc_id("atencionsismo", "1")}
+    ids_seen, _ = _setup_read_reduction_run(monkeypatch, puntos, cache_ids=cache)
+
+    job.run_planeacion_cruce()
+
+    assert sorted(ids_seen[0]) == sorted([job.doc_id("atencionsismo", "2")])
+
+
+def test_newly_resolved_point_is_published_to_cache(monkeypatch):
+    puntos = _puntos_minimos("2")
+    did2 = job.doc_id("atencionsismo", "2")
+    state_by_id = {did2: {"exists": True, "tiene_survey": True,
+                          "clave_integracion": None, "estado_asignacion": None}}
+    _setup_read_reduction_run(monkeypatch, puntos, cache_ids=set(), state_by_id=state_by_id)
+
+    published = []
+    monkeypatch.setattr(job, "publish_resolved_cache", lambda ids: published.append(ids))
+
+    job.run_planeacion_cruce()
+
+    assert published, "publish_resolved_cache must be called on a real (non-dry) run"
+    assert did2 in published[-1]
+
+
+def test_full_run_ignores_cache_and_reads_everything(monkeypatch):
+    puntos = _puntos_minimos("1", "2")
+    cache = {job.doc_id("atencionsismo", "1")}
+    ids_seen, _ = _setup_read_reduction_run(monkeypatch, puntos, cache_ids=cache)
+
+    def _must_not_be_called():
+        raise AssertionError("load_resolved_cache must not be consulted on --full")
+    monkeypatch.setattr(job, "load_resolved_cache", _must_not_be_called)
+
+    job.run_planeacion_cruce(full=True)
+
+    expected = {job.doc_id("atencionsismo", "1"), job.doc_id("atencionsismo", "2")}
+    assert set(ids_seen[0]) == expected
+
+
+def test_resolved_cached_point_is_never_a_candidate_or_rewritten(monkeypatch):
+    """Correctness-critical: a point the cache says is already resolved must
+    never appear in a write op — otherwise the auto-close exception in
+    `build_write_ops` could silently touch its `estado_asignacion` (or a
+    future rung could try to re-match/overwrite it) even though it was never
+    re-read this run."""
+    puntos = _puntos_minimos("1", "2")
+    did1 = job.doc_id("atencionsismo", "1")
+    cache = {did1}
+    _, ops_seen = _setup_read_reduction_run(monkeypatch, puntos, cache_ids=cache)
+
+    job.run_planeacion_cruce()
+
+    written_ids = {did for ops in ops_seen for did, _ in ops}
+    assert did1 not in written_ids
+
+
+def test_brand_new_point_not_in_cache_is_checked(monkeypatch):
+    puntos = _puntos_minimos("1", "2", "3")
+    cache = {job.doc_id("atencionsismo", "1")}
+    ids_seen, _ = _setup_read_reduction_run(monkeypatch, puntos, cache_ids=cache)
+
+    job.run_planeacion_cruce()
+
+    expected = {job.doc_id("atencionsismo", "2"), job.doc_id("atencionsismo", "3")}
+    assert set(ids_seen[0]) == expected
