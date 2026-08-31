@@ -52,7 +52,8 @@ def _store_id(token: str) -> str:
     return parts[3].lower()
 
 
-def upload(local_path: str, pathname: str, max_age: int, content_type: str | None) -> str:
+def upload(local_path: str, pathname: str, max_age: int, content_type: str | None,
+           timeout: int = 120) -> str:
     token = _token()
     with open(local_path, "rb") as fh:
         body = fh.read()
@@ -73,7 +74,7 @@ def upload(local_path: str, pathname: str, max_age: int, content_type: str | Non
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=120) as res:
+        with urllib.request.urlopen(req, timeout=timeout) as res:
             payload = json.loads(res.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")[:500]
@@ -82,11 +83,11 @@ def upload(local_path: str, pathname: str, max_age: int, content_type: str | Non
     return payload.get("url") or PUBLIC_HOST_TMPL.format(store=_store_id(token), pathname=pathname)
 
 
-def download(pathname: str, local_path: str) -> bool:
+def download(pathname: str, local_path: str, timeout: int = 120) -> bool:
     token = _token()
     url = PUBLIC_HOST_TMPL.format(store=_store_id(token), pathname=pathname)
     try:
-        with urllib.request.urlopen(url, timeout=120) as res:
+        with urllib.request.urlopen(url, timeout=timeout) as res:
             data = res.read()
     except urllib.error.HTTPError as e:
         if e.code == 404:

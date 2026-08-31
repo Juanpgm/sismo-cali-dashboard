@@ -47,6 +47,15 @@ FAKE_CLAIMS_ADMIN = {"sub": UID_ADMIN, "email": "admin@example.com", "role": "ad
 FAKE_CLAIMS_VIEWER = {"sub": "uid-viewer", "email": "someone@gmail.com"}
 
 
+@pytest.fixture(autouse=True)
+def _no_blob_token(monkeypatch):
+    """Hermetic guard: a real BLOB_READ_WRITE_TOKEN in the dev environment
+    must never let the cache's fire-and-forget Blob persistence attempt a
+    real upload during tests (tests that exercise the Blob path set the env
+    var and fake `blob_sync` themselves)."""
+    monkeypatch.delenv("BLOB_READ_WRITE_TOKEN", raising=False)
+
+
 # ── Fake Firestore (in-memory dict, keyed by doc id within one collection
 # namespace) — same shape convention test_inspector_asignaciones.py uses,
 # extended with get_all() + transaction() (stickers.py's codigo-allocation
@@ -486,11 +495,12 @@ def test_evaluaciones_cache_serves_stale_payload_when_a_later_fetch_fails(monkey
     assert result_during_outage == good_payload  # served stale, no exception raised
 
 
-def test_evaluaciones_cache_still_raises_on_a_cold_cache_with_no_prior_success():
-    """The very first fetch in a fresh process (nothing to fall back to yet)
-    must still surface the real error — there is no stale payload to serve,
-    and silently returning a fake empty list would be more misleading than
-    a clear failure."""
+def test_evaluaciones_cache_still_raises_on_a_cold_cache_with_no_prior_success(monkeypatch):
+    """The very first fetch in a fresh process, with nothing in Blob either
+    (no last-known-good ever persisted), must still surface the real error —
+    there is nothing to serve, and silently returning a fake empty list
+    would be more misleading than a clear failure."""
+    monkeypatch.setattr(stickers.blob_lkg, "load_json", lambda pathname, expected_type: None)
     cache = stickers.EvaluacionesCache()
 
     def boom():
@@ -498,6 +508,126 @@ def test_evaluaciones_cache_still_raises_on_a_cold_cache_with_no_prior_success()
 
     with pytest.raises(RuntimeError, match="Quota exceeded"):
         cache.get_or_fetch(boom)
+
+
+def test_evaluaciones_cache_cold_start_falls_back_to_blob_last_good(monkeypatch):
+    """A COLD-start fetch failure (fresh process after a deploy, Firestore
+    still 429ing) must serve the Blob-persisted last-known-good payload
+    instead of raising — and adopt it as the in-process payload so later
+    behavior is normal serve-stale."""
+    blob_payload = [{"codigo_edificacion": "76001-1-0010001"}]
+    monkeypatch.setattr(stickers.blob_lkg, "load_json",
+                        lambda pathname, expected_type: blob_payload)
+    cache = stickers.EvaluacionesCache()
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    assert cache.get_or_fetch(boom) == blob_payload
+    # Adopted in-process: served again within TTL without touching Blob.
+    monkeypatch.setattr(stickers.blob_lkg, "load_json",
+                        lambda pathname, expected_type: None)
+    assert cache.get_or_fetch(boom) == blob_payload
+
+
+def test_evaluaciones_cache_cold_start_rejects_malformed_blob_payload(monkeypatch, tmp_path):
+    """A malformed/wrong-shaped Blob payload must fail to the raise path,
+    never be served as data (the `_load_contacto_hashes` malformed-Blob
+    precedent). Exercises the real `blob_lkg.load_json` validation with only
+    `blob_sync.download` faked."""
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "vercel_blob_rw_STORE_secret")
+
+    def fake_download(pathname, local, **kw):
+        from pathlib import Path
+        Path(local).write_text('{"not": "a list"}', encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(stickers.blob_lkg.blob_sync, "download", fake_download)
+    cache = stickers.EvaluacionesCache()
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    with pytest.raises(RuntimeError, match="Quota exceeded"):
+        cache.get_or_fetch(boom)
+
+
+def _join_persist(cache) -> None:
+    """The Blob persist runs on a daemon thread (off the request path);
+    tests join it so assertions on the uploaded payload are deterministic."""
+    if cache._persist_thread is not None:
+        cache._persist_thread.join()
+
+
+def test_evaluaciones_blob_copy_is_an_allowlist_projection(monkeypatch):
+    """The Blob store is public and its URL derivable, so the persisted copy
+    is an ALLOWLIST projection: never-public data classes (comentarios,
+    inspector.nombre_completo/identificacion, fotos) AND any unknown new
+    field are excluded by default (with shape-compatible placeholders), while
+    the in-process cache and the served payload stay complete."""
+    cache = stickers.EvaluacionesCache()
+    saves: list[Any] = []
+    monkeypatch.setattr(stickers.blob_lkg, "save_json",
+                        lambda pathname, payload: saves.append(payload) or True)
+
+    payload = [{"codigo_edificacion": "A", "municipio": "Cali",
+                "comentarios": "nota interna sensible",
+                "fotos": ["https://fotos/1.jpg"],
+                "campo_nuevo_inesperado": "no debe filtrarse",
+                "descripcion": {"nombre": "Edificio X", "direccion": "CL 1 # 2-3"},
+                "inspector": {"uid": "u1", "codigo": "004",
+                              "nombre_completo": "Ana", "identificacion": "12345678",
+                              "entidad": "DAGMA"}}]
+    served = cache.get_or_fetch(lambda: payload)
+    _join_persist(cache)
+
+    # Served payload: complete, input never mutated.
+    assert served[0]["comentarios"] == "nota interna sensible"
+    assert served[0]["inspector"]["nombre_completo"] == "Ana"
+    assert served[0]["inspector"]["identificacion"] == "12345678"
+    assert served[0]["campo_nuevo_inesperado"] == "no debe filtrarse"
+
+    # Uploaded copy: allowlist only, placeholders for the dropped fields.
+    uploaded = saves[0][0]
+    assert "campo_nuevo_inesperado" not in uploaded  # unknown field excluded by default
+    assert uploaded["comentarios"] == ""
+    assert uploaded["fotos"] == []
+    assert uploaded["inspector"]["nombre_completo"] == ""
+    assert uploaded["inspector"]["identificacion"] == ""
+    # Already-public data classes survive.
+    assert uploaded["codigo_edificacion"] == "A"
+    assert uploaded["municipio"] == "Cali"
+    assert uploaded["descripcion"] == {"nombre": "Edificio X", "direccion": "CL 1 # 2-3"}
+    assert uploaded["inspector"]["uid"] == "u1"
+    assert uploaded["inspector"]["codigo"] == "004"
+    assert uploaded["inspector"]["entidad"] == "DAGMA"
+
+
+def test_evaluaciones_cache_persists_to_blob_only_when_payload_changed(monkeypatch):
+    """A successful fetch persists the payload to Blob, hash-gated: an
+    unchanged payload is NOT re-uploaded every TTL window; a changed one
+    is."""
+    cache = stickers.EvaluacionesCache()
+    clock = {"t": 0.0}
+    monkeypatch.setattr(stickers.time, "monotonic", lambda: clock["t"])
+    saves: list[Any] = []
+    monkeypatch.setattr(stickers.blob_lkg, "save_json",
+                        lambda pathname, payload: saves.append((pathname, payload)) or True)
+
+    cache.get_or_fetch(lambda: [{"codigo_edificacion": "A"}])
+    _join_persist(cache)
+    assert len(saves) == 1
+    assert saves[0][0] == stickers.EVALUACIONES_LKG_BLOB
+
+    clock["t"] += stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1
+    cache.get_or_fetch(lambda: [{"codigo_edificacion": "A"}])  # same content, fresh list
+    _join_persist(cache)
+    assert len(saves) == 1  # hash-gated: unchanged payload not re-uploaded
+
+    clock["t"] += stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1
+    cache.get_or_fetch(lambda: [{"codigo_edificacion": "B"}])
+    _join_persist(cache)
+    assert len(saves) == 2
 
 
 def test_get_evaluaciones_non_admin_is_403(monkeypatch):

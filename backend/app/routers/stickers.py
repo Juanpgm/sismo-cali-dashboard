@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from datetime import datetime
 from typing import Any
@@ -42,6 +43,7 @@ from pydantic import BaseModel
 
 from app.auth.deps import require_role
 from app.credentials import clients as credentials
+from app.services import blob_lkg
 
 # `sismo` is already unconditionally in credentials.WEB_STARTUP_CLIENTS, but
 # this router still declares it per ADR-4's declaration mechanism (same
@@ -61,6 +63,7 @@ _CEDULA_RE = re.compile(r"^\d{5,12}$")
 _CODIGO_RE = re.compile(r"^\d{3}$")
 
 EVALUACIONES_CACHE_TTL_SECONDS = 5 * 60
+EVALUACIONES_LKG_BLOB = "data/evaluaciones_last_good.json"  # last-known-good payload, see services/blob_lkg.py
 
 
 class EvaluacionesCache:
@@ -68,11 +71,19 @@ class EvaluacionesCache:
     same app.state / test-isolated pattern as sticker_status.py's
     StickerStatusCache. The dashboard's Evaluaciones tab reads this on every
     open AND on a 5-min poll while visible; caching collapses that to at most
-    one full `evaluaciones` collection read per TTL window per process."""
+    one full `evaluaciones` collection read per TTL window per process.
+
+    Each successful fetch is also persisted to Vercel Blob (fire-and-forget,
+    hash-gated) so a COLD start during a sustained Firestore outage — every
+    Railway deploy restarts the process, wiping the in-process payload — can
+    fall back to the last-known-good copy instead of a 502 (31-ago-2026, see
+    `app.services.blob_lkg`)."""
 
     def __init__(self) -> None:
         self._at: float | None = None
         self._payload: list[dict[str, Any]] | None = None
+        self._blob_hash: str | None = None  # hash of the last payload persisted to Blob
+        self._persist_thread: threading.Thread | None = None  # last persist worker (tests join it)
 
     def get_or_fetch(self, fetch: Any) -> list[dict[str, Any]]:
         now = time.monotonic()
@@ -81,20 +92,95 @@ class EvaluacionesCache:
             try:
                 self._payload = fetch()
                 self._at = now
+                self._persist_last_good()
             except Exception:
                 # Serve-stale-on-error (30-ago-2026): a Firestore 429/
                 # ResourceExhausted degrading this route to a raw 502 is
                 # worse than showing a slightly-old evaluaciones list — the
-                # dashboard has NOTHING to show otherwise. Only re-raise
-                # when there is truly no prior payload to fall back to
-                # (first-ever fetch in this process failing).
+                # dashboard has NOTHING to show otherwise.
                 if self._payload is None:
-                    raise
-                logging.exception(
-                    "evaluaciones: fetch fallo, sirviendo el ultimo payload en cache (stale)"
-                )
+                    # Cold start (fresh process) during the outage: try the
+                    # Blob-persisted last-known-good copy before giving up.
+                    # `load_json` returns None on ANY failure — including a
+                    # malformed/wrong-shaped payload — so only a validated
+                    # list is ever served. Re-raise only when Firestore
+                    # failed AND Blob has nothing usable.
+                    restored = blob_lkg.load_json(EVALUACIONES_LKG_BLOB, list)
+                    if restored is None:
+                        raise
+                    logging.exception(
+                        "evaluaciones: fetch fallo sin payload previo, sirviendo el ultimo bueno desde Blob"
+                    )
+                    self._payload = restored
+                    self._at = now  # behaves as a normal (stale-able) payload from here on
+                else:
+                    logging.exception(
+                        "evaluaciones: fetch fallo, sirviendo el ultimo payload en cache (stale)"
+                    )
         assert self._payload is not None
         return self._payload
+
+    def _persist_last_good(self) -> None:
+        """Blob write of the fresh payload, gated by content hash so an
+        unchanged payload doesn't re-upload every TTL window — same
+        hash-gate idea as `dashboard_refresh._write_contactos`. The actual
+        PUT (a synchronous urllib call) runs on a daemon thread, OFF the
+        request path; the hash only advances inside the thread on a
+        confirmed upload, so a failed write is retried on the next fetch.
+        The Blob copy is projected through the public allowlist (see
+        `_redact_for_blob`); the in-process payload and the HTTP response
+        stay complete."""
+        redacted = _redact_for_blob(self._payload or [])
+        h = blob_lkg.payload_hash(redacted)
+        if h == self._blob_hash:
+            return
+
+        def _upload() -> None:
+            if blob_lkg.save_json(EVALUACIONES_LKG_BLOB, redacted):
+                self._blob_hash = h
+
+        # ponytail: no locking — two overlapping refreshes may double-upload
+        # the same pathname; harmless (idempotent overwrite, hash gate
+        # converges). Add a lock only if duplicate PUTs ever matter.
+        self._persist_thread = threading.Thread(target=_upload, daemon=True)
+        self._persist_thread.start()
+
+
+# Public-Blob ALLOWLIST (RISK-001): the Blob store is PUBLIC (reads need no
+# token) and its URL is derivable (store base in web/js/data.js + pathname in
+# this file), so the persisted copy may only carry data classes the Panel
+# already publishes (criticos/inspections precedent). A new/unknown field is
+# EXCLUDED by default — extend these tuples deliberately, never implicitly.
+_BLOB_ALLOWED_FIELDS = ("id", "codigo_edificacion", "consecutivo", "municipio",
+                        "area", "area_nombre", "clasificacion", "alcance",
+                        "coords", "restricciones", "acciones_posteriores", "fecha")
+_BLOB_ALLOWED_INSPECTOR = ("uid", "codigo", "entidad")
+
+
+def _redact_for_blob(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Allowlist projection of the evaluaciones list for the public Blob
+    copy — same spirit as reportes.json's PII strip
+    (`dashboard_refresh.PII_FIELDS`), but allowlist-shaped so a field added
+    to `list_evaluaciones` later can never leak by default. Dropped fields
+    (`inspector.nombre_completo`/`identificacion`, `comentarios`, `fotos`)
+    keep shape-compatible placeholders (""/[]) so a Blob-restored cold-start
+    payload renders in the UI without undefined errors — acceptable
+    degradation. Never mutates the input (the same dicts are served to the
+    route)."""
+    out: list[dict[str, Any]] = []
+    for e in payload:
+        insp = e.get("inspector") or {}
+        desc = e.get("descripcion") or {}
+        out.append({
+            **{k: e.get(k) for k in _BLOB_ALLOWED_FIELDS},
+            "descripcion": {"nombre": desc.get("nombre") or "",
+                            "direccion": desc.get("direccion") or ""},
+            "inspector": {**{k: insp.get(k) or "" for k in _BLOB_ALLOWED_INSPECTOR},
+                          "nombre_completo": "", "identificacion": ""},
+            "comentarios": "",
+            "fotos": [],
+        })
+    return out
 
 
 router = APIRouter()

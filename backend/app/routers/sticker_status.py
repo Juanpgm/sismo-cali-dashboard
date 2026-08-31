@@ -21,6 +21,7 @@ open to ANY authenticated role, not admin-only (backend-platform spec table:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Any
 
@@ -29,6 +30,7 @@ from fastapi.responses import JSONResponse
 
 from app.auth.deps import require_auth
 from app.credentials import clients as credentials
+from app.services import blob_lkg
 
 # sismo() is already unconditionally in credentials.WEB_STARTUP_CLIENTS, but
 # this router still declares it per ADR-4's declaration mechanism — the
@@ -36,6 +38,7 @@ from app.credentials import clients as credentials
 REQUIRED_CLIENTS: tuple[str, ...] = ("sismo",)
 
 CACHE_TTL_SECONDS = 5 * 60
+STICKER_STATUS_LKG_BLOB = "data/sticker_status_last_good.json"  # last-known-good payload, see services/blob_lkg.py
 
 
 class StickerStatusCache:
@@ -44,11 +47,19 @@ class StickerStatusCache:
     One instance per `create_app()` call, attached to `app.state` (matches
     `app/services/snapshot.py`'s `ReportadosSnapshot` convention), so tests
     get a fresh cache per app instance instead of leaking state across
-    tests via a module-level global."""
+    tests via a module-level global.
+
+    Each successful fetch is also persisted to Vercel Blob (fire-and-forget,
+    hash-gated) so a COLD start during a sustained Firestore outage — every
+    Railway deploy restarts the process, wiping the in-process payload — can
+    fall back to the last-known-good copy instead of a 502 (31-ago-2026, see
+    `app.services.blob_lkg`)."""
 
     def __init__(self) -> None:
         self._at: float | None = None
         self._payload: dict[str, Any] | None = None
+        self._blob_hash: str | None = None  # hash of the last payload persisted to Blob
+        self._persist_thread: threading.Thread | None = None  # last persist worker (tests join it)
 
     def get_or_fetch(self, fetch: Any) -> dict[str, Any]:
         now = time.monotonic()
@@ -57,20 +68,61 @@ class StickerStatusCache:
             try:
                 self._payload = fetch()
                 self._at = now
+                self._persist_last_good()
             except Exception:
                 # Serve-stale-on-error (30-ago-2026): a Firestore 429/
                 # ResourceExhausted degrading this route to a raw 502 is
                 # worse than showing slightly-old coverage numbers — the
-                # dashboard has NOTHING to show otherwise. Only re-raise
-                # when there is truly no prior payload to fall back to
-                # (first-ever fetch in this process failing).
+                # dashboard has NOTHING to show otherwise.
                 if self._payload is None:
-                    raise
-                logging.exception(
-                    "sticker-status: fetch fallo, sirviendo el ultimo payload en cache (stale)"
-                )
+                    # Cold start (fresh process) during the outage: try the
+                    # Blob-persisted last-known-good copy before giving up.
+                    # `load_json` returns None on ANY failure — including a
+                    # malformed/wrong-shaped payload — so only a validated
+                    # dict is ever served. Re-raise only when Firestore
+                    # failed AND Blob has nothing usable.
+                    restored = blob_lkg.load_json(STICKER_STATUS_LKG_BLOB, dict)
+                    if restored is None:
+                        raise
+                    logging.exception(
+                        "sticker-status: fetch fallo sin payload previo, sirviendo el ultimo bueno desde Blob"
+                    )
+                    self._payload = restored
+                    self._at = now  # behaves as a normal (stale-able) payload from here on
+                else:
+                    logging.exception(
+                        "sticker-status: fetch fallo, sirviendo el ultimo payload en cache (stale)"
+                    )
         assert self._payload is not None
         return self._payload
+
+    def _persist_last_good(self) -> None:
+        """Blob write of the fresh payload, gated by content hash so an
+        unchanged payload doesn't re-upload every TTL window — same
+        hash-gate idea as `dashboard_refresh._write_contactos`. The actual
+        PUT (a synchronous urllib call) runs on a daemon thread, OFF the
+        request path; the hash only advances inside the thread on a
+        confirmed upload, so a failed write is retried on the next fetch.
+
+        Public Blob exposure ceiling: this payload is only registro ids +
+        counts, equivalent to the already-public web/data — do NOT add
+        fields to this payload without re-reviewing the exposure boundary
+        (the store is public; see stickers.py's `_redact_for_blob`
+        allowlist for the precedent)."""
+        payload = self._payload
+        h = blob_lkg.payload_hash(payload)
+        if h == self._blob_hash:
+            return
+
+        def _upload() -> None:
+            if blob_lkg.save_json(STICKER_STATUS_LKG_BLOB, payload):
+                self._blob_hash = h
+
+        # ponytail: no locking — two overlapping refreshes may double-upload
+        # the same pathname; harmless (idempotent overwrite, hash gate
+        # converges). Add a lock only if duplicate PUTs ever matter.
+        self._persist_thread = threading.Thread(target=_upload, daemon=True)
+        self._persist_thread.start()
 
 
 def _read_coverage(db: Any) -> dict[str, Any]:

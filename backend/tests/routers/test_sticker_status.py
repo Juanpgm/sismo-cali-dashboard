@@ -35,6 +35,15 @@ FAKE_CLAIMS_ADMIN = {
     "role": "admin",
 }
 
+
+@pytest.fixture(autouse=True)
+def _no_blob_token(monkeypatch):
+    """Hermetic guard: a real BLOB_READ_WRITE_TOKEN in the dev environment
+    must never let the cache's fire-and-forget Blob persistence attempt a
+    real upload during tests (tests that exercise the Blob path set the env
+    var and fake `blob_sync` themselves)."""
+    monkeypatch.delenv("BLOB_READ_WRITE_TOKEN", raising=False)
+
 _FAKE_DOCS: list[dict[str, Any]] = [
     {"registro_id": "1", "tiene_sticker": True},
     {"registro_id": "2", "tiene_sticker": False},
@@ -171,12 +180,13 @@ def test_get_or_fetch_serves_stale_payload_when_a_later_fetch_fails(monkeypatch)
 
 
 def test_get_or_fetch_still_raises_on_a_cold_cache_with_no_prior_success(monkeypatch):
-    """The very first fetch in a fresh process (nothing to fall back to yet)
-    must still surface the real error — there is no stale payload to serve,
-    and silently returning a fake empty result would be more misleading
-    than a clear failure."""
+    """The very first fetch in a fresh process, with nothing in Blob either
+    (no last-known-good ever persisted), must still surface the real error —
+    there is nothing to serve, and silently returning a fake empty result
+    would be more misleading than a clear failure."""
     from app.routers import sticker_status as mod
 
+    monkeypatch.setattr(mod.blob_lkg, "load_json", lambda pathname, expected_type: None)
     cache = mod.StickerStatusCache()
 
     def boom():
@@ -184,6 +194,108 @@ def test_get_or_fetch_still_raises_on_a_cold_cache_with_no_prior_success(monkeyp
 
     with pytest.raises(RuntimeError, match="Quota exceeded"):
         cache.get_or_fetch(boom)
+
+
+def test_get_or_fetch_cold_start_falls_back_to_blob_last_good(monkeypatch):
+    """A COLD-start fetch failure (fresh process after a deploy, Firestore
+    still 429ing) must serve the Blob-persisted last-known-good payload
+    instead of raising — and adopt it as the in-process payload so later
+    behavior is normal serve-stale."""
+    from app.routers import sticker_status as mod
+
+    blob_payload = {"con_sticker": ["1"], "total": 3, "con": 1}
+    monkeypatch.setattr(mod.blob_lkg, "load_json",
+                        lambda pathname, expected_type: blob_payload)
+    cache = mod.StickerStatusCache()
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    assert cache.get_or_fetch(boom) == blob_payload
+    # Adopted in-process: served again within TTL without touching Blob.
+    monkeypatch.setattr(mod.blob_lkg, "load_json",
+                        lambda pathname, expected_type: None)
+    assert cache.get_or_fetch(boom) == blob_payload
+
+
+def test_get_or_fetch_cold_start_rejects_malformed_blob_payload(monkeypatch):
+    """Malformed Blob JSON must fail to the raise path, never be served as
+    data (the `_load_contacto_hashes` malformed-Blob precedent). Exercises
+    the real `blob_lkg.load_json` with only `blob_sync.download` faked."""
+    from pathlib import Path
+
+    from app.routers import sticker_status as mod
+
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "vercel_blob_rw_STORE_secret")
+
+    def fake_download(pathname, local, **kw):
+        Path(local).write_text("{not valid json", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(mod.blob_lkg.blob_sync, "download", fake_download)
+    cache = mod.StickerStatusCache()
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    with pytest.raises(RuntimeError, match="Quota exceeded"):
+        cache.get_or_fetch(boom)
+
+
+def test_get_or_fetch_persists_to_blob_only_when_payload_changed(monkeypatch):
+    """A successful fetch persists the payload to Blob, hash-gated: an
+    unchanged payload is NOT re-uploaded every TTL window; a changed one
+    is."""
+    from app.routers import sticker_status as mod
+
+    cache = mod.StickerStatusCache()
+    clock = {"t": 0.0}
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock["t"])
+    saves: list[Any] = []
+    monkeypatch.setattr(mod.blob_lkg, "save_json",
+                        lambda pathname, payload: saves.append((pathname, payload)) or True)
+
+    def _join():
+        # Persist runs on a daemon thread (off the request path); join it so
+        # the upload-count assertions are deterministic.
+        if cache._persist_thread is not None:
+            cache._persist_thread.join()
+
+    cache.get_or_fetch(lambda: {"con_sticker": ["1"], "total": 3, "con": 1})
+    _join()
+    assert len(saves) == 1
+    assert saves[0][0] == mod.STICKER_STATUS_LKG_BLOB
+
+    clock["t"] += mod.CACHE_TTL_SECONDS + 1
+    cache.get_or_fetch(lambda: {"con_sticker": ["1"], "total": 3, "con": 1})  # unchanged
+    _join()
+    assert len(saves) == 1  # hash-gated: unchanged payload not re-uploaded
+
+    clock["t"] += mod.CACHE_TTL_SECONDS + 1
+    cache.get_or_fetch(lambda: {"con_sticker": ["1", "2"], "total": 3, "con": 2})
+    _join()
+    assert len(saves) == 2
+
+
+def test_get_or_fetch_blob_write_failure_never_breaks_the_request(monkeypatch):
+    """A Blob upload failure (e.g. `blob_sync`'s own `sys.exit` on an API
+    error) on the persist path must never break a request whose Firestore
+    fetch SUCCEEDED — persistence is strictly fire-and-forget."""
+    from app.routers import sticker_status as mod
+
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "vercel_blob_rw_STORE_secret")
+
+    def exploding_upload(local, pathname, *a, **kw):
+        raise SystemExit("Blob upload 500 para data/sticker_status_last_good.json")
+
+    monkeypatch.setattr(mod.blob_lkg.blob_sync, "upload", exploding_upload)
+    cache = mod.StickerStatusCache()
+
+    payload = {"con_sticker": [], "total": 0, "con": 0}
+    assert cache.get_or_fetch(lambda: payload) == payload
+    if cache._persist_thread is not None:  # let the failing upload finish inside the test
+        cache._persist_thread.join()
+    assert cache._blob_hash is None  # failed upload never advances the hash
 
 
 def test_cached_response_served_without_new_firestore_read(monkeypatch):
