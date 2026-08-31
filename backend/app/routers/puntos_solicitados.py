@@ -90,6 +90,7 @@ test_sole_writer.py`'s `ALLOWED_MODULES_PUNTOS_CONTACTO`.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -101,6 +102,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.auth.deps import require_auth, require_role
 from app.credentials import clients as credentials
 from app.jobs.planeacion_cruce import clave_integracion, doc_id, load_reportes
+from app.services import blob_lkg
 from app.services.geocode import GeocodeTransportError
 from app.services.geocode import geocode as geocode_service
 
@@ -123,6 +125,17 @@ FUENTE = "solicitado"
 # the cached build, never part of the cache key.
 _BUSCAR_TTL_S = 300  # 5 min
 _BUSCAR_TOP_N = 20
+
+# Firestore-quota-outage fix (31-ago-2026): `GET /puntos-solicitados` is the
+# exact route a real user hit today with a raw "429 Quota exceeded" 502 —
+# same serve-stale/Blob-last-known-good pattern as `sticker_status.py`'s
+# `StickerStatusCache`/`stickers.py`'s `EvaluacionesCache`, reusing
+# `app.services.blob_lkg` rather than reimplementing Blob I/O. Short TTL
+# (unlike the 5-min TTLs above): this list is small (manually-curated,
+# admin-created) and changes more often via admin create/edit/delete than
+# sticker coverage does, so staleness needs a tighter ceiling.
+PUNTOS_SOLICITADOS_CACHE_TTL_SECONDS = 60
+PUNTOS_SOLICITADOS_LKG_BLOB = "data/puntos_solicitados_last_good.json"  # last-known-good payload, see services/blob_lkg.py
 
 # `puntos_solicitados` required-field set (spec: "Admin-only creation with
 # required-field validation"). Enforced by CrearPuntoSolicitadoBody's plain
@@ -312,6 +325,105 @@ class BuscarCache:
         return self._rows
 
 
+class PuntosSolicitadosCache:
+    """Process-lifetime TTL cache for `listar_puntos_solicitados`'s response
+    body (the ALREADY-JOINED `{"puntos": [...]}` shape, post `mirror_by_id`
+    merge — not the raw Firestore docs, which are cheap to re-fetch; the
+    expensive/failure-prone part is the two Firestore round trips this
+    caches). Same app.state / test-isolated pattern as `sticker_status.py`'s
+    `StickerStatusCache` — one instance per `create_app()` call — rather
+    than a bare module-level global.
+
+    Each successful fetch is also persisted to Vercel Blob (fire-and-forget,
+    hash-gated) so a COLD start during a sustained Firestore outage — every
+    Railway deploy restarts the process, wiping the in-process payload — can
+    fall back to the last-known-good copy instead of a 502 (same rationale
+    as `app.services.blob_lkg`'s module docstring)."""
+
+    def __init__(self) -> None:
+        self._at: float | None = None
+        self._payload: dict[str, Any] | None = None
+        self._blob_hash: str | None = None  # hash of the last payload persisted to Blob
+        self._persist_thread: threading.Thread | None = None  # last persist worker (tests join it)
+
+    def get_or_fetch(self, fetch: Any) -> dict[str, Any]:
+        now = time.monotonic()
+        stale = (
+            self._payload is None
+            or self._at is None
+            or (now - self._at) > PUNTOS_SOLICITADOS_CACHE_TTL_SECONDS
+        )
+        if stale:
+            try:
+                self._payload = fetch()
+                self._at = now
+                self._persist_last_good()
+            except Exception:
+                # Serve-stale-on-error: a Firestore 429/ResourceExhausted
+                # degrading this route to a raw 502 is worse than showing a
+                # slightly-old puntos-solicitados list — the admin board has
+                # NOTHING to show otherwise.
+                if self._payload is None:
+                    # Cold start (fresh process) during the outage: try the
+                    # Blob-persisted last-known-good copy before giving up.
+                    # `load_json` returns None on ANY failure — including a
+                    # malformed/wrong-shaped payload — so only a validated
+                    # dict is ever served. Re-raise only when Firestore
+                    # failed AND Blob has nothing usable.
+                    restored = blob_lkg.load_json(PUNTOS_SOLICITADOS_LKG_BLOB, dict)
+                    if restored is None:
+                        raise
+                    logging.exception(
+                        "puntos_solicitados: fetch fallo sin payload previo, "
+                        "sirviendo el ultimo bueno desde Blob"
+                    )
+                    self._payload = restored
+                    self._at = now  # behaves as a normal (stale-able) payload from here on
+                else:
+                    logging.exception(
+                        "puntos_solicitados: fetch fallo, sirviendo el ultimo payload en cache (stale)"
+                    )
+        assert self._payload is not None
+        return self._payload
+
+    def _persist_last_good(self) -> None:
+        """Blob write of the fresh payload, gated by content hash so an
+        unchanged payload doesn't re-upload every TTL window. The actual PUT
+        runs on a daemon thread, OFF the request path; the hash only
+        advances inside the thread on a confirmed upload, so a failed write
+        is retried on the next fetch. No allowlist/redaction here (unlike
+        `stickers.py`'s `EvaluacionesCache`) — this payload is already the
+        admin-only response body, no wider exposure than the route itself."""
+        payload = self._payload
+        h = blob_lkg.payload_hash(payload)
+        if h == self._blob_hash:
+            return
+
+        def _upload() -> None:
+            if blob_lkg.save_json(PUNTOS_SOLICITADOS_LKG_BLOB, payload):
+                self._blob_hash = h
+
+        # ponytail: no locking — two overlapping refreshes may double-upload
+        # the same pathname; harmless (idempotent overwrite, hash gate
+        # converges). Add a lock only if duplicate PUTs ever matter.
+        self._persist_thread = threading.Thread(target=_upload, daemon=True)
+        self._persist_thread.start()
+
+    def invalidate(self) -> None:
+        """Post-mutation invalidation: called after any WRITE to
+        `puntos_solicitados` (create/edit/delete, all in this file) so an
+        admin's own change is reflected immediately on the next list call,
+        never stuck showing a stale cached list for up to the TTL — same
+        `clear()`-style invalidation hook `PlaneacionAggregatesCache` (
+        `planeacion_asignaciones.py`) already establishes for this exact
+        purpose. Only clears the TTL timestamp, NOT the payload itself —
+        `get_or_fetch` treats a `None` timestamp as stale and re-fetches, but
+        keeps the last-good payload available to serve-stale if THAT
+        re-fetch also hits a 429 (a mutation must never turn a working cache
+        into a cold one)."""
+        self._at = None
+
+
 def _joined_rows(cache: BuscarCache) -> list[dict]:
     """TTL-cached (via `cache`) ADDRESS-ONLY rows — one `load_reportes()`
     call per TTL window, never per keystroke. No Firestore read happens
@@ -429,27 +541,27 @@ def crear_punto_solicitado(
         raise HTTPException(status_code=502, detail=f"No se pudo crear el punto solicitado: {exc}") from exc
 
     _mark_planeacion_snapshot_dirty(request)
+    request.app.state.puntos_solicitados_cache.invalidate()
     return JSONResponse({"ok": True, "id": sid, "clave_integracion": clave}, status_code=201)
 
 
-@router.get("/puntos-solicitados")
-def listar_puntos_solicitados(claims: dict[str, Any] = Depends(require_role("admin"))) -> JSONResponse:
-    """ADR-4: `estado_seguimiento` in the response is DERIVED from the
-    mirror's `estado_asignacion` via one batched `get_all` — never the
-    stored seed value once a mirror exists."""
+def _fetch_puntos_solicitados() -> dict[str, Any]:
+    """The full listar_puntos_solicitados build — pulled out of the route so
+    `PuntosSolicitadosCache.get_or_fetch` can call it as the cached unit.
+    Returns the ALREADY-JOINED `{"puntos": [...]}` body (post `mirror_by_id`
+    merge), not the raw Firestore docs — cache what's expensive to fail, not
+    what's cheap. ADR-4: `estado_seguimiento` is DERIVED from the mirror's
+    `estado_asignacion` via one batched `get_all` — never the stored seed
+    value once a mirror exists."""
     db = credentials.sismo().firestore
-    try:
-        docs = list(db.collection(PUNTOS_SOLICITADOS_COLLECTION).get())
-        if not docs:
-            return JSONResponse({"ok": True, "puntos": []})
+    docs = list(db.collection(PUNTOS_SOLICITADOS_COLLECTION).get())
+    if not docs:
+        return {"puntos": []}
 
-        mirror_refs = [
-            db.collection(PLANEACION_PUNTOS_COLLECTION).document(_mirror_doc_id(d.id)) for d in docs
-        ]
-        mirror_by_id = {s.id: (s.to_dict() or {}) for s in db.get_all(mirror_refs) if s.exists}
-    except Exception as exc:  # noqa: BLE001 — clean 502, never an unhandled 500
-        logging.exception("Fallo listando puntos solicitados")
-        raise HTTPException(status_code=502, detail=f"No se pudo listar los puntos solicitados: {exc}") from exc
+    mirror_refs = [
+        db.collection(PLANEACION_PUNTOS_COLLECTION).document(_mirror_doc_id(d.id)) for d in docs
+    ]
+    mirror_by_id = {s.id: (s.to_dict() or {}) for s in db.get_all(mirror_refs) if s.exists}
 
     puntos = []
     for d in docs:
@@ -476,7 +588,32 @@ def listar_puntos_solicitados(claims: dict[str, Any] = Depends(require_role("adm
             "tiene_evaluacion": tiene_evaluacion,
             "datos_capturados": tiene_survey or tiene_evaluacion,
         })
-    return JSONResponse({"ok": True, "puntos": puntos})
+    return {"puntos": puntos}
+
+
+@router.get("/puntos-solicitados")
+def listar_puntos_solicitados(
+    request: Request,
+    claims: dict[str, Any] = Depends(require_role("admin")),
+) -> JSONResponse:
+    """Firestore-quota-outage fix (31-ago-2026): this is the exact route a
+    real user hit today with a raw "429 Quota exceeded" 502 — cached with
+    serve-stale/Blob-last-known-good fallback (`PuntosSolicitadosCache`,
+    same pattern as `sticker_status.py`'s `StickerStatusCache`) instead of
+    blanking the whole list on a transient outage. See `_fetch_puntos_
+    solicitados` for what's actually cached and ADR-4 for `estado_
+    seguimiento`'s derivation."""
+    cache: PuntosSolicitadosCache = request.app.state.puntos_solicitados_cache
+    try:
+        payload = cache.get_or_fetch(_fetch_puntos_solicitados)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — clean 502, never an unhandled 500
+        # (reached only when BOTH the live fetch AND the Blob fallback fail —
+        # see PuntosSolicitadosCache.get_or_fetch)
+        logging.exception("Fallo listando puntos solicitados")
+        raise HTTPException(status_code=502, detail=f"No se pudo listar los puntos solicitados: {exc}") from exc
+    return JSONResponse({"ok": True, **payload})
 
 
 @router.patch("/puntos-solicitados/{id}")
@@ -544,6 +681,12 @@ def editar_punto_solicitado(
         # Only a mirror write bumps `actualizado_en` — nothing for the
         # snapshot's delta query to see otherwise.
         _mark_planeacion_snapshot_dirty(request)
+    if mirror_changes or changes:
+        # Any successful write here (mirror-touching or puntos_solicitados-
+        # only, e.g. justificacion) changes the GET response body — bust the
+        # cache so the admin's own edit shows up on the next list call
+        # instead of waiting out the TTL.
+        request.app.state.puntos_solicitados_cache.invalidate()
     return JSONResponse({"ok": True, "id": id})
 
 
@@ -578,6 +721,7 @@ def eliminar_punto_solicitado(
             snapshot.remove(_mirror_doc_id(id))
         except Exception:  # noqa: BLE001 - best-effort
             pass
+    request.app.state.puntos_solicitados_cache.invalidate()
     return JSONResponse({"ok": True, "id": id})
 
 

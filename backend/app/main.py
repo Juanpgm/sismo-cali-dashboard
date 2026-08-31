@@ -34,7 +34,7 @@ from app.routers import (
     usuarios,
 )
 from app.routers.planeacion_asignaciones import PlaneacionAggregatesCache, PlaneacionPuntosSnapshot
-from app.routers.puntos_solicitados import BuscarCache
+from app.routers.puntos_solicitados import BuscarCache, PuntosSolicitadosCache
 from app.routers.stickers import EvaluacionesCache
 from app.routers.sticker_status import StickerStatusCache
 from app.services.snapshot import ReportadosSnapshot, refresh_loop, seed_from_blob
@@ -134,6 +134,11 @@ def create_app() -> FastAPI:
     # Same convention, `puntos_solicitados.py`'s `GET /buscar` joined-rows
     # cache (busqueda-asignacion follow-up, 4R polish pass).
     app.state.puntos_solicitados_buscar_cache = BuscarCache()
+
+    # Firestore-quota-outage fix (31-ago-2026): `GET /puntos-solicitados`'s
+    # own TTL + Blob-last-known-good cache — same convention as
+    # `sticker_status_cache`/`stickers_evaluaciones_cache` above.
+    app.state.puntos_solicitados_cache = PuntosSolicitadosCache()
 
     app.add_middleware(
         CORSMiddleware,

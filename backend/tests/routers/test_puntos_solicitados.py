@@ -34,6 +34,16 @@ UID_ADMIN = "uid-admin"
 FAKE_CLAIMS_ADMIN = {"sub": UID_ADMIN, "email": "admin@example.com", "role": "admin"}
 FAKE_CLAIMS_VIEWER = {"sub": "uid-viewer", "email": "viewer@example.com"}
 
+@pytest.fixture(autouse=True)
+def _no_blob_token(monkeypatch):
+    """Hermetic guard (same as test_sticker_status.py's own fixture): a real
+    BLOB_READ_WRITE_TOKEN in the dev environment must never let
+    `PuntosSolicitadosCache`'s fire-and-forget Blob persistence attempt a
+    real upload during tests (tests that exercise the Blob path set the env
+    var and fake `blob_sync` themselves)."""
+    monkeypatch.delenv("BLOB_READ_WRITE_TOKEN", raising=False)
+
+
 VALID_BODY: dict[str, Any] = {
     "nombre": "Casa esquinera",
     "comuna_corregimiento": "Comuna 3",
@@ -310,8 +320,17 @@ def test_non_admin_delete_is_rejected(monkeypatch):
 
 
 def test_estado_seguimiento_tracks_mirror_estado_asignacion_transitions(monkeypatch):
+    """GET is now TTL-cached (`PuntosSolicitadosCache`) — this test mutates
+    the fake store directly (bypassing the router's own write endpoints, so
+    `invalidate()` never fires), so the clock is advanced past the TTL
+    before each re-read to force a fresh fetch, same convention
+    `test_sticker_status.py`'s own TTL tests use."""
+    import app.routers.puntos_solicitados as router_mod
+
     stores = _stores()
     client = _admin_client(monkeypatch, stores)
+    clock = {"t": 0.0}
+    monkeypatch.setattr(router_mod.time, "monotonic", lambda: clock["t"])
 
     sid = client.post("/puntos-solicitados", json=VALID_BODY).json()["id"]
     mirror_id = f"solicitado_{sid}"
@@ -323,12 +342,15 @@ def test_estado_seguimiento_tracks_mirror_estado_asignacion_transitions(monkeypa
 
     assert _estado_seguimiento() == "pendiente"
 
+    clock["t"] += router_mod.PUNTOS_SOLICITADOS_CACHE_TTL_SECONDS + 1
     stores[PLANEACION_PUNTOS][mirror_id]["estado_asignacion"] = "asignado"
     assert _estado_seguimiento() == "asignado"
 
+    clock["t"] += router_mod.PUNTOS_SOLICITADOS_CACHE_TTL_SECONDS + 1
     stores[PLANEACION_PUNTOS][mirror_id]["estado_asignacion"] = "en_proceso"
     assert _estado_seguimiento() == "en_proceso"
 
+    clock["t"] += router_mod.PUNTOS_SOLICITADOS_CACHE_TTL_SECONDS + 1
     stores[PLANEACION_PUNTOS][mirror_id]["estado_asignacion"] = "hecho"
     assert _estado_seguimiento() == "visitado"
 
@@ -341,8 +363,16 @@ def test_estado_seguimiento_tracks_mirror_estado_asignacion_transitions(monkeypa
 
 
 def test_list_exposes_inspector_uid_and_mirror_id_from_mirror(monkeypatch):
+    """Same TTL-cache clock-advance note as
+    `test_estado_seguimiento_tracks_mirror_estado_asignacion_transitions`
+    above — the direct store mutation bypasses `invalidate()`."""
+    import app.routers.puntos_solicitados as router_mod
+
     stores = _stores()
     client = _admin_client(monkeypatch, stores)
+    clock = {"t": 0.0}
+    monkeypatch.setattr(router_mod.time, "monotonic", lambda: clock["t"])
+
     sid = client.post("/puntos-solicitados", json=VALID_BODY).json()["id"]
     mirror_id = f"solicitado_{sid}"
 
@@ -355,6 +385,7 @@ def test_list_exposes_inspector_uid_and_mirror_id_from_mirror(monkeypatch):
     assert punto["inspector_uid"] is None
     assert punto["mirror_id"] == mirror_id
 
+    clock["t"] += router_mod.PUNTOS_SOLICITADOS_CACHE_TTL_SECONDS + 1
     stores[PLANEACION_PUNTOS][mirror_id]["inspector_uid"] = "uid-inspector-1"
     punto = _punto()
     assert punto["inspector_uid"] == "uid-inspector-1"
@@ -501,6 +532,211 @@ def test_list_firestore_read_failure_is_a_clean_502(monkeypatch):
     fail_flag["fail_read"] = True
     resp = client.get("/puntos-solicitados")
     assert resp.status_code == 502
+
+
+# ── PuntosSolicitadosCache: TTL + serve-stale + Blob last-known-good ───────
+# (Firestore-quota-outage fix, 31-ago-2026). Same battery of tests as
+# `test_sticker_status.py`'s own `StickerStatusCache` coverage, exercised
+# directly against the cache class (no Firestore/HTTP plumbing needed for
+# the pure caching behavior) plus a few route-level tests for the parts that
+# depend on the actual GET route (cache hit skips Firestore, writes bust it
+# immediately, a live-plus-Blob double failure still 502s).
+
+
+def test_cached_response_served_without_new_firestore_read(monkeypatch):
+    stores = _stores()
+    fail_flag: dict[str, bool] = {}
+    client = _admin_client(monkeypatch, stores, fail_flag)
+    client.post("/puntos-solicitados", json=VALID_BODY)
+
+    first = client.get("/puntos-solicitados")
+    fail_flag["fail_read"] = True  # a second Firestore read would now blow up
+    second = client.get("/puntos-solicitados")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json() == second.json()  # served from cache, Firestore never touched again
+
+
+def test_list_serves_stale_via_route_when_firestore_fails_after_a_success(monkeypatch):
+    """30-ago-2026 serve-stale-on-error, at the route/HTTP level: once one
+    GET has succeeded, a later Firestore 429 must degrade to the cached
+    (stale) list — 200, not 502 — so the admin board always has SOMETHING
+    to show."""
+    import app.routers.puntos_solicitados as router_mod
+
+    stores = _stores()
+    fail_flag: dict[str, bool] = {}
+    client = _admin_client(monkeypatch, stores, fail_flag)
+    client.post("/puntos-solicitados", json=VALID_BODY)
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(router_mod.time, "monotonic", lambda: clock["t"])
+    first = client.get("/puntos-solicitados")
+    assert first.status_code == 200
+
+    clock["t"] += router_mod.PUNTOS_SOLICITADOS_CACHE_TTL_SECONDS + 1  # force stale
+    fail_flag["fail_read"] = True
+    second = client.get("/puntos-solicitados")
+
+    assert second.status_code == 200
+    assert second.json() == first.json()  # stale but served, not a 502
+
+
+def test_create_invalidates_the_list_cache_immediately(monkeypatch):
+    """Cache-busting on write: an admin's own `POST /puntos-solicitados`
+    must be visible on the VERY NEXT `GET`, not stuck behind the 60 s TTL —
+    no clock advance in this test."""
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+
+    before = client.get("/puntos-solicitados").json()["puntos"]
+    assert before == []
+
+    client.post("/puntos-solicitados", json=VALID_BODY)
+    after = client.get("/puntos-solicitados").json()["puntos"]
+
+    assert len(after) == 1
+
+
+def test_edit_invalidates_the_list_cache_immediately(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+    sid = client.post("/puntos-solicitados", json=VALID_BODY).json()["id"]
+    client.get("/puntos-solicitados")  # populate the cache with the pre-edit name
+
+    client.patch(f"/puntos-solicitados/{sid}", json={"nombre": "Renombrada"})
+    listing = client.get("/puntos-solicitados").json()["puntos"]
+
+    assert next(p for p in listing if p["id"] == sid)["nombre"] == "Renombrada"
+
+
+def test_delete_invalidates_the_list_cache_immediately(monkeypatch):
+    stores = _stores()
+    client = _admin_client(monkeypatch, stores)
+    sid = client.post("/puntos-solicitados", json=VALID_BODY).json()["id"]
+    client.get("/puntos-solicitados")  # populate the cache while the point still exists
+
+    client.delete(f"/puntos-solicitados/{sid}")
+    listing = client.get("/puntos-solicitados").json()["puntos"]
+
+    assert listing == []
+
+
+def test_get_or_fetch_serves_stale_payload_when_a_later_fetch_fails(monkeypatch):
+    from app.routers import puntos_solicitados as mod
+
+    cache = mod.PuntosSolicitadosCache()
+    clock = {"t": 0.0}
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock["t"])
+
+    good_payload = {"puntos": [{"id": "p1"}]}
+    assert cache.get_or_fetch(lambda: good_payload) == good_payload
+
+    clock["t"] += mod.PUNTOS_SOLICITADOS_CACHE_TTL_SECONDS + 1
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    assert cache.get_or_fetch(boom) == good_payload  # served stale, no exception
+
+
+def test_get_or_fetch_still_raises_on_a_cold_cache_with_no_prior_success(monkeypatch):
+    from app.routers import puntos_solicitados as mod
+
+    monkeypatch.setattr(mod.blob_lkg, "load_json", lambda pathname, expected_type: None)
+    cache = mod.PuntosSolicitadosCache()
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    with pytest.raises(RuntimeError, match="Quota exceeded"):
+        cache.get_or_fetch(boom)
+
+
+def test_get_or_fetch_cold_start_falls_back_to_blob_last_good(monkeypatch):
+    from app.routers import puntos_solicitados as mod
+
+    blob_payload = {"puntos": [{"id": "p1"}]}
+    monkeypatch.setattr(mod.blob_lkg, "load_json", lambda pathname, expected_type: blob_payload)
+    cache = mod.PuntosSolicitadosCache()
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    assert cache.get_or_fetch(boom) == blob_payload
+    # Adopted in-process: served again within TTL without touching Blob.
+    monkeypatch.setattr(mod.blob_lkg, "load_json", lambda pathname, expected_type: None)
+    assert cache.get_or_fetch(boom) == blob_payload
+
+
+def test_get_or_fetch_cold_start_rejects_malformed_blob_payload(monkeypatch):
+    from pathlib import Path
+
+    from app.routers import puntos_solicitados as mod
+
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "vercel_blob_rw_STORE_secret")
+
+    def fake_download(pathname, local, **kw):
+        Path(local).write_text("{not valid json", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr(mod.blob_lkg.blob_sync, "download", fake_download)
+    cache = mod.PuntosSolicitadosCache()
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    with pytest.raises(RuntimeError, match="Quota exceeded"):
+        cache.get_or_fetch(boom)
+
+
+def test_get_or_fetch_persists_to_blob_only_when_payload_changed(monkeypatch):
+    from app.routers import puntos_solicitados as mod
+
+    cache = mod.PuntosSolicitadosCache()
+    clock = {"t": 0.0}
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock["t"])
+    saves: list[Any] = []
+    monkeypatch.setattr(mod.blob_lkg, "save_json",
+                        lambda pathname, payload: saves.append((pathname, payload)) or True)
+
+    def _join():
+        if cache._persist_thread is not None:
+            cache._persist_thread.join()
+
+    cache.get_or_fetch(lambda: {"puntos": [{"id": "p1"}]})
+    _join()
+    assert len(saves) == 1
+    assert saves[0][0] == mod.PUNTOS_SOLICITADOS_LKG_BLOB
+
+    clock["t"] += mod.PUNTOS_SOLICITADOS_CACHE_TTL_SECONDS + 1
+    cache.get_or_fetch(lambda: {"puntos": [{"id": "p1"}]})  # unchanged
+    _join()
+    assert len(saves) == 1  # hash-gated: unchanged payload not re-uploaded
+
+    clock["t"] += mod.PUNTOS_SOLICITADOS_CACHE_TTL_SECONDS + 1
+    cache.get_or_fetch(lambda: {"puntos": [{"id": "p1"}, {"id": "p2"}]})
+    _join()
+    assert len(saves) == 2
+
+
+def test_get_or_fetch_blob_write_failure_never_breaks_the_request(monkeypatch):
+    from app.routers import puntos_solicitados as mod
+
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "vercel_blob_rw_STORE_secret")
+
+    def exploding_upload(local, pathname, *a, **kw):
+        raise SystemExit("Blob upload 500 para data/puntos_solicitados_last_good.json")
+
+    monkeypatch.setattr(mod.blob_lkg.blob_sync, "upload", exploding_upload)
+    cache = mod.PuntosSolicitadosCache()
+
+    payload = {"puntos": []}
+    assert cache.get_or_fetch(lambda: payload) == payload
+    if cache._persist_thread is not None:
+        cache._persist_thread.join()
+    assert cache._blob_hash is None  # failed upload never advances the hash
 
 
 # ── POST /geocode: any authenticated caller (Nominatim, no API key) ────────

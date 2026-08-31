@@ -862,28 +862,48 @@ def inspector_asignaciones(
     if not uid:
         raise HTTPException(status_code=401, detail="Token sin identificador de usuario.")
 
-    db = credentials.sismo().firestore
-    if body.action == "misPuntos":
-        return {"ok": True, "puntos": _mis_puntos(db, uid)}
-    if body.action == "marcarHecho":
-        result = _marcar_hecho(db, uid, str(body.punto_id or ""))
-        return {"ok": True, **result}
-    if body.action == "misPuntosPlaneacion":
-        return {"ok": True, "puntos": _mis_puntos_planeacion(db, uid)}
-    if body.action == "marcarHechoPlaneacion":
-        result = _marcar_hecho_planeacion(db, uid, str(body.punto_id or ""))
-        _clear_planeacion_cache(request)
-        return {"ok": True, **result}
-    if body.action == "marcarSurveyHecho":
-        result = _marcar_survey_hecho(db, uid, str(body.punto_id or ""))
-        _clear_planeacion_cache(request)
-        return {"ok": True, **result}
-    if body.action == "puntosCercanosDisponibles":
-        if body.lat is None or body.lng is None:
-            raise HTTPException(status_code=400, detail="Faltan lat/lng.")
-        return {"ok": True, "puntos": _puntos_cercanos_disponibles(db, body.lat, body.lng)}
-    if body.action == "tomarPunto":
-        result = _tomar_punto(db, uid, str(body.punto_id or ""), str(body.campana or ""))
-        _clear_planeacion_cache(request)
-        return {"ok": True, **result}
-    raise HTTPException(status_code=400, detail="Acción no reconocida.")
+    # Firestore-quota-outage fix (31-ago-2026): this whole dispatch used to
+    # have ZERO exception handling — an uncaught 429/ResourceExhausted (or
+    # any other Firestore error) reached Starlette's default handler as a
+    # bare 500 with NO CORS headers attached, which the browser then
+    # misreports as "blocked by CORS policy" / "Failed to fetch" instead of
+    # the real cause. Same minimal catch-all the CRUD router for
+    # solicited-point requests already uses on its own write endpoints;
+    # unlike `sticker_status.py`/`stickers.py`
+    # this endpoint is per-user and write-heavy (own points + group points +
+    # mutations), so a flat 502 is the proportionate fix — no Blob LKG cache
+    # here, there is nothing shared/read-mostly to serve stale.
+    try:
+        db = credentials.sismo().firestore
+        if body.action == "misPuntos":
+            return {"ok": True, "puntos": _mis_puntos(db, uid)}
+        if body.action == "marcarHecho":
+            result = _marcar_hecho(db, uid, str(body.punto_id or ""))
+            return {"ok": True, **result}
+        if body.action == "misPuntosPlaneacion":
+            return {"ok": True, "puntos": _mis_puntos_planeacion(db, uid)}
+        if body.action == "marcarHechoPlaneacion":
+            result = _marcar_hecho_planeacion(db, uid, str(body.punto_id or ""))
+            _clear_planeacion_cache(request)
+            return {"ok": True, **result}
+        if body.action == "marcarSurveyHecho":
+            result = _marcar_survey_hecho(db, uid, str(body.punto_id or ""))
+            _clear_planeacion_cache(request)
+            return {"ok": True, **result}
+        if body.action == "puntosCercanosDisponibles":
+            if body.lat is None or body.lng is None:
+                raise HTTPException(status_code=400, detail="Faltan lat/lng.")
+            return {"ok": True, "puntos": _puntos_cercanos_disponibles(db, body.lat, body.lng)}
+        if body.action == "tomarPunto":
+            result = _tomar_punto(db, uid, str(body.punto_id or ""), str(body.campana or ""))
+            _clear_planeacion_cache(request)
+            return {"ok": True, **result}
+        raise HTTPException(status_code=400, detail="Acción no reconocida.")
+    except HTTPException:
+        raise
+    except Exception as exc:  # pragma: no cover - fail-open surface, mirrors
+        # sticker_status.py's own catch-all ordering (HTTPException re-raised
+        # first, so the 400/404/409/etc raised by the handlers above pass
+        # through untouched — only a genuinely UNEXPECTED exception is
+        # converted here).
+        raise HTTPException(status_code=502, detail=str(exc)) from exc

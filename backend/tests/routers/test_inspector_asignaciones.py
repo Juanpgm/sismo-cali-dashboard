@@ -408,6 +408,65 @@ def test_unrecognized_action_is_rejected(monkeypatch):
     assert resp.status_code == 400
 
 
+# ---- Firestore-quota-outage fix (31-ago-2026) ------------------------------
+# This handler used to have ZERO exception handling: an uncaught Firestore
+# 429/ResourceExhausted reached Starlette's default handler as a bare 500
+# with NO CORS headers, which the browser then misreports as "blocked by
+# CORS policy" / "Failed to fetch" instead of the real cause. Same minimal
+# `except HTTPException: raise` / `except Exception -> 502` idiom
+# `sticker_status.py`/`puntos_solicitados.py` already use — no Blob LKG
+# cache here (see the router module docstring for why: per-user,
+# write-heavy, not a shared read-mostly aggregate).
+
+
+def test_unexpected_exception_becomes_502_not_a_bare_crash(monkeypatch):
+    """A 429/ResourceExhausted (or any other) Firestore exception raised
+    from inside an action handler must surface as a normal HTTPException
+    (502, CORS headers intact) — not propagate unhandled into a bare 500
+    that Starlette's default error handler serves with NO CORS headers."""
+    store = _store()
+    client = _authed_client(monkeypatch, store, FAKE_CLAIMS_A)
+
+    import app.routers.inspector_asignaciones as router_mod
+
+    def boom(db, uid):
+        raise RuntimeError("429 Quota exceeded.")
+
+    monkeypatch.setattr(router_mod, "_mis_puntos", boom)
+
+    resp = client.post("/inspector-asignaciones", json={"action": "misPuntos"})
+
+    assert resp.status_code == 502
+    assert "Quota exceeded" in resp.json()["detail"]
+
+
+def test_expected_http_exceptions_still_pass_through_the_catch_all_unchanged(monkeypatch):
+    """The `except HTTPException: raise` ordering must never downgrade an
+    action handler's own deliberate status code (400/403/404/409) to a
+    502 — only genuinely UNEXPECTED exceptions are converted."""
+    store = _store()
+    client = _authed_client(monkeypatch, store, FAKE_CLAIMS_A)
+
+    # 404: nonexistent point (raised inside _marcar_hecho, well below the
+    # new try/except).
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "marcarHecho", "punto_id": "does-not-exist"},
+    )
+    assert resp.status_code == 404
+
+    # 403: cross-inspector write rejection (also raised well below).
+    resp = client.post(
+        "/inspector-asignaciones",
+        json={"action": "marcarHecho", "punto_id": "point-b"},
+    )
+    assert resp.status_code == 403
+
+    # 400: the router's own "unrecognized action" HTTPException.
+    resp = client.post("/inspector-asignaciones", json={"action": "bogus"})
+    assert resp.status_code == 400
+
+
 # ---- misPuntosPlaneacion / marcarHechoPlaneacion --------------------------
 # `planeacion-asignaciones` follow-up batch (2026-08-26): the inspector-
 # facing counterpart to `planeacion_puntos`, own-uid-scoped exactly like
