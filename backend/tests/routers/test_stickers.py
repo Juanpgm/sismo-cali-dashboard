@@ -461,6 +461,45 @@ def test_get_evaluaciones_firestore_exception_becomes_502_not_a_bare_crash(monke
     assert "Quota exceeded" in resp.json()["detail"]
 
 
+def test_evaluaciones_cache_serves_stale_payload_when_a_later_fetch_fails(monkeypatch):
+    """Once at least one fetch has ever succeeded, a Firestore outage on a
+    later refresh (429/ResourceExhausted, sustained) must degrade to the
+    last known-good evaluaciones list — not a 502 — so the dashboard always
+    has SOMETHING to show. 30-ago-2026: staggering the colliding crons did
+    not clear an already-tripped rate limit fast enough; this is the fix
+    that actually keeps the UI usable while Firestore recovers."""
+    cache = stickers.EvaluacionesCache()
+    clock = {"t": 0.0}
+    monkeypatch.setattr(stickers.time, "monotonic", lambda: clock["t"])
+
+    good_payload = [{"codigo_edificacion": "76001-1-0010001"}]
+    result = cache.get_or_fetch(lambda: good_payload)
+    assert result == good_payload
+
+    clock["t"] += stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1  # force staleness
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    result_during_outage = cache.get_or_fetch(boom)
+
+    assert result_during_outage == good_payload  # served stale, no exception raised
+
+
+def test_evaluaciones_cache_still_raises_on_a_cold_cache_with_no_prior_success():
+    """The very first fetch in a fresh process (nothing to fall back to yet)
+    must still surface the real error — there is no stale payload to serve,
+    and silently returning a fake empty list would be more misleading than
+    a clear failure."""
+    cache = stickers.EvaluacionesCache()
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    with pytest.raises(RuntimeError, match="Quota exceeded"):
+        cache.get_or_fetch(boom)
+
+
 def test_get_evaluaciones_non_admin_is_403(monkeypatch):
     fake_auth = _FakeAuth()
     client = _viewer_client(monkeypatch, fake_auth)

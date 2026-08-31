@@ -29,6 +29,7 @@ Two Firebase surfaces, both memoized/named per ADR-4:
 """
 from __future__ import annotations
 
+import logging
 import re
 import time
 from datetime import datetime
@@ -77,8 +78,21 @@ class EvaluacionesCache:
         now = time.monotonic()
         stale = self._payload is None or self._at is None or (now - self._at) > EVALUACIONES_CACHE_TTL_SECONDS
         if stale:
-            self._payload = fetch()
-            self._at = now
+            try:
+                self._payload = fetch()
+                self._at = now
+            except Exception:
+                # Serve-stale-on-error (30-ago-2026): a Firestore 429/
+                # ResourceExhausted degrading this route to a raw 502 is
+                # worse than showing a slightly-old evaluaciones list — the
+                # dashboard has NOTHING to show otherwise. Only re-raise
+                # when there is truly no prior payload to fall back to
+                # (first-ever fetch in this process failing).
+                if self._payload is None:
+                    raise
+                logging.exception(
+                    "evaluaciones: fetch fallo, sirviendo el ultimo payload en cache (stale)"
+                )
         assert self._payload is not None
         return self._payload
 

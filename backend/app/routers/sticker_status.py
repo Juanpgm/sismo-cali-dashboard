@@ -20,6 +20,7 @@ open to ANY authenticated role, not admin-only (backend-platform spec table:
 """
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -53,8 +54,21 @@ class StickerStatusCache:
         now = time.monotonic()
         stale = self._payload is None or self._at is None or (now - self._at) > CACHE_TTL_SECONDS
         if stale:
-            self._payload = fetch()
-            self._at = now
+            try:
+                self._payload = fetch()
+                self._at = now
+            except Exception:
+                # Serve-stale-on-error (30-ago-2026): a Firestore 429/
+                # ResourceExhausted degrading this route to a raw 502 is
+                # worse than showing slightly-old coverage numbers — the
+                # dashboard has NOTHING to show otherwise. Only re-raise
+                # when there is truly no prior payload to fall back to
+                # (first-ever fetch in this process failing).
+                if self._payload is None:
+                    raise
+                logging.exception(
+                    "sticker-status: fetch fallo, sirviendo el ultimo payload en cache (stale)"
+                )
         assert self._payload is not None
         return self._payload
 

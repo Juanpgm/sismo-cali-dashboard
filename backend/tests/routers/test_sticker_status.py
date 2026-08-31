@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -140,6 +141,49 @@ def test_firestore_exception_becomes_502_not_a_bare_crash(monkeypatch):
 
     assert resp.status_code == 502
     assert "Quota exceeded" in resp.json()["detail"]
+
+
+def test_get_or_fetch_serves_stale_payload_when_a_later_fetch_fails(monkeypatch):
+    """Once at least one fetch has ever succeeded, a Firestore outage on a
+    later refresh (429/ResourceExhausted, sustained) must degrade to the
+    last known-good payload — not a 502 — so the dashboard always has
+    SOMETHING to show. 30-ago-2026: staggering the colliding crons did not
+    clear an already-tripped rate limit fast enough; this is the fix that
+    actually keeps the UI usable while Firestore recovers."""
+    from app.routers import sticker_status as mod
+
+    cache = mod.StickerStatusCache()
+    clock = {"t": 0.0}
+    monkeypatch.setattr(mod.time, "monotonic", lambda: clock["t"])
+
+    good_payload = {"ok": True, "total": 5, "con": 2, "con_sticker": ["1", "2"]}
+    result = cache.get_or_fetch(lambda: good_payload)
+    assert result == good_payload
+
+    clock["t"] += mod.CACHE_TTL_SECONDS + 1  # force the next call to see it as stale
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    result_during_outage = cache.get_or_fetch(boom)
+
+    assert result_during_outage == good_payload  # served stale, no exception raised
+
+
+def test_get_or_fetch_still_raises_on_a_cold_cache_with_no_prior_success(monkeypatch):
+    """The very first fetch in a fresh process (nothing to fall back to yet)
+    must still surface the real error — there is no stale payload to serve,
+    and silently returning a fake empty result would be more misleading
+    than a clear failure."""
+    from app.routers import sticker_status as mod
+
+    cache = mod.StickerStatusCache()
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    with pytest.raises(RuntimeError, match="Quota exceeded"):
+        cache.get_or_fetch(boom)
 
 
 def test_cached_response_served_without_new_firestore_read(monkeypatch):
