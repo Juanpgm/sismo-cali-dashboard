@@ -1,5 +1,6 @@
-"""Provision and configure the two migrated Railway cron services
-(`dashboard-refresh`, `cruce-sticker`) on the consolidated backend image
+"""Provision and configure the consolidated Railway job services
+(`dashboard-refresh` scheduled; `cruce-sticker`/`planeacion-cruce` dormant,
+on-demand only — see the SERVICES comment) on the consolidated backend image
 (design.md ADR-6, task 7.12).
 
 **Replaces `integracion_F1/scripts/railway_setup.py` as the source of
@@ -47,15 +48,15 @@ PROJECT_ID = "f32efdbf-a8d5-4a43-9369-cb7b7623c4f6"
 ENVIRONMENT_ID = "4418f451-bd97-4d96-ba6e-b5ecbbd49c9b"
 
 # Schedules per job-scheduling spec's "Per-Job Schedule Parity" table
-# (ground truth over any module docstring) — identical to
-# integracion_F1/scripts/railway_setup.py's EVERY_15/STICKER_EVERY_15
-# constants before this migration.
+# (ground truth over any module docstring).
 EVERY_15 = "*/15 13-23,0 * * *"
-STICKER_EVERY_15 = "7,22,37,52 13-23,0 * * *"
 
-# Desired fleet: EXACTLY the two migrated jobs (tasks.md 7.12). No rows for
-# integracion-f3/asignaciones/cruce-gestion — none of them ever move to this
-# script (see 7.7/7.10/7.11); they stay in the legacy railway_setup.py.
+# Desired fleet. The two cruce jobs are DORMANT by decision (2026-08-31):
+# their automatic runs caused Firestore 429s and the app does not need them
+# to function — key-driven native state covers in-app flows in real time.
+# `cron: None` keeps them unscheduled; runs are on-demand only (POST
+# /planeacion-cruce/run, or a service redeploy which runs the job once).
+# Re-scheduling one is a deliberate edit of its `cron` here, not a rerun.
 SERVICES = [
     # Already provisioned (task 6.2's redeploy trigger already targets this
     # exact service_id) — this script repoints it from the legacy
@@ -63,14 +64,16 @@ SERVICES = [
     # on the consolidated image (git-connected, backend/Dockerfile).
     {"name": "dashboard-refresh", "start_command": "python -m app.jobs.dashboard_refresh",
      "cron": EVERY_15, "service_id": "156e97a2-596b-4861-95f4-4060dab408e2"},
-    # A service named "cruce-sticker" already existed in this project (an
-    # earlier abandoned attempt, startCommand `python job_sticker.py` on the
-    # old image) — task 7.13 reused it rather than creating a duplicate,
-    # repointed to `backend/Dockerfile` + this consolidated startCommand,
-    # env vars wired per ADR-6 (FIREBASE_SERVICE_ACCOUNT_JSON,
-    # INSPECTIONS_URL), 2026-08-26.
+    # Dormant since 2026-08-31 (see fleet comment above). Previous schedule,
+    # if ever re-enabled: "7,22,37,52 13-23,0 * * *".
     {"name": "cruce-sticker", "start_command": "python -m app.jobs.cruce_sticker",
-     "cron": STICKER_EVERY_15, "service_id": "b18c74c8-0b7a-459c-ada5-5e5df6db8050"},
+     "cron": None, "service_id": "b18c74c8-0b7a-459c-ada5-5e5df6db8050"},
+    # Dormant since 2026-08-31 (see fleet comment above). Previously managed
+    # by ad-hoc GraphQL mutations only (fase 0 cleanup); owned here now so a
+    # script run cannot silently resurrect its cron. Previous schedule, if
+    # ever re-enabled: "10,40 13-23,0 * * *".
+    {"name": "planeacion-cruce", "start_command": "python -m app.jobs.planeacion_cruce",
+     "cron": None, "service_id": "3db766ea-ac14-4922-bce5-1eacf3dd5bf1"},
 ]
 
 # builder: None (unset) lets Railway auto-detect the Dockerfile — same
