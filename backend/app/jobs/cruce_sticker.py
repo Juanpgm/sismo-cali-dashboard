@@ -32,6 +32,11 @@ INCREMENTAL, not a full re-match every run: a point already
 pre-read via `get_all`, not a full-document read), and `evaluaciones` is
 fetched only from `timestamp` after the last successful run's watermark
 (`_meta/cruce_sticker_state`), not the whole collection every time.
+Since 31-ago-2026 the cheap watermarked evaluaciones fetch runs FIRST and
+an early-exit gate (0 new evaluaciones AND unchanged `panel_hash`) skips
+even the `tiene_sticker` pre-read — that unconditional ~1k-doc `get_all`
+alone was ~48k reads/day at 48 runs/day, the entire Spark daily quota.
+`--full` bypasses the gate (and the watermark).
 
 Confirmed clean of Google Sheets/gspread AND dagma dependencies (design.md
 open-question-6 resolution; job-scheduling spec "Absorbed job code carries
@@ -44,9 +49,11 @@ legacy module's own 3-tier `STICKERS_FIREBASE_SA`/`FIREBASE_SERVICE_ACCOUNT_JSON
     python -m app.jobs.cruce_sticker --dry       # real data, no Firestore write
     python -m app.jobs.cruce_sticker             # real data, write sticker_matches
     python -m app.jobs.cruce_sticker --top 50    # cap to the first N panel points (debug)
+    python -m app.jobs.cruce_sticker --full      # ignore watermark + early-exit gate (full re-scan)
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -69,7 +76,7 @@ ISRAEL_JSON = REPO_ROOT / "puntos_israel_cali.json"
 
 STICKER_MATCHES_COLLECTION = "sticker_matches"
 EVALUACIONES_COLLECTION = "evaluaciones"
-STATE_DOC = "_meta/cruce_sticker_state"  # {"last_run_at": Timestamp} — incremental watermark
+STATE_DOC = "_meta/cruce_sticker_state"  # {"last_run_at", "last_checked_at": Timestamp, "panel_hash": str} — watermark + early-exit gate inputs
 
 MATCH_MAX_M = 40.0     # same proximity threshold as cruce_gestor/asignar_f3
 SEM_OK = 0.90           # same "fuzzy exacto" address-ratio threshold as cruce_gestor.ADDR_MATCH_RATIO
@@ -177,18 +184,44 @@ def fetch_evaluaciones(db, watermark=None) -> list[dict]:
     return out
 
 
-def read_watermark(db):
-    """Timestamp of the last successful run, or None (first run — or a prior
-    run that never reached the end — process every evaluación that exists)."""
+def read_state(db) -> dict:
+    """The full STATE_DOC dict (or `{}` if it has never been written) — one
+    Firestore get, reused for the watermark (`last_run_at`, None on a first
+    run meaning "process every evaluación that exists") AND the early-exit
+    gate field (`panel_hash`), mirroring `planeacion_cruce.read_state`."""
     doc = db.document(STATE_DOC).get()
-    if not doc.exists:
-        return None
-    return (doc.to_dict() or {}).get("last_run_at")
+    return (doc.to_dict() or {}) if doc.exists else {}
 
 
-def write_watermark(db, when: datetime) -> None:
+def _hash_panel(panel: list[dict]) -> str:
+    """sha256 of a stable JSON serialization of `load_panel()`'s own output —
+    changes iff the Panel point set changes. Cheap: hashes a value already
+    computed for `run_cruce_sticker`'s own use, never a second read. Same
+    change signal as `planeacion_cruce._hash_puntos`."""
+    blob = json.dumps(panel, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def touch_last_checked(db, when: datetime) -> None:
+    """No-op run (the early-exit gate fired): stamp only `last_checked_at`
+    so observability shows the cron alive, leaving the watermark and
+    `panel_hash` untouched — nothing was actually processed, so there is
+    nothing new to compare future runs against (same convention as
+    `planeacion_cruce.touch_last_checked`)."""
     coll, name = STATE_DOC.split("/")
-    db.collection(coll).document(name).set({"last_run_at": when}, merge=True)
+    db.collection(coll).document(name).set({"last_checked_at": when}, merge=True)
+
+
+def write_watermark(db, when: datetime, *, panel_hash: str | None = None) -> None:
+    """Advance the incremental watermark after a real run. `panel_hash`
+    (when given) and `last_checked_at` are persisted alongside — the
+    early-exit gate's own inputs, so the NEXT run can compare against what
+    THIS run actually processed."""
+    coll, name = STATE_DOC.split("/")
+    payload: dict = {"last_run_at": when, "last_checked_at": when}
+    if panel_hash is not None:
+        payload["panel_hash"] = panel_hash
+    db.collection(coll).document(name).set(payload, merge=True)
 
 
 def read_tiene_sticker_state(db, doc_ids: list[str]) -> dict:
@@ -359,12 +392,55 @@ def _selfcheck() -> None:
 # ── Pipeline (absorbed from the legacy module's `main()`) ──────────────────
 def run_cruce_sticker() -> dict:
     top = int(sys.argv[sys.argv.index("--top") + 1]) if "--top" in sys.argv else None
+    full = "--full" in sys.argv
 
     panel = load_panel()
     if top is not None:
         panel = panel[:top]
+    # Hash AFTER the --top slice (RELI-001): a truncated debug run must
+    # persist the TRUNCATED hash, so the next normal run always mismatches
+    # and runs fully — hashing pre-slice would let a --top run's watermark
+    # gate the never-scanned tail out forever.
+    panel_hash = _hash_panel(panel)
 
     db = credentials.sismo().firestore
+    now = datetime.now(timezone.utc)
+
+    # Cheap change-detection inputs FIRST (mirrors planeacion_cruce.py's
+    # early-exit gate): one state-doc get + the watermarked evaluaciones
+    # stream (~0 docs steady-state) — NOT the unconditional projected
+    # get_all over the full sticker_matches panel (~1k docs, 48 runs/day,
+    # ~the entire Spark daily read quota by itself) that used to run before
+    # anything else. `--full` ignores the persisted state entirely (watermark
+    # None -> re-fetch every evaluación) and bypasses the gate below.
+    state_doc = {} if full else read_state(db)
+    watermark = state_doc.get("last_run_at")
+    print(f"watermark: {watermark or '(ninguno — primera corrida, procesa toda evaluaciones)'}")
+    evaluaciones = fetch_evaluaciones(db, watermark)
+    print(f"evaluaciones nuevas desde el watermark: {len(evaluaciones)}")
+
+    # Early-exit gate: 0 new evaluaciones AND unchanged Panel point set since
+    # the last real run -> nothing a match attempt could change; skip
+    # read_tiene_sticker_state (the full sticker_matches pre-read) and the
+    # whole match/write path, stamping only last_checked_at so the status
+    # surface still shows the cron alive.
+    # ponytail: watermark+hash approximation — misses an in-place edit of an
+    # already-scanned evaluación (timestamp unchanged, a miss the watermark
+    # itself already accepts) and a manual deletion of a sticker_matches doc
+    # (re-seeded only on the next panel/evaluaciones change or --full run).
+    # Acceptable: both are effectively append-only in practice — same ceiling
+    # planeacion_cruce's evaluaciones_count gate documents.
+    if not full and watermark is not None and not evaluaciones \
+            and state_doc.get("panel_hash") == panel_hash:
+        print("cruce_sticker no-op: 0 evaluaciones nuevas y panel_hash sin cambios; "
+              "salida temprana (sin read_tiene_sticker_state).")
+        if "--dry" in sys.argv:
+            print("[dry] sin escritura de last_checked_at")
+        else:
+            # --dry honors its "no Firestore write" contract even here.
+            touch_last_checked(db, now)
+        return {"noop": True, "total_panel": len(panel), "ya_con_sticker": None,
+                "candidatos": 0, "a_escribir": 0, "nuevos_match": 0}
 
     doc_ids = [doc_id(p["fuente"], p["registro_id"]) for p in panel]
     state = read_tiene_sticker_state(db, doc_ids)
@@ -373,13 +449,7 @@ def run_cruce_sticker() -> dict:
     print(f"Panel: {len(panel)} puntos | ya con sticker (sin re-escanear): {ya_con_sticker} | "
           f"candidatos este run: {len(candidates)}")
 
-    watermark = read_watermark(db)
-    print(f"watermark: {watermark or '(ninguno — primera corrida, procesa toda evaluaciones)'}")
-    evaluaciones = fetch_evaluaciones(db, watermark)
     addr_index = build_addr_index(evaluaciones)
-    print(f"evaluaciones nuevas desde el watermark: {len(evaluaciones)}")
-
-    now = datetime.now(timezone.utc)
     to_write = []
     for p in candidates:
         r = cruce_sticker_punto(p["lat"], p["lon"], p["direccion"], evaluaciones, addr_index)
@@ -410,7 +480,7 @@ def run_cruce_sticker() -> dict:
 
     existing_ids = {did for did, s in state.items() if s["exists"]}
     n = write_sticker_matches(db, to_write, existing_ids)
-    write_watermark(db, now)
+    write_watermark(db, now, panel_hash=panel_hash)
     print(f"escritos {n} docs -> {db.project}/{STICKER_MATCHES_COLLECTION}; watermark avanzado a {now.isoformat()}")
     summary["escritos"] = n
     return summary

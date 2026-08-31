@@ -17,6 +17,7 @@ Firestore/runlog setup).
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 
 from app.jobs import cruce_sticker as job
 
@@ -141,3 +142,200 @@ def test_main_check_flag_runs_offline_selfcheck_and_returns_zero(monkeypatch):
 
 def test_required_clients_declares_only_sismo():
     assert job.REQUIRED_CLIENTS == ("sismo",)
+
+
+# --- run_cruce_sticker early-exit gate: skip the sticker_matches pre-read
+# when nothing changed since the last run (mirrors
+# test_planeacion_cruce.py's own gate tests — same monkeypatching style,
+# no fake db heavier than the gate itself touches) --------------------------
+
+
+def _gate_panel():
+    return [{"fuente": "ede", "registro_id": "A", "lat": 3.42, "lon": -76.53,
+             "direccion": "CL 1 # 2-3", "zona_id": None,
+             "criterio_habitabilidad": None, "colapso": "no"}]
+
+
+def _never_called(name):
+    def _fake(*a, **kw):
+        raise AssertionError(f"{name} must not be called when the gate fires")
+    return _fake
+
+
+class _FakeDb:
+    project = "fake-project"
+
+
+def test_run_is_a_noop_when_no_new_evaluaciones_and_panel_unchanged(monkeypatch):
+    panel = _gate_panel()
+    expected_hash = job._hash_panel(panel)
+    when = datetime(2026, 8, 31, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(sys, "argv", ["cruce_sticker.py"])
+    monkeypatch.setattr(job, "load_panel", lambda: panel)
+    monkeypatch.setattr(job.credentials, "sismo",
+                        lambda: type("C", (), {"firestore": _FakeDb()})())
+    monkeypatch.setattr(job, "read_state",
+                        lambda db: {"last_run_at": when, "panel_hash": expected_hash})
+    monkeypatch.setattr(job, "fetch_evaluaciones", lambda db, watermark: [])
+    monkeypatch.setattr(job, "read_tiene_sticker_state", _never_called("read_tiene_sticker_state"))
+    monkeypatch.setattr(job, "write_sticker_matches", _never_called("write_sticker_matches"))
+    monkeypatch.setattr(job, "write_watermark", _never_called("write_watermark"))
+    touched = []
+    monkeypatch.setattr(job, "touch_last_checked", lambda db, now: touched.append(now))
+
+    summary = job.run_cruce_sticker()
+
+    assert summary["noop"] is True
+    assert touched, "touch_last_checked must stamp the doc on a no-op run"
+
+
+def test_run_executes_fully_when_new_evaluaciones_arrive(monkeypatch):
+    panel = _gate_panel()
+    expected_hash = job._hash_panel(panel)
+    when = datetime(2026, 8, 31, tzinfo=timezone.utc)
+    nueva = {"CODIGO_EDIFICACION": "76001-1-0010001", "Y": 3.42, "X": -76.53,
+             "DIRECCION": "CL 1 # 2-3"}
+
+    monkeypatch.setattr(sys, "argv", ["cruce_sticker.py"])
+    monkeypatch.setattr(job, "load_panel", lambda: panel)
+    monkeypatch.setattr(job.credentials, "sismo",
+                        lambda: type("C", (), {"firestore": _FakeDb()})())
+    monkeypatch.setattr(job, "read_state",
+                        lambda db: {"last_run_at": when, "panel_hash": expected_hash})
+    monkeypatch.setattr(job, "fetch_evaluaciones", lambda db, watermark: [nueva])
+
+    calls = []
+    monkeypatch.setattr(job, "read_tiene_sticker_state",
+                        lambda db, ids: calls.append("read_tiene_sticker_state") or {})
+    monkeypatch.setattr(job, "write_sticker_matches", lambda db, points, existing: len(points))
+    watermark_calls = []
+    monkeypatch.setattr(job, "write_watermark",
+                        lambda db, now, **kw: watermark_calls.append(kw))
+
+    summary = job.run_cruce_sticker()
+
+    assert "noop" not in summary
+    assert "read_tiene_sticker_state" in calls
+    assert watermark_calls[-1]["panel_hash"] == expected_hash
+
+
+def test_run_executes_fully_when_panel_hash_changed(monkeypatch):
+    panel = _gate_panel()
+    when = datetime(2026, 8, 31, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(sys, "argv", ["cruce_sticker.py"])
+    monkeypatch.setattr(job, "load_panel", lambda: panel)
+    monkeypatch.setattr(job.credentials, "sismo",
+                        lambda: type("C", (), {"firestore": _FakeDb()})())
+    # 0 new evaluaciones but a STALE panel_hash (e.g. a brand-new Panel point
+    # arrived): the full path must still run so the point gets its pendiente
+    # sticker_matches seed doc.
+    monkeypatch.setattr(job, "read_state",
+                        lambda db: {"last_run_at": when, "panel_hash": "stale-hash"})
+    monkeypatch.setattr(job, "fetch_evaluaciones", lambda db, watermark: [])
+
+    calls = []
+    monkeypatch.setattr(job, "read_tiene_sticker_state",
+                        lambda db, ids: calls.append("read_tiene_sticker_state") or {})
+    monkeypatch.setattr(job, "write_sticker_matches", lambda db, points, existing: len(points))
+    monkeypatch.setattr(job, "write_watermark", lambda db, now, **kw: None)
+
+    summary = job.run_cruce_sticker()
+
+    assert "noop" not in summary
+    assert "read_tiene_sticker_state" in calls
+
+
+def test_dry_gate_run_never_writes_last_checked(monkeypatch):
+    """--dry documents "no Firestore write" — that contract holds even when
+    the early-exit gate fires: last_checked_at is NOT stamped."""
+    panel = _gate_panel()
+    expected_hash = job._hash_panel(panel)
+    when = datetime(2026, 8, 31, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(sys, "argv", ["cruce_sticker.py", "--dry"])
+    monkeypatch.setattr(job, "load_panel", lambda: panel)
+    monkeypatch.setattr(job.credentials, "sismo",
+                        lambda: type("C", (), {"firestore": _FakeDb()})())
+    monkeypatch.setattr(job, "read_state",
+                        lambda db: {"last_run_at": when, "panel_hash": expected_hash})
+    monkeypatch.setattr(job, "fetch_evaluaciones", lambda db, watermark: [])
+    monkeypatch.setattr(job, "read_tiene_sticker_state", _never_called("read_tiene_sticker_state"))
+    monkeypatch.setattr(job, "touch_last_checked", _never_called("touch_last_checked"))
+    monkeypatch.setattr(job, "write_watermark", _never_called("write_watermark"))
+
+    summary = job.run_cruce_sticker()
+
+    assert summary["noop"] is True
+
+
+def test_top_run_does_not_poison_the_gate_for_the_next_full_run(monkeypatch):
+    """A --top N debug run must persist the TRUNCATED panel's hash — the
+    next normal run's gate then mismatches and runs fully, instead of
+    no-oping forever over the never-scanned tail (RELI-001)."""
+    panel = _gate_panel() + [
+        {"fuente": "ede", "registro_id": "B", "lat": 3.45, "lon": -76.56,
+         "direccion": "CR 9 # 8-7", "zona_id": None,
+         "criterio_habitabilidad": None, "colapso": "no"},
+    ]
+    when = datetime(2026, 8, 31, tzinfo=timezone.utc)
+
+    # 1) --top 1 run: only the first point is processed and hashed.
+    monkeypatch.setattr(sys, "argv", ["cruce_sticker.py", "--top", "1"])
+    monkeypatch.setattr(job, "load_panel", lambda: panel)
+    monkeypatch.setattr(job.credentials, "sismo",
+                        lambda: type("C", (), {"firestore": _FakeDb()})())
+    monkeypatch.setattr(job, "read_state", lambda db: {})
+    monkeypatch.setattr(job, "fetch_evaluaciones", lambda db, watermark: [])
+    monkeypatch.setattr(job, "read_tiene_sticker_state", lambda db, ids: {})
+    monkeypatch.setattr(job, "write_sticker_matches", lambda db, points, existing: len(points))
+    persisted = {}
+    monkeypatch.setattr(job, "write_watermark",
+                        lambda db, now, **kw: persisted.update(kw))
+    job.run_cruce_sticker()
+    assert persisted["panel_hash"] == job._hash_panel(panel[:1])
+
+    # 2) next NORMAL run against that persisted state, 0 new evaluaciones:
+    # the gate must NOT fire (truncated hash != full-panel hash).
+    monkeypatch.setattr(sys, "argv", ["cruce_sticker.py"])
+    monkeypatch.setattr(job, "read_state",
+                        lambda db: {"last_run_at": when,
+                                    "panel_hash": persisted["panel_hash"]})
+    calls = []
+    monkeypatch.setattr(job, "read_tiene_sticker_state",
+                        lambda db, ids: calls.append("read_tiene_sticker_state") or {})
+    monkeypatch.setattr(job, "touch_last_checked", _never_called("touch_last_checked"))
+
+    summary = job.run_cruce_sticker()
+
+    assert "noop" not in summary
+    assert "read_tiene_sticker_state" in calls
+
+
+def test_full_flag_bypasses_the_early_exit_gate(monkeypatch):
+    panel = _gate_panel()
+
+    monkeypatch.setattr(sys, "argv", ["cruce_sticker.py", "--full"])
+    monkeypatch.setattr(job, "load_panel", lambda: panel)
+    monkeypatch.setattr(job.credentials, "sismo",
+                        lambda: type("C", (), {"firestore": _FakeDb()})())
+    # --full must not even read the persisted state: watermark None -> every
+    # evaluación is re-fetched, and the gate can never fire.
+    monkeypatch.setattr(job, "read_state", _never_called("read_state"))
+    fetch_watermarks = []
+    monkeypatch.setattr(job, "fetch_evaluaciones",
+                        lambda db, watermark: fetch_watermarks.append(watermark) or [])
+
+    calls = []
+    monkeypatch.setattr(job, "read_tiene_sticker_state",
+                        lambda db, ids: calls.append("read_tiene_sticker_state") or {})
+    monkeypatch.setattr(job, "write_sticker_matches", lambda db, points, existing: len(points))
+    monkeypatch.setattr(job, "touch_last_checked", _never_called("touch_last_checked"))
+    monkeypatch.setattr(job, "write_watermark", lambda db, now, **kw: None)
+
+    summary = job.run_cruce_sticker()
+
+    assert "noop" not in summary
+    assert "read_tiene_sticker_state" in calls
+    assert fetch_watermarks == [None]
