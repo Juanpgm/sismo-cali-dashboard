@@ -80,6 +80,26 @@ def test_hash_spacing_is_canonicalized(variant):
     assert rd.normalize_direccion(variant) == "KR 46 # 10-04"
 
 
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        # A dash gluing a "No"/"-#" connector onto the road number is source
+        # noise, not IGAC nomenclature -- "#" is always preceded by the plain
+        # road number, real ObjectID 29/53 in the panel dataset.
+        ("Carrera 77-No 1C-140", "KR 77 # 1C-140"),
+        ("Danubio\nCarrera 77-No 1C-140\nUrbanizacion Danubio", "DANUBIO KR 77 # 1C-140 URBANIZACION DANUBIO"),
+        # Real ObjectID 45: dash-space before "#".
+        ("Calle 1D oeste - #100bis-19", "CL 1D OESTE # 100BIS-19"),
+        # Real ObjectID 1433: dash directly glued to "#", plus a stray space
+        # later in the lot-complement number that the existing dash-tighten
+        # pass must still collapse.
+        ("Calle 14-#12a -36", "CL 14 # 12A-36"),
+    ],
+)
+def test_stray_dash_before_hash_is_dropped(raw, expected):
+    assert rd.normalize_direccion(raw) == expected
+
+
 # Real messy examples cited in refresh_data.py's own grouping docstrings
 # (_claves_por_edificio / test_refresh_data_dedup.py's Danubio towers case).
 

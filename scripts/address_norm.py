@@ -116,8 +116,14 @@ def normalize_address(address) -> str:
     )
     s = re.sub(r'N[°º]\.?\s*', '# ', s)
 
-    # Whitespace normalization: exactly one space on each side of #
-    s = re.sub(r'\s*#\s*', ' # ', s)
+    # Whitespace normalization: exactly one space on each side of #, and drop
+    # a stray dash directly touching it -- always noise from source text
+    # gluing a connector like "-No" onto the number (e.g. "77-No 1C-140"
+    # -> "77-# " after the número-sign substitution above), never a
+    # meaningful part of IGAC nomenclature: "#" is always preceded by the
+    # plain road number, dashes only ever separate lot from complement
+    # *after* it (e.g. "# 1C-140").
+    s = re.sub(r'-?\s*#\s*', ' # ', s)
     s = re.sub(r'\s+', ' ', s).strip()
 
     # Casing: nomenclature stays uppercase; complement (after comma) -> title
