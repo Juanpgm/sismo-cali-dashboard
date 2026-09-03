@@ -1,7 +1,7 @@
 // Data loading + global filter state (tiny pub/sub store, no framework).
 import {
   normalizeAddressText, buildSearchIndex, splitMultiValue, labelForField,
-  bucketNpisos, suspensionServicios, colapsoResuelto, colapsoResueltoFields, bustParams, AFECTACION_ORDER, resolveBarrioVereda,
+  bucketNpisos, suspensionServicios, colapsoResuelto, colapsoResueltoFields, bustParams, AFECTACION_ORDER, DANO_GRADO_ORDER, resolveBarrioVereda,
 } from './utils.js';
 import { fetchIsraelRecords } from './israel-source.js';
 import { apiUrl } from './api-config.js';
@@ -45,6 +45,10 @@ export const FILTER_FIELDS = [
   // muestra por severidad creciente en vez de alfabéticamente (ver computeOptions).
   { field: 'afectacion_planta', label: labelForField('afectacion_planta'), group: 'severidad', order: AFECTACION_ORDER },
   { field: 'nivel_dano', label: 'Nivel de daño', group: 'severidad' },
+  // Grado de daño en elementos de carga (muros/columnas), ordinal como
+  // afectacion_planta; emptyLabel mantiene alcanzables los blancos que sí
+  // aparecen en producción aunque no en la muestra local de 1000 registros.
+  { field: 'danos_estructura', label: labelForField('danos_estructura'), group: 'severidad', order: DANO_GRADO_ORDER, emptyLabel: 'Sin dato' },
   { field: 'criterio_habitabilidad', label: 'Habitabilidad', group: 'severidad' },
   // Derived field (see suspensionServicios): not in inspections.json.
   { field: 'suspension_servicios', label: 'Suspensión de servicios', group: 'severidad' },

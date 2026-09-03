@@ -2,7 +2,7 @@
 // (ADR-5's safety net — run before AND after touching upsertChart/renderStatistics).
 // Run: node web/js/charts.test.mjs
 import assert from 'node:assert/strict';
-import { tipologiaDe, tipologiaCounts, colapsoHabCounts } from './charts.js';
+import { tipologiaDe, tipologiaCounts, colapsoHabCounts, danosEstructuraCounts } from './charts.js';
 
 // --- tipologiaDe edge cases -------------------------------------------------
 assert.equal(tipologiaDe({ n_pisos: null }), 'sin_dato');
@@ -78,4 +78,67 @@ expectedCH.erroneo.habitable = { reg: 1, unid: 1 };
 expectedCH.erroneo.no_colapso = { reg: 1, unid: 1 };
 assert.deepEqual(colapsoHabCounts(fixture), expectedCH);
 
+// --- danosEstructuraCounts: the "Sin dato" bucket, which is the only branching
+// this chart has. Blank AND unrecognized codes fold into it together (see the
+// doc comment in charts.js for why that is deliberate, not renderByEpoca's rule).
+{
+  const counts = (recs) => {
+    const { counts: c, sinDato } = danosEstructuraCounts(recs);
+    return { ...Object.fromEntries(c), sinDato };
+  };
+
+  // Empty input: every grade at zero, no phantom "Sin dato".
+  assert.deepEqual(
+    counts([]),
+    { sin_dano: 0, leve: 0, moderado: 0, severo: 0, sinDato: 0 },
+  );
+
+  // The four canonical grades, one each.
+  assert.deepEqual(
+    counts([
+      { danos_estructura: 'sin_dano' }, { danos_estructura: 'leve' },
+      { danos_estructura: 'moderado' }, { danos_estructura: 'severo' },
+    ]),
+    { sin_dano: 1, leve: 1, moderado: 1, severo: 1, sinDato: 0 },
+  );
+
+  // Case + accent variants normalize onto the canonical grade, NOT into sinDato.
+  // 'sin_daño' with ñ is the case that actually exercises normalize()'s NFD strip.
+  assert.deepEqual(
+    counts([
+      { danos_estructura: 'SEVERO' }, { danos_estructura: '  Moderado  ' },
+      { danos_estructura: 'sin_daño' },
+    ]),
+    { sin_dano: 1, leve: 0, moderado: 1, severo: 1, sinDato: 0 },
+  );
+
+  // Blank shapes: null, undefined, '', and a missing key all land in sinDato.
+  assert.deepEqual(
+    counts([
+      { danos_estructura: null }, { danos_estructura: undefined },
+      { danos_estructura: '' }, {},
+    ]),
+    { sin_dano: 0, leve: 0, moderado: 0, severo: 0, sinDato: 4 },
+  );
+
+  // Unrecognized non-blank code ('fuerte' is a live KNOWN_LABELS damage code
+  // that no source emits for THIS field) folds into sinDato too, matching the
+  // map's COLORS.unknown / "Sin dato" legend entry for the same record.
+  assert.deepEqual(
+    counts([{ danos_estructura: 'fuerte' }, { danos_estructura: 'no_evaluado' }]),
+    { sin_dano: 0, leve: 0, moderado: 0, severo: 0, sinDato: 2 },
+  );
+
+  // Every record is counted exactly once — grades + sinDato must equal the input.
+  const mixed = [
+    { danos_estructura: 'leve' }, { danos_estructura: 'leve' },
+    { danos_estructura: 'severo' }, { danos_estructura: null },
+    { danos_estructura: 'fuerte' }, {},
+  ];
+  const m = counts(mixed);
+  assert.equal(m.sin_dano + m.leve + m.moderado + m.severo + m.sinDato, mixed.length);
+  assert.deepEqual(m, { sin_dano: 0, leve: 2, moderado: 0, severo: 1, sinDato: 3 });
+}
+
 console.log('ok — charts.js aggregation parity');
+console.log('ok — danosEstructuraCounts "Sin dato" bucket');

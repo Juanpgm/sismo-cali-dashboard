@@ -3,7 +3,7 @@ import {
   COLORS, habitabilityColor, damageColor, severidadColor, buildCategoricalScale,
   interpolateRamp, labelForCode, labelForField, formatValue, escapeHtml, normalize,
   isNoHabitableBinary, basemapTileUrl, afectacionColor, afectacionLevel, AFECTACION_ORDER,
-  barrioVeredaDisplay,
+  barrioVeredaDisplay, danoGradoColor, DANO_GRADO_ORDER,
 } from './utils.js';
 
 const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
@@ -139,6 +139,8 @@ function pointColor(record) {
       return severidadColor(record.severidad_danos);
     case 'afectacion_planta':
       return afectacionColor(record.afectacion_planta);
+    case 'danos_estructura':
+      return danoGradoColor(record.danos_estructura);
     case 'tipologia':
       return tipologiaColor(record);
     case 'uso_edificacion':
@@ -262,6 +264,10 @@ function renderPointsLegend(records) {
   } else if (state.colorBy === 'afectacion_planta') {
     title = labelForField('afectacion_planta');
     entries = AFECTACION_ORDER.map((code) => ({ label: labelForCode(code), color: afectacionColor(code) }));
+    entries.push({ label: 'Sin dato', color: COLORS.unknown });
+  } else if (state.colorBy === 'danos_estructura') {
+    title = labelForField('danos_estructura');
+    entries = DANO_GRADO_ORDER.map((code) => ({ label: labelForCode(code), color: danoGradoColor(code) }));
     entries.push({ label: 'Sin dato', color: COLORS.unknown });
   } else if (state.colorBy === 'tipologia') {
     title = 'Tipología (Casa / Edificación)';

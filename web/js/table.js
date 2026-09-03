@@ -31,7 +31,7 @@ const CANONICAL_ORDER = [
 
 const DEFAULT_VISIBLE = [
   'fecha_inspeccion', 'nombre_edificacion', 'barrio_vereda_resuelto', 'direccion', 'uso_edificacion',
-  'nivel_dano', 'criterio_habitabilidad', 'suspension_servicios', 'sticker',
+  'nivel_dano', 'danos_estructura', 'criterio_habitabilidad', 'suspension_servicios', 'sticker',
   'justificacion_criterio', 'observaciones_generales', 'recomendaciones',
 ];
 

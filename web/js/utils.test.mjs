@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   normalizeAddressText, buildSearchIndex, barrioVeredaDisplay, resolveBarrioVereda, labelForField,
   filterOptionsByLabel, mountCombobox, isTypedAddress, addressDisplay,
+  danoGradoColor, DANO_GRADO_ORDER, formatValue, COLORS,
 } from './utils.js';
 
 // Real variants seen in the dataset for the same building should normalize
@@ -313,3 +314,66 @@ assert.deepEqual(addressDisplay(null), { primary: undefined, secondary: null });
 console.log('ok — address search normalization');
 console.log('ok — barrioVeredaDisplay + geo-first field labels');
 console.log('ok — filterOptionsByLabel (shared combobox default filter)');
+
+// --- DANO_GRADO_ORDER: exact contents/length ---------------------------------
+// The filter sort (data.js FILTER_FIELDS `order`) and the chart both depend on
+// this exact ascending-severity order -- guard against silent reordering.
+assert.deepEqual(DANO_GRADO_ORDER, ['sin_dano', 'leve', 'moderado', 'severo']);
+
+// --- danoGradoColor: 4 known grades, each a distinct hex ---------------------
+const sinDanoColor = danoGradoColor('sin_dano');
+const leveColor = danoGradoColor('leve');
+const moderadoColor = danoGradoColor('moderado');
+const severoColor = danoGradoColor('severo');
+const danoColors = [sinDanoColor, leveColor, moderadoColor, severoColor];
+assert.equal(new Set(danoColors).size, 4, 'each of the 4 grades must map to a distinct color');
+for (const c of danoColors) assert.match(c, /^#[0-9a-f]{6}$/i);
+
+// The ramp must run BEST -> WORST over COLORS.severidad. Asserting only
+// "4 distinct hexes" would pass just as happily with sin_dano painted dark red
+// and severo painted green, which is the one failure a reader would never
+// question on screen -- pin the actual mapping.
+assert.equal(sinDanoColor, COLORS.severidad.sin_dano);
+assert.equal(leveColor, COLORS.severidad.bajo);
+assert.equal(moderadoColor, COLORS.severidad.medio);
+assert.equal(severoColor, COLORS.severidad.alto);
+
+// No grade may collide with COLORS.unknown either: the map legend renders the
+// 4 grades AND "Sin dato" together, and renderPointsLegend's countByColor
+// buckets by hex -- a collision would silently merge two categories' counts.
+assert.equal(new Set([...danoColors, COLORS.unknown]).size, 5);
+
+// Accent/uppercase/whitespace input normalizes the same as the canonical code.
+// 'sin_daño' (ñ) is the one that actually exercises normalize()'s NFD strip --
+// 'SEVERO'/'Sin_Dano' only cover case folding.
+assert.equal(danoGradoColor('SEVERO'), severoColor);
+assert.equal(danoGradoColor('Sin_Dano'), sinDanoColor);
+assert.equal(danoGradoColor('sin_daño'), sinDanoColor);
+assert.equal(danoGradoColor('  Moderado  '), moderadoColor);
+
+// Blank / unknown codes fall back to COLORS.unknown.
+assert.equal(danoGradoColor(null), COLORS.unknown);
+assert.equal(danoGradoColor(undefined), COLORS.unknown);
+assert.equal(danoGradoColor(''), COLORS.unknown);
+assert.equal(danoGradoColor('fuerte_xyz'), COLORS.unknown);
+
+// --- formatValue: danos_estructura + sibling danos_*/cielos_instalaciones ---
+// fields route through labelForCode instead of rendering the raw snake_case code.
+assert.equal(formatValue('danos_estructura', 'sin_dano'), 'Sin daño');
+assert.equal(formatValue('danos_estructura', 'severo'), 'Severo');
+assert.equal(formatValue('danos_contrapiso_entrepiso_muroscont', 'moderado'), 'Moderado');
+assert.equal(formatValue('danos_muro_div', 'leve'), 'Leve');
+assert.equal(formatValue('danos_cubierta', 'severo'), 'Severo');
+assert.equal(formatValue('cielos_instalaciones', 'sin_dano'), 'Sin daño');
+
+// Blank/null value -> 'Sin dato', regardless of field.
+assert.equal(formatValue('danos_estructura', null), 'Sin dato');
+assert.equal(formatValue('danos_estructura', undefined), 'Sin dato');
+assert.equal(formatValue('danos_estructura', ''), 'Sin dato');
+
+// Unknown code falls back to prettify() (labelForCode's own fallback), not to
+// the raw untouched string -- e.g. underscores turned to spaces + capitalized.
+assert.equal(formatValue('danos_estructura', 'fuerte_xyz'), 'Fuerte xyz');
+
+console.log('ok — danoGradoColor + DANO_GRADO_ORDER (Daños en la estructura)');
+console.log('ok — formatValue routes danos_*/cielos_instalaciones through labelForCode');

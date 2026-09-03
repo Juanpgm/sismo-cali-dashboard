@@ -2,7 +2,7 @@
 // Chart.js 4 (UMD global via CDN, same pattern as Leaflet's `L`) — "Estadísticas" charts.
 import {
   COLORS, themeColor, labelForCode, labelForField, splitMultiValue, habCode, habBinary, normalize, formatDate,
-  buildCategoricalScale, interpolateRamp, colapsoResuelto,
+  buildCategoricalScale, interpolateRamp, colapsoResuelto, danoGradoColor, DANO_GRADO_ORDER,
 } from './utils.js';
 
 /** Colores de un set de valores por INTENSIDAD de un mismo hue (el acento):
@@ -29,6 +29,7 @@ const CHART_HELP = {
   'chart-flags': 'Cuántas inspecciones marcaron "Sí" en cada riesgo o afectación, ordenadas de mayor a menor.',
   'chart-hab-comuna': 'Habitabilidad por comuna: cada barra es una comuna, segmentada por criterio de habitabilidad.',
   'chart-epoca': 'Inspecciones agrupadas por la época de construcción declarada de la edificación.',
+  'chart-danos-estructura': 'Grado de daño observado en elementos de carga (muros de carga, columnas), de "Sin daño" a "Severo".',
 };
 
 function injectChartHelp() {
@@ -195,6 +196,54 @@ function renderByNivelDano(records) {
         label: 'Inspecciones',
         data: DANO_ORDER.map((k) => counts.get(k)),
         backgroundColor: DANO_ORDER.map((k) => COLORS.damage[k]),
+        borderRadius: 4,
+        maxBarThickness: 40,
+      }],
+    },
+    options: baseOptions(),
+  });
+}
+
+/** Counts per danos_estructura grade + a single `sinDato` bucket.
+ *  Deliberately NOT renderByEpoca's convention: that one drops unrecognized
+ *  non-blank codes on the floor, this one folds them into "Sin dato" together
+ *  with the blanks. That is what keeps the chart reconciling with the MAP,
+ *  where danoGradoColor() already paints anything outside DANO_GRADO_ORDER as
+ *  COLORS.unknown and renderPointsLegend counts it under "Sin dato" too — the
+ *  two surfaces must never disagree on the same record.
+ *  Exported for charts.test.mjs (same reason as tipologiaCounts/colapsoHabCounts:
+ *  the branching is the part worth asserting, and a canvas can't be asserted). */
+export function danosEstructuraCounts(records) {
+  const counts = new Map(DANO_GRADO_ORDER.map((k) => [k, 0]));
+  let sinDato = 0;
+  for (const r of records) {
+    const key = normalize(r.danos_estructura);
+    if (counts.has(key)) counts.set(key, counts.get(key) + 1);
+    else sinDato += 1;
+  }
+  return { counts, sinDato };
+}
+
+/** Bar: grade of damage on load-bearing elements (danos_estructura), plus a
+ *  trailing "Sin dato" bar when at least one record is blank/unrecognized. */
+function renderDanosEstructura(records) {
+  const { counts, sinDato } = danosEstructuraCounts(records);
+  const labels = DANO_GRADO_ORDER.map(labelForCode);
+  const data = DANO_GRADO_ORDER.map((k) => counts.get(k));
+  const backgroundColor = DANO_GRADO_ORDER.map((k) => danoGradoColor(k));
+  if (sinDato > 0) {
+    labels.push('Sin dato');
+    data.push(sinDato);
+    backgroundColor.push(COLORS.unknown);
+  }
+  upsertChart('chart-danos-estructura', {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Inspecciones',
+        data,
+        backgroundColor,
         borderRadius: 4,
         maxBarThickness: 40,
       }],
@@ -875,6 +924,7 @@ export function renderStatistics(records, allRecords, reportados = null) {
   renderColapsoHab(records);
   renderHabDoughnut(records);
   renderSeveridad(records);
+  renderDanosEstructura(records);
   renderSuspension(records);
   renderFlags(records);
   renderTimeSeries(records, reportados);

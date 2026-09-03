@@ -459,7 +459,11 @@ export function formatValue(field, value) {
   if (value === null || value === undefined || value === '') return 'Sin dato';
   if (field === 'fecha_inspeccion') return formatDate(value);
   if (field === 'fecha_hora' || field === 'CreationDate' || field === 'EditDate') return formatDateTime(value);
-  if (['criterio_habitabilidad', 'habitabilidad_calc', 'nivel_dano', 'severidad_danos', 'severidad_danos_calc', 'afectacion_planta', 'afectacion_planta_calc', 'sticker', 'barrio_vereda_fuente']
+  // danos_* / cielos_instalaciones share the sin_dano/leve/moderado/severo
+  // vocabulary with the fixed fields above -- leaving them raw next to a
+  // mapped column would read as a bug (e.g. "sin_dano" next to "Sin daño").
+  if (['criterio_habitabilidad', 'habitabilidad_calc', 'nivel_dano', 'severidad_danos', 'severidad_danos_calc', 'afectacion_planta', 'afectacion_planta_calc', 'sticker', 'barrio_vereda_fuente',
+    'danos_estructura', 'danos_contrapiso_entrepiso_muroscont', 'danos_muro_div', 'danos_cubierta', 'cielos_instalaciones']
     .includes(field)) return labelForCode(value);
   if (typeof value === 'string' && /^(si|sí|no)$/i.test(value.trim())) return labelForCode(value);
   return String(value);
@@ -590,6 +594,25 @@ const AFECTACION_COLORS = {
 /** Color for an afectacion_planta range (ordinal, same warm ramp as severidad). */
 export function afectacionColor(code) {
   return AFECTACION_COLORS[normalize(code)] || COLORS.unknown;
+}
+
+// Ordinal grade scale shared by the `danos_*` detail fields (danos_estructura,
+// danos_contrapiso_entrepiso_muroscont, danos_muro_div, danos_cubierta,
+// cielos_instalaciones). An explicit order is needed instead of alphabetical
+// sorting: alphabetically "leve" < "moderado" < "severo" < "sin_dano", which
+// puts the WORST grade right after the BEST one and breaks any UI (filter,
+// legend, chart) that relies on ascending severity.
+export const DANO_GRADO_ORDER = ['sin_dano', 'leve', 'moderado', 'severo'];
+const DANO_GRADO_COLORS = {
+  sin_dano: COLORS.severidad.sin_dano,
+  leve: COLORS.severidad.bajo,
+  moderado: COLORS.severidad.medio,
+  severo: COLORS.severidad.alto,
+};
+
+/** Color for a danos_* grade code (ordinal, same warm ramp as severidad/afectacion). */
+export function danoGradoColor(code) {
+  return DANO_GRADO_COLORS[normalize(code)] || COLORS.unknown;
 }
 
 /** Ordinal level 0..4 of an afectacion_planta range; null when blank/unknown.
