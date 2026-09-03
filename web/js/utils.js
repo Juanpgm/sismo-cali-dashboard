@@ -118,7 +118,7 @@ export function normalize(str) {
  *  Longest variants first so e.g. "crra"/"carrera" both hit before "cr". */
 const WAY_TYPE_MAP = [
   [/\b(calle|cll)\b/g, 'cl'],
-  [/\b(carrera|carrea|crra|cra|krra|kra)\b/g, 'cr'],
+  [/\b(carrera|carrea|crra|cra|krra|kra|kr)\b/g, 'cr'],
   [/\b(avenida|aven)\b/g, 'av'],
   [/\b(diagonal|diag)\b/g, 'dg'],
   [/\b(transversal|trans)\b/g, 'tv'],
@@ -127,22 +127,119 @@ const WAY_TYPE_MAP = [
   [/\bmanzana\b/g, 'mz'],
 ];
 
+/** Lone "k" as a carrera abbreviation (real IGAC form, e.g. "K 67#3C-15").
+ *  Digit-adjacency alone is NOT enough evidence: in the real dataset, a bare
+ *  "k" glued to a number is the short form of "kilometro" ("k18", "k10.5",
+ *  "k14.5, sector...") roughly 5x more often than it's a carrera -- both
+ *  look identical to a rule that only checks "k" + digit. What tells them
+ *  apart, on every occurrence seen in the data: a cadastral number-sign
+ *  ("#", the house/lot number marker) shows up shortly after the road
+ *  number in the real carrera cases and never does in the kilometer ones
+ *  (free text -- a sector/place name -- or nothing follows instead).
+ *  Kilometers are also sometimes written with a decimal ("k10.5", "k14.5"),
+ *  which a carrera number never has -- an independent second signal, kept as
+ *  defense in depth. Same cautious rule as address_norm.py's backend fix
+ *  (`_ROAD_TYPES`'s lone-K entry) -- kept in sync with it.
+ *
+ *  MUST run before punctuation gets blanked to spaces below, so the "#"
+ *  this rule looks for -- and a dash/other separator that should instead
+ *  BLOCK a match (e.g. "Torre K - 5") -- are both still visible as
+ *  themselves, not already collapsed to interchangeable whitespace.
+ *
+ *  No lookbehind (`(?<!...)`): this module is loaded directly by the
+ *  browser with no build step (see docs/ADR.md), and Safari <16.4 has no
+ *  lookbehind support -- a parse error here would take down the whole
+ *  panel, not just search. `_LONE_K_RE` instead captures the character
+ *  before "k" (or start-of-string) in group 1, and the replacer callback
+ *  re-emits it unchanged; only the lookahead (checking what follows, which
+ *  Safari has always supported) stays inside the pattern. */
+const LONE_K_RE = /(^|[^a-z0-9])k(?=\s*\d+(?!\.\d)[a-z\s]{0,3}#)/g;
+
 /** normalize() + address-aware fuzz: punctuation/separators -> spaces, way-type
  *  abbreviations collapsed to one canonical form, digit<->letter boundaries
  *  split ("44a" / "5B2" -> "44 a" / "5 b 2"), noise words dropped. Used to
  *  build the search index AND the query, so "Cra 44a #10-25" and
- *  "carrera 44 10-25" land on the same tokens. */
+ *  "carrera 44 10-25" land on the same tokens.
+ *
+ *  Order matters: the digit<->letter split runs BEFORE the WAY_TYPE_MAP
+ *  collapse. `\b` does not separate a letter from a digit it's glued to
+ *  (both count as "word" characters to regex), so an abbreviation glued to
+ *  its number ("Carrera77", "Kr96") is invisible to `\bcarrera\b`-style
+ *  patterns until the digit/letter split has already pulled them apart --
+ *  collapsing first (the previous order) meant "Carrera77 #1c-140" indexed
+ *  as "carrera 77 1 c 140" forever, never becoming "cr 77 1 c 140", so a
+ *  search for "carrera 77" (which DOES collapse, having a space already)
+ *  could never find it. */
 export function normalizeAddressText(str) {
-  let s = normalize(str)
-    .replace(/[#.,\-]/g, ' ')
-    .replace(/\b(no|num)\b/g, ' ');
-  for (const [re, canon] of WAY_TYPE_MAP) s = s.replace(re, canon);
+  let s = normalize(str).replace(LONE_K_RE, (_m, pre) => `${pre}cr`);
   s = s
+    .replace(/[#.,\-]/g, ' ')
+    .replace(/\b(no|num)\b/g, ' ')
     .replace(/(\d)([a-z])/g, '$1 $2')
-    .replace(/([a-z])(\d)/g, '$1 $2')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .replace(/([a-z])(\d)/g, '$1 $2');
+  for (const [re, canon] of WAY_TYPE_MAP) s = s.replace(re, canon);
+  s = s.replace(/\s+/g, ' ').trim();
   return s;
+}
+
+// IGAC road-type codes normalize_address (scripts/address_norm.py) can emit
+// anywhere in a normalized address -- kept in sync with that module's
+// `_CODES`/`_ROAD_TYPES`. A `direccion_norm` value that does NOT contain one
+// of these as a real token is free text normalize_address could not typify
+// (e.g. "Clinica colombia", "Finca El Refujio") -- it passed through
+// case-folded only, so showing it as "the normalized address" would be
+// misleading.
+//
+// Deliberately NOT anchored to the start (`^`): normalize_direccion often
+// prepends free-text context the normalizer could not typify -- a building/
+// urbanización name, a "Km N vía" rural prefix -- ahead of the actual typed
+// address, e.g. "IO KR 39 # 12C-57 BARRIO OLIMPICO" (raw: "io carrera 39 #
+// 12c-57 Barrio Olimpico") or "KM 2 VI CRISTO REY". Requiring the code at
+// position 0 missed every one of these even though the normalizer DID
+// recognize the road type mid-string -- confirmed against both the local
+// 1000-record dataset and the 1505-record production dataset: 10 and 16
+// records respectively carry a real road code that is not string-initial
+// (zero of them turned out to be a coincidental embedded match once the
+// boundary check below is applied -- see the boundary comment).
+//
+// Boundary check, both ends: `\b` does not work here on EITHER side. Digits
+// count as "word" characters to `\b` same as letters, so `\b` fails to
+// separate a code from a glued number ("KR77", "CL1D", "CL12A" -- exactly
+// what the backend's own glued-abbreviation fix, address_norm.py's `_wb`/
+// `_END`, now emits) -- it would also fail to separate one from a glued
+// PRECEDING word once the anchor is dropped (e.g. a hypothetical "XKR" or a
+// digit run before it). So both sides use an explicit letter-only check
+// instead: a lookahead after (blocks matching inside a longer word, e.g. a
+// would-be "AVXYZ", while still allowing a digit right after the code, with
+// or without a space) and, before, a consuming alternation of start-of-string
+// or "the previous character is not a letter" (same semantics as a
+// lookbehind would give, without one -- this module has no build step and
+// ships straight to the browser, so it stays lookbehind-free per the
+// existing LONE_K_RE precedent below for pre-Safari-16.4 support). A digit
+// immediately before the code (as opposed to a letter) is allowed to match,
+// matching address_norm.py's own `_START` boundary on the backend.
+const IGAC_ROAD_CODE_RE = /(?:^|[^A-ZÁÉÍÓÚÑÜ])(AC|AK|AU|AV|CT|KR|CL|CV|CQ|DG|TV|TC|BL|PJ|PS|PT|VT|VI|CC)(?![A-ZÁÉÍÓÚÑÜ])/;
+
+/** Whether `norm` (a record's `direccion_norm`) looks like a real IGAC-typed
+ *  address rather than untyped free text. */
+export function isTypedAddress(norm) {
+  return typeof norm === 'string' && IGAC_ROAD_CODE_RE.test(norm.trim());
+}
+
+/** Table/detail display for the `direccion` field: prefer the IGAC-normalized
+ *  value (`direccion_norm`, from scripts/refresh_data.py's normalize_direccion)
+ *  when it is a real typed address and adds information over the raw value;
+ *  otherwise fall back to the raw value alone, never pretending untyped free
+ *  text is a normalized address. `secondary` is the raw value, to keep it
+ *  reachable even when `primary` is the normalized one -- null when there is
+ *  nothing extra to show (blank raw, or raw/norm are the same address). */
+export function addressDisplay(record) {
+  const raw = record?.direccion;
+  const norm = record?.direccion_norm;
+  if (isTypedAddress(norm) && normalize(norm) !== normalize(raw)) {
+    return { primary: norm, secondary: raw || null };
+  }
+  return { primary: raw, secondary: null };
 }
 
 /** Capitalize-and-space a raw snake_case field/code as a last-resort label. */
@@ -183,7 +280,17 @@ const FIELD_LABELS = {
   barrio_vereda_resuelto: 'Barrio / vereda',
   barrio_vereda: 'Barrio / vereda (reportado)',
   barrio_vereda_fuente: 'Barrio / vereda (fuente)',
+  // Table column shows the IGAC-normalized value as primary (with the raw
+  // value riding along as a secondary line) whenever it's typed -- see
+  // addressDisplay()/isTypedAddress() above -- so a label claiming this is
+  // "the original" would be wrong most of the time. In the detail modal this
+  // same label sits on the raw value alone (that row has no addressDisplay
+  // treatment), right next to the separate "Dirección (IGAC)" row below --
+  // context enough there without needing "original" spelled out.
   direccion: 'Dirección',
+  // direccion_norm: IGAC-normalized address (normalize_direccion, refresh_data.py) —
+  // see addressDisplay()/isTypedAddress() below for how it's chosen over the raw value.
+  direccion_norm: 'Dirección (IGAC)',
   comuna: 'Comuna / corregimiento',
   barrio_geo: 'Barrio / vereda (geo)',
   tipo_propiedad: 'Tipo de propiedad',
@@ -284,7 +391,7 @@ export const DETAIL_GROUPS = {
     'ObjectID', 'GlobalID', 'evento_id', 'tipo_evento', 'entidad', 'nombre_evaluador', 'id_grupo',
     'fecha_inspeccion', 'hora', 'fecha_hora', 'nombre_edificacion', 'municipio', 'comuna',
     'barrio_vereda_resuelto', 'barrio_vereda', 'barrio_geo', 'barrio_vereda_fuente',
-    'direccion', 'tipo_propiedad', 'relacion_edificacion', 'otro',
+    'direccion', 'direccion_norm', 'tipo_propiedad', 'relacion_edificacion', 'otro',
     'x', 'y', 'gps_precision_m', 'CreationDate', 'Creator', 'EditDate', 'Editor',
   ],
   'Estructura': [

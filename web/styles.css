@@ -1094,6 +1094,19 @@ td { padding: 10px 14px; vertical-align: top; color: var(--text-primary); max-wi
 }
 .cell-clamp.is-expanded { -webkit-line-clamp: unset; }
 
+/* Address column -- deliberately unclamped (unlike .cell-clamp) so the
+   nomenclature is never hidden behind a click; wraps in full within the
+   cell's max-width instead of truncating. break-word guards against an
+   occasional glued-together token (e.g. a raw address with no spaces)
+   overflowing the column. */
+.cell-address { white-space: normal; overflow-wrap: break-word; }
+
+/* Secondary line under the primary value -- e.g. the raw "direccion" value
+   riding along under the IGAC-normalized primary value in the direccion
+   column (see addressDisplay() in utils.js). Visually muted/smaller so it
+   reads as supporting info, not a second address. */
+.cell-secondary { display: block; font-size: 0.68rem; color: var(--text-muted); margin-top: 2px; }
+
 .empty-row td { padding: 40px 20px; }
 .empty-state { display: flex; flex-direction: column; gap: 4px; align-items: center; text-align: center; color: var(--text-secondary); }
 

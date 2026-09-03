@@ -1,14 +1,14 @@
 // Results table: sortable columns, column visibility control, detail modal.
 import {
   labelForField, labelForCode, formatValue, escapeHtml, DETAIL_GROUPS, BADGE_FIELDS, normalize,
-  barrioVeredaDisplay,
+  barrioVeredaDisplay, addressDisplay, isTypedAddress,
 } from './utils.js';
 import { buildMiniMap, highlightRecord } from './mapview.js';
 
 const CANONICAL_ORDER = [
   'ObjectID', 'GlobalID', 'fecha_inspeccion', 'hora', 'fecha_hora', 'nombre_evaluador', 'id_grupo',
   'entidad', 'tipo_evento', 'nombre_edificacion', 'municipio', 'barrio_vereda_resuelto', 'barrio_vereda',
-  'direccion',
+  'direccion', 'direccion_norm',
   'tipo_propiedad', 'relacion_edificacion', 'otro', 'epoca_construccion', 'n_pisos', 'n_sotanos',
   'n_ocupantes', 'frente', 'fondo', 'n_residenciales', 'n_comerciales', 'n_no_habitadas',
   'n_muertos', 'n_heridos', 'acceso_edificacion', 'uso_edificacion', 'uso_cual', 'sistema_estructural',
@@ -35,9 +35,11 @@ const DEFAULT_VISIBLE = [
   'justificacion_criterio', 'observaciones_generales', 'recomendaciones',
 ];
 
+// 'direccion' is intentionally NOT here -- it gets its own unclamped render
+// path (see renderCell) so addresses are never truncated behind a click.
 const LONG_TEXT_FIELDS = new Set([
   'observaciones', 'observaciones_generales', 'recomendaciones', 'justificacion_criterio',
-  'direccion', 'nombre_edificacion',
+  'nombre_edificacion',
 ]);
 
 let allFields = [...CANONICAL_ORDER];
@@ -140,8 +142,12 @@ function wireColumnsToggle() {
 const isEmptyVal = (v) => v === null || v === undefined || String(v).trim() === '';
 
 function compareValues(a, b, field) {
-  const va = a[field];
-  const vb = b[field];
+  // The "direccion" column displays addressDisplay().primary (IGAC-normalized
+  // when typed, raw otherwise -- see renderCell() above), so sort by that
+  // same value instead of the always-raw a[field]/b[field]; otherwise the
+  // sort order silently disagrees with what's on screen.
+  const va = field === 'direccion' ? addressDisplay(a).primary : a[field];
+  const vb = field === 'direccion' ? addressDisplay(b).primary : b[field];
   const na = Number(va);
   const nb = Number(vb);
   if (!Number.isNaN(na) && !Number.isNaN(nb) && String(va).trim() !== '' && String(vb).trim() !== '') {
@@ -176,6 +182,16 @@ function renderBadge(field, value) {
 function renderCell(record, field) {
   const value = record[field];
   if (field === 'barrio_vereda_resuelto') return escapeHtml(barrioVeredaDisplay(record));
+  if (field === 'direccion') {
+    // Prefer the IGAC-normalized address (direccion_norm) as the primary
+    // value when it's a real typed address; the raw value is never lost --
+    // it rides along as a secondary line inside the same expandable cell
+    // (see .cell-secondary in styles.css).
+    const { primary, secondary } = addressDisplay(record);
+    const text = escapeHtml(formatValue(field, primary));
+    const sub = secondary ? `<span class="cell-secondary">${escapeHtml(secondary)}</span>` : '';
+    return `<div class="cell-address">${text}${sub}</div>`;
+  }
   if (BADGE_FIELDS.has(field) && value) return renderBadge(field, value);
   const text = escapeHtml(formatValue(field, value));
   if (LONG_TEXT_FIELDS.has(field)) {
@@ -419,6 +435,11 @@ export function openDetailModal(record) {
   for (const field of allFields) {
     const value = record[field];
     if (value === null || value === undefined || value === '') continue;
+    // direccion_norm is only worth its own "Dirección (IGAC)" row when it IS
+    // a typed address -- otherwise it is normalize_address's untouched
+    // passthrough of free text (e.g. "Finca El Refujio"), duplicating what
+    // the plain "direccion" field already shows.
+    if (field === 'direccion_norm' && !isTypedAddress(value)) continue;
     const group = groupForField(field);
     if (!groups[group]) groups[group] = [];
     groups[group].push(field);

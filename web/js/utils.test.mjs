@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import {
   normalizeAddressText, buildSearchIndex, barrioVeredaDisplay, resolveBarrioVereda, labelForField,
-  filterOptionsByLabel, mountCombobox,
+  filterOptionsByLabel, mountCombobox, isTypedAddress, addressDisplay,
 } from './utils.js';
 
 // Real variants seen in the dataset for the same building should normalize
@@ -29,6 +29,73 @@ assert.ok(query.every((tok) => index.includes(tok)), 'query tokens should all be
 // Precision: an address that only shares one token should NOT match.
 const otherQuery = normalizeAddressText('calle 44 10-25').split(' ').filter(Boolean);
 assert.ok(!otherQuery.every((tok) => index.includes(tok)), 'different way-type should not match');
+
+// --- normalizeAddressText: abbreviation glued to the number (bug fix) ------
+// `\b` does not separate a letter from a digit it's glued to, so WAY_TYPE_MAP
+// used to skip "Carrera77" entirely -- and running the collapse BEFORE the
+// digit/letter split meant it never got a second chance either. Both issues
+// together meant "carrera 77" (own index term "cr 77...") could never match
+// a record indexed from the glued form. Digit-glued and space-separated
+// forms of the same address must now produce the exact same token stream.
+assert.equal(normalizeAddressText('Carrera77 #1c-140'), normalizeAddressText('Carrera 77 #1c-140'));
+assert.equal(normalizeAddressText('CARRERA77'), normalizeAddressText('Carrera 77'));
+assert.equal(normalizeAddressText('Calle3D # 45-23'), normalizeAddressText('Calle 3D # 45-23'));
+
+// A search for "carrera 77" must find a record indexed from the glued form.
+const gluedIndex = buildSearchIndex({ direccion: 'Carrera77 #1c-140' });
+const spacedQuery = normalizeAddressText('carrera 77').split(' ').filter(Boolean);
+assert.ok(spacedQuery.every((tok) => gluedIndex.includes(tok)), 'glued-form index should match a spaced query');
+
+// --- normalizeAddressText: "kr"/"k" as carrera aliases ---------------------
+// "kr" (no vowels) was missing from WAY_TYPE_MAP's carrera group even though
+// direccion_norm (backend) emits "KR" as the canonical IGAC code -- so
+// searching "kr 96" would not find data whose search index came from
+// "carrera 96" (and vice versa) despite both meaning the same road.
+assert.equal(normalizeAddressText('kr 96'), normalizeAddressText('carrera 96'));
+assert.equal(normalizeAddressText('kr96'), normalizeAddressText('carrera 96'));
+
+// Lone "k" glued to a digit is ALSO the short form of "kilometro" in the raw
+// dataset ("k18", "k10.5", "k14, sector...") -- roughly 5x more often than
+// it's a real carrera -- so digit-adjacency alone is not enough evidence
+// (see LONE_K_RE's doc comment above). Only convert when a "#" (the
+// cadastral number-sign) shows up shortly after the road number, same
+// criterion as address_norm.py's backend fix -- kept in sync with it.
+assert.equal(normalizeAddressText('K 67#3C-15'), normalizeAddressText('KR 67 # 3C-15'));
+assert.equal(normalizeAddressText('K 58 #3 - 136 4 G'), normalizeAddressText('KR 58 # 3-136 4 G'));
+
+// False-positive guards, all pulled from the real dataset -- none of these
+// have a "#" anywhere near the "k", so none must collapse to "carrera".
+assert.equal(normalizeAddressText('K18 vial al mar sector la vaca'), normalizeAddressText('k18 vial al mar sector la vaca'));
+assert.ok(!normalizeAddressText('K18 vial al mar sector la vaca').includes('cr '), 'kilometer marker must not become "cr"');
+assert.equal(normalizeAddressText('K10.5 Casa 6'), normalizeAddressText('k10 5 casa 6'));
+assert.ok(!normalizeAddressText('K10.5 Casa 6').includes('cr'), 'kilometer with decimal must not become "cr"');
+assert.ok(!normalizeAddressText('Sector Altos Los Pinos, K14').includes('cr'), 'kilometer at end of string, no "#", must not become "cr"');
+assert.equal(normalizeAddressText('Km 18 via cali'), 'km 18 via cali');
+assert.notEqual(normalizeAddressText('Torre K - 5').split(' ')[1], 'cr');
+assert.ok(normalizeAddressText('Torre K - 5').includes(' k '), 'a dash-separated "K" must stay a bare token, not become "cr"');
+assert.equal(normalizeAddressText('Bloque K'), 'bloque k');
+assert.equal(normalizeAddressText('Torre K 5'), 'torre k 5');
+assert.equal(normalizeAddressText('Bloque K 3'), 'bloque k 3');
+assert.equal(normalizeAddressText('Manzana K 12'), normalizeAddressText('Mz K 12'));
+assert.ok(!normalizeAddressText('Manzana K 12').includes('cr'), 'a bare "K" after MANZANA/MZ must not become "cr"');
+assert.equal(normalizeAddressText('Mz K 5 Cs 3'), 'mz k 5 cs 3');
+// A real "KR" earlier in the string must not make a later, unrelated "K"
+// collapse too -- each occurrence is judged on its own local evidence.
+assert.ok(!normalizeAddressText('Cra 1 K 5').endsWith('cr 5'), '"K 5" after an unrelated real carrera must stay a bare "k", not double up as another "cr"');
+
+// --- normalizeAddressText: non-address free text is untouched --------------
+assert.equal(normalizeAddressText('Clinica colombia'), 'clinica colombia');
+assert.equal(normalizeAddressText('Finca El Refujio'), 'finca el refujio');
+
+// --- normalizeAddressText: blank / whitespace-only input -------------------
+assert.equal(normalizeAddressText(''), '');
+assert.equal(normalizeAddressText(null), '');
+assert.equal(normalizeAddressText(undefined), '');
+assert.equal(normalizeAddressText('   '), '');
+
+// --- normalizeAddressText: irregular spacing --------------------------------
+assert.equal(normalizeAddressText('CL 72 W # 28 D  -  11'), normalizeAddressText('Calle 72 W 28 D 11'));
+assert.equal(normalizeAddressText('Avenida 5 ta norte # 23 74 '), normalizeAddressText('Av 5 ta norte 23 74'));
 
 // --- barrioVeredaDisplay ----------------------------------------------------
 // "Barrio / vereda" = product of the spatial intersection against the
@@ -151,6 +218,97 @@ assert.deepEqual(filterOptionsByLabel(comunas, 'comuna 3a'), []); // no false ma
 assert.deepEqual(filterOptionsByLabel(comunas, 'saladito').map((o) => o.id), ['x']); // non-numeric label unaffected
 
 assert.equal(typeof mountCombobox, 'function');
+
+// --- isTypedAddress / addressDisplay: table+modal "direccion" column -------
+// direccion_norm shows as the primary value ONLY when it's a real IGAC-typed
+// address (contains a road-type code as a bounded token, anywhere in the
+// string -- NOT only at the start, see below); free text normalize_address
+// could not typify falls back to the raw value, unlabeled as "normalized".
+
+assert.equal(isTypedAddress('KR 96 # 48-53 BLQ 1 AP 502'), true);
+assert.equal(isTypedAddress('CL 3 C # 66B-03'), true);
+assert.equal(isTypedAddress('CLINICA COLOMBIA'), false);
+assert.equal(isTypedAddress('FINCA EL REFUJIO'), false);
+assert.equal(isTypedAddress(''), false);
+assert.equal(isTypedAddress(null), false);
+assert.equal(isTypedAddress(undefined), false);
+
+// `\b` does not separate a letter from a digit it's glued to (both count as
+// "word" characters to `\b`), so the road-type code is invisible to a
+// `\bCODE\b`-anchored pattern when a number is glued right after it --
+// exactly the shape address_norm.py's own glued-abbreviation fix now
+// produces ("KR77", "CL1D", "CL12A"). Without the same fix here, the UI
+// would fail to recognize the very addresses the backend fix just typified.
+assert.equal(isTypedAddress('KR77 # 1C-140'), true);
+assert.equal(isTypedAddress('CL1D OESTE # 12-30'), true);
+assert.equal(isTypedAddress('CL12A # 56-04'), true);
+
+// --- isTypedAddress: NOT anchored to the start -- real production bug -----
+// normalize_direccion often prepends free-text context ahead of the actual
+// typed address (a building/urbanización name, a rural "Km N vía" prefix).
+// Requiring the code at position 0 missed every one of these even though
+// normalize_address DID recognize the road type mid-string. The reported
+// bug case: raw "io carrera 39 # 12c-57 Barrio Olimpico" normalizes to
+// direccion_norm "IO KR 39 # 12C-57 BARRIO OLIMPICO" -- the "IO" prefix
+// (evaluator noise, not a road-type code) meant the old `^`-anchored check
+// classified this as untyped and showed the ugly raw string instead of the
+// already-correctly-normalized one.
+assert.equal(isTypedAddress('IO KR 39 # 12C-57 BARRIO OLIMPICO'), true);
+assert.deepEqual(
+  addressDisplay({
+    direccion: 'io carrera 39 # 12c-57 Barrio Olimpico',
+    direccion_norm: 'IO KR 39 # 12C-57 BARRIO OLIMPICO',
+  }),
+  { primary: 'IO KR 39 # 12C-57 BARRIO OLIMPICO', secondary: 'io carrera 39 # 12c-57 Barrio Olimpico' },
+);
+
+// A few more real non-anchored cases pulled from the local/production
+// datasets during validation (10 local / 16 production records total carry
+// a real road code that is not string-initial; see the module comment above
+// IGAC_ROAD_CODE_RE for the full audit -- zero were coincidental embedded
+// matches once the boundary check applies).
+assert.equal(isTypedAddress('DANUBIO KR 77- # 1C-140 URBANIZACION DANUBIO'), true);
+assert.equal(isTypedAddress('AGRUPACION 1 SECTOR 5 CL 62B # 1A9-75'), true);
+// Rural nomenclature ("Km N vía [nombre]") -- "VI" (vía) recognized mid-string.
+assert.equal(isTypedAddress('KM 2 VI CRISTO REY'), true);
+
+// --- isTypedAddress: boundary check rejects a code glued inside another ---
+// --- word, even with the anchor removed -----------------------------------
+// A 2-letter code embedded inside an unrelated word (letters on both sides)
+// must NOT be treated as a road-type token just because "contains" replaced
+// "starts with". "CLAVEL" ("carnation", a plant name used in street/park
+// naming) contains "AV" glued between "CL" and "EL" -- neither boundary is
+// a non-letter, so it must stay blocked, same as it always was.
+assert.equal(isTypedAddress('JARDINES CLAVEL 45'), false);
+// "APTO" contains "PT" glued between "A" and "O" -- must stay blocked too.
+assert.equal(isTypedAddress('MANZANA K 12 APTO 301'), false);
+
+// Typed norm, different from raw -> norm is primary, raw rides as secondary.
+assert.deepEqual(
+  addressDisplay({ direccion: 'Carrera 96 # 48 - 53', direccion_norm: 'KR 96 # 48-53' }),
+  { primary: 'KR 96 # 48-53', secondary: 'Carrera 96 # 48 - 53' },
+);
+
+// Blank direccion_norm -> raw alone, no secondary (nothing extra to show).
+assert.deepEqual(
+  addressDisplay({ direccion: 'Carrera 96 # 48 - 53', direccion_norm: '' }),
+  { primary: 'Carrera 96 # 48 - 53', secondary: null },
+);
+assert.deepEqual(
+  addressDisplay({ direccion: 'Carrera 96 # 48 - 53' }),
+  { primary: 'Carrera 96 # 48 - 53', secondary: null },
+);
+
+// Untyped free text norm (normalize_address's passthrough) -> raw alone, no
+// secondary duplicate of the same text under a misleading "IGAC" framing.
+assert.deepEqual(
+  addressDisplay({ direccion: 'Clinica colombia', direccion_norm: 'CLINICA COLOMBIA' }),
+  { primary: 'Clinica colombia', secondary: null },
+);
+
+// Neither field present -> both null, no crash.
+assert.deepEqual(addressDisplay({}), { primary: undefined, secondary: null });
+assert.deepEqual(addressDisplay(null), { primary: undefined, secondary: null });
 
 console.log('ok — address search normalization');
 console.log('ok — barrioVeredaDisplay + geo-first field labels');
