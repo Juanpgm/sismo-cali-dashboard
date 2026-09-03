@@ -787,8 +787,20 @@ export function bustParams(bust) {
 // and values are never touched.
 let SOURCE_LABELS = {};
 export function setSourceLabels(map) { SOURCE_LABELS = map || {}; }
+
+// Fields whose EDAN-F3 question text is NOT what the panel should show, and
+// which therefore win over SOURCE_LABELS. Kept deliberately tiny: the numbered
+// question wording is the sidebar's shared language, so every entry here is a
+// case where that wording actively hides the filter from the person looking
+// for it. danos_estructura's source label ("5.7 Daño en muros de carga,
+// columnas y otros elementos") never says "estructura", so the filter reads as
+// a different, narrower variable than the one the field actually holds.
+const LABEL_OVERRIDES = {
+  danos_estructura: 'Daños en la estructura',
+};
+
 export function sourceLabel(field, fallback) {
-  return SOURCE_LABELS[field] || fallback || labelForField(field);
+  return LABEL_OVERRIDES[field] || SOURCE_LABELS[field] || fallback || labelForField(field);
 }
 
 /** Split a comma-joined multi-value field (e.g. "residencial,comercial") into trimmed parts. */

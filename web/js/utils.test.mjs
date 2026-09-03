@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   normalizeAddressText, buildSearchIndex, barrioVeredaDisplay, resolveBarrioVereda, labelForField,
   filterOptionsByLabel, mountCombobox, isTypedAddress, addressDisplay,
-  danoGradoColor, DANO_GRADO_ORDER, formatValue, COLORS,
+  danoGradoColor, DANO_GRADO_ORDER, formatValue, COLORS, sourceLabel, setSourceLabels,
 } from './utils.js';
 
 // Real variants seen in the dataset for the same building should normalize
@@ -377,3 +377,36 @@ assert.equal(formatValue('danos_estructura', 'fuerte_xyz'), 'Fuerte xyz');
 
 console.log('ok — danoGradoColor + DANO_GRADO_ORDER (Daños en la estructura)');
 console.log('ok — formatValue routes danos_*/cielos_instalaciones through labelForCode');
+
+// --- sourceLabel: LABEL_OVERRIDES beats the EDAN-F3 question text -----------
+// The sidebar speaks the survey's numbered wording for every other field, so
+// this override is the exception, not the rule -- assert BOTH halves.
+{
+  setSourceLabels({
+    danos_estructura: '5.7 Daño en muros de carga, columnas y otros elementos',
+    severidad_danos: '6.2 Severidad de daños:',
+  });
+
+  // Overridden field: the source label loses, no matter what fallback is passed.
+  assert.equal(sourceLabel('danos_estructura', 'Daños en la estructura'), 'Daños en la estructura');
+  assert.equal(sourceLabel('danos_estructura', 'cualquier otro fallback'), 'Daños en la estructura');
+  assert.equal(sourceLabel('danos_estructura'), 'Daños en la estructura');
+
+  // Non-overridden field: the source label still wins over the fallback, which
+  // is the whole point of the sidebar's shared language.
+  assert.equal(sourceLabel('severidad_danos', 'Severidad de daños'), '6.2 Severidad de daños:');
+
+  // Unknown field: fallback, then labelForField -- unchanged precedence.
+  assert.equal(sourceLabel('nivel_dano', 'Nivel de daño'), 'Nivel de daño');
+  assert.equal(sourceLabel('comuna'), labelForField('comuna'));
+
+  // The override must survive meta.json arriving empty/absent (source_labels
+  // missing is a real state: setSourceLabels(undefined) on a cold/failed load).
+  setSourceLabels(undefined);
+  assert.equal(sourceLabel('danos_estructura', 'x'), 'Daños en la estructura');
+  assert.equal(sourceLabel('severidad_danos', 'Severidad de daños'), 'Severidad de daños');
+
+  setSourceLabels({}); // leave the module in a clean state for later assertions
+}
+
+console.log('ok — sourceLabel override for danos_estructura');
