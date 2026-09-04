@@ -293,6 +293,10 @@ const FIELD_LABELS = {
   direccion_norm: 'Dirección (IGAC)',
   comuna: 'Comuna / corregimiento',
   barrio_geo: 'Barrio / vereda (geo)',
+  // Point-in-polygon membership against the HIDDEN zonas_interes basemap
+  // (Centro Histórico / Avenida 6ta) — see resolve_zona_interes in
+  // refresh_data.py / resolveZonaInteres in this file.
+  zona_interes: 'Zona de interés',
   tipo_propiedad: 'Tipo de propiedad',
   relacion_edificacion: 'Relación con la edificación',
   otro: 'Otro',
@@ -517,6 +521,226 @@ export function resolveBarrioVereda(record) {
   }
 
   return { barrio_vereda_resuelto: null, barrio_vereda_fuente: 'sin_dato' };
+}
+
+/* ------------------------------------------------------------------ */
+/* zona_interes — ray-casting point-in-polygon against the HIDDEN       */
+/* zonas_interes basemap (Centro Histórico / Avenida 6ta)               */
+/* ------------------------------------------------------------------ */
+
+/** True if (x, y) lies exactly on the segment (x1,y1)-(x2,y2), endpoints
+ *  included — used so a point exactly on a vertex o arista cuente como
+ *  "inside" the ring, siguiendo el criterio de resolve_zona_interes(), que usa
+ *  shapely `covers()` (borde incluido) en vez de `contains()`.
+ *
+ *  La tolerancia se aplica sobre la DISTANCIA perpendicular al segmento
+ *  (producto cruz normalizado por el largo de la arista), no sobre el producto
+ *  cruz crudo. El producto cruz está en grados², así que compararlo contra un
+ *  epsilon fijo daba una banda de borde de ancho 1e-9 / largo_de_arista: cuanto
+ *  más corta la arista, más gorda la banda (hasta ~0,18 m en estos polígonos),
+ *  y ahí este test decía "dentro" mientras shapely `covers()` decía "fuera".
+ *  Normalizando, la banda es uniforme y vale EPS_ON_SEGMENT grados (~0,1 mm)
+ *  para cualquier arista. */
+
+/** Tolerancia de "sobre el borde" en grados de distancia perpendicular.
+ *  1e-9 grados ~ 0,1 mm: alcanza para absorber el error de redondeo de punto
+ *  flotante sin ensanchar el borde a una escala que importe (las coordenadas
+ *  del basemap vienen redondeadas a 7 decimales, ~1 cm). */
+const EPS_ON_SEGMENT = 1e-9;
+
+function pointOnSegment(x, y, x1, y1, x2, y2) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  if (dx === 0 && dy === 0) {
+    // Degenerate (zero-length) segment — an explicitly CLOSED ring's
+    // wraparound edge duplicates this when ring[last] === ring[0]. The
+    // general cross/dot formula below is trivially "collinear" for ANY
+    // point against a zero-length segment (both terms multiply by 0), so it
+    // must be handled separately: true only if the point IS that one vertex.
+    return x === x1 && y === y1;
+  }
+  const lenSq = dx * dx + dy * dy;
+  const cross = dx * (y - y1) - dy * (x - x1);
+  // |cross| / largo = distancia perpendicular del punto a la recta del
+  // segmento. Normalizar es lo que hace que la tolerancia sea una distancia
+  // real y no dependa del largo de la arista.
+  if (Math.abs(cross) / Math.sqrt(lenSq) > EPS_ON_SEGMENT) return false; // no colineal
+  const dot = (x - x1) * dx + (y - y1) * dy;
+  if (dot < 0) return false; // antes del inicio del segmento
+  return dot <= lenSq; // en/después del extremo lejano -> fuera
+}
+
+/** True if (x, y) lies on any edge (vertex included) of `ring`. Works for a
+ *  ring given either closed (first point repeated at the end) or unclosed —
+ *  edges are walked with wraparound (`(i + 1) % n`) rather than assuming the
+ *  closing edge is already present. */
+function pointOnRingBoundary(x, y, ring) {
+  const n = ring.length;
+  for (let i = 0; i < n; i++) {
+    const [x1, y1] = ring[i];
+    const [x2, y2] = ring[(i + 1) % n];
+    if (pointOnSegment(x, y, x1, y1, x2, y2)) return true;
+  }
+  return false;
+}
+
+/** Even-odd ray-casting test for STRICT interior membership (boundary NOT
+ *  included — that's pointOnRingBoundary's job). Closed-vs-unclosed input
+ *  makes no difference: the wraparound (j = n - 1 initially) already
+ *  supplies the closing edge either way. */
+function pointInRingStrict(x, y, ring) {
+  let inside = false;
+  const n = ring.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    const crosses = (yi > y) !== (yj > y)
+      && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * Ray-casting point-in-polygon test against a GeoJSON Polygon's
+ * `coordinates` array (`rings[0]` = outer ring, `rings[1..]` = holes).
+ * Inclusive of the boundary (vertex/edge) — see pointOnRingBoundary — para
+ * seguir el criterio de shapely `covers()` que usa resolve_zona_interes() del
+ * lado del servidor (tolerancia de borde: ver EPS_ON_SEGMENT).
+ * A point inside a hole (and not on its boundary) is OUTSIDE the polygon.
+ */
+export function pointInPolygon(x, y, rings) {
+  if (!Array.isArray(rings) || rings.length === 0) return false;
+  const outer = rings[0];
+  if (!Array.isArray(outer) || outer.length < 3) return false;
+  if (pointOnRingBoundary(x, y, outer)) return true;
+  if (!pointInRingStrict(x, y, outer)) return false;
+  for (let h = 1; h < rings.length; h++) {
+    const hole = rings[h];
+    if (!Array.isArray(hole) || hole.length < 3) continue;
+    if (pointOnRingBoundary(x, y, hole)) return true; // hole's own boundary is still polygon
+    if (pointInRingStrict(x, y, hole)) return false; // strictly inside the hole -> outside
+  }
+  return true;
+}
+
+/**
+ * Client-side ray-casting port of `resolve_zona_interes()` in
+ * scripts/refresh_data.py: point-in-polygon membership against the HIDDEN
+ * zonas_interes basemap (Centro Histórico / Avenida 6ta — never fetched by
+ * mapview.js, see scripts/kml_to_zonas_interes.py).
+ *
+ * Applied at load time to EVERY record for the same reason as
+ * resolveBarrioVereda: data.js's filter reads raw `record.zona_interes`, and
+ * the pipeline-resolved value lags a deploy (plus the israel source never
+ * runs through the pipeline at all) — without this catch-up, every such
+ * record would show up as "Fuera de zona".
+ *
+ * Pipeline-provided `record.zona_interes` ALWAYS wins when present/non-
+ * empty; this only computes a value when it's missing.
+ *
+ * `zonas`: array of GeoJSON Features (web/data/zonas_interes.geojson's
+ * `.features`), each `{ properties: { name }, geometry: { coordinates } }`.
+ */
+export function resolveZonaInteres(record, zonas) {
+  const existing = cleanBarrioValue(record?.zona_interes);
+  if (existing !== null) return { zona_interes: existing };
+
+  const rawX = record?.x;
+  const rawY = record?.y;
+  // Reject null/undefined explicitly BEFORE Number() coercion: Number(null)
+  // is 0 (a real, valid coordinate elsewhere on Earth), so letting it fall
+  // through to the Number.isFinite check below would silently treat "no
+  // coordinate" as "(0, 0)" instead of "unknown".
+  if (rawX === null || rawX === undefined || rawY === null || rawY === undefined) {
+    return { zona_interes: null };
+  }
+  const x = Number(rawX);
+  const y = Number(rawY);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Array.isArray(zonas)) {
+    return { zona_interes: null };
+  }
+  for (const feature of zonas) {
+    const geom = feature?.geometry;
+    const coords = geom?.coordinates;
+    // MultiPolygon anida un nivel más (array de polígonos, cada uno array de
+    // anillos). El KML actual solo produce Polygon, pero shapely lo resuelve
+    // bien del lado del servidor: sin esta rama el cliente devolvería false en
+    // silencio y las dos implementaciones dejarían de coincidir.
+    const polygons = geom?.type === 'MultiPolygon' ? coords : [coords];
+    if (!Array.isArray(polygons)) continue;
+    for (const rings of polygons) {
+      if (pointInPolygon(x, y, rings)) {
+        return { zona_interes: feature?.properties?.name ?? null };
+      }
+    }
+  }
+  return { zona_interes: null };
+}
+
+/**
+ * Client-side ray-casting membership test against the Santiago de Cali
+ * municipal boundary (`web/data/cali_boundary.geojson`, built by
+ * scripts/build_cali_boundary.py from the dissolved union of the 37 raw
+ * comuna/corregimiento polygons, exterior ring only). Used by data.js to
+ * exclude out-of-Cali records (GPS entry errors) from the whole dashboard.
+ *
+ * `boundary` accepts a single GeoJSON Feature (the shape cali_boundary.geojson
+ * actually ships: one Polygon feature) OR a FeatureCollection -- the latter is
+ * accepted defensively (any feature matching counts as inside) so a caller
+ * that hands over the raw parsed file either way still works; there is
+ * currently only ever one feature in the file.
+ *
+ * Missing/null/non-numeric x or y -> INSIDE (kept). "No location" is not the
+ * same as "proven outside": dropping a record whose position is merely
+ * unknown would delete data the user never asked to remove -- only records
+ * with COORDINATES that fall outside the boundary get excluded. Same trap as
+ * resolveZonaInteres: reject null/undefined BEFORE Number() coercion, since
+ * Number(null) === 0 would otherwise silently turn "no coordinate" into the
+ * real point (0, 0).
+ *
+ * `boundary` missing/unusable (e.g. the fetch failed) -> true for everything:
+ * degrade toward KEEPING data, never toward silently deleting it.
+ */
+export function isInsideCali(record, boundary) {
+  const rawX = record?.x;
+  const rawY = record?.y;
+  if (rawX === null || rawX === undefined || rawY === null || rawY === undefined) {
+    return true;
+  }
+  const x = Number(rawX);
+  const y = Number(rawY);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return true;
+
+  const features = boundary?.type === 'FeatureCollection'
+    ? boundary.features
+    : boundary?.type === 'Feature' ? [boundary] : null;
+  if (!Array.isArray(features) || features.length === 0) return true;
+
+  // Track whether ANY feature actually contributed usable ring coordinates.
+  // A feature with no geometry (or `coordinates: null`) is the SAME kind of
+  // "unusable boundary" the missing/{}/undefined cases above already degrade
+  // toward keeping data for -- it must not be silently read as "point matched
+  // no polygon" (which would incorrectly mean "outside"). Only once at least
+  // one real ring has been checked does "matched nothing" mean "outside".
+  let sawUsableGeometry = false;
+  for (const feature of features) {
+    const geom = feature?.geometry;
+    const coords = geom?.coordinates;
+    if (!Array.isArray(coords)) continue;
+    // Same MultiPolygon branch as resolveZonaInteres, for the same reason:
+    // shapely resolves either geometry type server-side, so the client must
+    // too or the two implementations silently diverge. cali_boundary.geojson
+    // currently only ever produces a Polygon, but staying consistent here
+    // costs nothing and avoids a future basemap regeneration surprise.
+    const polygons = geom.type === 'MultiPolygon' ? coords : [coords];
+    for (const rings of polygons) {
+      if (!Array.isArray(rings)) continue;
+      sawUsableGeometry = true;
+      if (pointInPolygon(x, y, rings)) return true;
+    }
+  }
+  return !sawUsableGeometry;
 }
 
 export function barrioVeredaDisplay(record) {

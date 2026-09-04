@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Alejandra Rivera</name>
+    <Style id="poly-000000-1200-77-nodesc-normal">
+      <LineStyle>
+        <color>ff000000</color>
+        <width>1.2</width>
+      </LineStyle>
+      <PolyStyle>
+        <color>4d000000</color>
+        <fill>1</fill>
+        <outline>1</outline>
+      </PolyStyle>
+      <BalloonStyle>
+        <text><![CDATA[<h3>$[name]</h3>]]></text>
+      </BalloonStyle>
+    </Style>
+    <Style id="poly-000000-1200-77-nodesc-highlight">
+      <LineStyle>
+        <color>ff000000</color>
+        <width>1.8</width>
+      </LineStyle>
+      <PolyStyle>
+        <color>4d000000</color>
+        <fill>1</fill>
+        <outline>1</outline>
+      </PolyStyle>
+      <BalloonStyle>
+        <text><![CDATA[<h3>$[name]</h3>]]></text>
+      </BalloonStyle>
+    </Style>
+    <StyleMap id="poly-000000-1200-77-nodesc">
+      <Pair>
+        <key>normal</key>
+        <styleUrl>#poly-000000-1200-77-nodesc-normal</styleUrl>
+      </Pair>
+      <Pair>
+        <key>highlight</key>
+        <styleUrl>#poly-000000-1200-77-nodesc-highlight</styleUrl>
+      </Pair>
+    </StyleMap>
+    <Placemark>
+      <name>Polígono 1 - Centro Histórico</name>
+      <styleUrl>#poly-000000-1200-77-nodesc</styleUrl>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <tessellate>1</tessellate>
+            <coordinates>
+              -76.5376454,3.4506889,0
+              -76.5368473,3.4482356,0
+              -76.5348434,3.4493227,0
+              -76.5330772,3.4494554,0
+              -76.5295442,3.450897,0
+              -76.5301849,3.4524412,0
+              -76.5308462,3.4540316,0
+              -76.5310953,3.4546127,0
+              -76.5318667,3.454543,0
+              -76.5326068,3.4535977,0
+              -76.5357459,3.4521779,0
+              -76.5376454,3.4506889,0
+            </coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+      </Polygon>
+    </Placemark>
+    <Placemark>
+      <name>Polígono 2 - Avenida 6ta</name>
+      <styleUrl>#poly-000000-1200-77-nodesc</styleUrl>
+      <Polygon>
+        <outerBoundaryIs>
+          <LinearRing>
+            <tessellate>1</tessellate>
+            <coordinates>
+              -76.533767,3.4553174,0
+              -76.5296895,3.4572261,0
+              -76.5277739,3.462712,0
+              -76.5273443,3.4655222,0
+              -76.5260563,3.4678183,0
+              -76.5244042,3.4728787,0
+              -76.525809,3.4750449,0
+              -76.5272293,3.4742665,0
+              -76.529224,3.4710265,0
+              -76.5315259,3.4685888,0
+              -76.5319278,3.4670669,0
+              -76.5316859,3.4655879,0
+              -76.5328304,3.4616447,0
+              -76.5353377,3.4565555,0
+              -76.533767,3.4553174,0
+            </coordinates>
+          </LinearRing>
+        </outerBoundaryIs>
+      </Polygon>
+    </Placemark>
+  </Document>
+</kml>

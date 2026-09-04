@@ -26,7 +26,7 @@ const CANONICAL_ORDER = [
   'requiere_evaluacion_adicional', 'eval_estructural', 'eval_geotecnica', 'eval_otra',
   'recomendaciones', 'aislamiento', 'intervencion_entades', 'observaciones_generales',
   'evento_id', 'gps_precision_m', 'CreationDate', 'Creator', 'EditDate', 'Editor', 'x', 'y',
-  'comuna', 'barrio_geo', 'barrio_vereda_fuente',
+  'comuna', 'zona_interes', 'barrio_geo', 'barrio_vereda_fuente',
 ];
 
 const DEFAULT_VISIBLE = [
