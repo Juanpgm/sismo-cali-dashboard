@@ -1,7 +1,7 @@
 // Results table: sortable columns, column visibility control, detail modal.
 import {
   labelForField, labelForCode, formatValue, escapeHtml, DETAIL_GROUPS, BADGE_FIELDS, normalize,
-  barrioVeredaDisplay,
+  barrioVeredaDisplay, SURVEY_LAYER_URL, isFirmaAttachment, attachmentUrl,
 } from './utils.js';
 import { buildMiniMap, highlightRecord } from './mapview.js';
 
@@ -234,27 +234,21 @@ function groupForField(field) {
   return 'Otros';
 }
 
-// Layer público de Survey123: sus adjuntos (fotos) son accesibles sin token en
-// {LAYER}/{objectid}/attachments. Se muestran en el modal, junto al minimapa.
-const SURVEY_LAYER_URL = 'https://services8.arcgis.com/ljfiJpg35HWgdtaC/arcgis/rest/services/service_16fa1d2000ea4fa68304bc030a95e8d1/FeatureServer/0';
-
 async function loadPhotos(objectId, container) {
   if (!container || objectId == null) return;
   try {
     const res = await fetch(`${SURVEY_LAYER_URL}/${objectId}/attachments?f=json`);
     const json = await res.json();
     const infos = (json.attachmentInfos || []).filter((a) => (a.contentType || '').startsWith('image'));
-    // Las fotos del formulario se llaman foto_*; la firma del evaluador es firma-*
-    // (pequeña). Mostramos las fotos primero y grandes, la firma al final y chica.
-    const isFirma = (a) => /^firma/i.test(a.name || '');
-    const ordered = [...infos.filter((a) => !isFirma(a)), ...infos.filter(isFirma)];
+    // Mostramos las fotos primero y grandes, la firma al final y chica.
+    const ordered = [...infos.filter((a) => !isFirmaAttachment(a.name)), ...infos.filter((a) => isFirmaAttachment(a.name))];
     if (!ordered.length) {
       container.innerHTML = '<span class="detail-photos-empty">Sin fotos en el survey.</span>';
       return;
     }
-    const urls = ordered.map((a) => `${SURVEY_LAYER_URL}/${objectId}/attachments/${a.id}`);
+    const urls = ordered.map((a) => attachmentUrl(objectId, a.id));
     container.innerHTML = ordered.map((a, i) => {
-      const firma = isFirma(a);
+      const firma = isFirmaAttachment(a.name);
       return `<button type="button" class="detail-photo${firma ? ' detail-photo-firma' : ''}" data-idx="${i}" title="${firma ? 'Firma del evaluador' : 'Foto de la inspección'}">
         <img src="${escapeHtml(urls[i])}" alt="${firma ? 'Firma del evaluador' : 'Foto de la inspección'}" loading="lazy">
       </button>`;

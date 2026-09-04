@@ -39,11 +39,12 @@ Chain strategy: pending
 
 ## Phase 2: Asset Gathering + PDF Generation (PR 2, depends on Phase 1)
 
-- [ ] 2.1 Extract a shared attachment-URL helper from `loadPhotos` (table.js:241-260); add `gatherAssets(objectId)` in `report.js` — fetch `attachments?f=json`, split `firma*` (regex from table.js:249) vs photos, resolve each to a dataURL via fetch→blob→`FileReader`, or `{dataURL:null, sourceUrl}` on any failure. *(Requirement: per-image graceful degradation)*
-- [ ] 2.2 Add downscale helper: canvas resize to ≤1000px width, JPEG quality 0.7, before embedding each resolved dataURL.
-- [ ] 2.3 Add locator map: 3x3 CARTO tile grid on offscreen canvas (`crossOrigin='anonymous'`, `basemapTileUrl()` from utils.js:672) + marker, `toDataURL()`; `{dataURL:null}` on failure or missing/invalid coords.
-- [ ] 2.4 Add `loadPdfmake()` lazy-loader in `report.js` following `loadXlsx()` (utils.js:825-836): load `pdfmake.min.js` + `vfs_fonts.js` 0.2.20 from jsDelivr on first call, cache the promise.
-- [ ] 2.5 Add `generarInformePdf(record)`: `gatherAssets` → `buildReportDocDefinition` → `loadPdfmake()` → `createPdf(def).download(filename)`; filename `informe_EDE_${codigo||ObjectID}_${downloadStamp().slug}.pdf`; whole flow wrapped in try/catch, no partial file on error. *(Requirement: generation UX and error handling)*
+- [x] 2.1 Extract a shared attachment-URL helper from `loadPhotos` (table.js:241-260); add `gatherAssets(objectId)` in `report.js` — fetch `attachments?f=json`, split `firma*` (regex from table.js:249) vs photos, resolve each to a dataURL via fetch→blob→`FileReader`, or `{dataURL:null, sourceUrl}` on any failure. *(Requirement: per-image graceful degradation)*
+  - Note: the shared helper (`SURVEY_LAYER_URL`, `isFirmaAttachment`, `attachmentUrl`) was extracted to `utils.js`, not left in `table.js` as literally worded in this task — `report.js` importing from `table.js` would create a `table.js` ↔ `report.js` circular import once Phase 3 wires the button into `table.js`. `utils.js` is the existing cross-cutting home for `basemapTileUrl`/`downloadStamp`/`DETAIL_GROUPS`, so this keeps the same "one shared source" intent without the cycle.
+- [x] 2.2 Add downscale helper: canvas resize to ≤1000px width, JPEG quality 0.7, before embedding each resolved dataURL.
+- [x] 2.3 Add locator map: 3x3 CARTO tile grid on offscreen canvas (`crossOrigin='anonymous'`, `basemapTileUrl()` from utils.js:672) + marker, `toDataURL()`; `{dataURL:null}` on failure or missing/invalid coords.
+- [x] 2.4 Add `loadPdfmake()` lazy-loader in `report.js` following `loadXlsx()` (utils.js:825-836): load `pdfmake.min.js` + `vfs_fonts.js` 0.2.20 from jsDelivr on first call, cache the promise.
+- [x] 2.5 Add `generarInformePdf(record)`: `gatherAssets` → `buildReportDocDefinition` → `loadPdfmake()` → `createPdf(def).download(filename)`; filename `informe_EDE_${codigo||ObjectID}_${downloadStamp().slug}.pdf`; whole flow wrapped in try/catch, no partial file on error. *(Requirement: generation UX and error handling)*
 
 ## Phase 3: UI Wiring (PR 3, depends on Phase 2)
 
