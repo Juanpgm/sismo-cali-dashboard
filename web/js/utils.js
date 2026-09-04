@@ -1036,6 +1036,21 @@ export function splitMultiValue(value) {
   return String(value).split(',').map((s) => s.trim()).filter(Boolean);
 }
 
+// Layer público de Survey123: sus adjuntos (fotos/firmas) son accesibles sin
+// token en {LAYER}/{objectid}/attachments. Consumido por table.js (loadPhotos,
+// on-screen gallery) and report.js (gatherAssets, PDF embedding) — kept here
+// (not in table.js) so report.js doesn't have to import a UI module.
+export const SURVEY_LAYER_URL = 'https://services8.arcgis.com/ljfiJpg35HWgdtaC/arcgis/rest/services/service_16fa1d2000ea4fa68304bc030a95e8d1/FeatureServer/0';
+
+/** Las fotos del formulario se llaman foto_*; la firma del evaluador es firma-* (pequeña). */
+export function isFirmaAttachment(name) {
+  return /^firma/i.test(name || '');
+}
+
+export function attachmentUrl(objectId, attachmentId) {
+  return `${SURVEY_LAYER_URL}/${objectId}/attachments/${attachmentId}`;
+}
+
 /** CARTO basemap tiles matching the active theme: Positron (light_all) when the
  *  page is in light mode, Dark Matter (dark_all) otherwise. */
 export function basemapTileUrl() {
