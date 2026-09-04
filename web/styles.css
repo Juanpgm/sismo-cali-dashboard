@@ -1638,7 +1638,6 @@ select.gestion-edit:focus, input.gestion-edit:focus { outline: none; border-colo
    (usuario / viewer / inspector) — and the logged-out state — is gated to
    Panel only. Server-side enforcement lives in api/refresh|stickers|usuarios. */
 body:not([data-role="admin"]) #refresh-btn,
-body:not([data-role="admin"]) #transito-download,
 body:not([data-role="admin"]) .view-tab[data-view="acciones"],
 body:not([data-role="admin"]) .view-tab[data-view="stickers"],
 body:not([data-role="admin"]) .view-tab[data-view="planeacion"],

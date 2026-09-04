@@ -576,38 +576,6 @@ el('#datos-download').addEventListener('click', async () => {
   XLSX.writeFile(wb, `inspecciones_${slug}.xlsx`);
 });
 
-/** Reporte para la Secretaría de Tránsito (solo admin): edificaciones con
- *  colapso (parcial o total) Y nivel de daño alto — las que pueden comprometer
- *  la vía. El filtro es FIJO (no usa los filtros del Panel) porque es un
- *  documento con criterio propio que se entrega a otra entidad. */
-el('#transito-download').addEventListener('click', async () => {
-  if (!isAdmin()) return; // el botón está oculto para viewers; guardia por si acaso
-  let XLSX;
-  try { XLSX = await loadXlsx(); } catch { showToast('No se pudo cargar el generador de Excel.', 'error'); return; }
-  const yes = (v) => String(v).toLowerCase() === 'si';
-  const rows = store.records
-    .filter((r) => (yes(r.colapso_parcial) || yes(r.colapso_total))
-      && String(r.nivel_dano).toLowerCase() === 'alto')
-    .map(({ _search, n_pisos_rango, ...r }) => r);
-  if (!rows.length) {
-    showToast('No hay edificaciones que cumplan el filtro de Tránsito.', 'error');
-    return;
-  }
-  const { legible, slug } = downloadStamp();
-  const ws = XLSX.utils.aoa_to_sheet([
-    ['Reporte para la Secretaría de Tránsito'],
-    ['Filtro aplicado:', 'Colapso (parcial o total) y nivel de daño alto'],
-    ['Fecha de generación:', legible],
-    ['Registros:', rows.length],
-    ['Aviso:', 'Los cierres o intervenciones viales son a criterio de la Secretaría de Tránsito.'],
-    [],
-  ]);
-  XLSX.utils.sheet_add_json(ws, rows, { origin: 'A7' });
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'transito');
-  XLSX.writeFile(wb, `reporte_transito_${slug}.xlsx`);
-});
-
 searchInput.addEventListener('input', debounce((e) => store.setSearch(e.target.value), 250));
 refreshBtn.addEventListener('click', () => triggerRefresh());
 retryBtn.addEventListener('click', () => loadAndRender({ isRefresh: true, bust: true }));
