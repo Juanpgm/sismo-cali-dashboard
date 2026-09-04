@@ -1,9 +1,10 @@
 // Results table: sortable columns, column visibility control, detail modal.
 import {
   labelForField, labelForCode, formatValue, escapeHtml, DETAIL_GROUPS, BADGE_FIELDS, normalize,
-  barrioVeredaDisplay, addressDisplay, isTypedAddress, SURVEY_LAYER_URL, isFirmaAttachment, attachmentUrl,
+  barrioVeredaDisplay, addressDisplay, isTypedAddress, SURVEY_LAYER_URL, isFirmaAttachment, attachmentUrl, showToast,
 } from './utils.js';
 import { buildMiniMap, highlightRecord } from './mapview.js';
+import { generarInformePdf } from './report.js';
 
 const CANONICAL_ORDER = [
   'ObjectID', 'GlobalID', 'fecha_inspeccion', 'hora', 'fecha_hora', 'nombre_evaluador', 'id_grupo',
@@ -480,4 +481,19 @@ export function openDetailModal(record) {
   };
   closeBtn.onclick = onClose;
   modal.querySelector('.modal-backdrop').onclick = onClose;
+
+  const reportBtn = modal.querySelector('#detail-report-btn');
+  const reportBtnLabel = reportBtn.textContent;
+  reportBtn.onclick = async () => {
+    reportBtn.disabled = true;
+    reportBtn.textContent = 'Generando…';
+    try {
+      await generarInformePdf(record);
+    } catch {
+      showToast('No se pudo generar el informe PDF.', 'error');
+    } finally {
+      reportBtn.disabled = false;
+      reportBtn.textContent = reportBtnLabel;
+    }
+  };
 }

@@ -310,6 +310,9 @@
   <div class="modal-panel">
     <div class="modal-header">
       <h2 data-modal-title id="detail-modal-title">Detalle de inspección</h2>
+      <!-- pdfmake (see web/js/report.js) stays lazy-loaded from CDN on first click;
+           no <script> tag is added here on purpose. -->
+      <button type="button" class="btn-secondary" id="detail-report-btn">Generar informe PDF</button>
       <button type="button" class="btn-icon" data-modal-close aria-label="Cerrar">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
       </button>

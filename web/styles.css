@@ -1656,12 +1656,15 @@ select.gestion-edit:focus, input.gestion-edit:focus { outline: none; border-colo
    (usuario / viewer / inspector) — and the logged-out state — is gated to
    Panel only. Server-side enforcement lives in api/refresh|stickers|usuarios. */
 body:not([data-role="admin"]) #refresh-btn,
+body:not([data-role="admin"]) #detail-report-btn,
 body:not([data-role="admin"]) .view-tab[data-view="acciones"],
 body:not([data-role="admin"]) .view-tab[data-view="stickers"],
 body:not([data-role="admin"]) .view-tab[data-view="planeacion"],
 body:not([data-role="admin"]) .view-tab[data-view="usuarios"],
 body:not([data-role="admin"]) .view-tab[data-view="analista"],
 body:not([data-role="admin"]) .view-tab[data-view="puntos-solicitados"] { display: none !important; }
+
+#detail-report-btn:disabled { opacity: .6; cursor: wait; }
 
 /* TEMPORARY: the Acciones tab is suspended — visible but inert. Remove this
    rule (and the matching guard in main.js switchView) to reactivate it. */
