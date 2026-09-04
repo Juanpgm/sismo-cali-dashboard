@@ -48,9 +48,10 @@ Chain strategy: pending
 
 ## Phase 3: UI Wiring (PR 3, depends on Phase 2)
 
-- [ ] 3.1 `table.js` `openDetailModal` (table.js:412): add `#detail-report-btn` in the modal toolbar, admin-gated, calling `generarInformePdf(record)`; disable + "Generando..." while running, re-enable after; on catch, `showToast('No se pudo generar el informe PDF.','error')` (Spanish), modal stays open. *(Requirement: admin-only trigger, generation UX)*
-- [ ] 3.2 `styles.css`: add `body:not([data-role="admin"]) #detail-report-btn{display:none}` next to the existing admin-gating block (styles.css:1627-1633); add busy/disabled style.
-- [ ] 3.3 `web/index.html`: add a comment noting pdfmake stays lazy-loaded — no `<script>` tag added.
+- [x] 3.1 `table.js` `openDetailModal` (table.js:412): add `#detail-report-btn` in the modal toolbar, admin-gated, calling `generarInformePdf(record)`; disable + "Generando..." while running, re-enable after; on catch, `showToast('No se pudo generar el informe PDF.','error')` (Spanish), modal stays open. *(Requirement: admin-only trigger, generation UX)*
+  - Note: button lives in `web/index.html`'s static `.modal-header` (not rebuilt per `openDetailModal` call like `.modal-body`), so its click handler follows the existing `closeBtn.onclick =` pattern used a few lines below it — assigned fresh per call to close over the current `record`, not a top-level `main.js` `addEventListener` (there is no persistent per-record state to hang that off). CSS gating mirrors `#transito-download` exactly.
+- [x] 3.2 `styles.css`: add `body:not([data-role="admin"]) #detail-report-btn{display:none}` next to the existing admin-gating block (styles.css:1627-1633); add busy/disabled style.
+- [x] 3.3 `web/index.html`: add a comment noting pdfmake stays lazy-loaded — no `<script>` tag added.
 
 ## Phase 4: Manual Verification
 
