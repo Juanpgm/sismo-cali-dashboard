@@ -451,7 +451,8 @@ console.log('ok — pointInPolygon (ray-casting, holes, closed/unclosed rings)')
 
 // --- resolveZonaInteres: client-side catch-up for the "Ubicación" filter ---
 // Mirrors resolve_zona_interes() in refresh_data.py: pipeline value wins,
-// otherwise ray-cast against the HIDDEN zonas_interes basemap features.
+// otherwise ray-cast against the zonas_interes basemap features (also drawn
+// by mapview.js as an optional, user-toggleable overlay layer).
 const ZONAS = [
   {
     properties: { name: 'Centro Histórico' },

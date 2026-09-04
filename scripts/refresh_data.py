@@ -912,12 +912,15 @@ ZONAS_INTERES_GEOJSON = PREPARED_BASEMAPS_DIR / "zonas_interes.geojson"
 
 
 def resolve_zona_interes(df: pd.DataFrame, mask: pd.Series | None = None) -> pd.DataFrame:
-    """Assign `zona_interes` from the HIDDEN zonas_interes basemap (Centro
-    Histórico / Avenida 6ta — see scripts/kml_to_zonas_interes.py). Point-in-
-    polygon join, same STRtree pattern as `spatial_join` above, but `covers()`
-    instead of `contains()/intersects()` so a point exactly on the polygon
-    boundary still resolves to that zone (matches the client-side ray-casting
-    port in web/js/utils.js, which treats an edge/vertex hit as inside).
+    """Assign `zona_interes` from the zonas_interes basemap (Centro Histórico
+    / Avenida 6ta — see scripts/kml_to_zonas_interes.py). Also fetched (on
+    demand) and drawn client-side by web/js/mapview.js as an optional,
+    user-toggleable overlay layer, hidden by default and independent of the
+    active map mode. Point-in-polygon join, same STRtree pattern as
+    `spatial_join` above, but `covers()` instead of `contains()/intersects()`
+    so a point exactly on the polygon boundary still resolves to that zone
+    (matches the client-side ray-casting port in web/js/utils.js, which
+    treats an edge/vertex hit as inside).
 
     El port de utils.js normaliza su tolerancia de borde por el largo de la
     arista (EPS_ON_SEGMENT, 1e-9 grados ~ 0,1 mm de distancia perpendicular),

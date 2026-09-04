@@ -293,9 +293,10 @@ const FIELD_LABELS = {
   direccion_norm: 'Dirección (IGAC)',
   comuna: 'Comuna / corregimiento',
   barrio_geo: 'Barrio / vereda (geo)',
-  // Point-in-polygon membership against the HIDDEN zonas_interes basemap
-  // (Centro Histórico / Avenida 6ta) — see resolve_zona_interes in
-  // refresh_data.py / resolveZonaInteres in this file.
+  // Point-in-polygon membership against the zonas_interes basemap (Centro
+  // Histórico / Avenida 6ta) — see resolve_zona_interes in refresh_data.py /
+  // resolveZonaInteres in this file. Also drawn by mapview.js as an
+  // optional, user-toggleable overlay layer (hidden by default).
   zona_interes: 'Zona de interés',
   tipo_propiedad: 'Tipo de propiedad',
   relacion_edificacion: 'Relación con la edificación',
@@ -524,8 +525,8 @@ export function resolveBarrioVereda(record) {
 }
 
 /* ------------------------------------------------------------------ */
-/* zona_interes — ray-casting point-in-polygon against the HIDDEN       */
-/* zonas_interes basemap (Centro Histórico / Avenida 6ta)               */
+/* zona_interes — ray-casting point-in-polygon against the zonas_interes */
+/* basemap (Centro Histórico / Avenida 6ta)                              */
 /* ------------------------------------------------------------------ */
 
 /** True if (x, y) lies exactly on the segment (x1,y1)-(x2,y2), endpoints
@@ -626,9 +627,11 @@ export function pointInPolygon(x, y, rings) {
 
 /**
  * Client-side ray-casting port of `resolve_zona_interes()` in
- * scripts/refresh_data.py: point-in-polygon membership against the HIDDEN
- * zonas_interes basemap (Centro Histórico / Avenida 6ta — never fetched by
- * mapview.js, see scripts/kml_to_zonas_interes.py).
+ * scripts/refresh_data.py: point-in-polygon membership against the
+ * zonas_interes basemap (Centro Histórico / Avenida 6ta — see
+ * scripts/kml_to_zonas_interes.py). This basemap is also fetched (on demand)
+ * and drawn by mapview.js as an optional, user-toggleable overlay layer,
+ * hidden by default and independent of the active map mode.
  *
  * Applied at load time to EVERY record for the same reason as
  * resolveBarrioVereda: data.js's filter reads raw `record.zona_interes`, and

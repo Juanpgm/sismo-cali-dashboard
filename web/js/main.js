@@ -6,7 +6,7 @@ import { renderStatistics, resetCharts } from './charts.js';
 import {
   initMap, render as renderMap, setMode, setColorBy, setSizeBy, setHeatWeight,
   setChoroplethLevel, setChoroplethMetric, invalidateSize, highlightRecord, applyMapTheme,
-  setStickerStatus,
+  setStickerStatus, setZonasInteresVisible,
 } from './mapview.js';
 import { coverageGaugeHtml } from './coverage-gauge.js';
 import { initTable, renderTable, setTotalRecords, openDetailModal, configurarRepresentante } from './table.js';
@@ -202,6 +202,16 @@ function wireMapControls() {
   el('#choropleth-metric-select').addEventListener('change', (e) => {
     setChoroplethMetric(e.target.value);
     renderMap(soloRepresentantes(store.filtered));
+  });
+
+  // Zonas de interés: independent overlay, not a map mode — no renderMap()
+  // call, it only adds/removes its own layer (see setZonasInteresVisible).
+  el('#zonas-interes-toggle').addEventListener('change', (e) => {
+    const checkbox = e.target;
+    setZonasInteresVisible(checkbox.checked).catch(() => {
+      checkbox.checked = false;
+      showToast('No se pudo cargar la capa de zonas de interés.', 'error');
+    });
   });
 }
 

@@ -1,9 +1,11 @@
 """One-time/idempotent script: convert `basemaps/zonas_interes.kml` into the
-slim, frontend-ready `web/data/zonas_interes.geojson` used ONLY for the
-server- and client-side point-in-polygon resolution of the `zona_interes`
-field (see `resolve_zona_interes` in `refresh_data.py` and
-`resolveZonaInteres` in `web/js/utils.js`). This basemap is intentionally
-never fetched by `web/js/mapview.js` — it must stay hidden from the map.
+slim, frontend-ready `web/data/zonas_interes.geojson` used for the server-
+and client-side point-in-polygon resolution of the `zona_interes` field (see
+`resolve_zona_interes` in `refresh_data.py` and `resolveZonaInteres` in
+`web/js/utils.js`), and also fetched (on demand) and drawn by
+`web/js/mapview.js` as an optional, user-toggleable overlay layer on the
+panel map — hidden by default, independent of the Puntos/Calor/Coroplético
+map mode.
 
 Source shape (verified against the committed KML): exactly two `Placemark`
 elements, each a simple `Polygon/outerBoundaryIs/LinearRing/coordinates` with

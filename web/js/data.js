@@ -29,13 +29,15 @@ export async function fetchData(name, { q = '', opts = {} } = {}) {
   return fetch(`data/${name}${q}`, opts);
 }
 
-// HIDDEN basemap (Centro Histórico / Avenida 6ta) used ONLY to catch up
-// `zona_interes` for records the pipeline hasn't resolved yet — see
-// resolveZonaInteres in utils.js. Never fetched by mapview.js. A static
-// boundary like comunas/barrios.geojson: served straight from the deploy,
-// not through fetchData()'s Blob path. Cached at module scope (fetched once
-// per page load) since the polygons never change between refreshes; a
-// failed fetch degrades to an empty list instead of throwing, so a missing
+// Basemap (Centro Histórico / Avenida 6ta) used to catch up `zona_interes`
+// for records the pipeline hasn't resolved yet — see resolveZonaInteres in
+// utils.js. Also fetched (on demand) and drawn by mapview.js as an optional,
+// user-toggleable overlay layer, hidden by default and independent of the
+// active map mode. A static boundary like comunas/barrios.geojson: served
+// straight from the deploy, not through fetchData()'s Blob path. Cached at
+// module scope (fetched once per page load) since the polygons never change
+// between refreshes; a failed fetch degrades to an empty list instead of
+// throwing, so a missing
 // or unreachable file just means every record keeps whatever zona_interes
 // it already had (or null).
 //
@@ -133,11 +135,12 @@ export const FILTER_FIELDS = [
   // the spatial intersection wins, falling back to the inspector's typed
   // value when the point falls outside every barrios_veredas polygon.
   { field: 'barrio_vereda_resuelto', label: labelForField('barrio_vereda_resuelto'), emptyLabel: 'Sin barrio asignado', group: 'ubicacion' },
-  // Point-in-polygon membership against the HIDDEN zonas_interes basemap
-  // (Centro Histórico / Avenida 6ta — never fetched/drawn by mapview.js; see
-  // resolve_zona_interes in refresh_data.py). Records outside both polygons
-  // get zona_interes null/'' -> surfaced as "Fuera de zona" via emptyLabel,
-  // same mechanism barrio_vereda_resuelto uses above.
+  // Point-in-polygon membership against the zonas_interes basemap (Centro
+  // Histórico / Avenida 6ta — see resolve_zona_interes in refresh_data.py;
+  // also drawn by mapview.js as an optional overlay layer, toggled from the
+  // map toolbar). Records outside both polygons get zona_interes null/'' ->
+  // surfaced as "Fuera de zona" via emptyLabel, same mechanism
+  // barrio_vereda_resuelto uses above.
   { field: 'zona_interes', label: labelForField('zona_interes'), emptyLabel: 'Fuera de zona', group: 'ubicacion' },
   { field: 'entidad', label: labelForField('entidad'), group: 'contexto' },
   // Derived field (see Store.setStickerIds): cruce con /api/sticker-status, no
@@ -324,9 +327,9 @@ class Store {
       // through it at all — without this the barrio filter would be empty.
       ...resolveBarrioVereda(r),
       // zona_interes: same catch-up reasoning as resolveBarrioVereda above,
-      // against the HIDDEN zonas_interes basemap (Centro Histórico / Avenida
-      // 6ta) — without this every record would show "Fuera de zona" until
-      // the next pipeline run.
+      // against the zonas_interes basemap (Centro Histórico / Avenida 6ta)
+      // — without this every record would show "Fuera de zona" until the
+      // next pipeline run.
       ...resolveZonaInteres(r, zonasInteres),
     }));
     // Excluir registros cuyas coordenadas caen FUERA del municipio de Santiago
