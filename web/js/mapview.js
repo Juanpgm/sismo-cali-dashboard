@@ -44,6 +44,14 @@ let barriosGeo = null;
 let onDetailRequest = null;
 let highlightMarker = null;
 
+// Zonas de interés: optional overlay layer (checkbox in the toolbar), NOT a
+// map mode. Independent of state.mode/clearLayers()/render() — added straight
+// to `map` (never into pointsLayer/heatLayer/choroplethLayer), so mode
+// switches never touch it. See setZonasInteresVisible.
+let zonasInteresLayer = null; // L.geoJSON, built once on first enable
+let zonasInteresGeo = null;
+let zonasInteresOn = false;
+
 // GlobalIDs of Panel points that already have a field sticker, from the cruce
 // (api/sticker-status). Set by main.js when the store refreshes. Used by the
 // 'sticker' colorBy mode. Empty until the coverage lookup resolves.
@@ -390,6 +398,102 @@ async function ensureGeo(level) {
     }
     await barriosGeoLoad;
   }
+}
+
+// In-flight load for the zonas_interes overlay, same single-flight +
+// clear-on-failure pattern as comunasGeoLoad/barriosGeoLoad above — kept
+// separate from ensureGeo() on purpose: that function is choropleth wiring
+// (comuna/barrio levels), while this is an independent optional overlay, and
+// mixing the two would tangle unrelated concerns.
+let zonasInteresGeoLoad = null;
+
+async function ensureZonasInteresGeo() {
+  if (!zonasInteresGeo) {
+    if (!zonasInteresGeoLoad) {
+      zonasInteresGeoLoad = (async () => {
+        const res = await fetch('data/zonas_interes.geojson');
+        if (!res.ok) throw new Error('No se pudo cargar zonas_interes.geojson');
+        zonasInteresGeo = await res.json();
+      })().catch((err) => { zonasInteresGeoLoad = null; throw err; });
+    }
+    await zonasInteresGeoLoad;
+  }
+  return zonasInteresGeo;
+}
+
+/** Builds the zonas_interes overlay layer. Defensive on malformed input (0
+ *  features, missing/non-array `features`) — never throws. Exported only so
+ *  the test harness can exercise this defensiveness directly, independent
+ *  of the fetch/cache state machine in setZonasInteresVisible. */
+export function buildZonasInteresLayer(geo) {
+  const safeGeo = geo && Array.isArray(geo.features)
+    ? geo
+    : { type: 'FeatureCollection', features: [] };
+  return L.geoJSON(safeGeo, {
+    style: () => ({
+      color: COLORS.accent,
+      weight: 2,
+      fillColor: COLORS.accent,
+      fillOpacity: 0.12,
+    }),
+    onEachFeature: (feature, lyr) => {
+      const name = (feature.properties && feature.properties.name) || 'Zona de interés';
+      lyr.bindTooltip(escapeHtml(name), { sticky: true });
+    },
+  });
+}
+
+// Single-flight guard for the "turn on" flow itself (not just the fetch):
+// without it, two concurrent setZonasInteresVisible(true) calls would both
+// pass the `!zonasInteresOn` check before the first one finishes and each
+// build/add its own layer. Cleared on both success and failure so a later
+// toggle-on always starts fresh.
+let zonasInteresEnabling = null;
+
+/**
+ * Shows/hides the zonas_interes overlay. Loaded on demand the first time it
+ * is enabled (hidden by default); idempotent — calling it twice with the same
+ * value is a no-op. Independent of state.mode: added straight to `map`, never
+ * touched by clearLayers()/render(), so it survives every Puntos/Calor/
+ * Coroplético switch.
+ *
+ * The layer is added with bringToBack() so it never sits above the
+ * inspection markers/choropleth in z-order: Leaflet's SVG renderer paints
+ * later-added layers on top, and pointsLayer/choroplethLayer are re-added on
+ * every render() after this call, but bringToBack() also covers the case
+ * where the overlay is switched on while points are already on the map (its
+ * paths would otherwise land after — i.e. above — the existing marker
+ * paths). Clicks on markers therefore keep hitting the marker (topmost),
+ * never the polygon underneath.
+ */
+export async function setZonasInteresVisible(visible) {
+  const wantOn = !!visible;
+  if (!wantOn) {
+    zonasInteresOn = false;
+    if (zonasInteresLayer && map && map.hasLayer(zonasInteresLayer)) {
+      map.removeLayer(zonasInteresLayer);
+    }
+    return;
+  }
+  if (zonasInteresOn) return; // already on: no-op, no duplicate layer/fetch
+  if (!zonasInteresEnabling) {
+    zonasInteresEnabling = (async () => {
+      const geo = await ensureZonasInteresGeo();
+      if (!zonasInteresLayer) {
+        zonasInteresLayer = buildZonasInteresLayer(geo);
+      }
+      zonasInteresOn = true;
+      if (map) {
+        zonasInteresLayer.addTo(map);
+        zonasInteresLayer.bringToBack();
+      }
+    })().catch((err) => {
+      console.warn('No se pudo cargar zonas_interes.geojson:', err);
+      zonasInteresOn = false;
+      throw err;
+    }).finally(() => { zonasInteresEnabling = null; });
+  }
+  return zonasInteresEnabling;
 }
 
 // Standard ray-casting point-in-polygon over one ring (array of [lng, lat]

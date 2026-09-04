@@ -616,6 +616,23 @@ a { color: var(--accent); }
   font-size: 0.82rem;
 }
 
+/* Zonas de interés overlay toggle: same row as the mode selects, but a plain
+   checkbox instead of a <select> — no separate control (it is not tied to
+   .map-sub-controls / a map mode), just an .inline-select sibling. */
+.inline-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-weight: 600;
+  cursor: pointer;
+}
+.inline-check input[type="checkbox"] {
+  min-height: auto;
+  cursor: pointer;
+}
+
 /* ============================================================
    Map
    ============================================================ */
@@ -1386,6 +1403,7 @@ td { padding: 10px 14px; vertical-align: top; color: var(--text-primary); max-wi
   .map-sub-controls { width: 100%; }
   .inline-select { flex: 1; }
   .inline-select select { width: 100%; }
+  .inline-check { flex: 1; }
   .modal { padding: 0; }
   .modal-panel { width: 100%; max-height: 100vh; border-radius: 0; }
   .detail-fields { grid-template-columns: 1fr; }
@@ -1638,7 +1656,6 @@ select.gestion-edit:focus, input.gestion-edit:focus { outline: none; border-colo
    (usuario / viewer / inspector) — and the logged-out state — is gated to
    Panel only. Server-side enforcement lives in api/refresh|stickers|usuarios. */
 body:not([data-role="admin"]) #refresh-btn,
-body:not([data-role="admin"]) #transito-download,
 body:not([data-role="admin"]) .view-tab[data-view="acciones"],
 body:not([data-role="admin"]) .view-tab[data-view="stickers"],
 body:not([data-role="admin"]) .view-tab[data-view="planeacion"],

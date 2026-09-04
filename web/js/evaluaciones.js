@@ -704,7 +704,7 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
     renderFiltered();
   });
 
-  // Same header-block convention as main.js's #transito-download (title,
+  // Same xlsx header-block convention used elsewhere in the dashboard (title,
   // filtro aplicado, fecha de generación, registros, blank row) but built
   // from Stickers data and the currently active filters.
   downloadBtn.addEventListener('click', async () => {

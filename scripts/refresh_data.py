@@ -728,6 +728,7 @@ def apply_photo_coords(df: pd.DataFrame, groups: list[dict] | None = None) -> pd
                 for x, y in zip(df.loc[corrected, "x"], df.loc[corrected, "y"])
             ]
         df = spatial_join(df, mask=corrected)
+        df = resolve_zona_interes(df, mask=corrected)
     log.info("Photo-EXIF centroid applied to %d/%d records.", int(corrected.sum()), len(df))
     return df
 
@@ -807,6 +808,7 @@ def validate_photo_coords(df: pd.DataFrame) -> pd.DataFrame:
                     for x, y in zip(df.loc[reverted, "x"], df.loc[reverted, "y"])
                 ]
             df = spatial_join(df, mask=reverted)
+            df = resolve_zona_interes(df, mask=reverted)
         log.info(
             "Geocode validation: %d suspicious (> %dm), %s.",
             int(suspicious.sum()), VALIDATION_DIST_M,
@@ -903,6 +905,70 @@ def spatial_join(df: pd.DataFrame, mask: pd.Series | None = None) -> pd.DataFram
         x, y = df.at[i, "x"], df.at[i, "y"]
         df.at[i, "comuna"] = match(comunas_tree, comunas_geoms, comunas_names, x, y)
         df.at[i, "barrio_geo"] = match(barrios_tree, barrios_geoms, barrios_names, x, y)
+    return df
+
+
+ZONAS_INTERES_GEOJSON = PREPARED_BASEMAPS_DIR / "zonas_interes.geojson"
+
+
+def resolve_zona_interes(df: pd.DataFrame, mask: pd.Series | None = None) -> pd.DataFrame:
+    """Assign `zona_interes` from the zonas_interes basemap (Centro Histórico
+    / Avenida 6ta — see scripts/kml_to_zonas_interes.py). Also fetched (on
+    demand) and drawn client-side by web/js/mapview.js as an optional,
+    user-toggleable overlay layer, hidden by default and independent of the
+    active map mode. Point-in-polygon join, same STRtree pattern as
+    `spatial_join` above, but `covers()` instead of `contains()/intersects()`
+    so a point exactly on the polygon boundary still resolves to that zone
+    (matches the client-side ray-casting port in web/js/utils.js, which
+    treats an edge/vertex hit as inside).
+
+    El port de utils.js normaliza su tolerancia de borde por el largo de la
+    arista (EPS_ON_SEGMENT, 1e-9 grados ~ 0,1 mm de distancia perpendicular),
+    asi que ambas implementaciones coinciden salvo en esa banda submilimetrica.
+    Medido con un fuzz diferencial de 33.852 puntos (aleatorios en el bbox,
+    cada vertice, e interpolaciones sobre cada arista con offsets normales de
+    1e-12 a 1e-4 grados): 0 desacuerdos por encima de 1e-9 grados, y el sesgo
+    es siempre "utils.js incluye, covers() excluye", nunca al reves.
+
+    Unlike `comuna`/`barrio_geo`, this basemap is OPTIONAL: it only exists
+    once `python scripts/kml_to_zonas_interes.py` has been run. Missing file
+    -> log a warning and leave the column as `None` for the affected rows
+    rather than crashing the whole refresh (`spatial_join`'s comuna/barrio_geo
+    basemaps are load-bearing for the rest of the pipeline and stay a hard
+    FileNotFoundError; this one is not).
+
+    Takes the same `mask` parameter as `spatial_join` and is wired at the
+    IDENTICAL three call sites (normalize()'s initial join, plus the masked
+    re-joins inside apply_photo_coords/validate_photo_coords): a photo-EXIF
+    or geocode x/y correction moves the point, so zona_interes must be
+    re-resolved for that row too, exactly like comuna/barrio_geo are — a
+    single resolve-once-at-the-end call (the resolve_barrio_vereda() style)
+    would leave corrected rows with a stale zone label."""
+    if "zona_interes" not in df.columns:
+        df["zona_interes"] = None
+    if not ZONAS_INTERES_GEOJSON.exists():
+        log.warning(
+            "%s not found; zona_interes left as None. Run "
+            "`python scripts/kml_to_zonas_interes.py` to generate it.",
+            ZONAS_INTERES_GEOJSON,
+        )
+        return df
+
+    geoms, names = load_prepared_polygons(ZONAS_INTERES_GEOJSON)
+    tree = STRtree(geoms)
+
+    def match(x, y):
+        if pd.isna(x) or pd.isna(y):
+            return None
+        point = Point(x, y)
+        for idx in tree.query(point, predicate="intersects"):
+            if geoms[idx].covers(point):
+                return names[idx]
+        return None
+
+    rows = df.index if mask is None else df.index[mask]
+    for i in rows:
+        df.at[i, "zona_interes"] = match(df.at[i, "x"], df.at[i, "y"])
     return df
 
 
@@ -1510,6 +1576,7 @@ def normalize(rows_raw: pd.DataFrame) -> pd.DataFrame:
     df = coerce_numeric(df)
     df = drop_pii(df)
     df = spatial_join(df)
+    df = resolve_zona_interes(df)
     df = add_id_edan(df)
     df = add_address_norm(df)
     # AFTER add_address_norm: the grouping keys off `direccion_norm`.

@@ -2,6 +2,7 @@
 import {
   normalizeAddressText, buildSearchIndex, splitMultiValue, labelForField,
   bucketNpisos, suspensionServicios, colapsoResuelto, colapsoResueltoFields, bustParams, AFECTACION_ORDER, DANO_GRADO_ORDER, resolveBarrioVereda,
+  resolveZonaInteres, isInsideCali,
 } from './utils.js';
 import { fetchIsraelRecords } from './israel-source.js';
 import { apiUrl } from './api-config.js';
@@ -26,6 +27,64 @@ export async function fetchData(name, { q = '', opts = {} } = {}) {
     if (res.ok) return res;
   } catch { /* Blob unreachable — fall back to the deployed copy */ }
   return fetch(`data/${name}${q}`, opts);
+}
+
+// Basemap (Centro Histórico / Avenida 6ta) used to catch up `zona_interes`
+// for records the pipeline hasn't resolved yet — see resolveZonaInteres in
+// utils.js. Also fetched (on demand) and drawn by mapview.js as an optional,
+// user-toggleable overlay layer, hidden by default and independent of the
+// active map mode. A static boundary like comunas/barrios.geojson: served
+// straight from the deploy, not through fetchData()'s Blob path. Cached at
+// module scope (fetched once per page load) since the polygons never change
+// between refreshes; a failed fetch degrades to an empty list instead of
+// throwing, so a missing
+// or unreachable file just means every record keeps whatever zona_interes
+// it already had (or null).
+//
+// Solo se cachea el resultado EXITOSO: un fallo transitorio de red devuelve
+// una lista vacía para esa pasada pero deja la caché en null, de modo que el
+// botón Actualizar (y cualquier load() posterior) reintente. Cachear el fallo
+// dejaría toda la sesión mostrando "Fuera de zona" hasta recargar la página.
+let zonasInteresCache = null;
+async function loadZonasInteres() {
+  if (zonasInteresCache !== null) return zonasInteresCache;
+  try {
+    const res = await fetch('data/zonas_interes.geojson');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const geojson = await res.json();
+    zonasInteresCache = Array.isArray(geojson?.features) ? geojson.features : [];
+    return zonasInteresCache;
+  } catch (err) {
+    console.warn('No se pudo cargar zonas_interes.geojson (zona_interes no se completará por polígono):', err);
+    return [];
+  }
+}
+
+// Municipal boundary (scripts/build_cali_boundary.py) used to EXCLUDE, at load
+// time, every record whose coordinates fall outside Santiago de Cali (GPS
+// entry errors — see isInsideCali in utils.js). Same caching pattern as
+// loadZonasInteres above: static, never changes between refreshes, cached at
+// module scope, and a failed fetch degrades to `null` (NOT an empty array) so
+// isInsideCali's own "unusable boundary -> keep everything" fallback kicks in
+// instead of the cache latching onto a false "exclude nothing" that could
+// later be confused with "boundary loaded, nothing to exclude".
+//
+// Solo se cachea un fetch EXITOSO (mismo motivo que zonasInteresCache): un
+// fallo transitorio deja la caché en null para que un load() posterior
+// reintente, en vez de dejar la sesión entera sin filtrar por límite municipal.
+let caliBoundaryCache = null;
+async function loadCaliBoundary() {
+  if (caliBoundaryCache !== null) return caliBoundaryCache;
+  try {
+    const res = await fetch('data/cali_boundary.geojson');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const geojson = await res.json();
+    caliBoundaryCache = geojson?.features?.[0] ?? null;
+    return caliBoundaryCache;
+  } catch (err) {
+    console.warn('No se pudo cargar cali_boundary.geojson (no se excluirán registros fuera del municipio):', err);
+    return null;
+  }
 }
 
 // Sidebar section order/labels for FILTER_FIELDS' `group` key.
@@ -76,6 +135,13 @@ export const FILTER_FIELDS = [
   // the spatial intersection wins, falling back to the inspector's typed
   // value when the point falls outside every barrios_veredas polygon.
   { field: 'barrio_vereda_resuelto', label: labelForField('barrio_vereda_resuelto'), emptyLabel: 'Sin barrio asignado', group: 'ubicacion' },
+  // Point-in-polygon membership against the zonas_interes basemap (Centro
+  // Histórico / Avenida 6ta — see resolve_zona_interes in refresh_data.py;
+  // also drawn by mapview.js as an optional overlay layer, toggled from the
+  // map toolbar). Records outside both polygons get zona_interes null/'' ->
+  // surfaced as "Fuera de zona" via emptyLabel, same mechanism
+  // barrio_vereda_resuelto uses above.
+  { field: 'zona_interes', label: labelForField('zona_interes'), emptyLabel: 'Fuera de zona', group: 'ubicacion' },
   { field: 'entidad', label: labelForField('entidad'), group: 'contexto' },
   // Derived field (see Store.setStickerIds): cruce con /api/sticker-status, no
   // en inspections.json. Siempre 'con'/'sin', nunca vacío — no necesita emptyLabel.
@@ -224,10 +290,12 @@ class Store {
     // ~1-2 min cuando la caché CDN está fría (camina toda la API) y esperarlo
     // acá dejaba el tablero en blanco. Cuando llega, notify() pinta el KPI.
     this.refreshReportados().catch(() => {});
-    const [metaRes, dataRes, israelRecords] = await Promise.all([
+    const [metaRes, dataRes, israelRecords, zonasInteres, caliBoundary] = await Promise.all([
       fetchData('meta.json', { q, opts }),
       fetchData('inspections.json', { q, opts }),
       fetchIsraelRecords(),
+      loadZonasInteres(),
+      loadCaliBoundary(),
     ]);
     if (!metaRes.ok || !dataRes.ok) {
       throw new Error(`HTTP ${metaRes.status}/${dataRes.status}`);
@@ -258,7 +326,27 @@ class Store {
       // published data lags a deploy and the israel source never passes
       // through it at all — without this the barrio filter would be empty.
       ...resolveBarrioVereda(r),
+      // zona_interes: same catch-up reasoning as resolveBarrioVereda above,
+      // against the zonas_interes basemap (Centro Histórico / Avenida 6ta)
+      // — without this every record would show "Fuera de zona" until the
+      // next pipeline run.
+      ...resolveZonaInteres(r, zonasInteres),
     }));
+    // Excluir registros cuyas coordenadas caen FUERA del municipio de Santiago
+    // de Cali (errores de captura de GPS -- ver isInsideCali en utils.js). Se
+    // filtra ACÁ, antes de computeOptions(), para que store.records ya sea el
+    // universo filtrado: así KPIs, gráficos, mapa, tabla y el export xlsx
+    // (todos derivan de store.records/store.filtered) coinciden sin tener que
+    // tocar cada uno por separado, y los dropdowns de filtro nunca ofrecen
+    // valores que solo existan en registros fuera de Cali. Sin aviso visible en
+    // la UI (decisión explícita del usuario) -- solo un console.warn con el
+    // conteo, para diagnóstico de desarrollo.
+    const totalAntes = this.records.length;
+    this.records = this.records.filter((r) => isInsideCali(r, caliBoundary));
+    const excluidos = totalAntes - this.records.length;
+    if (excluidos > 0) {
+      console.warn(`${excluidos} registro(s) excluido(s) por caer fuera del límite de Santiago de Cali.`);
+    }
     this.applyStickerField(); // 'con'/'sin' contra this.stickerIds (vacío hasta setStickerIds)
     this.computeOptions();
     this.computeDateBounds();

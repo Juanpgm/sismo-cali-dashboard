@@ -4,6 +4,7 @@ import {
   normalizeAddressText, buildSearchIndex, barrioVeredaDisplay, resolveBarrioVereda, labelForField,
   filterOptionsByLabel, mountCombobox, isTypedAddress, addressDisplay,
   danoGradoColor, DANO_GRADO_ORDER, formatValue, COLORS, sourceLabel, setSourceLabels,
+  pointInPolygon, resolveZonaInteres, isInsideCali,
 } from './utils.js';
 
 // Real variants seen in the dataset for the same building should normalize
@@ -410,3 +411,213 @@ console.log('ok — formatValue routes danos_*/cielos_instalaciones through labe
 }
 
 console.log('ok — sourceLabel override for danos_estructura');
+
+// --- pointInPolygon: ray-casting helper for zona_interes --------------------
+// A 10x10 square, both explicitly closed (first point repeated) and left
+// unclosed -- pointInPolygon must not care which one it gets (see
+// pointOnRingBoundary/pointInRingStrict's wraparound edge handling).
+const SQUARE_CLOSED = [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]];
+const SQUARE_UNCLOSED = [[0, 0], [10, 0], [10, 10], [0, 10]];
+
+// Inside, closed ring.
+assert.equal(pointInPolygon(5, 5, [SQUARE_CLOSED]), true);
+// Inside, unclosed ring -- identical result to the closed version.
+assert.equal(pointInPolygon(5, 5, [SQUARE_UNCLOSED]), true);
+// Clearly outside.
+assert.equal(pointInPolygon(20, 20, [SQUARE_CLOSED]), false);
+assert.equal(pointInPolygon(20, 20, [SQUARE_UNCLOSED]), false);
+// Exactly on a vertex -- inclusive of the boundary (shapely covers() parity).
+assert.equal(pointInPolygon(0, 0, [SQUARE_CLOSED]), true);
+assert.equal(pointInPolygon(0, 0, [SQUARE_UNCLOSED]), true);
+// Exactly on an edge, not a vertex.
+assert.equal(pointInPolygon(5, 0, [SQUARE_CLOSED]), true);
+assert.equal(pointInPolygon(5, 10, [SQUARE_UNCLOSED]), true);
+
+// Polygon with a hole: rings[0] = outer, rings[1..] = hole(s). A point
+// inside the hole is OUTSIDE the polygon; a point in the remaining annulus
+// is still inside; the hole's own boundary still counts as polygon.
+const HOLE = [[3, 3], [7, 3], [7, 7], [3, 7], [3, 3]];
+assert.equal(pointInPolygon(5, 5, [SQUARE_CLOSED, HOLE]), false, 'center of the hole should be outside');
+assert.equal(pointInPolygon(1, 1, [SQUARE_CLOSED, HOLE]), true, 'annulus between hole and outer ring is inside');
+assert.equal(pointInPolygon(3, 3, [SQUARE_CLOSED, HOLE]), true, "hole's own boundary is still part of the polygon");
+
+// Empty/missing coordinates must not throw and must resolve to "outside".
+assert.equal(pointInPolygon(5, 5, []), false);
+assert.equal(pointInPolygon(5, 5, [[]]), false);
+assert.equal(pointInPolygon(5, 5, null), false);
+assert.equal(pointInPolygon(5, 5, undefined), false);
+
+console.log('ok — pointInPolygon (ray-casting, holes, closed/unclosed rings)');
+
+// --- resolveZonaInteres: client-side catch-up for the "Ubicación" filter ---
+// Mirrors resolve_zona_interes() in refresh_data.py: pipeline value wins,
+// otherwise ray-cast against the zonas_interes basemap features (also drawn
+// by mapview.js as an optional, user-toggleable overlay layer).
+const ZONAS = [
+  {
+    properties: { name: 'Centro Histórico' },
+    geometry: { coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] },
+  },
+  {
+    properties: { name: 'Avenida 6ta' },
+    geometry: { coordinates: [[[20, 20], [30, 20], [30, 30], [20, 30], [20, 20]]] },
+  },
+];
+
+// Inside one of the zones.
+assert.deepEqual(resolveZonaInteres({ x: 5, y: 5 }, ZONAS), { zona_interes: 'Centro Histórico' });
+assert.deepEqual(resolveZonaInteres({ x: 25, y: 25 }, ZONAS), { zona_interes: 'Avenida 6ta' });
+
+// Outside every zone -> null ("Fuera de zona" via FILTER_FIELDS emptyLabel).
+assert.deepEqual(resolveZonaInteres({ x: 50, y: 50 }, ZONAS), { zona_interes: null });
+
+// Pipeline-provided value ALWAYS wins, even when x/y would resolve to a
+// DIFFERENT zone -- it must never be silently recomputed/overridden.
+assert.deepEqual(
+  resolveZonaInteres({ x: 5, y: 5, zona_interes: 'Ya Resuelta' }, ZONAS),
+  { zona_interes: 'Ya Resuelta' },
+);
+
+// Blank/whitespace pipeline value is treated as missing, same convention as
+// resolveBarrioVereda/cleanBarrioValue -- computed instead of trusted as-is.
+assert.deepEqual(
+  resolveZonaInteres({ x: 5, y: 5, zona_interes: '   ' }, ZONAS),
+  { zona_interes: 'Centro Histórico' },
+);
+
+// Missing/non-numeric coordinates -> null, no crash.
+assert.deepEqual(resolveZonaInteres({ x: null, y: 5 }, ZONAS), { zona_interes: null });
+assert.deepEqual(resolveZonaInteres({ x: undefined, y: undefined }, ZONAS), { zona_interes: null });
+assert.deepEqual(resolveZonaInteres({ x: 'abc', y: 5 }, ZONAS), { zona_interes: null });
+assert.deepEqual(resolveZonaInteres({}, ZONAS), { zona_interes: null });
+
+// Missing/empty zonas list -> null, no crash (e.g. the geojson fetch failed).
+assert.deepEqual(resolveZonaInteres({ x: 5, y: 5 }, undefined), { zona_interes: null });
+assert.deepEqual(resolveZonaInteres({ x: 5, y: 5 }, []), { zona_interes: null });
+
+// MultiPolygon: shapely lo resuelve del lado del servidor, asi que el cliente
+// tiene que hacer lo mismo o las dos implementaciones dejan de coincidir. El
+// KML actual solo produce Polygon, pero un basemap regenerado podria traerlo.
+const ZONAS_MULTI = [{
+  properties: { name: 'Zona Partida' },
+  geometry: {
+    type: 'MultiPolygon',
+    coordinates: [
+      [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]],
+      [[[20, 20], [30, 20], [30, 30], [20, 30], [20, 20]]],
+    ],
+  },
+}];
+assert.deepEqual(resolveZonaInteres({ x: 5, y: 5 }, ZONAS_MULTI), { zona_interes: 'Zona Partida' });
+assert.deepEqual(resolveZonaInteres({ x: 25, y: 25 }, ZONAS_MULTI), { zona_interes: 'Zona Partida' });
+assert.deepEqual(resolveZonaInteres({ x: 15, y: 15 }, ZONAS_MULTI), { zona_interes: null });
+
+// Geometria corrupta/ausente no debe romper el barrido de features.
+assert.deepEqual(resolveZonaInteres({ x: 5, y: 5 }, [{ properties: { name: 'X' } }]), { zona_interes: null });
+assert.deepEqual(
+  resolveZonaInteres({ x: 5, y: 5 }, [{ geometry: { type: 'MultiPolygon', coordinates: null } }, ...ZONAS]),
+  { zona_interes: 'Centro Histórico' },
+);
+
+console.log('ok — resolveZonaInteres (pipeline value wins, ray-cast catch-up, MultiPolygon, defensive on bad input)');
+
+// --- isInsideCali: exclude out-of-Cali records from the whole dashboard ----
+// Reuses pointInPolygon (ray-casting, boundary-inclusive) against a single
+// GeoJSON Feature (the shape web/data/cali_boundary.geojson ships).
+const CALI_BOUNDARY = {
+  type: 'Feature',
+  properties: { id: 'santiago-de-cali', name: 'Santiago de Cali' },
+  geometry: {
+    type: 'Polygon',
+    coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]],
+  },
+};
+
+// Well inside / well outside.
+assert.equal(isInsideCali({ x: 5, y: 5 }, CALI_BOUNDARY), true);
+assert.equal(isInsideCali({ x: 50, y: 50 }, CALI_BOUNDARY), false);
+
+// Exactly on the boundary edge and exactly on a vertex -- pointInPolygon is
+// boundary-inclusive, so both must be INSIDE.
+assert.equal(isInsideCali({ x: 5, y: 0 }, CALI_BOUNDARY), true, 'on-edge point must be inside');
+assert.equal(isInsideCali({ x: 0, y: 0 }, CALI_BOUNDARY), true, 'on-vertex point must be inside');
+
+// Missing/null/non-numeric x or y -> kept (inside). "No location" is not the
+// same as "proven outside" -- see isInsideCali's own doc comment.
+assert.equal(isInsideCali({ x: null, y: null }, CALI_BOUNDARY), true);
+assert.equal(isInsideCali({ x: undefined, y: undefined }, CALI_BOUNDARY), true);
+assert.equal(isInsideCali({ x: '', y: '' }, CALI_BOUNDARY), true);
+assert.equal(isInsideCali({ x: NaN, y: 5 }, CALI_BOUNDARY), true);
+assert.equal(isInsideCali({ x: 'abc', y: 5 }, CALI_BOUNDARY), true);
+assert.equal(isInsideCali({}, CALI_BOUNDARY), true);
+// Explicit: { x: null, y: null } must NOT be treated as the point (0, 0) --
+// (0, 0) is a vertex of CALI_BOUNDARY above and would ALSO read as "inside"
+// by coincidence, so this is re-asserted against a boundary that does NOT
+// contain (0, 0) to prove the null short-circuit, not the coordinate, is
+// what keeps the record.
+const BOUNDARY_AWAY_FROM_ORIGIN = {
+  type: 'Feature',
+  geometry: { type: 'Polygon', coordinates: [[[20, 20], [30, 20], [30, 30], [20, 30], [20, 20]]] },
+};
+assert.equal(isInsideCali({ x: null, y: null }, BOUNDARY_AWAY_FROM_ORIGIN), true,
+  '{x: null, y: null} must be kept even when (0, 0) is outside the boundary');
+
+// boundary undefined/null/{}/a Feature with no geometry/geometry with
+// coordinates: null -> everything kept (degrade toward KEEPING data).
+assert.equal(isInsideCali({ x: 50, y: 50 }, undefined), true);
+assert.equal(isInsideCali({ x: 50, y: 50 }, null), true);
+assert.equal(isInsideCali({ x: 50, y: 50 }, {}), true);
+assert.equal(isInsideCali({ x: 50, y: 50 }, { type: 'Feature', properties: {} }), true);
+assert.equal(
+  isInsideCali({ x: 50, y: 50 }, { type: 'Feature', geometry: { type: 'Polygon', coordinates: null } }),
+  true,
+);
+
+// MultiPolygon boundary: point in the first part, point in the second part,
+// point between the parts (outside both).
+const MULTI_BOUNDARY = {
+  type: 'Feature',
+  geometry: {
+    type: 'MultiPolygon',
+    coordinates: [
+      [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]],
+      [[[20, 20], [30, 20], [30, 30], [20, 30], [20, 20]]],
+    ],
+  },
+};
+assert.equal(isInsideCali({ x: 5, y: 5 }, MULTI_BOUNDARY), true, 'inside first part');
+assert.equal(isInsideCali({ x: 25, y: 25 }, MULTI_BOUNDARY), true, 'inside second part');
+assert.equal(isInsideCali({ x: 15, y: 15 }, MULTI_BOUNDARY), false, 'between the two parts');
+
+// A boundary whose polygon has a hole: a point in the hole reads as OUTSIDE
+// (pointInPolygon's own contract — see its test above). This case cannot
+// actually arise for the real cali_boundary.geojson: build_cali_boundary.py
+// deliberately drops interior rings (Polygon(union.exterior) only), so the
+// generated file never has a hole in the first place — this only documents
+// isInsideCali's behavior if it were ever handed one.
+const BOUNDARY_WITH_HOLE = {
+  type: 'Feature',
+  geometry: {
+    type: 'Polygon',
+    coordinates: [
+      [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]],
+      [[3, 3], [7, 3], [7, 7], [3, 7], [3, 3]],
+    ],
+  },
+};
+assert.equal(isInsideCali({ x: 5, y: 5 }, BOUNDARY_WITH_HOLE), false, 'point in the hole reads as outside');
+assert.equal(isInsideCali({ x: 1, y: 1 }, BOUNDARY_WITH_HOLE), true, 'annulus around the hole is inside');
+
+// FeatureCollection input also accepted (defensive — cali_boundary.geojson's
+// top-level object, in case a caller hands the whole parsed file instead of
+// its single feature).
+assert.equal(
+  isInsideCali({ x: 5, y: 5 }, { type: 'FeatureCollection', features: [CALI_BOUNDARY] }),
+  true,
+);
+assert.equal(
+  isInsideCali({ x: 50, y: 50 }, { type: 'FeatureCollection', features: [CALI_BOUNDARY] }),
+  false,
+);
+
+console.log('ok — isInsideCali (municipal-boundary exclusion, MultiPolygon, defensive on bad input)');
