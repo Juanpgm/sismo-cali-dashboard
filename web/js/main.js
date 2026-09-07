@@ -8,7 +8,6 @@ import {
   setChoroplethLevel, setChoroplethMetric, invalidateSize, highlightRecord, applyMapTheme,
   setStickerStatus, setZonasInteresVisible,
 } from './mapview.js';
-import { coverageGaugeHtml } from './coverage-gauge.js';
 import { initTable, renderTable, setTotalRecords, openDetailModal, configurarRepresentante } from './table.js';
 import { renderAcciones } from './acciones.js';
 import { initStickers } from './stickers.js';
@@ -89,17 +88,6 @@ function applySourceLabelsToSelect() {
   });
 }
 
-const stickerCoverageSection = el('#panel-sticker-coverage');
-const stickerGaugeEl = el('#panel-sticker-gauge');
-
-// Paints the Panel coverage gauge from store.stickerCoverage; hides the card
-// while there is nothing to show (endpoint not yet resolved / failed).
-function renderStickerGauge() {
-  const html = store.stickerCoverage ? coverageGaugeHtml(store.stickerCoverage) : '';
-  if (stickerGaugeEl) stickerGaugeEl.innerHTML = html;
-  if (stickerCoverageSection) stickerCoverageSection.hidden = !html;
-}
-
 // Sticker coverage from the cruce (api/sticker-status). Authenticated (any
 // logged-in role), so it runs only after startApp. Fire-and-forget: feeds the
 // map's 'sticker' colorBy mode, the coverage gauge, and the store's 'sticker'
@@ -146,7 +134,6 @@ function onStoreChange() {
     showToast('No se pudo cargar la capa geográfica.', 'error');
   });
   renderStatistics(soloRepresentantes(store.filtered), soloRepresentantes(store.records), store.reportados);
-  renderStickerGauge();
   // Acciones works over ALL records: the filters sidebar only applies to Panel.
   // Solo admin, and only while that tab is actually visible — skip the full
   // rebuild on every Panel filter keystroke otherwise (see switchView()).

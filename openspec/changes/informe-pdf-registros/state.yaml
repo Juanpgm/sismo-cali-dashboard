@@ -1,0 +1,33 @@
+change: informe-pdf-registros
+project: sismo-cali-dashboard
+artifact_store: hybrid
+execution_mode: interactive
+status: planned # proposal, spec, design, tasks complete; apply NOT started
+phases:
+  explore: done # engram obs 495
+  proposal: done # engram obs 496, proposal.md
+  spec: done # engram obs 497, specs/record-pdf-report/spec.md
+  design: done # engram obs 498, design.md
+  tasks: done # engram obs 499, tasks.md
+  apply: pending
+  verify: pending
+  archive: pending
+delivery:
+  strategy: ask-on-risk
+  forecast_lines: 480-580
+  budget_risk: high
+  chained_prs: true
+  chain_strategy: stacked-to-main # user decision 2026-09-04
+  pr_slices:
+    - pr1: CORS spike + pure builder buildReportDocDefinition + report.test.mjs
+    - pr2: asset gathering (photos/firmas/map tiles) + pdfmake lazy-load + image guards
+    - pr3: UI wiring (admin-gated button in openDetailModal, CSS role gate, toast UX)
+next: sdd-apply (PR 1 first; task 1 is the blocking CORS spike)
+notes: |
+  Binding product decisions: admin-only button, single-record only, per-image
+  placeholder degradation (never fail the PDF), simple header without logos.
+  Library: pdfmake 0.2.20 via jsDelivr, lazy-loaded like loadXlsx() (utils.js).
+  Guards: MAX_PHOTOS=12, downscale <=1000px JPEG q0.7.
+  Filename: informe_EDE_<codigo|ObjectID>_<stamp>.pdf.
+  Helpers live in web/js/utils.js (loadXlsx, basemapTileUrl, downloadStamp) and
+  web/js/auth.js (isAdmin); click handlers in main.js.
