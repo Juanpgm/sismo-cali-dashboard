@@ -349,7 +349,7 @@ function renderFormulario(sectionEl, records) {
       <div class="chart-tile"><h3 class="chart-tile-title">Candidato a demolición</h3><canvas id="accion-chart-candidato"></canvas></div>
       <div class="chart-tile"><h3 class="chart-tile-title">Tipo de colapso</h3><canvas id="accion-chart-colapso"></canvas></div>
       <div class="chart-tile"><h3 class="chart-tile-title">Requiere visita adicional</h3><canvas id="accion-chart-visita"></canvas></div>
-      <div class="chart-tile chart-tile-wide"><h3 class="chart-tile-title">Registros por fecha</h3><canvas id="accion-chart-fecha"></canvas></div>
+      <div class="chart-tile chart-tile-wide"><h3 class="chart-tile-title">Registros por fecha (acumulado)</h3><canvas id="accion-chart-fecha"></canvas></div>
       <div class="chart-tile chart-tile-wide"><h3 class="chart-tile-title">Registros por barrio (top 10)</h3><canvas id="accion-chart-barrio"></canvas></div>
     </div>
 
@@ -615,11 +615,23 @@ function renderCharts(rows) {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   });
   const days = [...dayCounts.keys()].sort();
+  // Cumulative running total, not daily counts — the field review's overall
+  // pace matters more here than any single day's volume.
+  let runningTotal = 0;
+  const cumulative = days.map((d) => (runningTotal += dayCounts.get(d)));
   upsert('accion-chart-fecha', {
-    type: 'bar',
+    type: 'line',
     data: {
       labels: days.map((d) => new Date(`${d}T12:00:00`).toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })),
-      datasets: [{ data: days.map((d) => dayCounts.get(d)), backgroundColor: themeColor('--accent', '#FFC400') }],
+      datasets: [{
+        data: cumulative,
+        borderColor: themeColor('--accent', '#FFC400'),
+        backgroundColor: themeColor('--accent-dim', 'rgba(255,196,0,0.16)'),
+        pointBackgroundColor: themeColor('--accent', '#FFC400'),
+        pointRadius: 3,
+        tension: 0.25,
+        fill: true,
+      }],
     },
     options: chartOpts(),
   });
