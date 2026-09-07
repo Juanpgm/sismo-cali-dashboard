@@ -638,8 +638,8 @@ a { color: var(--accent); }
    ============================================================ */
 
 .map-container {
-  height: 60vh;
-  min-height: 420px;
+  height: 75vh;
+  min-height: 525px;
   width: 100%;
   background: var(--surface-3);
 }
@@ -1395,7 +1395,7 @@ td { padding: 10px 14px; vertical-align: top; color: var(--text-primary); max-wi
   .app-header-bottom { flex-direction: column; align-items: stretch; }
   .btn-primary { width: 100%; justify-content: center; }
   .kpi-row { grid-template-columns: repeat(2, 1fr); }
-  .map-container { height: 52vh; min-height: 320px; }
+  .map-container { height: 65vh; min-height: 400px; }
   .chart-tile { height: 260px; }
   .card-toolbar { flex-direction: column; align-items: stretch; }
   .segmented { width: 100%; }
@@ -1415,13 +1415,13 @@ td { padding: 10px 14px; vertical-align: top; color: var(--text-primary); max-wi
   /* width:100% is required: auto margins disable a grid item's default
      stretch, collapsing the column to fit-content on content-light views. */
   .main-column { padding: 28px 40px 48px; width: 100%; max-width: 1720px; margin: 0 auto; }
-  .map-container { height: 62vh; min-height: 560px; }
+  .map-container { height: 77.5vh; min-height: 700px; }
   .kpi-value { font-size: 1.9rem; }
 }
 
 /* Landscape phones / short viewports: keep the map usable without scroll gymnastics */
 @media (max-height: 480px) and (orientation: landscape) {
-  .map-container { height: 70vh; min-height: 260px; }
+  .map-container { height: 87.5vh; min-height: 325px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
