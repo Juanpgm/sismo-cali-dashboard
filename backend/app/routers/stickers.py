@@ -533,7 +533,9 @@ def stickers(
 @router.get("/evaluaciones")
 def get_evaluaciones(
     request: Request,
-    claims: dict[str, Any] = Depends(require_role("admin")),
+    # Read-only list: viewers (institucional @cali.gov.co) may see it too;
+    # every mutating action stays admin-only on POST /stickers above.
+    claims: dict[str, Any] = Depends(require_role("admin", "viewer")),
 ) -> JSONResponse:
     """Cached read of the flattened ATC-20 evaluaciones list (dashboard
     Evaluaciones tab). Replaces the legacy Vercel `POST /api/stickers

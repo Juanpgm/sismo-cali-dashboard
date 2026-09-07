@@ -1493,9 +1493,9 @@ td { padding: 10px 14px; vertical-align: top; color: var(--text-primary); max-wi
   .view-tabs:not(.is-expanded) .view-tab[data-view="puntos-solicitados"],
   .view-tabs:not(.is-expanded) .view-tab[data-view="usuarios"] { display: none; }
 }
-/* Only admins have operational tabs to reveal, so non-admins never see the
-   toggle (they only ever have Panel). */
-body:not([data-role="admin"]) .view-tabs-toggle { display: none !important; }
+/* Admins and viewers have operational tabs to reveal (viewers: Stickers);
+   every other role only ever has Panel, so they never see the toggle. */
+body:not([data-role="admin"]):not([data-role="viewer"]) .view-tabs-toggle { display: none !important; }
 
 /* Collapse the filters sidebar when the Assignments view is active. */
 .app-shell.asig-active { grid-template-columns: 1fr; }
@@ -1658,11 +1658,16 @@ select.gestion-edit:focus, input.gestion-edit:focus { outline: none; border-colo
 body:not([data-role="admin"]) #refresh-btn,
 body:not([data-role="admin"]) #detail-report-btn,
 body:not([data-role="admin"]) .view-tab[data-view="acciones"],
-body:not([data-role="admin"]) .view-tab[data-view="stickers"],
 body:not([data-role="admin"]) .view-tab[data-view="planeacion"],
 body:not([data-role="admin"]) .view-tab[data-view="usuarios"],
 body:not([data-role="admin"]) .view-tab[data-view="analista"],
 body:not([data-role="admin"]) .view-tab[data-view="puntos-solicitados"] { display: none !important; }
+
+/* Stickers is the exception: viewers (institucional) may see its data too.
+   The read endpoint (Railway GET /evaluaciones) admits admin+viewer; the
+   Asignación segment stays admin-only because it mutates. */
+body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="stickers"] { display: none !important; }
+body:not([data-role="admin"]) [data-sticker-segment="asignacion"] { display: none !important; }
 
 #detail-report-btn:disabled { opacity: .6; cursor: wait; }
 

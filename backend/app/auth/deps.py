@@ -49,11 +49,11 @@ async def require_auth(claims: dict[str, Any] = Depends(current_claims)) -> dict
     return claims
 
 
-def require_role(role: str):
-    """Dependency factory: 403 unless `role_from_claims(claims) == role`."""
+def require_role(*roles: str):
+    """Dependency factory: 403 unless `role_from_claims(claims)` is one of `roles`."""
 
     async def _dependency(claims: dict[str, Any] = Depends(current_claims)) -> dict[str, Any]:
-        if role_from_claims(claims) != role:
+        if role_from_claims(claims) not in roles:
             raise HTTPException(status_code=403, detail="No autorizado.")
         return claims
 

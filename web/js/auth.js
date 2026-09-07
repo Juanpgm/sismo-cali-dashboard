@@ -5,7 +5,8 @@
 //     datos", "Cambiar rol". Only juanp.gzmz@gmail.com by default (superadmin,
 //     un-lockable); others become admin via an assignable custom claim.
 //   • USUARIO — password account created from the Usuarios tab. Panel only.
-//   • VIEWER — Google @cali.gov.co (auto-provisioned on first sign-in). Panel only.
+//   • VIEWER — Google @cali.gov.co (auto-provisioned on first sign-in).
+//     Panel + Stickers read-only (Evaluaciones data; no Asignación).
 //   • INSPECTOR — @sismocali.gov.co field account. Panel only.
 //   • Anything else (e.g. a Google account outside @cali.gov.co) is rejected.
 //
@@ -72,7 +73,8 @@ export async function signOutUser() {
 // UI gate and the API enforcement can never disagree. Reads the assignable
 // custom claim from the ID token. Precedence: superadmin email > custom claim >
 // @sismocali (inspector) > password (usuario) > google@cali (viewer) > reject.
-// Only 'admin' sees Stickers/Usuarios/Actualizar; the rest see Panel only.
+// Only 'admin' sees Usuarios/Actualizar; 'viewer' also gets Stickers
+// (read-only Evaluaciones); the rest see Panel only.
 async function roleForUser(user) {
   const email = (user.email || '').toLowerCase();
   if (email === SUPERADMIN_EMAIL) return 'admin';

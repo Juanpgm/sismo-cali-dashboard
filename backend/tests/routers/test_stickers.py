@@ -45,6 +45,13 @@ from app.routers import stickers
 UID_ADMIN = "uid-admin"
 FAKE_CLAIMS_ADMIN = {"sub": UID_ADMIN, "email": "admin@example.com", "role": "admin"}
 FAKE_CLAIMS_VIEWER = {"sub": "uid-viewer", "email": "someone@gmail.com"}
+# Real 'viewer' role (google.com + @cali.gov.co) — FAKE_CLAIMS_VIEWER above
+# actually resolves to 'otro' (no provider, gmail) and is the rejected caller.
+FAKE_CLAIMS_INSTITUCIONAL = {
+    "sub": "uid-institucional",
+    "email": "funcionario@cali.gov.co",
+    "firebase": {"sign_in_provider": "google.com"},
+}
 
 
 @pytest.fixture(autouse=True)
@@ -695,6 +702,18 @@ def test_get_evaluaciones_non_admin_is_403(monkeypatch):
     resp = client.get("/evaluaciones")
 
     assert resp.status_code == 403
+
+
+def test_get_evaluaciones_viewer_role_is_allowed(monkeypatch):
+    fake_auth = _FakeAuth()
+    app = _app(monkeypatch, fake_auth)
+    app.dependency_overrides[current_claims] = lambda: FAKE_CLAIMS_INSTITUCIONAL
+    client = TestClient(app)
+
+    resp = client.get("/evaluaciones")
+
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
 
 
 def test_unrecognized_action_is_rejected(monkeypatch):
