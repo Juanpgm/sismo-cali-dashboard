@@ -287,21 +287,31 @@ function colorSegmentedHtml() {
       data-accion-color="${key}" role="tab" aria-selected="${key === colorVar}">${escapeHtml(def.label)}</button>`).join('');
 }
 
+/** Dirección cell: address on top, barrio/vereda + comuna as muted subtext
+ *  below — replaces the separate "Barrio" column. The aside is a narrow
+ *  fixed-width column (not a full-width card like Panel's table), so a flat
+ *  8-column row forced horizontal scroll; stacking address context here
+ *  instead of spreading it across columns is what actually fixes that. */
+function direccionCellHtml(form, ede) {
+  if (!ede) {
+    return `<div class="accion-dir-primary">${escapeHtml(form.objectivo_id_r ?? '—')} <span class="badge badge-sin-cruce">Sin cruce EDE</span></div>`;
+  }
+  const primary = escapeHtml(addressDisplay(ede).primary || `Registro ${ede.ObjectID}`);
+  const subParts = [barrioVeredaDisplay(ede), ede.comuna].filter(Boolean).map(escapeHtml);
+  const sub = subParts.length ? `<div class="accion-dir-sub">${subParts.join(' · ')}</div>` : '';
+  return `<div class="accion-dir-primary">${primary}</div>${sub}`;
+}
+
 function tableRowsHtml(rows) {
   return rows.map((row, i) => {
     const { form, ede } = row;
-    const dir = ede
-      ? escapeHtml(addressDisplay(ede).primary || `Registro ${ede.ObjectID}`)
-      : `${escapeHtml(form.objectivo_id_r ?? '—')} <span class="badge badge-sin-cruce">Sin cruce EDE</span>`;
     return `
       <tr data-accion-row="${i}" tabindex="0">
-        <td>${dir}</td>
-        <td>${escapeHtml(ede ? barrioVeredaDisplay(ede) : '—')}</td>
+        <td>${direccionCellHtml(form, ede)}</td>
         <td>${escapeHtml(formatFecha(form.fecha_registro))}</td>
         <td>${badge('candidato_demolicion', form.candidato_demolicion)}</td>
         <td>${badge('colapso', form.colapso)}</td>
-        <td>${badge('visita', form.visita)}</td>
-        <td>${escapeHtml(ede?.nombre_evaluador || '—')}</td>
+        <td class="accion-col-profesional" title="${escapeHtml(ede?.nombre_evaluador || 'Sin dato')}">${escapeHtml(ede?.nombre_evaluador || '—')}</td>
         <td><button type="button" class="btn-icon accion-pdf-btn" data-accion-pdf="${i}" title="Descargar informe PDF" aria-label="Descargar informe PDF">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><polyline points="9 15 12 18 15 15"/></svg>
         </button></td>
@@ -377,10 +387,14 @@ function renderFormulario(sectionEl, records) {
             </div>
           </div>
           <div class="table-scroll">
-            <table>
+            <table class="accion-table">
+              <colgroup>
+                <col style="width:30%"><col style="width:14%"><col style="width:14%">
+                <col style="width:14%"><col style="width:18%"><col style="width:10%">
+              </colgroup>
               <thead><tr>
-                <th>Dirección</th><th>Barrio</th><th>Fecha</th><th>Candidato</th>
-                <th>Colapso</th><th>Visita</th><th>Profesional</th><th>Informe</th>
+                <th>Dirección</th><th>Fecha</th><th>Candidato</th>
+                <th>Colapso</th><th>Profesional</th><th>Informe</th>
               </tr></thead>
               <tbody>${tableRowsHtml(rows)}</tbody>
             </table>

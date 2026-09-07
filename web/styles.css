@@ -1596,6 +1596,18 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tabs-toggle { disp
   #view-acciones .eval-aside .table-scroll { max-height: 320px; }
   #view-acciones .eval-map { min-height: 55vh; }
 }
+/* Fixed layout for the aside's table: free-flowing columns (address, one
+   per evaluator name) each grab as much width as their longest value and
+   force horizontal scroll in a ~380px column — .colgroup widths in the
+   markup only take effect once cells stop auto-sizing to content. */
+.accion-table { table-layout: fixed; }
+.accion-table th, .accion-table td { overflow: hidden; text-overflow: ellipsis; }
+/* Address wraps instead of truncating (it's the one column worth reading in
+   full); barrio/comuna rides underneath it as muted subtext, replacing what
+   used to be its own "Barrio" column. */
+.accion-dir-primary { white-space: normal; overflow-wrap: break-word; }
+.accion-dir-sub { margin-top: 2px; font-size: 0.72rem; color: var(--text-muted); white-space: normal; overflow-wrap: break-word; }
+.accion-col-profesional { white-space: nowrap; }
 
 /* ---- roster table state accents ---- */
 #asig-table tbody tr { cursor: default; }
