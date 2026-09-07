@@ -385,6 +385,13 @@ function renderFormulario(sectionEl, records) {
       <div class="card-toolbar">
         <span class="eval-toolbar-title">Puntos revisados (coordenadas del EDE)</span>
         <div class="segmented" role="tablist" aria-label="Colorear por" data-accion-color-group>${colorSegmentedHtml()}</div>
+        <!-- Reference-only boundaries, off by default (design.md-style ADR:
+             pure orientation context, independent of "Colorear por" and of
+             Panel's own choropleth — this map has its own Leaflet instance). -->
+        <div class="map-sub-controls">
+          <label class="inline-check"><input type="checkbox" data-accion-ref="comuna">Comunas / corregimientos</label>
+          <label class="inline-check"><input type="checkbox" data-accion-ref="barrio">Barrios / veredas</label>
+        </div>
       </div>
       <div class="eval-workspace">
         <div class="eval-map" id="accion-capa-map"></div>
@@ -443,6 +450,16 @@ function renderFormulario(sectionEl, records) {
     paintMarkers();
   });
 
+  sectionEl.querySelectorAll('[data-accion-ref]').forEach((input) => {
+    input.checked = (input.dataset.accionRef === 'comuna') ? comunaRefOn : barrioRefOn;
+    input.addEventListener('change', () => {
+      setRefLayerVisible(input.dataset.accionRef, input.checked).catch(() => {
+        input.checked = false;
+        showToast('No se pudo cargar la capa de referencia.', 'error');
+      });
+    });
+  });
+
   // Row click -> detail; the PDF button is a sibling (.ps-row-wrap), not a
   // nested button, so no stopPropagation/keydown dance is needed — both are
   // real <button>s and get native keyboard activation for free.
@@ -474,6 +491,90 @@ function renderFormulario(sectionEl, records) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Optional reference basemaps: comuna/corregimiento and barrio/vereda   */
+/* boundary outlines — pure orientation context, hidden by default and   */
+/* independent of the candidato/colapso/visita "Colorear por" marker     */
+/* coloring. Own fetch/cache here rather than reusing mapview.js's        */
+/* ensureGeo/setZonasInteresVisible: those are wired to Panel's single    */
+/* map singleton (module-scoped `map` in mapview.js), not this tab's own  */
+/* Leaflet instance — same static files (data/comunas.geojson,           */
+/* data/barrios.geojson), independent cache (the browser's HTTP cache    */
+/* still de-dupes the actual network fetch either way).                  */
+/* ------------------------------------------------------------------ */
+
+let comunaGeoCache = null;
+let barrioGeoCache = null;
+let comunaGeoLoad = null;
+let barrioGeoLoad = null;
+let comunaRefLayer = null;
+let barrioRefLayer = null;
+let comunaRefOn = false;
+let barrioRefOn = false;
+
+async function ensureRefGeo(level) {
+  const isComuna = level === 'comuna';
+  if (isComuna ? comunaGeoCache : barrioGeoCache) return isComuna ? comunaGeoCache : barrioGeoCache;
+  const load = (isComuna ? comunaGeoLoad : barrioGeoLoad) || (async () => {
+    const url = isComuna ? 'data/comunas.geojson' : 'data/barrios.geojson';
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`No se pudo cargar ${url}`);
+    const geo = await res.json();
+    if (isComuna) comunaGeoCache = geo; else barrioGeoCache = geo;
+  })().catch((err) => {
+    if (isComuna) comunaGeoLoad = null; else barrioGeoLoad = null;
+    throw err;
+  });
+  if (isComuna) comunaGeoLoad = load; else barrioGeoLoad = load;
+  await load;
+  return isComuna ? comunaGeoCache : barrioGeoCache;
+}
+
+function buildRefLayer(geo, style) {
+  const safeGeo = geo && Array.isArray(geo.features) ? geo : { type: 'FeatureCollection', features: [] };
+  return L.geoJSON(safeGeo, {
+    style: () => style,
+    onEachFeature: (feature, lyr) => {
+      const name = feature.properties && feature.properties.name;
+      if (name) lyr.bindTooltip(escapeHtml(name), { sticky: true });
+    },
+  });
+}
+
+// Comuna: solid, a touch heavier — the coarser boundary. Barrio: thin
+// dashed — the finer one, so both can be on at once without merging
+// visually. No fill: this is a reference outline, not a choropleth — it
+// must not compete with the candidato_demolicion/colapso marker colors.
+const REF_STYLES = {
+  comuna: { color: '#38bdf8', weight: 2, fill: false },
+  barrio: { color: '#94a3b8', weight: 1, dashArray: '4,3', fill: false },
+};
+
+/** Shows/hides a reference layer on THIS tab's map. Idempotent; loaded on
+ *  demand the first time it's enabled. bringToBack() keeps it under the
+ *  candidato markers/legend regardless of add order. */
+async function setRefLayerVisible(level, visible) {
+  const isComuna = level === 'comuna';
+  if (isComuna) comunaRefOn = !!visible; else barrioRefOn = !!visible;
+  if (!visible) {
+    const layer = isComuna ? comunaRefLayer : barrioRefLayer;
+    if (layer && map && map.hasLayer(layer)) map.removeLayer(layer);
+    return;
+  }
+  const geo = await ensureRefGeo(level);
+  let layer = isComuna ? comunaRefLayer : barrioRefLayer;
+  if (!layer) {
+    layer = buildRefLayer(geo, REF_STYLES[level]);
+    if (isComuna) comunaRefLayer = layer; else barrioRefLayer = layer;
+  }
+  // The checkbox may have been unchecked again while the fetch was in
+  // flight — respect whichever state is current, not the one requested.
+  if (map && (isComuna ? comunaRefOn : barrioRefOn)) {
+    layer.addTo(map);
+    layer.bringToBack();
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Map                                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -482,6 +583,10 @@ let markers = []; // [{ marker, row }] for repainting on color-var change
 function renderCapaMap(rows) {
   map = L.map('accion-capa-map', { zoomControl: true, minZoom: 10, maxZoom: 18 }).setView(CALI_CENTER, CALI_ZOOM);
   baseTile = L.tileLayer(basemapTileUrl(), { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20 }).addTo(map);
+  // teardownMap() nulls `map` (and drops its layers) on every rebuild — an
+  // already-fetched reference layer just needs re-adding, no refetch.
+  if (comunaRefOn && comunaRefLayer) { comunaRefLayer.addTo(map); comunaRefLayer.bringToBack(); }
+  if (barrioRefOn && barrioRefLayer) { barrioRefLayer.addTo(map); barrioRefLayer.bringToBack(); }
 
   markers = [];
   const conCoords = rows.filter((r) => r.ede && Number.isFinite(Number(r.ede.y)) && Number.isFinite(Number(r.ede.x)));
