@@ -1569,7 +1569,22 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tabs-toggle { disp
 .accion-error-card { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
 .accion-sin-cruce { margin: 0; font-size: 0.88rem; color: var(--text-secondary); }
 .accion-justificacion { margin: 0; font-size: 0.88rem; color: var(--text-secondary); white-space: pre-wrap; }
-.accion-pdf-btn { width: 30px; height: 30px; }
+/* A proper button, not a bare ghost icon lost in the row's whitespace:
+   tinted background so it reads as clickable at a glance, plus quick
+   hover/active feedback so a click feels instant even before the PDF
+   itself finishes generating. */
+.accion-pdf-btn {
+  width: 38px; height: 38px;
+  background: var(--accent-dim); color: var(--accent);
+  transition: transform .08s ease, background .12s ease;
+}
+.accion-pdf-btn:hover { background: color-mix(in srgb, var(--accent) 26%, transparent); }
+.accion-pdf-btn:active { transform: scale(0.92); }
+.accion-pdf-btn:disabled { cursor: wait; }
+/* Swapped-in spinner icon (acciones-capa.js's SPINNER_ICON) while the PDF
+   is generating — spins in place instead of the button just going inert. */
+.accion-pdf-btn.is-loading svg { animation: accion-spin .7s linear infinite; }
+@keyframes accion-spin { to { transform: rotate(360deg); } }
 #view-acciones .kpi-row { margin-bottom: 16px; }
 #view-acciones .stats-grid { margin-top: 16px; margin-bottom: 16px; }
 
@@ -1595,6 +1610,12 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tabs-toggle { disp
    row carries address + barrio/comuna + fecha/colapso + profesional — 15%
    wider, scoped so Stickers itself keeps its own width. */
 #view-acciones .eval-workspace { grid-template-columns: minmax(0, 1fr) clamp(368px, 30vw, 506px); }
+/* .eval-row's 3rd column exists for Stickers' state pill; Acciones' rows
+   carry no pill (the dot already encodes candidato_demolicion), so that
+   reserved auto column left a large empty gap between the address and the
+   row's right edge. Scoped 2-column override + matching .eval-meta span. */
+#view-acciones .eval-row { grid-template-columns: auto minmax(0, 1fr); }
+#view-acciones .eval-meta { grid-column: 2 / 3; }
 
 /* ---- roster table state accents ---- */
 #asig-table tbody tr { cursor: default; }

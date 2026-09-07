@@ -287,36 +287,42 @@ function colorSegmentedHtml() {
       data-accion-color="${key}" role="tab" aria-selected="${key === colorVar}">${escapeHtml(def.label)}</button>`).join('');
 }
 
+// PDF icon, swapped for a spinner while generarInformeCandidato runs — the
+// button used to just go `disabled` with no other feedback, which reads as
+// unresponsive on a slower connection.
+const PDF_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><polyline points="9 15 12 18 15 15"/></svg>';
+const SPINNER_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" stroke-opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg>';
+
 /** Row card, same recipe as Stickers' evaluaciones.js buildEvalRow: a dot +
- *  name + pill first line, then full-width meta lines below — no per-column
+ *  name first line, then full-width meta lines below — no per-column
  *  headers to truncate, so the aside can carry as much text as it needs.
- *  The PDF button is a SIBLING of .eval-row (button-in-button is invalid
- *  HTML), same .ps-row-wrap fix puntos_solicitados.js already uses for its
- *  "Asignar" button next to .eval-row. */
+ *  The candidato "Sí/No" pill is gone: the dot already carries that same
+ *  color (same legend the map uses), so the pill was the same information
+ *  twice, printed as its own oddly-placed right-aligned label — dropping it
+ *  is also what lets .eval-name use the row's full width instead of leaving
+ *  the big gap in front of it (see the #view-acciones .eval-row override in
+ *  styles.css). The PDF button is a SIBLING of .eval-row (button-in-button
+ *  is invalid HTML), same .ps-row-wrap fix puntos_solicitados.js already
+ *  uses for its "Asignar" button next to .eval-row. */
 function accionRowHtml(row, i) {
   const { form, ede } = row;
-  const color = colorFor('candidato_demolicion', form.candidato_demolicion);
+  const color = ede ? colorFor('candidato_demolicion', form.candidato_demolicion) : COLORS.unknown;
+  const dotTitle = ede ? `Candidato a demolición: ${labelForCode(form.candidato_demolicion)}` : 'Sin cruce EDE';
   const name = ede
     ? escapeHtml(addressDisplay(ede).primary || `Registro ${ede.ObjectID}`)
-    : escapeHtml(form.objectivo_id_r ?? '—');
-  const pill = ede
-    ? `<span class="eval-pill" style="--eval-pill:${color}">${escapeHtml(labelForCode(form.candidato_demolicion))}</span>`
-    : `<span class="eval-pill" style="--eval-pill:${COLORS.unknown}">Sin cruce EDE</span>`;
+    : `${escapeHtml(form.objectivo_id_r ?? '—')} <span class="badge badge-sin-cruce">Sin cruce EDE</span>`;
   const ubicacion = ede ? [barrioVeredaDisplay(ede), ede.comuna].filter(Boolean).map(escapeHtml).join(' · ') : '';
   return `
     <li>
       <div class="ps-row-wrap">
         <button type="button" class="eval-row" data-accion-row="${i}">
-          <span class="eval-dot" style="background:${ede ? color : COLORS.unknown}" aria-hidden="true"></span>
+          <span class="eval-dot" style="background:${color}" aria-hidden="true" title="${escapeHtml(dotTitle)}"></span>
           <span class="eval-name">${name}</span>
-          ${pill}
           ${ubicacion ? `<span class="eval-meta">${ubicacion}</span>` : ''}
           <span class="eval-meta">${escapeHtml(formatFecha(form.fecha_registro))} · ${badge('colapso', form.colapso)}</span>
           <span class="eval-meta">${escapeHtml(ede?.nombre_evaluador || 'Sin profesional')}</span>
         </button>
-        <button type="button" class="btn-icon accion-pdf-btn" data-accion-pdf="${i}" title="Descargar informe PDF" aria-label="Descargar informe PDF">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><polyline points="9 15 12 18 15 15"/></svg>
-        </button>
+        <button type="button" class="btn-icon accion-pdf-btn" data-accion-pdf="${i}" title="Descargar informe PDF" aria-label="Descargar informe PDF">${PDF_ICON}</button>
       </div>
     </li>`;
 }
@@ -446,12 +452,16 @@ function renderFormulario(sectionEl, records) {
     if (pdfBtn) {
       const row = rows[Number(pdfBtn.dataset.accionPdf)];
       pdfBtn.disabled = true;
+      pdfBtn.classList.add('is-loading');
+      pdfBtn.innerHTML = SPINNER_ICON;
       try {
         await generarInformeCandidato(row.form, row.ede);
       } catch {
         showToast('No se pudo generar el informe PDF.', 'error');
       } finally {
         pdfBtn.disabled = false;
+        pdfBtn.classList.remove('is-loading');
+        pdfBtn.innerHTML = PDF_ICON;
       }
       return;
     }
