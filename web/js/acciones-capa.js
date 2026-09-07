@@ -9,6 +9,7 @@
 import {
   COLORS, escapeHtml, labelForCode, addressDisplay, barrioVeredaDisplay, basemapTileUrl,
   themeColor, SURVEY_LAYER_URL, isFirmaAttachment, attachmentUrl, showToast,
+  loadXlsx, downloadStamp,
 } from './utils.js';
 import { buildMiniMap } from './mapview.js';
 import { openLightbox } from './table.js';
@@ -308,6 +309,25 @@ function tableRowsHtml(rows) {
   }).join('');
 }
 
+/** Flat, spreadsheet-friendly shape of the joined rows — mirrors the visible
+ *  table columns (plus the EDE ObjectID and the cruce flag) rather than the
+ *  raw form/ede field dump: the join is the point of this view, so a flat
+ *  "no cruce" record with the ArcGIS field names would be less useful than
+ *  what the table already shows. */
+function buildExportRows(rows) {
+  return rows.map(({ form, ede }) => ({
+    direccion: ede ? (addressDisplay(ede).primary || `Registro ${ede.ObjectID}`) : (form.objectivo_id_r ?? ''),
+    barrio: ede ? barrioVeredaDisplay(ede) : '',
+    fecha_registro: formatFecha(form.fecha_registro, { withTime: true }),
+    candidato_demolicion: form.candidato_demolicion ? labelForCode(form.candidato_demolicion) : '',
+    colapso: form.colapso ? labelForCode(form.colapso) : '',
+    visita: form.visita ? labelForCode(form.visita) : '',
+    profesional: ede?.nombre_evaluador || '',
+    ede_object_id: ede?.ObjectID ?? '',
+    sin_cruce_ede: ede ? 'No' : 'Sí',
+  }));
+}
+
 function renderFormulario(sectionEl, records) {
   destroyCharts();
   teardownMap();
@@ -325,35 +345,47 @@ function renderFormulario(sectionEl, records) {
     </div>
     <div class="kpi-row" data-accion-kpis>${kpisHtml(rows)}</div>
 
-    <section class="card accion-map-card" aria-label="Mapa de revisiones">
-      <div class="card-toolbar">
-        <span class="eval-toolbar-title">Puntos revisados (coordenadas del EDE)</span>
-        <div class="segmented" role="tablist" aria-label="Colorear por" data-accion-color-group>${colorSegmentedHtml()}</div>
-      </div>
-      <div class="accion-map" id="accion-capa-map"></div>
-    </section>
-
     <div class="stats-grid">
       <div class="chart-tile"><h3 class="chart-tile-title">Candidato a demolición</h3><canvas id="accion-chart-candidato"></canvas></div>
       <div class="chart-tile"><h3 class="chart-tile-title">Tipo de colapso</h3><canvas id="accion-chart-colapso"></canvas></div>
       <div class="chart-tile"><h3 class="chart-tile-title">Requiere visita adicional</h3><canvas id="accion-chart-visita"></canvas></div>
-      <div class="chart-tile"><h3 class="chart-tile-title">Registros por barrio (top 10)</h3><canvas id="accion-chart-barrio"></canvas></div>
       <div class="chart-tile chart-tile-wide"><h3 class="chart-tile-title">Registros por fecha</h3><canvas id="accion-chart-fecha"></canvas></div>
+      <div class="chart-tile chart-tile-wide"><h3 class="chart-tile-title">Registros por barrio (top 10)</h3><canvas id="accion-chart-barrio"></canvas></div>
     </div>
 
-    <section class="card">
+    <!-- Map + table side by side, same recipe as Stickers' .eval-workspace
+         (evaluaciones.js): the list stops being a second copy of the map and
+         becomes a way to read it, and the tab has the width for it. Reuses
+         .eval-workspace/-map/-aside/-aside-head as-is (Puntos Solicitados
+         already set this precedent for a non-Stickers tab) — only the
+         download-icon placement (.accion-aside-actions) is genuinely new. -->
+    <section class="card eval-workspace-card" aria-label="Mapa y registros del formulario">
       <div class="card-toolbar">
-        <span class="eval-toolbar-title">Registros del formulario</span>
-        <span class="eval-toolbar-meta">${rows.length} registros · ${cruzados} cruzados con EDE</span>
+        <span class="eval-toolbar-title">Puntos revisados (coordenadas del EDE)</span>
+        <div class="segmented" role="tablist" aria-label="Colorear por" data-accion-color-group>${colorSegmentedHtml()}</div>
       </div>
-      <div class="table-scroll">
-        <table>
-          <thead><tr>
-            <th>Dirección</th><th>Barrio</th><th>Fecha</th><th>Candidato</th>
-            <th>Colapso</th><th>Visita</th><th>Profesional</th><th>Informe</th>
-          </tr></thead>
-          <tbody>${tableRowsHtml(rows)}</tbody>
-        </table>
+      <div class="eval-workspace">
+        <div class="eval-map" id="accion-capa-map"></div>
+        <div class="eval-aside">
+          <div class="eval-aside-head">
+            <h4>Registros del formulario</h4>
+            <div class="accion-aside-actions">
+              <span class="eval-toolbar-meta">${rows.length} registros · ${cruzados} cruzados con EDE</span>
+              <button type="button" class="btn-icon" data-accion-download title="Descargar datos (xlsx)" aria-label="Descargar datos (xlsx)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><line x1="5" y1="21" x2="19" y2="21"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead><tr>
+                <th>Dirección</th><th>Barrio</th><th>Fecha</th><th>Candidato</th>
+                <th>Colapso</th><th>Visita</th><th>Profesional</th><th>Informe</th>
+              </tr></thead>
+              <tbody>${tableRowsHtml(rows)}</tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </section>`;
 
@@ -361,6 +393,28 @@ function renderFormulario(sectionEl, records) {
     featuresCache = null;
     loadErrored = false;
     loadFormulario(sectionEl);
+  });
+
+  // Same mechanism as the Panel's "Descargar datos (xlsx)" (main.js):
+  // lazy-loaded SheetJS, a "Descargado el:" stamp row, then the flat export
+  // rows below it.
+  sectionEl.querySelector('[data-accion-download]').addEventListener('click', async () => {
+    let XLSX;
+    try { XLSX = await loadXlsx(); } catch { showToast('No se pudo cargar el generador de Excel.', 'error'); return; }
+    const exportRows = buildExportRows(rows);
+    if (!exportRows.length) {
+      showToast('No hay registros para exportar.', 'error');
+      return;
+    }
+    const { legible, slug } = downloadStamp();
+    const ws = XLSX.utils.aoa_to_sheet([
+      ['Descargado el:', legible],
+      [],
+    ]);
+    XLSX.utils.sheet_add_json(ws, exportRows, { origin: 'A3' });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'acciones');
+    XLSX.writeFile(wb, `acciones_candidatos_demolicion_${slug}.xlsx`);
   });
 
   sectionEl.querySelector('[data-accion-color-group]').addEventListener('click', (e) => {
@@ -544,10 +598,14 @@ function renderCharts(rows) {
   upsert('accion-chart-barrio', {
     type: 'bar',
     data: {
+      // Distinct blue (not the gold --accent "Registros por fecha" already
+      // uses right above it) so the two full-width charts read as separate
+      // at a glance. Vertical bars (default indexAxis) — a horizontal layout
+      // made sense narrow, but the tile is now full width.
       labels: topBarrios.map(([b]) => b),
-      datasets: [{ data: topBarrios.map(([, n]) => n), backgroundColor: themeColor('--accent', '#FFC400') }],
+      datasets: [{ data: topBarrios.map(([, n]) => n), backgroundColor: '#3b82f6' }],
     },
-    options: { ...chartOpts(), indexAxis: 'y' },
+    options: chartOpts(),
   });
 
   const dayCounts = countBy(rows, (r) => {

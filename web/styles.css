@@ -1566,13 +1566,36 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tabs-toggle { disp
 .badge-visita-no { background: var(--status-h); color: #0B1D33; }
 .badge-sin-cruce { background: var(--surface-2); color: var(--text-muted); }
 
-.accion-map { height: 420px; background: var(--surface-3); }
 .accion-error-card { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
 .accion-sin-cruce { margin: 0; font-size: 0.88rem; color: var(--text-secondary); }
 .accion-justificacion { margin: 0; font-size: 0.88rem; color: var(--text-secondary); white-space: pre-wrap; }
 .accion-pdf-btn { width: 30px; height: 30px; }
 #view-acciones .kpi-row { margin-bottom: 16px; }
 #view-acciones .stats-grid { margin-top: 16px; margin-bottom: 16px; }
+
+/* Map + table workspace (acciones-capa.js's renderFormulario): reuses
+   .eval-workspace/-map/-aside/-aside-head as-is (Stickers' evaluaciones.js;
+   Puntos Solicitados already set the precedent of reusing this outside
+   Stickers). .accion-map's old fixed 420px height is gone — the div now
+   takes .eval-map's class too, so it sizes/stacks exactly like Stickers'
+   map instead of drifting out of step with it. Only the download-icon
+   grouping and the table's height inside the narrow aside column are
+   genuinely new. */
+#view-acciones .eval-aside-head { align-items: center; }
+.accion-aside-actions { display: flex; align-items: center; gap: 8px; }
+/* .table-scroll's own 70vh cap is meant for a full-width card, not a ~380px
+   aside column; match .eval-list's flex+cap so the table scrolls inside its
+   own column instead of stretching the card past the map's height. */
+#view-acciones .eval-aside .table-scroll { flex: 1; min-height: 0; max-height: 560px; }
+/* Taller map than Stickers' default .eval-map (480px): the point cloud here
+   (candidatos a demolición) reads better with more vertical room. Scoped to
+   #view-acciones so Stickers keeps its own height. */
+#view-acciones .eval-map { min-height: 640px; }
+@media (max-width: 940px) {
+  /* Same breakpoint .eval-workspace already stacks map-over-list at. */
+  #view-acciones .eval-aside .table-scroll { max-height: 320px; }
+  #view-acciones .eval-map { min-height: 55vh; }
+}
 
 /* ---- roster table state accents ---- */
 #asig-table tbody tr { cursor: default; }
