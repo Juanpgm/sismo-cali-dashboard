@@ -302,16 +302,25 @@ function direccionCellHtml(form, ede) {
   return `<div class="accion-dir-primary">${primary}</div>${sub}`;
 }
 
+/** Detalle cell: candidato badge on top, fecha + colapso on one line below
+ *  it, profesional last — one stacked column instead of four flat ones.
+ *  Four side-by-side columns kept truncating to "FEC…"/"CA…"/"CO…"/"PROFE…"
+ *  even with a fixed layout; there just isn't enough width in a ~380px
+ *  aside for four headers plus content, so this stacks them instead. */
+function detalleCellHtml(form, ede) {
+  return `
+    <div class="accion-detalle-top">${badge('candidato_demolicion', form.candidato_demolicion)}</div>
+    <div class="accion-detalle-meta">${escapeHtml(formatFecha(form.fecha_registro))} · ${badge('colapso', form.colapso)}</div>
+    <div class="accion-detalle-profesional" title="${escapeHtml(ede?.nombre_evaluador || 'Sin dato')}">${escapeHtml(ede?.nombre_evaluador || '—')}</div>`;
+}
+
 function tableRowsHtml(rows) {
   return rows.map((row, i) => {
     const { form, ede } = row;
     return `
       <tr data-accion-row="${i}" tabindex="0">
         <td>${direccionCellHtml(form, ede)}</td>
-        <td>${escapeHtml(formatFecha(form.fecha_registro))}</td>
-        <td>${badge('candidato_demolicion', form.candidato_demolicion)}</td>
-        <td>${badge('colapso', form.colapso)}</td>
-        <td class="accion-col-profesional" title="${escapeHtml(ede?.nombre_evaluador || 'Sin dato')}">${escapeHtml(ede?.nombre_evaluador || '—')}</td>
+        <td>${detalleCellHtml(form, ede)}</td>
         <td><button type="button" class="btn-icon accion-pdf-btn" data-accion-pdf="${i}" title="Descargar informe PDF" aria-label="Descargar informe PDF">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><polyline points="9 15 12 18 15 15"/></svg>
         </button></td>
@@ -389,12 +398,10 @@ function renderFormulario(sectionEl, records) {
           <div class="table-scroll">
             <table class="accion-table">
               <colgroup>
-                <col style="width:30%"><col style="width:14%"><col style="width:14%">
-                <col style="width:14%"><col style="width:18%"><col style="width:10%">
+                <col style="width:48%"><col style="width:38%"><col style="width:14%">
               </colgroup>
               <thead><tr>
-                <th>Dirección</th><th>Fecha</th><th>Candidato</th>
-                <th>Colapso</th><th>Profesional</th><th>Informe</th>
+                <th>Dirección</th><th>Detalle</th><th>Informe</th>
               </tr></thead>
               <tbody>${tableRowsHtml(rows)}</tbody>
             </table>

@@ -1607,7 +1607,14 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tabs-toggle { disp
    used to be its own "Barrio" column. */
 .accion-dir-primary { white-space: normal; overflow-wrap: break-word; }
 .accion-dir-sub { margin-top: 2px; font-size: 0.72rem; color: var(--text-muted); white-space: normal; overflow-wrap: break-word; }
-.accion-col-profesional { white-space: nowrap; }
+/* Detalle cell (candidato badge / fecha+colapso / profesional, stacked) —
+   own column got too cramped for four side-by-side headers. */
+.accion-detalle-meta { margin-top: 4px; font-size: 0.78rem; color: var(--text-secondary); white-space: normal; }
+.accion-detalle-profesional { margin-top: 4px; font-size: 0.78rem; color: var(--text-secondary); white-space: normal; overflow-wrap: break-word; }
+/* Stickers' default aside (clamp(320px, 26vw, 440px)) reads cramped once the
+   table carries this much per row — 15% wider, scoped so Stickers itself
+   keeps its own width. */
+#view-acciones .eval-workspace { grid-template-columns: minmax(0, 1fr) clamp(368px, 30vw, 506px); }
 
 /* ---- roster table state accents ---- */
 #asig-table tbody tr { cursor: default; }
