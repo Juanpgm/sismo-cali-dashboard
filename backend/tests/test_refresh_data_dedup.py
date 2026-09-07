@@ -200,3 +200,182 @@ def test_blank_names_fall_back_to_distance_alone():
          "y": 3.40005, "x": -76.5},
     ]))
     assert df.loc[0, "dup_grupo_id"] == df.loc[1, "dup_grupo_id"]
+
+
+# Coarser geo bucket (~110 m cell, was ~1 m) ----------------------------------
+# The 5-decimal bucket was so tight that GPS jitter alone split the SAME
+# address-less building into two buckets, which `_misma_edificacion` never
+# even got a chance to re-join (they were never compared). 3 decimals puts
+# them in one bucket; the 30 m distance check still does the real splitting.
+
+
+def test_addressless_records_15m_apart_now_share_one_group():
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "a", "direccion_norm": "", "y": 3.40000, "x": -76.50000},
+        {"GlobalID": "b", "direccion_norm": "", "y": 3.40013, "x": -76.50000},  # ~14.5 m
+    ]))
+    assert df.loc[0, "dup_grupo_id"] == df.loc[1, "dup_grupo_id"]
+    assert list(df["dup_n"]) == [2, 2]
+
+
+def test_addressless_records_over_30m_in_the_same_geo_cell_stay_separate():
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "a", "direccion_norm": "", "y": 3.40000, "x": -76.50000},
+        {"GlobalID": "b", "direccion_norm": "", "y": 3.40040, "x": -76.50000},  # ~44 m, same 3-dec cell
+    ]))
+    assert df.loc[0, "dup_grupo_id"] != df.loc[1, "dup_grupo_id"]
+
+
+# Geo bridge across buckets ---------------------------------------------------
+# A typo'd/reformatted address string (or a geo-cell boundary) can put the
+# SAME building's two records in different `_clave_direccion` buckets.
+# `_puente_geo` re-merges those groups, but only when BOTH name and distance
+# agree -- never on either signal alone.
+
+
+def test_bridge_merges_different_address_strings_same_name_close():
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "a", "direccion_norm": "CL 5 # 60-64", "nombre_edificacion": "Torre Pacifico",
+         "y": 3.40000, "x": -76.50000},
+        {"GlobalID": "b", "direccion_norm": "CALLE 5 NO 60-64", "nombre_edificacion": "Torre Pacifico",
+         "y": 3.40010, "x": -76.50000},  # ~11 m, different address string
+    ]))
+    assert df.loc[0, "dup_grupo_id"] == df.loc[1, "dup_grupo_id"]
+    assert list(df["dup_n"]) == [2, 2]
+
+
+def test_bridge_does_not_merge_same_name_far_apart():
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "a", "direccion_norm": "CL 5 # 60-64", "nombre_edificacion": "Torre Pacifico",
+         "y": 3.40000, "x": -76.50000},
+        {"GlobalID": "b", "direccion_norm": "CALLE 5 NO 60-64", "nombre_edificacion": "Torre Pacifico",
+         "y": 3.40150, "x": -76.50000},  # ~165 m
+    ]))
+    assert df.loc[0, "dup_grupo_id"] != df.loc[1, "dup_grupo_id"]
+
+
+def test_bridge_does_not_merge_different_names_close_together():
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "a", "direccion_norm": "CL 5 # 60-64", "nombre_edificacion": "Torre Pacifico",
+         "y": 3.40000, "x": -76.50000},
+        {"GlobalID": "b", "direccion_norm": "KR 9 # 1-2", "nombre_edificacion": "Edificio Andes",
+         "y": 3.40001, "x": -76.50000},
+    ]))
+    assert df.loc[0, "dup_grupo_id"] != df.loc[1, "dup_grupo_id"]
+
+
+def test_bridge_does_not_merge_when_a_name_is_blank():
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "a", "direccion_norm": "CL 5 # 60-64", "nombre_edificacion": "Torre Pacifico",
+         "y": 3.40000, "x": -76.50000},
+        {"GlobalID": "b", "direccion_norm": "KR 9 # 1-2", "nombre_edificacion": "",
+         "y": 3.40001, "x": -76.50000},
+    ]))
+    assert df.loc[0, "dup_grupo_id"] != df.loc[1, "dup_grupo_id"]
+
+
+# Operator-facing audit (build_dup_audit) -------------------------------------
+
+
+def test_audit_excludes_singleton_groups_and_clears_revisar_when_consistent():
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "a", "direccion_norm": "CL 5", "nombre_edificacion": "Casa",
+         "y": 3.4, "x": -76.5, "colapso_total": "no", "criterio_habitabilidad": "h"},
+        {"GlobalID": "b", "direccion_norm": "CL 5", "nombre_edificacion": "Casa",
+         "y": 3.40001, "x": -76.5, "colapso_total": "no", "criterio_habitabilidad": "h"},
+        {"GlobalID": "c", "direccion_norm": "KR 9", "colapso_total": "no"},
+    ]))
+    audit = rd.build_dup_audit(df)
+    assert set(audit["dup_grupo_id"]) == {"dir:CL 5"}, "the singleton KR 9 group must not appear"
+    assert len(audit) == 2
+    assert not audit["revisar"].any()
+    assert (audit["senales"] == "misma-direccion").all()
+
+
+def test_audit_flags_contradictory_severity_even_when_corroborated():
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "a", "direccion_norm": "CL 5", "nombre_edificacion": "Casa",
+         "y": 3.4, "x": -76.5, "colapso_total": "si", "criterio_habitabilidad": "i2",
+         "fecha_inspeccion": "2026-08-14"},
+        {"GlobalID": "b", "direccion_norm": "CL 5", "nombre_edificacion": "Casa",
+         "y": 3.40001, "x": -76.5, "colapso_total": "no", "criterio_habitabilidad": "h",
+         "fecha_inspeccion": "2026-08-20"},
+    ]))
+    audit = rd.build_dup_audit(df)
+    assert len(audit) == 2
+    assert audit["revisar"].all()
+
+
+def test_audit_flags_address_only_groups_with_no_corroborating_signal():
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "a", "direccion_norm": "CL 5", "colapso_total": "no"},
+        {"GlobalID": "b", "direccion_norm": "CL 5", "colapso_total": "no"},
+    ]))
+    audit = rd.build_dup_audit(df)
+    assert (audit["senales"] == "solo-direccion").all()
+    assert audit["revisar"].all()
+
+
+# Specificity guard on the bridge (RELIABILITY-001) --------------------------
+# A bare generic name ("Casa", "Vivienda") repeats verbatim across unrelated
+# buildings city-wide -- 40 real records are literally named "Casa". Letting
+# name-match alone justify a CROSS-address merge folds those together; a real
+# cluster at "SECTOR LA CAPILLA, K12" vs the typo "SECTOR LA CAPULLA, K12"
+# (both "Casa", ~13-28 m apart) would wrongly merge two distinct rural houses.
+# The guard is bridge-only: within one address bucket a generic name still
+# corroborates fine (the address itself is the signal there).
+
+
+def test_bridge_does_not_merge_a_bare_generic_name_across_addresses():
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "a", "direccion_norm": "SECTOR LA CAPILLA, K12", "nombre_edificacion": "Casa",
+         "y": 3.40000, "x": -76.50000},
+        {"GlobalID": "b", "direccion_norm": "SECTOR LA CAPULLA, K12", "nombre_edificacion": "Casa",
+         "y": 3.40020, "x": -76.50000},  # ~22 m, different (typo'd) address string
+    ]))
+    assert df.loc[0, "dup_grupo_id"] != df.loc[1, "dup_grupo_id"]
+
+
+def test_bridge_still_merges_a_specific_two_token_name_across_addresses():
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "a", "direccion_norm": "CL 5 # 60-64", "nombre_edificacion": "Conjunto Asturias",
+         "y": 3.40000, "x": -76.50000},
+        {"GlobalID": "b", "direccion_norm": "CALLE 5 NO 60-64", "nombre_edificacion": "Conjunto Asturias",
+         "y": 3.40010, "x": -76.50000},  # ~11 m, different address string
+    ]))
+    assert df.loc[0, "dup_grupo_id"] == df.loc[1, "dup_grupo_id"]
+
+
+def test_audit_flags_every_puente_geo_group_for_review():
+    """Cross-address merges are a new class of decision (this diff) -- every
+    one gets `revisar=True` unconditionally, even when name AND distance both
+    corroborate, so an operator eyeballs each one at least once."""
+    df = rd.add_dup_group(_df([
+        {"GlobalID": "a", "direccion_norm": "CL 5 # 60-64", "nombre_edificacion": "Conjunto Asturias",
+         "y": 3.40000, "x": -76.50000},
+        {"GlobalID": "b", "direccion_norm": "CALLE 5 NO 60-64", "nombre_edificacion": "Conjunto Asturias",
+         "y": 3.40010, "x": -76.50000},
+    ]))
+    audit = rd.build_dup_audit(df)
+    assert len(audit) == 2
+    assert "puente-geo" in audit["senales"].iloc[0]
+    assert audit["revisar"].all()
+
+
+# Orphaned override warning (RELIABILITY-002) --------------------------------
+# This diff changes the geo-key format (3 decimals, was 5) and adds the
+# bridge, either of which can remap a group's key -- an operator's pin
+# (Firestore `panel_representante`, consumed live by panel_representante.py)
+# then silently stops applying with the recency rule quietly deciding
+# instead. Orphaned pins must be visible, not silent.
+
+
+def test_orphaned_override_warns_and_still_resolves_via_the_recency_rule(caplog):
+    with caplog.at_level("WARNING", logger="refresh_data"):
+        df = rd.add_dup_group(_df([
+            {"GlobalID": "a", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-20"},
+            {"GlobalID": "b", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-14"},
+        ]), overrides={"dir:CL 5": "ya-no-existe"})
+    assert any("huerfano" in r.message for r in caplog.records)
+    assert df["es_representante"].sum() == 1
+    assert df[df["es_representante"]].iloc[0]["GlobalID"] == "a"

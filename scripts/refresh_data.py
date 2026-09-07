@@ -1080,8 +1080,15 @@ def write_outputs(
             for o in oids
         ]
         xlsx_df = df.assign(fotos=fotos)
+    # Second sheet "grupos_dup": operator-facing audit of every merged
+    # duplicate group (dup_n > 1) — which signal(s) justified the merge and
+    # which groups look dubious. One workbook so the dashboard's existing
+    # download button delivers the audit too; default readers (pd.read_excel)
+    # only see the first sheet, so nothing downstream changes.
     try:
-        xlsx_df.to_excel(out_dir / "inspections.xlsx", index=False)
+        with pd.ExcelWriter(out_dir / "inspections.xlsx") as writer:
+            xlsx_df.to_excel(writer, index=False)
+            build_dup_audit(df).to_excel(writer, sheet_name="grupos_dup", index=False)
     except Exception as exc:  # noqa: BLE001 - openpyxl may be absent; xlsx is optional
         log.warning("inspections.xlsx not written: %s", exc)
 
@@ -1391,6 +1398,22 @@ def _nombres_coinciden(na: str, nb: str) -> bool:
     return SequenceMatcher(None, na, nb).ratio() >= _SIM_MISMO_EDIFICIO
 
 
+def _nombre_especifico(nombre: str) -> bool:
+    """Is this normalized name specific enough to bridge across DIFFERENT
+    addresses on its own (`_puente_geo`)?
+
+    A bare generic word repeats verbatim across totally unrelated
+    buildings city-wide -- 40 real records are literally named "Casa", and
+    a real cluster at "SECTOR LA CAPILLA, K12" vs the typo "SECTOR LA
+    CAPULLA, K12" (both named "Casa", ~13-28 m apart) would merge two
+    distinct rural houses if name-match alone could bridge them. A second
+    token or a digit ("Conjunto Asturias", "Torre 3") makes the name an
+    actual identifier rather than a common noun, and that IS trustworthy
+    across a typo'd address.
+    """
+    return len(nombre.split()) >= 2 or bool(re.search(r"\d", nombre))
+
+
 def _misma_edificacion(a: dict, b: dict) -> bool:
     """Two records at the SAME address: same building, or different towers?
 
@@ -1441,7 +1464,11 @@ def _clave_direccion(row) -> str:
         return f"dir:{direccion}"
     x, y = row.get("x"), row.get("y")
     if pd.notna(x) and pd.notna(y):
-        return f"geo:{round(float(y), 5)},{round(float(x), 5)}"
+        # 3 decimals (~110 m cell), not 5 (~1 m): an address-less record's
+        # GPS jitter is metres, and a 1 m cell was splitting the SAME
+        # building into its own bucket per pin. `_misma_edificacion`'s 30 m
+        # threshold does the real splitting inside the wider cell.
+        return f"geo:{round(float(y), 3)},{round(float(x), 3)}"
     return f"id:{row.get('GlobalID')}"
 
 
@@ -1485,6 +1512,165 @@ def _claves_por_edificio(df: pd.DataFrame) -> list[str]:
         for idx, _ in miembros:
             ordenadas[idx] = claves[idx]
     return ordenadas
+
+
+def _puente_geo(claves: list[str], df: pd.DataFrame) -> list[str]:
+    """Second pass: merge groups that came out of DIFFERENT `_clave_direccion`
+    buckets when they are almost certainly the same building anyway -- a
+    typo'd or differently-formatted address string, or an address-less
+    record whose geo cell landed one over from its real match.
+
+    Same double-signal rule as `_misma_edificacion`, but here BOTH signals
+    are mandatory -- there is no "one missing, the other decides" fallback.
+    A bare distance match would fold in the house next door; a bare name
+    match would fold in an unrelated building sharing a common name across
+    the city.
+    """
+    filas = df.to_dict("records")
+    por_grupo: dict[str, list[dict]] = {}
+    for clave, fila in zip(claves, filas):
+        por_grupo.setdefault(clave, []).append(fila)
+
+    def _representante(miembros: list[dict]) -> dict:
+        # Prefer a member that actually HAS both signals -- a group whose
+        # first row happens to lack a name or coordinates must not be
+        # starved of a real bridge visible from another member.
+        for m in miembros:
+            if _norm_nombre(m.get("nombre_edificacion")) and pd.notna(m.get("x")) and pd.notna(m.get("y")):
+                return m
+        return miembros[0]
+
+    representantes = {g: _representante(m) for g, m in por_grupo.items()}
+    llaves = sorted(representantes)  # deterministic scan order
+
+    padre = {k: k for k in llaves}
+
+    def encontrar(k: str) -> str:
+        while padre[k] != k:
+            padre[k] = padre[padre[k]]
+            k = padre[k]
+        return k
+
+    def unir(a: str, b: str) -> None:
+        ra, rb = encontrar(a), encontrar(b)
+        if ra != rb:
+            # Keep the lexicographically smallest key so the merged group's
+            # id is deterministic regardless of scan order.
+            menor, mayor = (ra, rb) if ra < rb else (rb, ra)
+            padre[mayor] = menor
+
+    # ponytail: O(groups^2) pairwise scan -- fine at the ~1k-group scale this
+    # runs at; swap for a spatial index (grid/kd-tree) if the dataset grows
+    # an order of magnitude.
+    for i, ka in enumerate(llaves):
+        fa = representantes[ka]
+        na = _norm_nombre(fa.get("nombre_edificacion"))
+        for kb in llaves[i + 1:]:
+            fb = representantes[kb]
+            nb = _norm_nombre(fb.get("nombre_edificacion"))
+            if not na or not nb or not _nombres_coinciden(na, nb):
+                continue
+            # Specificity guard, bridge-only: a bare generic name ("Casa")
+            # must never justify a CROSS-address merge on its own -- see
+            # `_nombre_especifico`. Deliberately not applied inside
+            # `_nombres_coinciden`/`_misma_edificacion`: within one address
+            # bucket the address itself is already the corroborating signal.
+            if not (_nombre_especifico(na) and _nombre_especifico(nb)):
+                continue
+            if not (pd.notna(fa.get("x")) and pd.notna(fa.get("y"))
+                    and pd.notna(fb.get("x")) and pd.notna(fb.get("y"))):
+                continue
+            dist = _haversine_m(float(fa["y"]), float(fa["x"]), float(fb["y"]), float(fb["x"]))
+            if dist <= _DIST_MISMO_EDIFICIO_M:
+                unir(ka, kb)
+
+    return [encontrar(k) for k in claves]
+
+
+def _signals_grupo(miembros: list[dict]) -> set[str]:
+    """Which signal(s) explain why a group's members ended up together --
+    for the operator-facing audit, not the grouping decision itself.
+
+    `puente-geo` when the members span more than one original address/geo
+    bucket (only the bridge pass could have joined those). `solo-direccion`
+    when NO pair in the group has any corroborating name or distance signal
+    at all -- the address alone decided it, per `_misma_edificacion`'s
+    "nothing else to go on" fallback. Otherwise `misma-direccion`.
+    """
+    buckets = {_clave_direccion(m) for m in miembros}
+    signals: set[str] = set()
+    if len(buckets) > 1:
+        signals.add("puente-geo")
+
+    corroborado = False
+    for i in range(len(miembros)):
+        for j in range(i + 1, len(miembros)):
+            a, b = miembros[i], miembros[j]
+            na, nb = _norm_nombre(a.get("nombre_edificacion")), _norm_nombre(b.get("nombre_edificacion"))
+            if na and nb and _nombres_coinciden(na, nb):
+                corroborado = True
+            if all(pd.notna(v) for v in (a.get("x"), a.get("y"), b.get("x"), b.get("y"))):
+                dist = _haversine_m(float(a["y"]), float(a["x"]), float(b["y"]), float(b["x"]))
+                if dist <= _DIST_MISMO_EDIFICIO_M:
+                    corroborado = True
+    signals.add("misma-direccion" if corroborado else "solo-direccion")
+    return signals
+
+
+def _severidad_contradictoria(miembros: list[dict]) -> bool:
+    """A group is dubious when one member reports total collapse and another
+    is tagged habitable -- that is not a data-entry nuance, it is two
+    mutually exclusive facts about the same building."""
+    hay_colapso_total = any(_es_si(m.get("colapso_total")) for m in miembros)
+    hay_habitable = any(str(m.get("criterio_habitabilidad")).strip().lower() == "h" for m in miembros)
+    return hay_colapso_total and hay_habitable
+
+
+_AUDIT_COLUMNAS = [
+    "dup_grupo_id", "GlobalID", "direccion_norm", "nombre_edificacion",
+    "x", "y", "fecha_inspeccion", "criterio_habitabilidad", "es_representante",
+]
+
+
+def build_dup_audit(df: pd.DataFrame) -> pd.DataFrame:
+    """Operator-facing audit of every group `add_dup_group` merged (`dup_n`
+    > 1): one row per member, plus which signal(s) justified the merge
+    (`senales`) and a `revisar` flag for the dubious ones -- ANY cross-address
+    merge (`puente-geo`, unconditionally, since that class of merge is new),
+    address-only merges with no corroborating signal, or members whose
+    severities flatly contradict each other.
+    """
+    columnas_salida = _AUDIT_COLUMNAS + ["senales", "revisar"]
+    if df.empty or "dup_grupo_id" not in df.columns:
+        return pd.DataFrame(columns=columnas_salida)
+
+    filas = df.to_dict("records")
+    por_grupo: dict[str, list[dict]] = {}
+    for fila in filas:
+        por_grupo.setdefault(fila.get("dup_grupo_id"), []).append(fila)
+
+    filas_audit = []
+    for grupo, miembros in sorted(por_grupo.items()):
+        if len(miembros) <= 1:
+            continue
+        signals = _signals_grupo(miembros)
+        # `puente-geo` always forces a review: a cross-address merge is a
+        # NEW class of grouping (this diff), and even past the specificity
+        # guard it deserves an operator's eyes on every single occurrence,
+        # not just the ones that also fail the other checks below.
+        revisar = (
+            "puente-geo" in signals
+            or "solo-direccion" in signals
+            or _severidad_contradictoria(miembros)
+        )
+        senales = ", ".join(sorted(signals))
+        for m in miembros:
+            fila_out = {c: m.get(c) for c in _AUDIT_COLUMNAS}
+            fila_out["senales"] = senales
+            fila_out["revisar"] = revisar
+            filas_audit.append(fila_out)
+
+    return pd.DataFrame(filas_audit, columns=columnas_salida)
 
 
 def leer_representantes_fijados() -> dict:
@@ -1539,7 +1725,11 @@ def add_dup_group(df: pd.DataFrame, overrides: dict | None = None) -> pd.DataFra
         return df
 
     df = df.copy()
-    df["dup_grupo_id"] = _claves_por_edificio(df)
+    claves = _claves_por_edificio(df)
+    # Bridge pass: merge groups from DIFFERENT buckets when name AND
+    # distance both agree (typo'd address strings, or a geo cell boundary
+    # splitting the same address-less building in two).
+    df["dup_grupo_id"] = _puente_geo(claves, df)
     df["dup_n"] = df.groupby("dup_grupo_id")["dup_grupo_id"].transform("size")
 
     df["_orden"] = df.apply(_recencia, axis=1)
@@ -1547,6 +1737,27 @@ def add_dup_group(df: pd.DataFrame, overrides: dict | None = None) -> pd.DataFra
     # ordering then decides the rest (and decides outright when no pin
     # applies). One sort, no special-casing downstream.
     pins = overrides or {}
+    if pins and "GlobalID" in df.columns:
+        # Pins key off `dup_grupo_id`, but this run's geo-key format (3
+        # decimals, was 5) and `_puente_geo` can both change which key a
+        # building ends up under -- a pin silently stops applying instead of
+        # erroring, so surface it here or an operator's manual choice quietly
+        # goes back to the automatic rule with no trace.
+        grupos_por_id = df.groupby("dup_grupo_id")["GlobalID"].apply(set)
+        for clave_pin, gid_pin in pins.items():
+            ids_del_grupo = grupos_por_id.get(clave_pin)
+            if ids_del_grupo is None:
+                log.warning(
+                    "Representante fijado a mano huerfano: la llave '%s' (GlobalID %s) "
+                    "no corresponde a ningun grupo actual; se usa la regla automatica.",
+                    clave_pin, gid_pin,
+                )
+            elif str(gid_pin) not in {str(g) for g in ids_del_grupo}:
+                log.warning(
+                    "Representante fijado a mano huerfano: la llave '%s' apunta a GlobalID %s, "
+                    "que ya no esta en ese grupo; se usa la regla automatica.",
+                    clave_pin, gid_pin,
+                )
     df["_pin"] = [
         1 if pins.get(grupo) is not None and str(pins.get(grupo)) == str(gid) else 0
         for grupo, gid in zip(df["dup_grupo_id"], df.get("GlobalID", pd.Series([None] * len(df))))
