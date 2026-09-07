@@ -1554,13 +1554,25 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tabs-toggle { disp
 
 /* ---- acciones view ---- */
 #view-acciones .card + .card { margin-top: 16px; }
-.accion-note { margin-bottom: 14px; font-size: 0.88rem; color: var(--text-secondary); }
-.accion-badge {
-  display: inline-block; padding: 2px 8px; border-radius: 999px;
-  font-size: 0.72rem; font-weight: 700; text-transform: uppercase;
-}
-.accion-badge-demoler { background: rgba(239, 68, 68, 0.18); color: var(--status-i3); }
-.accion-badge-verificar { background: rgba(249, 115, 22, 0.18); color: var(--status-r2); }
+
+/* ---- acciones: Formulario demolición (acciones-capa.js) ----
+   Badges speak the same semaphore language as the Panel's .badge-* rules
+   (see the criterio_habitabilidad/nivel_dano block above). */
+.badge-candidato_demolicion-si { background: var(--status-i2); color: #0B1D33; }
+.badge-candidato_demolicion-no { background: var(--status-h); color: #0B1D33; }
+.badge-colapso-total { background: var(--status-i3); color: #ffffff; }
+.badge-colapso-parcial { background: var(--status-r2); color: #0B1D33; }
+.badge-visita-si { background: var(--status-r1); color: #0B1D33; }
+.badge-visita-no { background: var(--status-h); color: #0B1D33; }
+.badge-sin-cruce { background: var(--surface-2); color: var(--text-muted); }
+
+.accion-map { height: 420px; background: var(--surface-3); }
+.accion-error-card { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+.accion-sin-cruce { margin: 0; font-size: 0.88rem; color: var(--text-secondary); }
+.accion-justificacion { margin: 0; font-size: 0.88rem; color: var(--text-secondary); white-space: pre-wrap; }
+.accion-pdf-btn { width: 30px; height: 30px; }
+#view-acciones .kpi-row { margin-bottom: 16px; }
+#view-acciones .stats-grid { margin-top: 16px; margin-bottom: 16px; }
 
 /* ---- roster table state accents ---- */
 #asig-table tbody tr { cursor: default; }
@@ -1670,14 +1682,6 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="sti
 body:not([data-role="admin"]) [data-sticker-segment="asignacion"] { display: none !important; }
 
 #detail-report-btn:disabled { opacity: .6; cursor: wait; }
-
-/* TEMPORARY: the Acciones tab is suspended — visible but inert. Remove this
-   rule (and the matching guard in main.js switchView) to reactivate it. */
-.view-tab[data-view="acciones"] {
-  opacity: .4;
-  pointer-events: none;
-  filter: grayscale(1);
-}
 
 /* ============================================================
    STICKERS — field-inspector roster management

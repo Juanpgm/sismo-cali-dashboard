@@ -7,6 +7,7 @@
 import {
   DETAIL_GROUPS, labelForField, formatValue, barrioVeredaDisplay, downloadStamp,
   SURVEY_LAYER_URL, isFirmaAttachment, attachmentUrl, basemapTileUrl,
+  labelForCode, addressDisplay,
 } from './utils.js';
 
 export const MAX_PHOTOS = 12;
@@ -298,6 +299,106 @@ export function loadPdfmake() {
     });
   }
   return pdfmakePromise;
+}
+
+/* ------------------------------------------------------------------ */
+/* "Revisión candidato a demolición" report (Acciones tab, see           */
+/* acciones-capa.js): form record from the ArcGIS review layer + the     */
+/* joined EDE record. Reuses the same asset pipeline as the EDE report. */
+/* ------------------------------------------------------------------ */
+
+function fieldTable(rows) {
+  const body = rows.filter(([, v]) => v !== null && v !== undefined && v !== '');
+  if (!body.length) return [];
+  return [{
+    table: {
+      widths: ['40%', '60%'],
+      body: body.map(([k, v]) => [
+        { text: k, style: 'fieldLabel' },
+        { text: String(v), style: 'fieldValue' },
+      ]),
+    },
+    layout: 'lightHorizontalLines',
+    margin: [0, 0, 0, 10],
+  }];
+}
+
+function formatFechaRegistro(ms) {
+  if (!ms) return 'Sin fecha';
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return 'Sin fecha';
+  return d.toLocaleString('es-CO', { dateStyle: 'long', timeStyle: 'short' });
+}
+
+/** Pure builder for the candidato-a-demolición report, same style tokens as
+ *  buildReportDocDefinition. `ede` may be null (registro sin cruce). */
+export function buildCandidatoDocDefinition(form, ede, { photos, signatures, mapImage } = {}) {
+  const content = [
+    { text: 'Revisión candidato a demolición', style: 'title' },
+    { text: `Objetivo: ${form?.objectivo_id_r ?? 'Sin referencia'}${ede ? ` · ObjectID EDE: ${ede.ObjectID}` : ' · Sin cruce EDE'}`, style: 'subtitle' },
+    { text: `Fecha de generación: ${downloadStamp().legible}`, style: 'subtitle' },
+    { text: DISCLAIMER, style: 'disclaimer', margin: [0, 4, 0, 12] },
+    { text: 'Revisión de campo', style: 'sectionHeader' },
+    ...fieldTable([
+      ['Candidato a demolición', labelForCode(form?.candidato_demolicion)],
+      ['Colapso', labelForCode(form?.colapso)],
+      ['Requiere visita adicional', labelForCode(form?.visita)],
+      ['Fecha de registro', formatFechaRegistro(form?.fecha_registro)],
+      ['Justificación de patología', form?.justificacion_patologia],
+      ['Justificación de reconfirmación', form?.justificacion_reconfirmacion],
+    ]),
+  ];
+  if (ede) {
+    content.push(
+      { text: 'Contexto EDE', style: 'sectionHeader' },
+      ...fieldTable([
+        ['Dirección', addressDisplay(ede).primary],
+        ['Barrio / vereda', barrioVeredaDisplay(ede)],
+        ['Comuna / corregimiento', ede.comuna],
+        ['Edificación', ede.nombre_edificacion],
+        ['Profesional que realizó la evaluación', ede.nombre_evaluador],
+        ['Criterio de habitabilidad', ede.criterio_habitabilidad ? labelForCode(ede.criterio_habitabilidad) : null],
+        ['Nivel de daño', ede.nivel_dano ? labelForCode(ede.nivel_dano) : null],
+      ]),
+    );
+  }
+  content.push(
+    ...buildImagesSection('Fotos', photos, ede ? 'Sin fotos en el survey.' : 'Sin cruce EDE: no hay fotos disponibles.'),
+    ...buildImagesSection('Firmas', signatures, ede ? 'Sin firmas en el survey.' : 'Sin cruce EDE: no hay firmas disponibles.'),
+    ...buildMapSection(mapImage),
+  );
+  return {
+    content,
+    styles: {
+      title: { fontSize: 16, bold: true },
+      subtitle: { fontSize: 9, color: '#555' },
+      disclaimer: { fontSize: 8, italics: true, color: '#777' },
+      sectionHeader: { fontSize: 12, bold: true, margin: [0, 10, 0, 4] },
+      fieldLabel: { fontSize: 9, bold: true },
+      fieldValue: { fontSize: 9 },
+    },
+    defaultStyle: { fontSize: 9 },
+  };
+}
+
+/** Same orchestration as generarInformePdf, over the joined pair: photos and
+ *  locator map come from the EDE record (the review layer's own geometry is
+ *  all (0,0) and carries no attachments worth embedding). */
+export async function generarInformeCandidato(form, ede) {
+  try {
+    const [assets, mapImage, pdfMake] = await Promise.all([
+      gatherAssets(ede?.ObjectID ?? null),
+      buildLocatorMap(ede || {}),
+      loadPdfmake(),
+    ]);
+    const def = buildCandidatoDocDefinition(form, ede, { photos: assets.photos, signatures: assets.signatures, mapImage });
+    const ref = ede?.ObjectID ?? String(form?.objectivo_id_r ?? 'registro').replace(/[^\w-]+/g, '_');
+    const filename = `revision_demolicion_${ref}_${downloadStamp().slug}.pdf`;
+    pdfMake.createPdf(def).download(filename);
+  } catch (err) {
+    console.error('generarInformeCandidato: fallo la generación', err);
+    throw err;
+  }
 }
 
 /** Orchestrator: gather assets + build the doc definition + lazy-load

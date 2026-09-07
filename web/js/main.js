@@ -9,7 +9,7 @@ import {
   setStickerStatus, setZonasInteresVisible,
 } from './mapview.js';
 import { initTable, renderTable, setTotalRecords, openDetailModal, configurarRepresentante } from './table.js';
-import { renderAcciones } from './acciones.js';
+import { initAccionesTab } from './acciones-capa.js';
 import { initStickers } from './stickers.js';
 import { initPlaneacion } from './planeacion.js';
 import { initPuntosSolicitados } from './puntos_solicitados.js';
@@ -138,7 +138,7 @@ function onStoreChange() {
   // Solo admin, and only while that tab is actually visible — skip the full
   // rebuild on every Panel filter keystroke otherwise (see switchView()).
   if (isAdmin() && currentView === 'acciones') {
-    renderAcciones(document.getElementById('view-acciones'), store.records, { onRowClick: openDetailModal });
+    initAccionesTab(document.getElementById('view-acciones'), { records: store.records });
   }
 }
 
@@ -207,10 +207,6 @@ function onRowClick(record) {
 }
 
 function switchView(view) {
-  // TEMPORARY: Acciones is suspended (see the matching CSS rule that greys
-  // out its tab). pointer-events already blocks clicks; this closes keyboard
-  // activation and programmatic calls.
-  if (view === 'acciones') return;
   document.querySelectorAll('.view-tab').forEach((btn) => {
     const active = btn.dataset.view === view;
     btn.classList.toggle('is-active', active);
@@ -253,8 +249,11 @@ function switchView(view) {
   // Acciones works over ALL records and doesn't depend on the Panel filters —
   // render it lazily (on load and on filter change) only while it's the
   // visible tab, same idea as Stickers above; see onStoreChange().
-  if (view === 'acciones' && isAdmin() && store.records.length) {
-    renderAcciones(document.getElementById('view-acciones'), store.records, { onRowClick: openDetailModal });
+  // No records.length guard: before the first store load the tab still needs
+  // its shell (initAccionesTab shows a neutral placeholder and self-heals on
+  // the next store notify).
+  if (view === 'acciones' && isAdmin()) {
+    initAccionesTab(document.getElementById('view-acciones'), { records: store.records });
   }
 }
 
