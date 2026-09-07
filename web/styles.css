@@ -1599,6 +1599,12 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tabs-toggle { disp
    aside below are genuinely new. */
 #view-acciones .eval-aside-head { align-items: center; }
 .accion-aside-actions { display: flex; align-items: center; gap: 8px; }
+/* Without the "Sí/No" pill, .eval-row's minmax(0,1fr) name column (inside a
+   row stretched to fill .ps-row-wrap via flex:1) left a wide gap between
+   the short address text and the PDF button anchored at the row's far
+   right. Let the row hug its own content instead of the wrap's full width,
+   so the icon sits right next to the text it belongs to. */
+#view-acciones .ps-row-wrap .eval-row { flex: 0 1 auto; max-width: 100%; }
 /* Taller map than Stickers' default .eval-map (480px): the point cloud here
    (candidatos a demolición) reads better with more vertical room. Scoped to
    #view-acciones so Stickers keeps its own height. */
@@ -1606,10 +1612,6 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tabs-toggle { disp
 @media (max-width: 940px) {
   #view-acciones .eval-map { min-height: 55vh; }
 }
-/* Stickers' default aside (clamp(320px, 26vw, 440px)) reads cramped once a
-   row carries address + barrio/comuna + fecha/colapso + profesional — 15%
-   wider, scoped so Stickers itself keeps its own width. */
-#view-acciones .eval-workspace { grid-template-columns: minmax(0, 1fr) clamp(368px, 30vw, 506px); }
 /* .eval-row's 3rd column exists for Stickers' state pill; Acciones' rows
    carry no pill (the dot already encodes candidato_demolicion), so that
    reserved auto column left a large empty gap between the address and the
