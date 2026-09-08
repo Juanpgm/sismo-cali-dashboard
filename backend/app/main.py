@@ -29,6 +29,7 @@ from app.routers import (
     source_status,
     sticker_asignaciones,
     stickers,
+    stickers_atencionsismo,
     sticker_status,
     survey_cali,
     usuarios,
@@ -59,6 +60,7 @@ _ROUTERS = (
     panel_representante,
     integracion,
     puntos_solicitados,
+    stickers_atencionsismo,
 )
 
 
@@ -126,6 +128,14 @@ def create_app() -> FastAPI:
     # follow-up 2026-08-29; moves the Evaluaciones tab's full-collection read
     # off Vercel onto this cached backend route).
     app.state.stickers_evaluaciones_cache = EvaluacionesCache()
+
+    # Sibling cache for GET /stickers-atencionsismo (design D4): same
+    # serve-stale/degraded semantics, own Blob pathname and redaction so the
+    # two sources' last-known-good copies never collide.
+    app.state.stickers_atencionsismo_cache = stickers.EvaluacionesCache(
+        lkg_blob=stickers_atencionsismo.STICKERS_LKG_BLOB,
+        redact=stickers_atencionsismo.redact_for_blob,
+    )
 
     # Same convention — stickers.py's roster (`action:"list"`) cache
     # (31-ago-2026 quota-outage follow-up: this action had no cache at all).
