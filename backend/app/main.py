@@ -135,6 +135,12 @@ def create_app() -> FastAPI:
     app.state.stickers_atencionsismo_cache = stickers.EvaluacionesCache(
         lkg_blob=stickers_atencionsismo.STICKERS_LKG_BLOB,
         redact=stickers_atencionsismo.redact_for_blob,
+        # informe/stickers can walk hundreds of retried pages before giving
+        # up (design D4/atencionsismo.MAX_PAGES) — a sustained outage must
+        # not turn every request landing on a stale cache into another full
+        # walk-and-fail. 60s backoff between failed-fetch attempts; the
+        # plain evaluaciones cache above keeps the default 0.0 (no backoff).
+        failure_backoff_s=60.0,
     )
 
     # Same convention — stickers.py's roster (`action:"list"`) cache

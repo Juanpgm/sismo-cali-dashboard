@@ -21,6 +21,7 @@ no pytest-asyncio marker/config needed.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import httpx
 import pytest
@@ -533,9 +534,75 @@ def test_fetch_stickers_empty_universe_raises(monkeypatch):
         _run(atencionsismo.fetch_stickers(_client(_pages_handler(pages)), FAKE_USER, FAKE_PASS))
 
 
-def test_fetch_stickers_stops_on_non_advancing_cursor(monkeypatch):
+# B1: non-advancing/malformed/exhausted pagination no longer returns a
+# silent partial universe — it raises, so the cache's serve-stale/Blob
+# chain kicks in instead of quietly under-counting stickers.
+
+
+def test_fetch_stickers_non_advancing_cursor_raises(monkeypatch):
     monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
     seen: list[dict] = []
     pages = {0: {"ok": True, "stickers": [_sticker(1)], "nextOffset": 0, "done": False}}
+    with pytest.raises(atencionsismo.ApiUnavailableError):
+        _run(atencionsismo.fetch_stickers(_client(_pages_handler(pages, seen)), FAKE_USER, FAKE_PASS))
+    assert len(seen) == 1  # stopped after the one non-advancing page, not looped forever
+
+
+def test_fetch_stickers_coerces_numeric_string_next_offset(monkeypatch):
+    monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
+    seen: list[dict] = []
+    pages = {
+        0: {"ok": True, "stickers": [_sticker(1)], "nextOffset": "200", "done": False},
+        200: {"ok": True, "stickers": [_sticker(2)], "nextOffset": 400, "done": True},
+    }
     rows = _run(atencionsismo.fetch_stickers(_client(_pages_handler(pages, seen)), FAKE_USER, FAKE_PASS))
-    assert len(rows) == 1 and len(seen) == 1
+    assert [r["id"] for r in rows] == ["ev-1", "ev-2"]
+    assert [p["offset"] for p in seen] == ["0", "200"]
+
+
+def test_fetch_stickers_non_numeric_cursor_raises(monkeypatch):
+    monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
+    pages = {0: {"ok": True, "stickers": [_sticker(1)], "nextOffset": "abc", "done": False}}
+    with pytest.raises(atencionsismo.ApiUnavailableError):
+        _run(atencionsismo.fetch_stickers(_client(_pages_handler(pages)), FAKE_USER, FAKE_PASS))
+
+
+def test_fetch_stickers_max_pages_exhausted_raises(monkeypatch):
+    monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
+    monkeypatch.setattr(atencionsismo, "MAX_PAGES", 2)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        offset = int(dict(request.url.params).get("offset", "0"))
+        return httpx.Response(
+            200,
+            json={"ok": True, "stickers": [_sticker(offset)], "nextOffset": offset + 200, "done": False},
+        )
+
+    with pytest.raises(atencionsismo.ApiUnavailableError):
+        _run(atencionsismo.fetch_stickers(_client(handler), FAKE_USER, FAKE_PASS))
+
+
+def test_fetch_stickers_missing_done_field_warns_and_completes(monkeypatch, caplog):
+    monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
+    pages = {0: {"ok": True, "stickers": [_sticker(1)]}}  # no `done`, no `nextOffset`
+    with caplog.at_level(logging.WARNING):
+        rows = _run(atencionsismo.fetch_stickers(_client(_pages_handler(pages)), FAKE_USER, FAKE_PASS))
+    assert len(rows) == 1
+    assert any("done" in r.message for r in caplog.records)
+
+
+# B2: any 400..499 status is a client-error, non-retriable failure — no
+# point burning MAX_ATTEMPTS retries on a request that will never succeed.
+
+
+def test_fetch_stickers_400_raises_without_retry(monkeypatch):
+    monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(400, json={"error": "bad request"})
+
+    with pytest.raises(atencionsismo.ApiUnavailableError):
+        _run(atencionsismo.fetch_stickers(_client(handler), FAKE_USER, FAKE_PASS))
+    assert calls["n"] == 1

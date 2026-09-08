@@ -31,6 +31,8 @@ Also ports the pure validators from `api/stickers.test.js` verbatim
 """
 from __future__ import annotations
 
+import threading
+import time as real_time
 from typing import Any
 
 import pytest
@@ -1033,3 +1035,114 @@ def test_cache_cold_start_restores_from_custom_blob(monkeypatch):
 
     assert cache.get_or_fetch(boom) == [{"id": "old"}]
     assert cache.degraded is True
+
+
+# ── B4: failure_backoff_s + locked double-checked staleness ──────────────
+
+
+def test_evaluaciones_cache_backoff_skips_immediate_refetch_after_failure(monkeypatch):
+    """A sibling cache (stickers_atencionsismo) wires failure_backoff_s=60:
+    once a fetch has just failed, hammering the upstream again on every
+    request within the window is pointless — serve whatever is cached
+    (stale or Blob-restored) until the window elapses."""
+    cache = stickers.EvaluacionesCache(failure_backoff_s=60.0)
+    clock = {"t": 0.0}
+    monkeypatch.setattr(stickers.time, "monotonic", lambda: clock["t"])
+
+    good_payload = [{"codigo_edificacion": "A"}]
+    cache.get_or_fetch(lambda: good_payload)
+
+    clock["t"] += stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1  # force staleness
+    calls = {"n": 0}
+
+    def boom():
+        calls["n"] += 1
+        raise RuntimeError("429 Quota exceeded.")
+
+    result = cache.get_or_fetch(boom)  # fails, serves stale, records the failure
+    assert calls["n"] == 1
+    assert result == good_payload
+
+    clock["t"] += 1  # still well inside the 60s backoff window
+    result = cache.get_or_fetch(boom)
+
+    assert calls["n"] == 1  # NOT re-fetched
+    assert result == good_payload
+
+
+def test_evaluaciones_cache_zero_backoff_refetches_every_stale_call(monkeypatch):
+    """Default failure_backoff_s=0.0 must keep the plain evaluaciones cache
+    byte-identical to its pre-backoff behavior: every stale call retries."""
+    cache = stickers.EvaluacionesCache()  # default failure_backoff_s=0.0
+    clock = {"t": 0.0}
+    monkeypatch.setattr(stickers.time, "monotonic", lambda: clock["t"])
+
+    good_payload = [{"codigo_edificacion": "A"}]
+    cache.get_or_fetch(lambda: good_payload)
+    clock["t"] += stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1
+    calls = {"n": 0}
+
+    def boom():
+        calls["n"] += 1
+        raise RuntimeError("429 Quota exceeded.")
+
+    cache.get_or_fetch(boom)
+    assert calls["n"] == 1
+
+    clock["t"] += 1
+    cache.get_or_fetch(boom)
+    assert calls["n"] == 2  # no backoff: refetches every stale call
+
+
+def test_evaluaciones_cache_backoff_clears_after_a_successful_refetch(monkeypatch):
+    """The backoff window is per-failure, not permanent: a later successful
+    fetch clears it so the very next failure gets a fresh 60s window rather
+    than being silently swallowed by a stale window boundary."""
+    cache = stickers.EvaluacionesCache(failure_backoff_s=60.0)
+    clock = {"t": 0.0}
+    monkeypatch.setattr(stickers.time, "monotonic", lambda: clock["t"])
+
+    cache.get_or_fetch(lambda: [{"codigo_edificacion": "A"}])
+    clock["t"] += stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    cache.get_or_fetch(boom)  # failure #1: backoff armed
+
+    clock["t"] += 70  # past the 60s window: a real fetch is attempted again
+    fresh_payload = [{"codigo_edificacion": "B"}]
+    result = cache.get_or_fetch(lambda: fresh_payload)
+    assert result == fresh_payload
+
+    clock["t"] += stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1
+    calls = {"n": 0}
+
+    def boom2():
+        calls["n"] += 1
+        raise RuntimeError("429 Quota exceeded.")
+
+    cache.get_or_fetch(boom2)  # failure #2: must actually call fetch again
+    assert calls["n"] == 1
+
+
+def test_evaluaciones_cache_concurrent_get_or_fetch_calls_fetch_once():
+    """Locked double-checked staleness: two threads racing a stale cache
+    with a slow fetch must trigger exactly one upstream call — the second
+    thread, once it acquires the lock, must see the payload the first
+    thread just installed and re-use it instead of fetching again."""
+    cache = stickers.EvaluacionesCache()
+    calls = {"n": 0}
+
+    def slow_fetch():
+        calls["n"] += 1
+        real_time.sleep(0.2)
+        return [{"codigo_edificacion": "A"}]
+
+    threads = [threading.Thread(target=cache.get_or_fetch, args=(slow_fetch,)) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert calls["n"] == 1

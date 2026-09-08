@@ -32,6 +32,14 @@ REQUIRED_CLIENTS: tuple[str, ...] = ("sismo",)
 
 STICKERS_LKG_BLOB = "data/stickers_atencionsismo_last_good.json"
 
+# Hard ceiling on the whole informe/stickers pull: fetch_stickers can walk
+# hundreds of pages (MAX_PAGES), each individually retried — without an
+# outer deadline a sustained slow-but-alive upstream could hang this sync
+# route (running in FastAPI's threadpool) far longer than any caller would
+# wait. 45s comfortably covers a normal full walk while still failing fast
+# into the cache's serve-stale/Blob chain instead of hanging the worker.
+STICKERS_FETCH_DEADLINE_S = 45.0
+
 _BLOB_ALLOWED_FIELDS = stickers._BLOB_ALLOWED_FIELDS + ("fuente", "origen", "color_etiqueta")
 
 
@@ -62,7 +70,15 @@ def build_payload(db: Any, evaluaciones_cache: stickers.EvaluacionesCache) -> li
         async with httpx.AsyncClient() as client:
             return await atencionsismo.fetch_stickers(client, user, password)
 
-    rows = asyncio.run(_pull())  # sync route runs in the threadpool: no running loop here
+    async def _pull_with_deadline() -> list[dict]:
+        try:
+            return await asyncio.wait_for(_pull(), timeout=STICKERS_FETCH_DEADLINE_S)
+        except asyncio.TimeoutError as exc:
+            raise atencionsismo.ApiUnavailableError(
+                f"informe/stickers: no respondio en {STICKERS_FETCH_DEADLINE_S}s", status=503
+            ) from exc
+
+    rows = asyncio.run(_pull_with_deadline())  # sync route runs in the threadpool: no running loop here
     np_map = stickers.np_by_codigo(db)
     firestore_evals = evaluaciones_cache.get_or_fetch(lambda: stickers.list_evaluaciones(db))
     if evaluaciones_cache.degraded:

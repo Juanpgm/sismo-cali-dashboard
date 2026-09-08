@@ -130,6 +130,7 @@ class EvaluacionesCache:
         self,
         lkg_blob: str = EVALUACIONES_LKG_BLOB,
         redact: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
+        failure_backoff_s: float = 0.0,
     ) -> None:
         # Parametrized so a sibling dataset (atencionsismo stickers, see
         # routers/stickers_atencionsismo.py) reuses the serve-stale +
@@ -144,6 +145,23 @@ class EvaluacionesCache:
         # (`_redact_for_blob` blanks `inspector.np`, which the Fase I/II
         # classification depends on — see the `degraded` property below).
         self._degraded: bool = False
+        # A sustained upstream outage (e.g. informe/stickers paginating
+        # incompletely on every attempt) would otherwise retry on EVERY
+        # request that lands while stale, each one paying the full
+        # request/retry cost just to fail again. `failure_backoff_s` skips
+        # that: after a fetch failure that ends in serve-stale or
+        # Blob-restore, subsequent calls within the window just serve the
+        # current payload without attempting `fetch` again. Default 0.0
+        # (no backoff) keeps this plain evaluaciones cache byte-identical
+        # to its pre-backoff behavior; the stickers_atencionsismo sibling
+        # cache opts into 60s (see app/main.py).
+        self._failure_backoff_s = failure_backoff_s
+        self._failed_at: float | None = None
+        # Guards the stale-check-and-fetch below: without it, two threads
+        # racing a stale cache would both fetch concurrently. Double-checked
+        # (re-evaluate staleness AFTER acquiring the lock) so the common,
+        # non-stale path never pays the lock's cost.
+        self._lock = threading.Lock()
 
     @property
     def degraded(self) -> bool:
@@ -157,11 +175,36 @@ class EvaluacionesCache:
     def get_or_fetch(self, fetch: Any) -> list[dict[str, Any]]:
         now = time.monotonic()
         stale = self._payload is None or self._at is None or (now - self._at) > EVALUACIONES_CACHE_TTL_SECONDS
-        if stale:
+        if not stale:
+            assert self._payload is not None
+            return self._payload
+
+        with self._lock:
+            # Re-evaluate staleness inside the lock: another thread may have
+            # already refreshed (or failure-serve-staled) the payload while
+            # this one was waiting on the lock — don't fetch twice.
+            now = time.monotonic()
+            stale = self._payload is None or self._at is None or (now - self._at) > EVALUACIONES_CACHE_TTL_SECONDS
+            if not stale:
+                assert self._payload is not None
+                return self._payload
+
+            in_backoff = (
+                self._failure_backoff_s > 0
+                and self._failed_at is not None
+                and (now - self._failed_at) < self._failure_backoff_s
+            )
+            if in_backoff and self._payload is not None:
+                # A recent fetch already failed; don't hammer the upstream
+                # again until the backoff window elapses — serve whatever is
+                # currently cached (stale or Blob-restored, but SOMETHING).
+                return self._payload
+
             try:
                 self._payload = fetch()
                 self._at = now
                 self._degraded = False  # real fresh data, even if it was degraded before
+                self._failed_at = None  # recovered: clear any armed backoff
                 self._persist_last_good()
             except Exception:
                 # Serve-stale-on-error (30-ago-2026): a Firestore 429/
@@ -177,6 +220,7 @@ class EvaluacionesCache:
                     # failed AND Blob has nothing usable.
                     restored = blob_lkg.load_json(self._lkg_blob, list)
                     if restored is None:
+                        self._failed_at = now
                         raise
                     logging.exception(
                         "evaluaciones: fetch fallo sin payload previo, sirviendo el ultimo bueno desde Blob"
@@ -188,8 +232,9 @@ class EvaluacionesCache:
                     logging.exception(
                         "evaluaciones: fetch fallo, sirviendo el ultimo payload en cache (stale)"
                     )
-        assert self._payload is not None
-        return self._payload
+                self._failed_at = now
+            assert self._payload is not None
+            return self._payload
 
     def _persist_last_good(self) -> None:
         """Blob write of the fresh payload, gated by content hash so an

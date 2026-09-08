@@ -9,6 +9,7 @@ the SAME Firestore fake `_app` already wires through `credentials.sismo` —
 instead of creating a second fake."""
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -179,3 +180,20 @@ def test_evaluaciones_degraded_never_persists_the_degraded_derived_payload(clien
     client.get("/stickers-atencionsismo")
 
     assert router_mod.STICKERS_LKG_BLOB not in saved_paths
+
+
+# ── B3: a hung upstream must not hang the route forever ────────────────
+
+
+def test_slow_fetch_stickers_times_out_and_is_503_cold(client, monkeypatch):
+    monkeypatch.setattr(router_mod, "STICKERS_FETCH_DEADLINE_S", 0.05)
+
+    async def slow_fetch(client, user, password, **kw):
+        await asyncio.sleep(0.3)
+        return list(ROWS)
+
+    monkeypatch.setattr(atencionsismo, "fetch_stickers", slow_fetch)
+
+    resp = client.get("/stickers-atencionsismo")
+
+    assert resp.status_code == 503
