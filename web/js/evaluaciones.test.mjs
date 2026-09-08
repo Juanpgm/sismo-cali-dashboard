@@ -2,7 +2,8 @@
 // evaluaciones panel. Run: node web/js/evaluaciones.test.mjs
 import assert from 'node:assert';
 import {
-  claseDe, contarPorClase, CLASES, faseDe, FASES, applyFilters,
+  claseDe, contarPorClase, CLASES, faseDe, FASES, applyFilters, FASE_SIN_DATO,
+  describeFilters, COLOR_MODES, tituloDe,
 } from './evaluaciones.js';
 
 // The three ATC-20 placard states, in escalating severity.
@@ -68,3 +69,67 @@ assert.deepStrictEqual(
 );
 
 console.log('ok — faseDe + applyFilters fase filter');
+
+// ── Fase "sin dato" for the atencionsismo source (design D1 step 3) ─────
+assert.strictEqual(FASE_SIN_DATO.key, 'SIN_DATO');
+assert.strictEqual(faseDe({ fuente: 'atencionsismo', inspector: { np: '' } }).key, 'SIN_DATO');
+assert.strictEqual(faseDe({ fuente: 'atencionsismo', inspector: { np: '  ' } }).key, 'SIN_DATO');
+assert.strictEqual(faseDe({ fuente: 'atencionsismo', inspector: { np: 'P4' } }).key, 'FASE_II');
+assert.strictEqual(faseDe({ fuente: 'atencionsismo', inspector: { np: 'P1' } }).key, 'FASE_I');
+// Firestore source keeps today's rule: unknown NP defaults to Fase I.
+assert.strictEqual(faseDe({ fuente: 'firestore', inspector: { np: '' } }).key, 'FASE_I');
+assert.strictEqual(faseDe({ inspector: { np: '' } }).key, 'FASE_I');
+assert.strictEqual(faseDe({}).key, 'FASE_I');
+// Edge cases beyond the plan: null input, and an atencionsismo record with
+// no inspector object at all (not just an empty np).
+assert.strictEqual(faseDe(null).key, 'FASE_I');
+assert.strictEqual(faseDe({ fuente: 'atencionsismo' }).key, 'SIN_DATO');
+
+const sinDato = { fuente: 'atencionsismo', inspector: { np: '', nombre_completo: '', codigo: '' },
+  descripcion: { nombre: '', direccion: 'Calle 9' }, codigo_edificacion: '', clasificacion: 'INSEGURO' };
+assert.strictEqual(applyFilters([sinDato], { fase: 'SIN_DATO' }).length, 1);
+assert.strictEqual(applyFilters([sinDato], { fase: 'FASE_I' }).length, 0);
+assert.strictEqual(applyFilters([sinDato], { search: 'calle 9' }).length, 1);
+
+// Edge case beyond the plan: a Firestore record must NOT match the
+// 'SIN_DATO' fase filter, even with an empty np (it defaults to Fase I).
+const firestoreVacio = { fuente: 'firestore', inspector: { np: '' }, descripcion: {}, clasificacion: '' };
+assert.strictEqual(applyFilters([firestoreVacio], { fase: 'SIN_DATO' }).length, 0);
+assert.strictEqual(applyFilters([firestoreVacio], { fase: 'FASE_I' }).length, 1);
+
+console.log('evaluaciones.test.mjs: fase sin dato OK');
+
+// ── describeFilters: SIN_DATO fallback for clase/fase (xlsx header block) ───
+assert.strictEqual(describeFilters({}), 'Todos los registros');
+assert.ok(describeFilters({ clase: 'SIN_DATO' }).includes('sin dato'), 'clase SIN_DATO should describe as "sin dato"');
+assert.ok(describeFilters({ fase: 'SIN_DATO' }).includes('sin dato'), 'fase SIN_DATO should describe as "sin dato"');
+assert.ok(describeFilters({ fase: 'FASE_II' }).includes('fase II'), 'a known fase key should describe by its own label');
+assert.ok(describeFilters({ clase: 'INSEGURO', fase: 'FASE_I', comuna: 'Comuna 5' })
+  .includes('Comuna: Comuna 5'), 'multiple filters should all appear, joined');
+
+// ── COLOR_MODES.fase/.clase entries must include their SIN_DATO state ───────
+assert.ok(COLOR_MODES.fase.entries.some((e) => e.key === 'SIN_DATO'), 'Fase color mode should include the SIN_DATO entry');
+assert.ok(COLOR_MODES.clase.entries.some((e) => e.key === 'SIN_DATO'), 'Clase color mode should include the SIN_DATO entry');
+
+console.log('evaluaciones.test.mjs: describeFilters + COLOR_MODES SIN_DATO OK');
+
+// ── tituloDe: fallback to 'Sin dirección' when nombre/direccion/codigo are
+// all empty — the row title and modal heading must never render blank. ─────
+assert.strictEqual(
+  tituloDe({ descripcion: { nombre: '', direccion: '' }, codigo_edificacion: '' }),
+  'Sin dirección',
+);
+assert.strictEqual(
+  tituloDe({ descripcion: { nombre: 'Torre A', direccion: '' }, codigo_edificacion: '' }),
+  'Torre A',
+);
+assert.strictEqual(
+  tituloDe({ descripcion: { nombre: '', direccion: 'Calle 9' }, codigo_edificacion: '' }),
+  'Calle 9',
+);
+assert.strictEqual(
+  tituloDe({ descripcion: { nombre: '', direccion: '' }, codigo_edificacion: '76001-1-0040001' }),
+  '76001-1-0040001',
+);
+
+console.log('evaluaciones.test.mjs: tituloDe "Sin dirección" fallback OK');

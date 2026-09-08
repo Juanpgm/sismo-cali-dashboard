@@ -1,6 +1,8 @@
 // Self-check for the pure PDF-report builder. Run: node web/js/report.test.mjs
 import assert from 'node:assert/strict';
-import { buildReportDocDefinition, buildEvaluacionDocDefinition, MAX_PHOTOS } from './report.js';
+import {
+  buildReportDocDefinition, buildEvaluacionDocDefinition, MAX_PHOTOS, evalFaseLabelDe,
+} from './report.js';
 import { DETAIL_GROUPS } from './utils.js';
 
 const fullRecord = {
@@ -109,5 +111,32 @@ assert.ok(/"NP"[\s\S]{0,40}"Sin dato"/.test(npBlankText) || npBlankText.includes
 
 // --- buildEvaluacionDocDefinition: sparse record must not throw ------------
 assert.doesNotThrow(() => buildEvaluacionDocDefinition({}, { photos: [], mapImage: null }));
+
+// --- evalFaseLabelDe: atencionsismo + blank NP -> "sin dato" (design D1) ---
+// Mirrors evaluaciones.js's faseDe()/FASE_SIN_DATO without importing that
+// module (circular import: evaluaciones.js already imports report.js).
+assert.strictEqual(evalFaseLabelDe({ fuente: 'atencionsismo', inspector: { np: '' } }), 'sin dato');
+assert.strictEqual(evalFaseLabelDe({ fuente: 'atencionsismo', inspector: { np: '  ' } }), 'sin dato');
+assert.strictEqual(evalFaseLabelDe({ fuente: 'atencionsismo', inspector: { np: 'P4' } }), 'fase II');
+assert.strictEqual(evalFaseLabelDe({ fuente: 'atencionsismo', inspector: { np: 'P1' } }), 'fase I');
+assert.strictEqual(evalFaseLabelDe({ fuente: 'firestore', inspector: { np: '' } }), 'fase I');
+assert.strictEqual(evalFaseLabelDe({ inspector: { np: '' } }), 'fase I');
+// Missing inspector object entirely, per source.
+assert.strictEqual(evalFaseLabelDe({ fuente: 'atencionsismo' }), 'sin dato');
+assert.strictEqual(evalFaseLabelDe({ fuente: 'firestore' }), 'fase I');
+assert.strictEqual(evalFaseLabelDe({}), 'fase I');
+
+console.log('report.test.mjs: evalFaseLabelDe OK');
+
+// --- buildEvaluacionDocDefinition: atencionsismo + blank NP shows "sin dato"
+// in the PDF's Inspector/Fase row, not a lying "fase I" (design D1 step 3).
+const atencionsismoBlankNp = {
+  ...fullEvaluacion, fuente: 'atencionsismo', inspector: { ...fullEvaluacion.inspector, np: '' },
+};
+const atencionsismoBlankNpText = JSON.stringify(
+  buildEvaluacionDocDefinition(atencionsismoBlankNp, { photos: [], mapImage: null }).content,
+);
+assert.ok(atencionsismoBlankNpText.includes('sin dato'), 'atencionsismo + blank NP should show "sin dato" in the PDF, not a Fase I/II lie');
+assert.ok(!atencionsismoBlankNpText.includes('"fase I"'), 'atencionsismo + blank NP must not fall back to the "fase I" value');
 
 console.log('report.test.mjs: all assertions passed');

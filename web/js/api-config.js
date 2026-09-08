@@ -32,6 +32,10 @@ export const API_CONFIG = {
   // {action:'evaluaciones'} full read onto the cached Railway route
   // (backend/app/routers/stickers.py GET /evaluaciones), 5-min TTL.
   evaluaciones: `${RAILWAY_BASE_URL}/evaluaciones`,
+  // Stickers tab, Evaluaciones sourced from atencionsismo informe/stickers
+  // (backend/app/routers/stickers_atencionsismo.py). New endpoint, no
+  // legacy Vercel twin: born on Railway (same rationale as panelRepresentante).
+  stickersAtencionsismo: `${RAILWAY_BASE_URL}/stickers-atencionsismo`,
   stickerAsignaciones: '/api/sticker-asignaciones',
   usuarios: '/api/usuarios',
   sourceStatus: `${RAILWAY_BASE_URL}/source-status`,

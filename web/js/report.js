@@ -451,9 +451,17 @@ function evalClaseLabel(clasificacion) {
 
 const EVAL_FASE_LABELS = { FASE_II: 'fase II', FASE_I: 'fase I' };
 
-/** Same derivation as evaluaciones.js's faseDe(), label text only — see
- *  that module's FASES for the color-carrying counterpart used on screen. */
-function evalFaseLabel(np) {
+/** Fase label for the evaluación PDF's Inspector group — same derivation as
+ *  evaluaciones.js's faseDe()/FASE_SIN_DATO (design D1 step 3): an
+ *  atencionsismo record with a blank inspector.np has no knowable Fase, so
+ *  it must read "sin dato" rather than silently defaulting to "fase I" (a
+ *  lie the exported PDF would carry with nothing on the page to flag it).
+ *  Kept local — not imported from evaluaciones.js — to avoid a circular
+ *  import (evaluaciones.js already imports generarInformeEvaluacion from
+ *  here). Exported: pure, so a self-check can exercise it directly. */
+export function evalFaseLabelDe(e) {
+  const np = String((e && e.inspector && e.inspector.np) || '').trim();
+  if (e && e.fuente === 'atencionsismo' && !np) return 'sin dato';
   return EVAL_FASE_LABELS[faseInspector(np)];
 }
 
@@ -509,7 +517,7 @@ export function buildEvaluacionDocDefinition(e, { photos, mapImage } = {}) {
       ['Código de brigada', insp.codigo || 'Sin dato'],
       ['Identificación', insp.identificacion || 'Sin dato'],
       ['Entidad', insp.entidad || 'Sin dato'],
-      ['Fase', evalFaseLabel(insp.np)],
+      ['Fase', evalFaseLabelDe(e)],
       ['NP', insp.np || 'Sin dato'],
       ['Fecha de registro', formatFechaEval(e?.fecha)],
     ]),
