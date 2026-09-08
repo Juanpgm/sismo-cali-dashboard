@@ -65,6 +65,15 @@ def build_payload(db: Any, evaluaciones_cache: stickers.EvaluacionesCache) -> li
     rows = asyncio.run(_pull())  # sync route runs in the threadpool: no running loop here
     np_map = stickers.np_by_codigo(db)
     firestore_evals = evaluaciones_cache.get_or_fetch(lambda: stickers.list_evaluaciones(db))
+    if evaluaciones_cache.degraded:
+        # design D4: "si Firestore falla, el fetch falla completo" — a
+        # Blob-restored evaluaciones payload has `inspector.np` blanked
+        # (`stickers._redact_for_blob`), so silently joining it here would
+        # produce a WRONG Fase (not just a stale one). Fail this fetch too
+        # so THIS cache (`stickers_atencionsismo_cache`) runs its own
+        # serve-stale / Blob-restore chain instead of serving a payload with
+        # a poisoned Fase.
+        raise RuntimeError("evaluaciones degradado: sin NP no hay Fase")
     return build_evaluaciones(rows, np_by_codigo=np_map, evaluaciones_firestore=firestore_evals)
 
 
@@ -81,7 +90,14 @@ def get_stickers_atencionsismo(
     except HTTPException:
         raise
     except (atencionsismo.ApiUnavailableError, atencionsismo.ApiCredentialsError,
-            atencionsismo.ApiEmptyResultError) as exc:
+            atencionsismo.ApiEmptyResultError, RuntimeError) as exc:
+        # RuntimeError: `build_payload`'s own "evaluaciones cache is
+        # degraded, sin NP no hay Fase" guard above, re-raised verbatim by
+        # `EvaluacionesCache.get_or_fetch` when this (stickers) cache is
+        # ALSO cold and has nothing in Blob to restore. Maps to 503 like
+        # every other upstream-unavailable case — this is the "nothing
+        # trustworthy to serve" branch, not an unclassified bug, so it does
+        # not deserve the generic 502 below.
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover - same CORS-preserving catch-all as GET /evaluaciones
         logging.exception("stickers-atencionsismo: fallo no clasificado")

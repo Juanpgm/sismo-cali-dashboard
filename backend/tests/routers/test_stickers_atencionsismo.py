@@ -9,6 +9,7 @@ the SAME Firestore fake `_app` already wires through `credentials.sismo` —
 instead of creating a second fake."""
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
@@ -114,3 +115,67 @@ def test_redaction_blanks_persona_and_np():
     assert out["comentarios"] == "" and out["fotos"] == []
     assert out["fuente"] == "atencionsismo" and out["origen"] == "firebase" and out["color_etiqueta"] == "Habitable"
     assert payload[0]["descripcion"]["nombre"] == "Juan"  # never mutates input
+    # A2: exact allowlist key set — no field silently added or dropped.
+    assert set(out) == set(router_mod._BLOB_ALLOWED_FIELDS) | {"descripcion", "inspector", "comentarios", "fotos"}
+
+
+# ── A1: evaluaciones cache degraded -> build_payload fails completo, so the
+# stickers cache runs its OWN serve-stale/Blob-restore chain (design D4:
+# "si Firestore falla, el fetch falla completo") ────────────────────────
+
+
+def _degrade_evaluaciones_cache(client) -> None:
+    """Force the evaluaciones cache into the same state a Blob-restored
+    cold start leaves it: a payload present, fresh (not TTL-stale), but
+    `degraded=True` (blanked NP -> no Fase)."""
+    cache = client.app.state.stickers_evaluaciones_cache
+    cache._payload = [{"codigo_edificacion": "old-fs"}]
+    cache._at = time.monotonic()
+    cache._degraded = True
+
+
+def test_evaluaciones_degraded_restores_stickers_cache_from_its_own_blob(client, monkeypatch):
+    _degrade_evaluaciones_cache(client)
+
+    old_row = {"id": "old", "fuente": "atencionsismo", "origen": "firebase", "color_etiqueta": "",
+               "codigo_edificacion": "c", "consecutivo": 1, "municipio": "76001", "area": "1",
+               "area_nombre": "", "clasificacion": "", "alcance": "", "coords": None,
+               "restricciones": "", "acciones_posteriores": {"barricadas": False, "evaluacion_detallada": False},
+               "fecha": None, "descripcion": {"nombre": "", "direccion": ""},
+               "inspector": {"uid": "", "codigo": "", "nombre_completo": "", "identificacion": "",
+                             "entidad": "", "np": ""}, "comentarios": "", "fotos": []}
+
+    def fake_load(pathname, expected_type):
+        if pathname == router_mod.STICKERS_LKG_BLOB:
+            return [old_row]
+        return None
+
+    monkeypatch.setattr(router_mod.blob_lkg, "load_json", fake_load)
+
+    resp = client.get("/stickers-atencionsismo")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["degraded"] is True
+    assert body["evaluaciones"] == [old_row]
+
+
+def test_evaluaciones_degraded_and_no_stickers_blob_backup_is_503(client, monkeypatch):
+    _degrade_evaluaciones_cache(client)
+    monkeypatch.setattr(router_mod.blob_lkg, "load_json", lambda *a: None)
+
+    resp = client.get("/stickers-atencionsismo")
+
+    assert resp.status_code == 503
+
+
+def test_evaluaciones_degraded_never_persists_the_degraded_derived_payload(client, monkeypatch):
+    _degrade_evaluaciones_cache(client)
+    saved_paths: list[str] = []
+    monkeypatch.setattr(router_mod.blob_lkg, "save_json",
+                        lambda pathname, payload: saved_paths.append(pathname) or True)
+    monkeypatch.setattr(router_mod.blob_lkg, "load_json", lambda *a: None)
+
+    client.get("/stickers-atencionsismo")
+
+    assert router_mod.STICKERS_LKG_BLOB not in saved_paths
