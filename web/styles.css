@@ -2003,6 +2003,11 @@ body:not([data-role="admin"]) [data-sticker-segment="asignacion"] { display: non
   color: var(--eval-pill); background: color-mix(in srgb, var(--eval-pill) 16%, transparent);
   border: 1px solid color-mix(in srgb, var(--eval-pill) 40%, transparent);
 }
+/* Evaluaciones' row shows two pills (clasificación + Fase I/II) stacked in
+   the grid's 3rd column instead of .eval-row's usual single one — .eval-pill
+   itself is untouched, so Acciones' rows (no 3rd column, no pill at all)
+   are unaffected. */
+.eval-pill-group { justify-self: end; display: flex; flex-direction: column; gap: 3px; align-items: flex-end; }
 
 /* Card-level "Asignar" (puntos-solicitados-busqueda-asignacion F2, ADR-3):
    .eval-row stays the whole-row detail button; .ps-asignar-btn is a sibling
@@ -2148,6 +2153,14 @@ details[open] > summary.card-title::before { transform: rotate(90deg); }
 }
 .asignacion-chip:hover { border-color: var(--border-strong); }
 .asignacion-chip.is-active { color: var(--accent); background: var(--accent-dim); border-color: var(--accent); }
+/* Fase I/II chips carry their own --chip-accent (evaluaciones.js's
+   faseChipsHtml) so the two read as different colours, not just different
+   labels — scoped to #eval-fase-chips so the clase/asignación chip groups
+   elsewhere keep the plain --accent active state above. */
+#eval-fase-chips .asignacion-chip.is-active {
+  color: var(--chip-accent); background: color-mix(in srgb, var(--chip-accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--chip-accent) 40%, transparent);
+}
 
 .asignacion-search { margin: 0 0 10px; }
 .asignacion-search-input {

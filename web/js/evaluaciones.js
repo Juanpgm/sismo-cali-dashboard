@@ -65,6 +65,23 @@ export function faseDe(evaluacion) {
   return FASE_BY_KEY.get(faseInspector(evaluacion && evaluacion.inspector && evaluacion.inspector.np));
 }
 
+// "Colorear por" — same segmented control acciones-capa.js's own
+// COLOR_VARS/colorSegmentedHtml pattern uses, two variables instead of
+// three: which one drives the map marker + list dot colour. Both pills in
+// listItemHtml stay visible regardless of the active mode — this only
+// changes which dimension the DOT (map + row) emphasises.
+const COLOR_MODES = {
+  clase: { label: 'Clasificación', colorOf: (e) => claseDe(e).color, entries: [...CLASES, SIN_CLASE] },
+  fase: { label: 'Fase', colorOf: (e) => faseDe(e).color, entries: FASES },
+};
+let colorMode = 'clase';
+
+function colorSegmentedHtml() {
+  return Object.entries(COLOR_MODES).map(([key, def]) => `
+    <button type="button" class="segmented-btn${key === colorMode ? ' is-active' : ''}"
+      data-eval-color="${key}" role="tab" aria-selected="${key === colorMode}">${escapeHtml(def.label)}</button>`).join('');
+}
+
 /** Count per placard class, keyed by CLASES[].key (plus SIN_DATO). */
 export function contarPorClase(evaluaciones) {
   const counts = Object.fromEntries([...CLASES, SIN_CLASE].map((c) => [c.key, 0]));
@@ -98,12 +115,15 @@ function claseChipsHtml(activeKey) {
 }
 
 /** Chip group for the inspector Fase I/II filter — same shape as
- *  claseChipsHtml above, one group ('fase') instead of 'clase'. */
+ *  claseChipsHtml above, one group ('fase') instead of 'clase'. Each fase
+ *  chip carries its own --chip-accent (see #eval-fase-chips in styles.css)
+ *  so Fase I/II read as two different colours, not just two labels —
+ *  "Todas" stays neutral, same as the clase group's own "Todas". */
 function faseChipsHtml(activeKey) {
-  const chip = (value, label, active) => `<button type="button" class="asignacion-chip${active ? ' is-active' : ''}" data-filter-group="fase" data-filter-value="${value}">${escapeHtml(label)}</button>`;
+  const chip = (value, label, active, color) => `<button type="button" class="asignacion-chip${active ? ' is-active' : ''}" data-filter-group="fase" data-filter-value="${value}"${color ? ` style="--chip-accent:${color}"` : ''}>${escapeHtml(label)}</button>`;
   return [
     chip('', 'Todas', !activeKey),
-    ...FASES.map((f) => chip(f.key, f.label, activeKey === f.key)),
+    ...FASES.map((f) => chip(f.key, f.label, activeKey === f.key, f.color)),
   ].join('');
 }
 
@@ -242,6 +262,7 @@ export function sectionHtml() {
       <div class="card eval-workspace-card">
         <div class="card-toolbar">
           <span class="eval-toolbar-title">Puntos de evaluación</span>
+          <div class="segmented" role="tablist" aria-label="Colorear por" data-eval-color-group>${colorSegmentedHtml()}</div>
           <span class="eval-toolbar-meta" id="eval-map-meta"></span>
         </div>
         <div class="eval-workspace">
@@ -384,12 +405,14 @@ if (typeof document !== 'undefined') {
 
 function popupHtml(e) {
   const c = claseDe(e);
+  const f = faseDe(e);
   return `
     <div class="map-popup">
       <h4>${escapeHtml(tituloDe(e))}</h4>
       <dl>
         <dt>Código</dt><dd>${escapeHtml(e.codigo_edificacion)}</dd>
         <dt>Clasificación</dt><dd>${escapeHtml(c.label)}</dd>
+        <dt>Fase</dt><dd>${escapeHtml(f.label)}</dd>
         <dt>Dirección</dt><dd>${escapeHtml(e.descripcion.direccion || 'Sin dato')}</dd>
         <dt>Inspector</dt><dd>${escapeHtml(e.inspector.nombre_completo || e.inspector.codigo || 'Sin dato')}</dd>
         <dt>Fecha</dt><dd>${escapeHtml(formatFecha(e.fecha))}</dd>
@@ -397,6 +420,20 @@ function popupHtml(e) {
       </dl>
       <button type="button" class="btn-link" data-eval-detail="${escapeHtml(e.id)}">Ver detalle &rarr;</button>
     </div>`;
+}
+
+/** Legend content for whichever variable "Colorear por" currently drives —
+ *  same shape claseDe/faseDe already share ({label, color}), so both
+ *  COLOR_MODES entries render through one function. */
+function colorLegendHtml() {
+  const def = COLOR_MODES[colorMode];
+  return `
+    <div class="legend-title">${escapeHtml(def.label)}</div>
+    ${def.entries.map((c) => `
+      <div class="legend-row">
+        <span class="legend-swatch legend-circle" style="background:${c.color}"></span>
+        <span>${escapeHtml(c.label)}</span>
+      </div>`).join('')}`;
 }
 
 function renderMap(containerId, evaluaciones, onDetail) {
@@ -413,7 +450,7 @@ function renderMap(containerId, evaluaciones, onDetail) {
       radius: 8,
       color: '#0B1D33',
       weight: 1,
-      fillColor: claseDe(e).color,
+      fillColor: COLOR_MODES[colorMode].colorOf(e),
       fillOpacity: 0.9,
     });
     marker.bindPopup(popupHtml(e), { maxWidth: 280 });
@@ -429,13 +466,7 @@ function renderMap(containerId, evaluaciones, onDetail) {
   legend.onAdd = () => {
     legendEl = L.DomUtil.create('div', 'map-legend');
     L.DomEvent.disableClickPropagation(legendEl);
-    legendEl.innerHTML = `
-      <div class="legend-title">Clasificación ATC-20</div>
-      ${[...CLASES, SIN_CLASE].map((c) => `
-        <div class="legend-row">
-          <span class="legend-swatch legend-circle" style="background:${c.color}"></span>
-          <span>${escapeHtml(c.label)}</span>
-        </div>`).join('')}`;
+    legendEl.innerHTML = colorLegendHtml();
     return legendEl;
   };
   legend.addTo(map);
@@ -475,18 +506,28 @@ function renderMap(containerId, evaluaciones, onDetail) {
 // affordance is not hidden behind a hover.
 function listItemHtml(e, degraded) {
   const c = claseDe(e);
+  const f = faseDe(e);
   const fotos = e.fotos.length ? `${e.fotos.length} foto${e.fotos.length === 1 ? '' : 's'}` : 'sin fotos';
   const quien = e.inspector.nombre_completo || `Brigada ${e.inspector.codigo || '—'}`;
   // .ps-row-wrap + sibling PDF button — same recipe acciones-capa.js's
   // accionRowHtml uses (button-in-button is invalid HTML, so the PDF
   // control lives next to .eval-row, not nested inside it). Disabled while
   // serving the degraded backup copy — see isDegraded above.
+  //
+  // Two stacked pills in the grid's 3rd column: clasificación (ATC-20
+  // placard colour, existing) on top, Fase I/II (inspector NP colour)
+  // below — .eval-pill-group is new, .eval-pill itself is untouched so
+  // Acciones' single-pill-less rows (its own accionRowHtml, its own
+  // 2-column grid override) are unaffected.
   return `<li>
     <div class="ps-row-wrap">
       <button type="button" class="eval-row" data-eval-detail="${escapeHtml(e.id)}">
-        <span class="eval-dot" style="background:${c.color}" aria-hidden="true"></span>
+        <span class="eval-dot" style="background:${COLOR_MODES[colorMode].colorOf(e)}" aria-hidden="true"></span>
         <span class="eval-name">${escapeHtml(tituloDe(e))}</span>
-        <span class="eval-pill" style="--eval-pill:${c.color}">${escapeHtml(c.label)}</span>
+        <span class="eval-pill-group">
+          <span class="eval-pill" style="--eval-pill:${c.color}">${escapeHtml(c.label)}</span>
+          <span class="eval-pill" style="--eval-pill:${f.color}">${escapeHtml(f.label)}</span>
+        </span>
         <span class="eval-meta">${escapeHtml(e.codigo_edificacion)} · ${escapeHtml(quien)}</span>
         <span class="eval-meta">${escapeHtml(formatFecha(e.fecha))} · ${fotos}</span>
         <span class="eval-cta">Ver detalle &rsaquo;</span>
@@ -589,6 +630,7 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   const searchEl = section.querySelector('#eval-search');
   const chipsEl = section.querySelector('#eval-clase-chips');
   const faseChipsEl = section.querySelector('#eval-fase-chips');
+  const colorGroupEl = section.querySelector('[data-eval-color-group]');
   const comunaSelect = section.querySelector('#eval-comuna-select');
   const barrioSelect = section.querySelector('#eval-barrio-select');
   const downloadBtn = section.querySelector('#eval-download');
@@ -836,6 +878,21 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
     const btn = ev.target.closest('[data-filter-group="fase"]');
     if (!btn) return;
     filters = { ...filters, fase: btn.dataset.filterValue };
+    renderFiltered();
+  });
+
+  // "Colorear por" — same wiring shape as acciones-capa.js's own
+  // [data-accion-color-group] handler, over the two-entry COLOR_MODES
+  // above instead of touching data or filters at all.
+  colorGroupEl.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-eval-color]');
+    if (!btn) return;
+    colorMode = btn.dataset.evalColor;
+    colorGroupEl.querySelectorAll('[data-eval-color]').forEach((b) => {
+      const active = b === btn;
+      b.classList.toggle('is-active', active);
+      b.setAttribute('aria-selected', String(active));
+    });
     renderFiltered();
   });
 
