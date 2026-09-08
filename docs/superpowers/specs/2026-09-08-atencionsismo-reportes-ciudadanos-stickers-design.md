@@ -77,11 +77,18 @@ Un control segmentado "Fuente" con dos valores: `Atención Sismo` (default) y `F
 
 ### D5. Reportes ciudadanos: snapshot estático proyectado, sin PII
 
-El job `dashboard_refresh.fetch_reportes` ya baja `informe/json` completo y publica `reportes.json` (19,8 MB, sin PII ni fotos). Se agrega una proyección liviana `reportes_ciudadanos.json` (estimado 4 a 5 MB) con solo lo que la pestaña necesita, y `creado` en ISO. Se publica al Blob junto con el resto y se lee con `fetchData`, igual que el Panel. Sin ruta nueva ni autenticación: no hay PII en el archivo.
+El job `dashboard_refresh.fetch_reportes` ya baja `informe/json` completo y publica `reportes.json` (19,8 MB, sin PII ni fotos). Se agrega una proyección liviana `reportes_ciudadanos.json` con solo lo que la pestaña necesita, y `creado` en ISO. Se escribe DESPUÉS de `reportes.json`/`reportes_meta.json`/`reportes_agg.json` y de forma fail-soft (`try/except` + `logging.exception`, igual que `_write_contactos`): un bug en la proyección nunca deja inconsistente el trío principal, que ya es la fuente de verdad del resto del refresh. Se publica al Blob junto con el resto y se lee con `fetchData`, igual que el Panel. Sin ruta nueva ni autenticación.
 
-Campos: `id, direccion, barrio, comuna, estado, afectacion, tipo_inmueble, nombre_edificio, lat, lng, creado, creado_texto, habitabilidad, visitado, pudo_evaluar, alcance, descripcion (máx. 500 caracteres), sticker{numero, color, etiqueta, origen, clasificacion}`.
+Campos: `id, direccion, barrio, comuna, estado, afectacion, tipo_inmueble, nombre_edificio, lat, lng, creado, creado_texto, habitabilidad, visitado, pudo_evaluar, alcance, descripcion (máx. 240 caracteres), sticker{numero, color, etiqueta, origen, clasificacion}`. `creado_texto` solo lleva contenido cuando `creado` no pudo parsearse (fallback de despliegue); si la fecha sí parseó queda en `""`, para no duplicar el texto. `lat`/`lng` se descartan (quedan en `null`) cuando no son finitos (`NaN`/`Infinity`) o cuando resuelven a `(0, 0)` — "isla nula", no una coordenada real de Cali; esto aplica tanto al valor primario como al fallback string `latitud`/`longitud`.
 
-`descripcion` ya es pública en `reportes.json`, pero la tarea 0 encontró teléfonos y cédulas sueltas en cerca del 2 % de los textos. En el snapshot se enmascara toda secuencia de 7 o más dígitos con `***` antes de truncar. El texto sigue siendo útil para leer el daño reportado y deja de transportar contactos.
+**Enmascarado (no es anonimización completa — ver residual abajo).** `descripcion`, `direccion` y `nombre_edificio` ya son públicos en `reportes.json`, pero la tarea 0 encontró teléfonos y cédulas sueltas en cerca del 2 % de los textos, y una revisión posterior encontró lo mismo en `direccion`/`nombre_edificio`, además de correos y teléfonos separados por espacios o guiones ("301 226 3431", "311-764-8858") que el patrón original (solo dígitos contiguos) no capturaba. En el snapshot se enmascaran con `***`, antes de truncar `descripcion`:
+
+- Secuencias de 7 o más dígitos, con o sin un separador simple (espacio, punto o guion) entre cada par de dígitos — cubre tanto corridas contiguas como números separados. Grupos cortos (números de casa, "# 3-45") quedan intactos.
+- Correos electrónicos.
+
+**Residual conocido:** nombres propios escritos en el texto libre NO se enmascaran — mismo residuo que ya existe hoy en `reportes.json`. El texto sigue siendo útil para leer el daño reportado y deja de transportar teléfonos, cédulas y correos.
+
+**Tamaño medido:** sobre el `reportes.json` real (14 804 filas, 18,9 MB de entrada), la proyección con el enmascarado ampliado y `descripcion` a 240 caracteres produce **9,17 MB** (antes de estos ajustes: 10,7 MB con el patrón de solo-dígitos y `descripcion` a 500 caracteres) — sigue por encima del estimado original de 4 a 5 MB, pero es el tamaño real verificado, no una proyección.
 
 ### D6. Pestaña Reportes ciudadanos: mismo patrón que Evaluaciones
 

@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -53,6 +54,7 @@ import httpx
 from app.credentials import clients as credentials
 from app.integracion import runlog
 from app.services import atencionsismo, survey_cali
+from app.services.reportes_ciudadanos import build_snapshot
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
@@ -104,6 +106,7 @@ _PUBLISH_FILES: tuple[tuple[str, str], ...] = (
     ("reportes.json", "data/reportes.json"),
     ("reportes_meta.json", "data/reportes_meta.json"),
     ("reportes_agg.json", "data/reportes_agg.json"),
+    ("reportes_ciudadanos.json", "data/reportes_ciudadanos.json"),
     (os.path.join("geocode", "geocode_cache.json"), "data/geocode/geocode_cache.json"),
 )
 _PUBLISH_MAX_AGE_S = 60
@@ -335,6 +338,18 @@ async def fetch_reportes() -> int:
         WEB_DATA_DIR / "reportes_agg.json",
         {"generated_at": generated_at, **atencionsismo.summarize(records)},
     )
+    # Lightweight PUBLIC projection for the "Reportes ciudadanos" tab
+    # (design D5); deliberately written LAST and fail-soft — a bug in the
+    # projection must never leave reportes.json/meta/agg (already written
+    # above, and already the source of truth for the rest of the refresh)
+    # inconsistent. Same never-publish-empty guard as reportes.json above
+    # (the `if not records: return 0` check earlier already skipped this
+    # whole block when the API returns 0 rows).
+    try:
+        ciudadanos = build_snapshot(records)
+        _atomic_write_json(WEB_DATA_DIR / "reportes_ciudadanos.json", ciudadanos, compact=True)
+    except Exception:  # noqa: BLE001 - fail-soft, refresh continues (design.md ADR-2)
+        logging.exception("reportes_ciudadanos projection falló, sigo sin bloquear el refresh")
     print(f"  {len(records)} reportes -> web/data/reportes.json (+ meta, +agg).")
     return len(records)
 
