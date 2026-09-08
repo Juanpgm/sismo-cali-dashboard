@@ -1023,6 +1023,74 @@ def test_np_by_codigo_skips_empty_or_missing_code():
     assert stickers.np_by_codigo(db) == {}
 
 
+# ── inspector_profile_by_codigo: full roster profile keyed by 3-digit
+# brigade code (same key convention as np_by_codigo, extended to the full
+# identity so a no-match sticker can show WHO holds the code, not just NP) ─
+
+
+def test_inspector_profile_by_codigo_returns_full_profile():
+    stores = {
+        "inspectores": {
+            "u1": {
+                "codigo": "004",
+                "NP": "P4",
+                "nombre_completo": "Ana Gomez",
+                "identificacion": "123",
+                "entidad": "Curaduria 1",
+            },
+        }
+    }
+    db = _FakeFirestore(stores)
+    assert stickers.inspector_profile_by_codigo(db) == {
+        "004": {
+            "uid": "u1",
+            "nombre_completo": "Ana Gomez",
+            "identificacion": "123",
+            "entidad": "Curaduria 1",
+            "np": "P4",
+        }
+    }
+
+
+def test_inspector_profile_by_codigo_zero_pads_single_and_two_digit_codes():
+    db = _FakeFirestore({
+        "inspectores": {
+            "u1": {"codigo": "4", "NP": "P4", "nombre_completo": "Ana"},
+            "u2": {"codigo": "07", "NP": "P2", "nombre_completo": "Bea"},
+        }
+    })
+    out = stickers.inspector_profile_by_codigo(db)
+    assert out["004"]["nombre_completo"] == "Ana"
+    assert out["004"]["np"] == "P4"
+    assert out["004"]["uid"] == "u1"
+    assert out["007"]["nombre_completo"] == "Bea"
+
+
+def test_inspector_profile_by_codigo_skips_empty_or_missing_code():
+    db = _FakeFirestore({"inspectores": {
+        "u1": {"codigo": "", "NP": "P9", "nombre_completo": "Nadie"},
+        "u2": {"NP": "P1", "nombre_completo": "Tampoco"},
+    }})
+    assert stickers.inspector_profile_by_codigo(db) == {}
+
+
+def test_inspector_profile_by_codigo_defaults_missing_fields_to_empty_string():
+    db = _FakeFirestore({"inspectores": {"u1": {"codigo": "004"}}})
+    assert stickers.inspector_profile_by_codigo(db) == {
+        "004": {"uid": "u1", "nombre_completo": "", "identificacion": "", "entidad": "", "np": ""}
+    }
+
+
+def test_inspector_profile_by_codigo_uid_is_doc_id_not_a_field():
+    db = _FakeFirestore({"inspectores": {"u1": {"codigo": "004", "uid": "not-this-one"}}})
+    assert stickers.inspector_profile_by_codigo(db)["004"]["uid"] == "u1"
+
+
+def test_inspector_profile_by_codigo_empty_roster():
+    db = _FakeFirestore({"inspectores": {}})
+    assert stickers.inspector_profile_by_codigo(db) == {}
+
+
 # ── EvaluacionesCache: parametrized Blob pathname + redaction ────────────
 
 

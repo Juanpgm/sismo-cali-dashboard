@@ -47,6 +47,8 @@ Regla, en orden:
 
 Si hay evaluación, su NP es autoritativo aunque esté vacío. El roster solo aplica cuando no hay evaluación, porque los códigos de brigada se reutilizan al borrar un inspector y una evaluación vieja podría heredar el NP del inspector nuevo.
 
+Extensión (2026-09-08): cuando NO hay evaluación, además del NP se completan `nombre_completo`, `identificacion`, `entidad` y `uid` desde el mismo documento del roster (`inspectores` por código de brigada) — mismo criterio de autoridad que el NP: solo aplica sin match, nunca se mezcla con una evaluación existente.
+
 La regla de negocio `faseInspector(np)` no cambia.
 
 ### D2. Forma normalizada única para Evaluaciones

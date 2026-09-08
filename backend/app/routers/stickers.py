@@ -439,6 +439,36 @@ def np_by_codigo(db: Any) -> dict[str, str]:
     return out
 
 
+def inspector_profile_by_codigo(db: Any) -> dict[str, dict[str, str]]:
+    """Roster profile keyed by the 3-digit brigade `codigo` — same
+    zero-padded key as `np_by_codigo`, extended to the full identity
+    (`uid`, `nombre_completo`, `identificacion`, `entidad`, `np`) so a
+    sticker with no matching Firestore evaluación can still show WHO
+    currently holds that code, not just their NP. Only used on the
+    no-evaluación-match path (see stickers_atencionsismo.normalize_sticker)
+    — when an evaluación DOES match, its own inspector data stays
+    authoritative and is never mixed with this roster lookup, because
+    brigade codes are reused after an inspector is deleted and mixing
+    sources field-by-field within a matched record could attach a
+    different inspector's identity to an old evaluación. Docs without a
+    code are unreachable from a sticker number and are skipped."""
+    out: dict[str, dict[str, str]] = {}
+    for snap in db.collection(INSPECTORES_COLLECTION).get():
+        d = snap.to_dict() or {}
+        raw_codigo = str(d.get("codigo") or "").strip()
+        if not raw_codigo:
+            continue
+        codigo = raw_codigo.zfill(3)
+        out[codigo] = {
+            "uid": snap.id,
+            "nombre_completo": str(d.get("nombre_completo") or "").strip(),
+            "identificacion": str(d.get("identificacion") or "").strip(),
+            "entidad": str(d.get("entidad") or "").strip(),
+            "np": str(d.get("NP") or "").strip(),
+        }
+    return out
+
+
 def list_evaluaciones(db: Any) -> list[dict[str, Any]]:
     """Every ATC-20 evaluation, flattened for the dashboard's Stickers tab.
     Verbatim port of `api/stickers.js`'s `listEvaluaciones` — read here

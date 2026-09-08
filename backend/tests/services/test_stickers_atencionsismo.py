@@ -45,7 +45,7 @@ def test_parse_codigo_rejects_other_formats():
 # ── normalize_sticker ─────────────────────────────────────────────────────
 
 def test_normalize_uses_firestore_evaluacion_when_code_matches():
-    out = sa.normalize_sticker(_row(), np_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": _eval_firestore()})
+    out = sa.normalize_sticker(_row(), roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": _eval_firestore()})
     assert out["fuente"] == "atencionsismo"
     assert out["origen"] == "firebase"
     assert out["id"] == "ev-1"  # atencionsismo id wins: it is the row identity in this source
@@ -60,7 +60,7 @@ def test_normalize_uses_firestore_evaluacion_when_code_matches():
 
 
 def test_normalize_falls_back_to_roster_np_by_inspector_code():
-    out = sa.normalize_sticker(_row(), np_by_codigo={"004": "P2"}, evaluacion_by_codigo={})
+    out = sa.normalize_sticker(_row(), roster_by_codigo={"004": {"np": "P2"}}, evaluacion_by_codigo={})
     assert out["inspector"] == {"uid": "", "codigo": "004", "nombre_completo": "", "identificacion": "",
                                 "entidad": "", "np": "P2"}
     assert out["fecha"] is None and out["fotos"] == []
@@ -74,44 +74,95 @@ def test_normalize_evaluacion_match_np_is_authoritative_even_when_empty():
         inspector={"uid": "u1", "codigo": "004", "nombre_completo": "Ana", "identificacion": "1",
                    "entidad": "E", "np": ""}
     )
-    out = sa.normalize_sticker(_row(), np_by_codigo={"004": "P4"},
+    out = sa.normalize_sticker(_row(), roster_by_codigo={"004": {"np": "P4"}},
                                evaluacion_by_codigo={"76001-1-0040007": matched_eval})
     assert out["inspector"]["np"] == ""
 
 
 def test_normalize_sistema_origin_has_no_np():
-    out = sa.normalize_sticker(_row(origen="sistema", numero="76001001-123-0001"), np_by_codigo={"004": "P4"},
+    out = sa.normalize_sticker(_row(origen="sistema", numero="76001001-123-0001"), roster_by_codigo={"004": {"np": "P4"}},
                                evaluacion_by_codigo={})
     assert out["inspector"]["codigo"] == "" and out["inspector"]["np"] == ""
     assert out["codigo_edificacion"] == "76001001-123-0001"
     assert out["consecutivo"] is None and out["area"] is None
 
 
+def test_normalize_no_match_completes_full_identity_from_roster():
+    # Extension (2026-09-08): the no-match fallback completes nombre_completo/
+    # identificacion/entidad/uid from the same roster doc as np, not just np.
+    roster = {"004": {"np": "P4", "nombre_completo": "Ana Gomez", "identificacion": "123",
+                      "entidad": "Curaduria 1", "uid": "u-004"}}
+    out = sa.normalize_sticker(_row(), roster_by_codigo=roster, evaluacion_by_codigo={})
+    assert out["inspector"] == {"uid": "u-004", "codigo": "004", "nombre_completo": "Ana Gomez",
+                                "identificacion": "123", "entidad": "Curaduria 1", "np": "P4"}
+
+
+def test_normalize_evaluacion_match_never_mixes_roster_identity():
+    # Critical regression guard: a matched evaluación's inspector fields are
+    # authoritative even when a roster entry for the SAME code carries a
+    # DIFFERENT identity — the roster's name must never leak into the output.
+    matched_eval = _eval_firestore(
+        inspector={"uid": "u1", "codigo": "004", "nombre_completo": "Ana", "identificacion": "1",
+                   "entidad": "E", "np": "P4"}
+    )
+    roster = {"004": {"np": "P9", "nombre_completo": "Otro Nombre", "identificacion": "999",
+                      "entidad": "Otra Entidad", "uid": "u-otro"}}
+    out = sa.normalize_sticker(_row(), roster_by_codigo=roster,
+                               evaluacion_by_codigo={"76001-1-0040007": matched_eval})
+    assert out["inspector"] == {"uid": "u1", "codigo": "004", "nombre_completo": "Ana",
+                                "identificacion": "1", "entidad": "E", "np": "P4"}
+    for value in roster["004"].values():
+        assert value not in out["inspector"].values()
+
+
+def test_normalize_evaluacion_match_empty_name_stays_empty_not_backfilled():
+    # Same authoritative-even-when-empty rule as np: a legacy evaluación doc
+    # with an empty inspector.nombre_completo is never backfilled from roster.
+    matched_eval = _eval_firestore(
+        inspector={"uid": "u1", "codigo": "004", "nombre_completo": "", "identificacion": "1",
+                   "entidad": "E", "np": "P4"}
+    )
+    roster = {"004": {"np": "P9", "nombre_completo": "Roster Name", "identificacion": "999",
+                      "entidad": "Otra Entidad", "uid": "u-otro"}}
+    out = sa.normalize_sticker(_row(), roster_by_codigo=roster,
+                               evaluacion_by_codigo={"76001-1-0040007": matched_eval})
+    assert out["inspector"]["nombre_completo"] == ""
+
+
+def test_normalize_no_codigo_parsed_ignores_nonempty_roster():
+    roster = {"004": {"np": "P9", "nombre_completo": "Alguien", "identificacion": "1",
+                      "entidad": "E", "uid": "u-1"}}
+    out = sa.normalize_sticker(_row(origen="sistema", numero="Sin código"), roster_by_codigo=roster,
+                               evaluacion_by_codigo={})
+    assert out["inspector"] == {"uid": "", "codigo": "", "nombre_completo": "", "identificacion": "",
+                                "entidad": "", "np": ""}
+
+
 def test_normalize_color_to_clase():
-    assert sa.normalize_sticker(_row(color="verde"), np_by_codigo={}, evaluacion_by_codigo={})["clasificacion"] == "INSPECCIONADA"
-    assert sa.normalize_sticker(_row(color="amarillo"), np_by_codigo={}, evaluacion_by_codigo={})["clasificacion"] == "USO_RESTRINGIDO"
-    assert sa.normalize_sticker(_row(color=""), np_by_codigo={}, evaluacion_by_codigo={})["clasificacion"] == ""
-    assert sa.normalize_sticker(_row(color="Rojo "), np_by_codigo={}, evaluacion_by_codigo={})["clasificacion"] == "INSEGURO"
+    assert sa.normalize_sticker(_row(color="verde"), roster_by_codigo={}, evaluacion_by_codigo={})["clasificacion"] == "INSPECCIONADA"
+    assert sa.normalize_sticker(_row(color="amarillo"), roster_by_codigo={}, evaluacion_by_codigo={})["clasificacion"] == "USO_RESTRINGIDO"
+    assert sa.normalize_sticker(_row(color=""), roster_by_codigo={}, evaluacion_by_codigo={})["clasificacion"] == ""
+    assert sa.normalize_sticker(_row(color="Rojo "), roster_by_codigo={}, evaluacion_by_codigo={})["clasificacion"] == "INSEGURO"
 
 
 def test_normalize_placeholders_become_empty():
     out = sa.normalize_sticker(_row(numero="Sin código", direccion="Sin dirección", personaAfectada="Sin identificar",
-                                    colorEtiqueta="Sin clasificación"), np_by_codigo={}, evaluacion_by_codigo={})
+                                    colorEtiqueta="Sin clasificación"), roster_by_codigo={}, evaluacion_by_codigo={})
     assert out["codigo_edificacion"] == ""
     assert out["descripcion"] == {"nombre": "", "direccion": ""}
     assert out["color_etiqueta"] == "Sin clasificación"  # kept: it is a real label the UI shows
 
 
 def test_normalize_coords():
-    assert sa.normalize_sticker(_row(), np_by_codigo={}, evaluacion_by_codigo={})["coords"] == {
+    assert sa.normalize_sticker(_row(), roster_by_codigo={}, evaluacion_by_codigo={})["coords"] == {
         "lat": 3.4516, "lng": -76.532, "accuracy": None}
     for lat, lng in (("", ""), ("abc", "-76"), ("0", "0"), (None, None)):
-        assert sa.normalize_sticker(_row(latitud=lat, longitud=lng), np_by_codigo={}, evaluacion_by_codigo={})["coords"] is None
+        assert sa.normalize_sticker(_row(latitud=lat, longitud=lng), roster_by_codigo={}, evaluacion_by_codigo={})["coords"] is None
 
 
 def test_normalize_without_id_is_dropped():
-    assert sa.normalize_sticker(_row(id=""), np_by_codigo={}, evaluacion_by_codigo={}) is None
-    assert sa.normalize_sticker({}, np_by_codigo={}, evaluacion_by_codigo={}) is None
+    assert sa.normalize_sticker(_row(id=""), roster_by_codigo={}, evaluacion_by_codigo={}) is None
+    assert sa.normalize_sticker({}, roster_by_codigo={}, evaluacion_by_codigo={}) is None
 
 
 # ── build_evaluaciones ────────────────────────────────────────────────────
@@ -120,12 +171,12 @@ def test_build_indexes_firestore_by_code_and_sorts_by_fecha_desc():
     rows = [_row(id="a", numero="76001-1-0040001"), _row(id="b", numero="76001-1-0040002"), _row(id="c", numero="Sin código")]
     fs = [_eval_firestore(codigo_edificacion="76001-1-0040001", fecha="2026-08-01T00:00:00"),
           _eval_firestore(codigo_edificacion="76001-1-0040002", fecha="2026-08-05T00:00:00")]
-    out = sa.build_evaluaciones(rows, np_by_codigo={}, evaluaciones_firestore=fs)
+    out = sa.build_evaluaciones(rows, roster_by_codigo={}, evaluaciones_firestore=fs)
     assert [e["id"] for e in out] == ["b", "a", "c"]  # newest first, no-date rows last
 
 
 def test_build_tolerates_bad_rows():
-    out = sa.build_evaluaciones([_row(), {"id": ""}, "not-a-dict", None], np_by_codigo={}, evaluaciones_firestore=[])
+    out = sa.build_evaluaciones([_row(), {"id": ""}, "not-a-dict", None], roster_by_codigo={}, evaluaciones_firestore=[])
     assert len(out) == 1
 
 
@@ -137,5 +188,5 @@ def test_build_matches_firestore_evaluacion_when_codigo_has_stray_whitespace():
     # evaluación).
     rows = [_row(id="a", numero=" 76001-1-0040007 ")]
     fs = [_eval_firestore(codigo_edificacion="76001-1-0040007 ")]
-    out = sa.build_evaluaciones(rows, np_by_codigo={}, evaluaciones_firestore=fs)
+    out = sa.build_evaluaciones(rows, roster_by_codigo={}, evaluaciones_firestore=fs)
     assert out[0]["inspector"]["np"] == "P4"

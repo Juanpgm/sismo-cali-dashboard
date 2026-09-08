@@ -6,6 +6,16 @@ Pure functions, no I/O. Fase I/II input (`inspector.np`) is derived in
 priority order: matched Firestore evaluación -> roster NP by the 3-digit
 inspector code embedded in our sticker code -> "" (the UI renders "sin
 dato" for this source when np is empty; see web/js/evaluaciones.js faseDe).
+
+Extensión (2026-09-08): the same no-match fallback also completes
+`inspector.nombre_completo`, `identificacion`, `entidad` and `uid` from the
+matching `roster_by_codigo` entry — not just `np`. This ONLY applies when
+there is no matching Firestore evaluación; a matched evaluación's own
+`inspector` sub-object stays fully authoritative (never mixed field-by-field
+with the roster), for the same reason `np` already worked this way: brigade
+codes are reused after an inspector is deleted, so mixing sources within a
+matched record could attach a different inspector's identity to an old
+evaluación.
 """
 from __future__ import annotations
 
@@ -61,7 +71,7 @@ def _coords(row: dict) -> dict[str, Any] | None:
 def normalize_sticker(
     row: dict,
     *,
-    np_by_codigo: dict[str, str],
+    roster_by_codigo: dict[str, dict[str, str]],
     evaluacion_by_codigo: dict[str, dict],
 ) -> dict[str, Any] | None:
     if not isinstance(row, dict):
@@ -75,15 +85,25 @@ def normalize_sticker(
     match = evaluacion_by_codigo.get(codigo) if codigo else None
     insp_match = (match or {}).get("inspector") or {}
     codigo_inspector = str(insp_match.get("codigo") or (parsed or {}).get("codigo_inspector") or "")
-    # D1 (updated): if a Firestore evaluación matched, its `np` is
-    # AUTHORITATIVE even when empty — the roster is consulted ONLY when
-    # there is no match. Brigade codes are reused once an inspector is
-    # deleted, so falling back to the roster here could hand an old
-    # evaluación the new inspector's NP.
+    # D1 (updated): if a Firestore evaluación matched, its inspector fields
+    # (np, nombre_completo, identificacion, entidad, uid) are AUTHORITATIVE
+    # even when empty — the roster is consulted ONLY when there is no match.
+    # Brigade codes are reused once an inspector is deleted, so falling back
+    # to the roster here could hand an old evaluación the new inspector's
+    # identity.
+    roster_match = roster_by_codigo.get(codigo_inspector, {}) if codigo_inspector else {}
     if match is not None:
         np_value = str(insp_match.get("np") or "").strip()
+        uid_value = str(insp_match.get("uid") or "")
+        nombre_completo_value = str(insp_match.get("nombre_completo") or "")
+        identificacion_value = str(insp_match.get("identificacion") or "")
+        entidad_value = str(insp_match.get("entidad") or "")
     else:
-        np_value = np_by_codigo.get(codigo_inspector, "")
+        np_value = roster_match.get("np", "")
+        uid_value = roster_match.get("uid", "")
+        nombre_completo_value = roster_match.get("nombre_completo", "")
+        identificacion_value = roster_match.get("identificacion", "")
+        entidad_value = roster_match.get("entidad", "")
 
     clase = COLOR_TO_CLASE.get(str(row.get("color") or "").strip().lower(), "")
     desc_match = (match or {}).get("descripcion") or {}
@@ -103,11 +123,11 @@ def normalize_sticker(
         "alcance": (match or {}).get("alcance") or "",
         "coords": _coords(row) or (match or {}).get("coords"),
         "inspector": {
-            "uid": str(insp_match.get("uid") or ""),
+            "uid": uid_value,
             "codigo": codigo_inspector,
-            "nombre_completo": str(insp_match.get("nombre_completo") or ""),
-            "identificacion": str(insp_match.get("identificacion") or ""),
-            "entidad": str(insp_match.get("entidad") or ""),
+            "nombre_completo": nombre_completo_value,
+            "identificacion": identificacion_value,
+            "entidad": entidad_value,
             "np": np_value,
         },
         "descripcion": {
@@ -128,7 +148,7 @@ def normalize_sticker(
 def build_evaluaciones(
     rows: list,
     *,
-    np_by_codigo: dict[str, str],
+    roster_by_codigo: dict[str, dict[str, str]],
     evaluaciones_firestore: list[dict],
 ) -> list[dict[str, Any]]:
     by_codigo = {
@@ -138,7 +158,7 @@ def build_evaluaciones(
     }
     out: list[dict[str, Any]] = []
     for row in rows:
-        normalized = normalize_sticker(row, np_by_codigo=np_by_codigo, evaluacion_by_codigo=by_codigo)
+        normalized = normalize_sticker(row, roster_by_codigo=roster_by_codigo, evaluacion_by_codigo=by_codigo)
         if normalized is not None:
             out.append(normalized)
     out.sort(key=lambda e: str(e.get("fecha") or ""), reverse=True)
