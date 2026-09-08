@@ -432,7 +432,10 @@ def np_by_codigo(db: Any) -> dict[str, str]:
         d = snap.to_dict() or {}
         codigo = str(d.get("codigo") or "").strip()
         if codigo:
-            out[codigo] = str(d.get("NP") or "").strip()
+            # zfill(3): same padding _allocate_codigo assigns, so an
+            # unpadded roster code (manual repair, older data) is still
+            # reachable by the 3-digit code every sticker `numero` embeds.
+            out[codigo.zfill(3)] = str(d.get("NP") or "").strip()
     return out
 
 

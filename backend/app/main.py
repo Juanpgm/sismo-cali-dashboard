@@ -17,8 +17,8 @@ from app.credentials import clients as credentials
 from app.routers import (
     cruce_sticker,
     health,
-    integracion,
     inspector_asignaciones,
+    integracion,
     panel_representante,
     planeacion_asignaciones,
     planeacion_cruce,
@@ -28,9 +28,9 @@ from app.routers import (
     sign,
     source_status,
     sticker_asignaciones,
+    sticker_status,
     stickers,
     stickers_atencionsismo,
-    sticker_status,
     survey_cali,
     usuarios,
 )

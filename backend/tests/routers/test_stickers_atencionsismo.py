@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from app.auth.deps import current_claims
 from app.main import create_app
+from app.routers import stickers
 from app.routers import stickers_atencionsismo as router_mod
 from app.services import atencionsismo
 
@@ -89,7 +90,7 @@ def test_api_failure_cold_start_without_blob_is_503(client, monkeypatch):
         raise atencionsismo.ApiUnavailableError("down")
 
     monkeypatch.setattr(atencionsismo, "fetch_stickers", boom)
-    monkeypatch.setattr(router_mod.blob_lkg, "load_json", lambda *a: None)
+    monkeypatch.setattr(stickers.blob_lkg, "load_json", lambda *a: None)
     assert client.get("/stickers-atencionsismo").status_code == 503
 
 
@@ -151,7 +152,7 @@ def test_evaluaciones_degraded_restores_stickers_cache_from_its_own_blob(client,
             return [old_row]
         return None
 
-    monkeypatch.setattr(router_mod.blob_lkg, "load_json", fake_load)
+    monkeypatch.setattr(stickers.blob_lkg, "load_json", fake_load)
 
     resp = client.get("/stickers-atencionsismo")
 
@@ -163,7 +164,7 @@ def test_evaluaciones_degraded_restores_stickers_cache_from_its_own_blob(client,
 
 def test_evaluaciones_degraded_and_no_stickers_blob_backup_is_503(client, monkeypatch):
     _degrade_evaluaciones_cache(client)
-    monkeypatch.setattr(router_mod.blob_lkg, "load_json", lambda *a: None)
+    monkeypatch.setattr(stickers.blob_lkg, "load_json", lambda *a: None)
 
     resp = client.get("/stickers-atencionsismo")
 
@@ -173,9 +174,9 @@ def test_evaluaciones_degraded_and_no_stickers_blob_backup_is_503(client, monkey
 def test_evaluaciones_degraded_never_persists_the_degraded_derived_payload(client, monkeypatch):
     _degrade_evaluaciones_cache(client)
     saved_paths: list[str] = []
-    monkeypatch.setattr(router_mod.blob_lkg, "save_json",
+    monkeypatch.setattr(stickers.blob_lkg, "save_json",
                         lambda pathname, payload: saved_paths.append(pathname) or True)
-    monkeypatch.setattr(router_mod.blob_lkg, "load_json", lambda *a: None)
+    monkeypatch.setattr(stickers.blob_lkg, "load_json", lambda *a: None)
 
     client.get("/stickers-atencionsismo")
 

@@ -1002,6 +1002,27 @@ def test_np_by_codigo_empty_roster():
     assert stickers.np_by_codigo(db) == {}
 
 
+def test_np_by_codigo_zero_pads_single_digit_code():
+    # Matches _allocate_codigo's own zfill(3) — a roster doc saved with an
+    # unpadded code (manual repair, older data) must still be reachable by
+    # the padded 3-digit code every sticker `numero` embeds.
+    db = _FakeFirestore({"inspectores": {"u1": {"codigo": "4", "NP": "P4"}}})
+    assert stickers.np_by_codigo(db) == {"004": "P4"}
+
+
+def test_np_by_codigo_zero_pads_two_digit_code():
+    db = _FakeFirestore({"inspectores": {"u1": {"codigo": "04", "NP": "P4"}}})
+    assert stickers.np_by_codigo(db) == {"004": "P4"}
+
+
+def test_np_by_codigo_skips_empty_or_missing_code():
+    db = _FakeFirestore({"inspectores": {
+        "u1": {"codigo": "", "NP": "P9"},
+        "u2": {"NP": "P1"},
+    }})
+    assert stickers.np_by_codigo(db) == {}
+
+
 # ── EvaluacionesCache: parametrized Blob pathname + redaction ────────────
 
 

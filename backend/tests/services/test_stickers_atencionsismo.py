@@ -66,6 +66,19 @@ def test_normalize_falls_back_to_roster_np_by_inspector_code():
     assert out["fecha"] is None and out["fotos"] == []
 
 
+def test_normalize_evaluacion_match_np_is_authoritative_even_when_empty():
+    # D1 (updated): brigade codes are reused when an inspector is deleted —
+    # falling back to the roster's NP here could hand an OLD evaluación the
+    # NEW inspector's NP. If there is a match, its np is final, blank or not.
+    matched_eval = _eval_firestore(
+        inspector={"uid": "u1", "codigo": "004", "nombre_completo": "Ana", "identificacion": "1",
+                   "entidad": "E", "np": ""}
+    )
+    out = sa.normalize_sticker(_row(), np_by_codigo={"004": "P4"},
+                               evaluacion_by_codigo={"76001-1-0040007": matched_eval})
+    assert out["inspector"]["np"] == ""
+
+
 def test_normalize_sistema_origin_has_no_np():
     out = sa.normalize_sticker(_row(origen="sistema", numero="76001001-123-0001"), np_by_codigo={"004": "P4"},
                                evaluacion_by_codigo={})
@@ -114,3 +127,15 @@ def test_build_indexes_firestore_by_code_and_sorts_by_fecha_desc():
 def test_build_tolerates_bad_rows():
     out = sa.build_evaluaciones([_row(), {"id": ""}, "not-a-dict", None], np_by_codigo={}, evaluaciones_firestore=[])
     assert len(out) == 1
+
+
+def test_build_matches_firestore_evaluacion_when_codigo_has_stray_whitespace():
+    # A sticker's `numero` is already stripped by `_clean` before the
+    # by_codigo lookup; the Firestore side must be stripped too or a
+    # trailing/leading space on `codigo_edificacion` silently breaks the
+    # join (falls through to the roster/"sin dato" instead of the real
+    # evaluación).
+    rows = [_row(id="a", numero=" 76001-1-0040007 ")]
+    fs = [_eval_firestore(codigo_edificacion="76001-1-0040007 ")]
+    out = sa.build_evaluaciones(rows, np_by_codigo={}, evaluaciones_firestore=fs)
+    assert out[0]["inspector"]["np"] == "P4"

@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 from app.auth.deps import require_role
 from app.credentials import clients as credentials
 from app.routers import stickers
-from app.services import atencionsismo, blob_lkg
+from app.services import atencionsismo
 from app.services.stickers_atencionsismo import build_evaluaciones
 
 router = APIRouter()

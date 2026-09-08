@@ -75,7 +75,15 @@ def normalize_sticker(
     match = evaluacion_by_codigo.get(codigo) if codigo else None
     insp_match = (match or {}).get("inspector") or {}
     codigo_inspector = str(insp_match.get("codigo") or (parsed or {}).get("codigo_inspector") or "")
-    np_value = str(insp_match.get("np") or "").strip() or np_by_codigo.get(codigo_inspector, "")
+    # D1 (updated): if a Firestore evaluación matched, its `np` is
+    # AUTHORITATIVE even when empty — the roster is consulted ONLY when
+    # there is no match. Brigade codes are reused once an inspector is
+    # deleted, so falling back to the roster here could hand an old
+    # evaluación the new inspector's NP.
+    if match is not None:
+        np_value = str(insp_match.get("np") or "").strip()
+    else:
+        np_value = np_by_codigo.get(codigo_inspector, "")
 
     clase = COLOR_TO_CLASE.get(str(row.get("color") or "").strip().lower(), "")
     desc_match = (match or {}).get("descripcion") or {}
@@ -124,7 +132,7 @@ def build_evaluaciones(
     evaluaciones_firestore: list[dict],
 ) -> list[dict[str, Any]]:
     by_codigo = {
-        str(e.get("codigo_edificacion") or ""): e
+        str(e.get("codigo_edificacion") or "").strip(): e
         for e in evaluaciones_firestore
         if isinstance(e, dict) and e.get("codigo_edificacion")
     }
