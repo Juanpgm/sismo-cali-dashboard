@@ -23,6 +23,7 @@ No conflict, so no "JS wins" substitution was needed for this constant.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import math
 import os
@@ -33,6 +34,9 @@ from typing import Callable, Iterable, Mapping
 import httpx
 
 API_URL = "https://atencionsismo.cali.gov.co/api/informe/json"
+STICKERS_URL = "https://atencionsismo.cali.gov.co/api/informe/stickers"
+PAGE_LIMIT = 200  # v2 contract: 1..200 rows per page
+MAX_PAGES = 500  # hard stop (100k rows) against a server that never reports done
 
 USER_ENV = "VISITADOS_API_USER"
 PASS_ENV = "VISITADOS_API_PASS"
@@ -385,3 +389,68 @@ async def fetch_reportados(
         "fuente": "api:informe/json",
         **counts,
     }
+
+
+async def _get_stickers_page(
+    client: httpx.AsyncClient, headers: dict[str, str], params: dict[str, int]
+) -> dict:
+    """One page of GET /api/informe/stickers with MAX_ATTEMPTS retries on
+    transport/5xx/malformed-body errors. 401/403 are credential problems
+    (unset password, account without `api: read`, password not yet created
+    at /ingresar) — retrying cannot fix them, so they raise immediately."""
+    last_exc: Exception | None = None
+    for attempt in range(MAX_ATTEMPTS):
+        try:
+            resp = await client.get(STICKERS_URL, params=params, headers=headers, timeout=REQUEST_TIMEOUT_S)
+            if resp.status_code in (401, 403):
+                raise ApiUnavailableError(
+                    f"informe/stickers HTTP {resp.status_code}: credenciales rechazadas", status=503
+                )
+            if resp.status_code >= 400:
+                raise httpx.HTTPStatusError(f"HTTP {resp.status_code}", request=resp.request, response=resp)
+            data = resp.json()
+            if not isinstance(data, dict):
+                raise ValueError("el cuerpo no es un objeto JSON")
+            return data
+        except (httpx.HTTPError, ValueError) as exc:
+            last_exc = exc
+            if attempt < MAX_ATTEMPTS - 1 and RETRY_SLEEP_S:
+                await asyncio.sleep(RETRY_SLEEP_S)
+    raise ApiUnavailableError(f"informe/stickers sin respuesta valida: {last_exc}", status=503)
+
+
+async def fetch_stickers(
+    client: httpx.AsyncClient,
+    user: str,
+    password: str,
+    *,
+    desde_utc: int | None = None,
+    hasta_utc: int | None = None,
+) -> list[dict]:
+    """Full offset-paginated read of GET /api/informe/stickers (v2 contract:
+    `offset`/`limit` <= 200, follow `nextOffset` until `done`). Unlike the
+    `informe/json` day-walk there is no date-window failure mode to split
+    on, so each page is simply retried. Returns the raw `stickers[]` rows.
+    Zero rows over the whole walk raises ApiEmptyResultError — never cache
+    an empty universe over a transient failure (same rule as
+    `fetch_reportados`)."""
+    headers = _headers(user, password)
+    rows: list[dict] = []
+    offset = 0
+    for _ in range(MAX_PAGES):
+        params: dict[str, int] = {"offset": offset, "limit": PAGE_LIMIT}
+        if desde_utc is not None:
+            params["desde_utc"] = desde_utc
+        if hasta_utc is not None:
+            params["hasta_utc"] = hasta_utc
+        body = await _get_stickers_page(client, headers, params)
+        rows.extend(r for r in (body.get("stickers") or []) if isinstance(r, dict))
+        if body.get("done", True):
+            break
+        next_offset = body.get("nextOffset")
+        if not isinstance(next_offset, int) or next_offset <= offset:
+            break  # malformed cursor: stop rather than loop forever
+        offset = next_offset
+    if not rows:
+        raise ApiEmptyResultError("informe/stickers devolvio 0 filas")
+    return rows
