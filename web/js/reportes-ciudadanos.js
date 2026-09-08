@@ -75,6 +75,7 @@ export function applyFiltrosReportes(list, filtros) {
   const f = filtros || {};
   const q = f.search ? normalize(f.search) : '';
   return list.filter((r) => {
+    if (!r) return false;
     if (f.estado && estadoDe(r).key !== f.estado) return false;
     if (f.afectacion && normalize(r.afectacion || '') !== normalize(f.afectacion)) return false;
     if (f.tipo && r.tipo_inmueble !== f.tipo) return false;
@@ -106,6 +107,15 @@ let baseTile = null;
 let pointsLayer = null;
 let lastFitBounds = null;
 let colorMode = 'estado';
+// Guards an out-of-order fetchReportes() response: initReportesCiudadanos
+// runs on every tab open, and nothing stops a slow init#1 request from
+// resolving after a faster init#2 already rendered — see the seq check in
+// initReportesCiudadanos below (same recipe as evaluaciones.js's loadSeq).
+let loadSeq = 0;
+// The search box's debounce timer, also module-level: a pending timer from
+// a previous init must be cancelled when the tab is reopened, or its
+// eventual fire calls the OLD init's render() over stale closures.
+let searchDebounceTimer = null;
 
 function teardownMap() {
   if (map) { map.remove(); map = null; }
@@ -297,8 +307,14 @@ function detailHtml(r) {
     ])}`;
 }
 
-function renderMap(containerId, list, onDetail) {
-  teardownMap();
+/** Builds the Leaflet map + its base tile + the (empty) points layer group,
+ *  but only the first time it's called per init — teardownMap() (called at
+ *  the top of initReportesCiudadanos) is what makes `map` null again for a
+ *  fresh init. A no-op on every render after the first within the same init,
+ *  which is the point: rebuilding the whole map on every filter/search
+ *  keystroke was resetting the user's pan/zoom mid-use (finding 2). */
+function ensureMap(containerId) {
+  if (map) return;
   // preferCanvas: true — up to ~14 800 points (design D6/D5 risk table),
   // a canvas renderer keeps pan/zoom smooth where per-marker SVG DOM nodes
   // would not.
@@ -306,6 +322,15 @@ function renderMap(containerId, list, onDetail) {
     .setView(CALI_CENTER, CALI_ZOOM);
   baseTile = L.tileLayer(basemapTileUrl(), { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20 }).addTo(map);
   pointsLayer = L.layerGroup().addTo(map);
+}
+
+/** Re-renders the point markers over the (already built, see ensureMap)
+ *  map. `fit` is true only for the first render of an init — see design D6
+ *  finding 2: fitBounds on every re-render fights the user's own pan/zoom
+ *  every time a filter or the search box changes. */
+function renderMap(containerId, list, onDetail, { fit } = { fit: true }) {
+  ensureMap(containerId);
+  pointsLayer.clearLayers();
   const inCali = [];
   for (const r of list) {
     // Records without coordinates are still listed (listItemHtml doesn't
@@ -314,7 +339,10 @@ function renderMap(containerId, list, onDetail) {
     const marker = L.circleMarker([r.lat, r.lng], {
       radius: 5, color: '#0B1D33', weight: 0.5, fillColor: COLOR_MODES_REPORTES[colorMode].colorOf(r), fillOpacity: 0.85,
     });
-    marker.bindPopup(popupHtml(r), { maxWidth: 260 });
+    // Function form: popupHtml(r) built eagerly for every one of up to
+    // ~14 800 points was wasted work for popups nobody opens — Leaflet only
+    // calls this when a marker's popup actually opens.
+    marker.bindPopup(() => popupHtml(r), { maxWidth: 260 });
     marker.on('popupopen', (ev) => {
       const btn = ev.popup.getElement().querySelector('[data-rep-detail]');
       if (btn) btn.addEventListener('click', () => onDetail(r.id));
@@ -325,10 +353,12 @@ function renderMap(containerId, list, onDetail) {
     }
   }
   lastFitBounds = inCali.length ? L.latLngBounds(inCali) : null;
-  if (lastFitBounds) {
-    map.fitBounds(lastFitBounds, { padding: [30, 30], maxZoom: 15 });
-  } else {
-    map.setView(CALI_CENTER, CALI_ZOOM);
+  if (fit) {
+    if (lastFitBounds) {
+      map.fitBounds(lastFitBounds, { padding: [30, 30], maxZoom: 15 });
+    } else {
+      map.setView(CALI_CENTER, CALI_ZOOM);
+    }
   }
   // The tab is hidden until switchView() shows it, so Leaflet measures a
   // zero-height container on first mount (same trap as evaluaciones.js).
@@ -348,6 +378,14 @@ if (typeof document !== 'undefined') {
 }
 
 export function initReportesCiudadanos(root, { fetchReportes }) {
+  // Both FIRST statements, before anything else touches the DOM or the
+  // network (findings 5/11): a previous init's pending debounce timer must
+  // never fire into this call's fresh closures, and the previous init's map
+  // (if any) must not survive to be torn down mid-render by ensureMap()'s
+  // "only build if null" check below.
+  clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = null;
+  teardownMap();
   root.innerHTML = sectionHtml();
   const $ = (id) => root.querySelector(`#${id}`);
   const kpisEl = $('rep-kpis');
@@ -380,11 +418,16 @@ export function initReportesCiudadanos(root, { fetchReportes }) {
     modal.setAttribute('aria-hidden', 'false');
   }
 
-  root.addEventListener('click', (ev) => {
+  // Attached to `listEl` (fresh every init, torn down with the rest of
+  // sectionHtml() on the next open) rather than the persistent `root` —
+  // finding 1: a listener on `root` stacks one more copy on every tab open
+  // and is never cleaned up (root is reused across inits, only its
+  // innerHTML gets replaced). Map popups live outside `listEl` (Leaflet
+  // reparents them), so those buttons are wired on popupopen instead; this
+  // covers the list rows only.
+  listEl.addEventListener('click', (ev) => {
     const btn = ev.target.closest('[data-rep-detail]');
-    // Map popups live outside `root` (Leaflet reparents them), so those
-    // buttons are wired on popupopen instead; this covers the list rows.
-    if (btn && listEl.contains(btn)) openDetail(btn.dataset.repDetail);
+    if (btn) openDetail(btn.dataset.repDetail);
   });
 
   function renderList(reset) {
@@ -404,12 +447,16 @@ export function initReportesCiudadanos(root, { fetchReportes }) {
     countEl.textContent = `${visibles.length.toLocaleString('es-CO')} de ${todos.length.toLocaleString('es-CO')} reportes`;
   }
 
+  // fitBounds only on this init's first render — finding 2: re-fitting on
+  // every filter/search re-render fights the user's own pan/zoom.
+  let firstMapRender = true;
   function render() {
     visibles = applyFiltrosReportes(todos, filtros);
     kpisEl.innerHTML = kpisHtml(visibles);
     barEl.innerHTML = barHtml(visibles);
     renderList(true);
-    renderMap('rep-map', visibles, openDetail);
+    renderMap('rep-map', visibles, openDetail, { fit: firstMapRender });
+    firstMapRender = false;
   }
 
   function renderFilters() {
@@ -432,10 +479,13 @@ export function initReportesCiudadanos(root, { fetchReportes }) {
     bind('rep-comuna', 'comuna');
     bind('rep-barrio', 'barrio');
     bind('rep-sticker', 'sticker');
-    let t = null;
+    // Module-level timer (searchDebounceTimer, not a local closure var): a
+    // pending timer must be reachable and cancellable from the NEXT init's
+    // own first statements (finding 5) — a local `let t` here would be
+    // invisible to that later call and could still fire into this closure.
     $('rep-search').addEventListener('input', (ev) => {
-      clearTimeout(t);
-      t = setTimeout(() => { filtros.search = ev.target.value; render(); }, 250);
+      clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(() => { filtros.search = ev.target.value; render(); }, 250);
     });
   }
 
@@ -479,9 +529,15 @@ export function initReportesCiudadanos(root, { fetchReportes }) {
   });
 
   (async () => {
+    // Claims this call's slot in the stale-response race (finding 3): a
+    // tab reopened before this fetch resolves bumps loadSeq again, and the
+    // check right after the await below drops this response instead of
+    // rendering over whatever the newer init already put on screen.
+    const seq = ++loadSeq;
     countEl.textContent = 'Cargando…';
     try {
       const { reportes, meta } = await fetchReportes();
+      if (seq !== loadSeq) return;
       todos = (reportes || []).filter((r) => r && r.id);
       byId.clear();
       for (const r of todos) byId.set(r.id, r);
@@ -494,6 +550,7 @@ export function initReportesCiudadanos(root, { fetchReportes }) {
       renderColorMode();
       render();
     } catch (err) {
+      if (seq !== loadSeq) return;
       countEl.textContent = `No se pudieron cargar los reportes: ${err && err.message ? err.message : err}`;
     }
   })();

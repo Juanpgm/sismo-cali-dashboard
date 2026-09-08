@@ -76,4 +76,10 @@ assert.deepStrictEqual(opcionesDe([null, undefined], 'comuna'), []);
 // contarPor on an empty list returns an empty bucket map, never throws.
 assert.deepStrictEqual(contarPor([], (x) => estadoDe(x).key), {});
 
+// applyFiltrosReportes: a falsy record in the list must be skipped, not thrown on
+// (fix(reportes) finding 5 — r.afectacion on a null r used to throw TypeError).
+assert.doesNotThrow(() => applyFiltrosReportes([null, r()], { afectacion: 'DAÑO ESTRUCTURAL' }));
+assert.deepStrictEqual(applyFiltrosReportes([null, r(), undefined], { afectacion: 'DAÑO ESTRUCTURAL' }).map((x) => x.id), ['r1']);
+assert.deepStrictEqual(applyFiltrosReportes([null, undefined], {}), []);
+
 console.log('reportes-ciudadanos.test.mjs edge cases OK');
