@@ -72,7 +72,7 @@ function rowGeocoding() {
 }
 
 function rowAtencionsismo(metaResult, probeResult) {
-  const base = { id: 'atencionsismo', nombre: 'API atención sismo (reportes)', descripcion: 'Reportes ciudadanos vía atencionsismo.cali.gov.co; alimenta el KPI "Reportados".' };
+  const base = { id: 'atencionsismo', nombre: 'API atención sismo (reportes)', descripcion: 'Reportes ciudadanos vía atencionsismo.cali.gov.co; alimenta el KPI "Reportados", la pestaña Reportes ciudadanos y la fuente Atención Sismo de Stickers.' };
   let ultima_lectura = null;
   let registros = null;
   if (metaResult.state === 'ok') {
