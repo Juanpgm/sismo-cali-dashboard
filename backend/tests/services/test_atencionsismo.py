@@ -21,6 +21,7 @@ no pytest-asyncio marker/config needed.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import httpx
 import pytest
@@ -425,3 +426,183 @@ def test_fetch_reportados_raises_on_zero_total(monkeypatch):
 
     with pytest.raises(atencionsismo.ApiEmptyResultError):
         _run(go())
+
+
+# ── fetch_stickers: offset pagination over GET /api/informe/stickers ──────
+
+
+def _sticker(i: int, origen: str = "firebase") -> dict:
+    return {"id": f"ev-{i}", "direccion": f"Calle {i}", "latitud": "3.45", "longitud": "-76.53",
+            "numero": f"76001-1-004{i:04d}", "personaAfectada": "X", "origen": origen,
+            "color": "verde", "colorEtiqueta": "Habitable"}
+
+
+def _pages_handler(pages: dict[int, dict], seen: list[dict] | None = None):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/informe/stickers"
+        assert request.headers["Authorization"].startswith("Basic ")
+        params = dict(request.url.params)
+        if seen is not None:
+            seen.append(params)
+        offset = int(params.get("offset", "0"))
+        return httpx.Response(200, json=pages[offset])
+    return handler
+
+
+def test_fetch_stickers_follows_next_offset_until_done(monkeypatch):
+    monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
+    seen: list[dict] = []
+    pages = {
+        0: {"ok": True, "stickers": [_sticker(1), _sticker(2)], "nextOffset": 200, "done": False},
+        200: {"ok": True, "stickers": [_sticker(3)], "nextOffset": 400, "done": True},
+    }
+    rows = _run(atencionsismo.fetch_stickers(_client(_pages_handler(pages, seen)), FAKE_USER, FAKE_PASS))
+    assert [r["id"] for r in rows] == ["ev-1", "ev-2", "ev-3"]
+    assert [p["offset"] for p in seen] == ["0", "200"]
+    assert all(p["limit"] == "200" for p in seen)
+
+
+def test_fetch_stickers_forwards_date_params(monkeypatch):
+    monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
+    seen: list[dict] = []
+    pages = {0: {"ok": True, "stickers": [_sticker(1)], "nextOffset": 200, "done": True}}
+    _run(atencionsismo.fetch_stickers(_client(_pages_handler(pages, seen)), FAKE_USER, FAKE_PASS,
+                                      desde_utc=1000, hasta_utc=2000))
+    assert seen[0]["desde_utc"] == "1000" and seen[0]["hasta_utc"] == "2000"
+
+
+def test_fetch_stickers_401_raises_unavailable_without_retry(monkeypatch):
+    monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(401, json={"error": "no"})
+
+    with pytest.raises(atencionsismo.ApiUnavailableError) as exc:
+        _run(atencionsismo.fetch_stickers(_client(handler), FAKE_USER, FAKE_PASS))
+    assert exc.value.status == 503
+    assert calls == 1
+
+
+def test_fetch_stickers_retries_504_then_succeeds(monkeypatch):
+    monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return httpx.Response(504)
+        return httpx.Response(200, json={"ok": True, "stickers": [_sticker(1)], "done": True})
+
+    rows = _run(atencionsismo.fetch_stickers(_client(handler), FAKE_USER, FAKE_PASS))
+    assert len(rows) == 1 and attempts["n"] == 2
+
+
+def test_fetch_stickers_gives_up_after_max_attempts(monkeypatch):
+    monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        return httpx.Response(500)
+
+    with pytest.raises(atencionsismo.ApiUnavailableError):
+        _run(atencionsismo.fetch_stickers(_client(handler), FAKE_USER, FAKE_PASS))
+    assert attempts["n"] == atencionsismo.MAX_ATTEMPTS
+
+
+def test_fetch_stickers_malformed_json_retries(monkeypatch):
+    monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return httpx.Response(200, text="<html>maintenance</html>")
+        return httpx.Response(200, json={"ok": True, "stickers": [_sticker(1)], "done": True})
+
+    rows = _run(atencionsismo.fetch_stickers(_client(handler), FAKE_USER, FAKE_PASS))
+    assert len(rows) == 1 and attempts["n"] == 2
+
+
+def test_fetch_stickers_empty_universe_raises(monkeypatch):
+    monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
+    pages = {0: {"ok": True, "stickers": [], "nextOffset": 0, "done": True}}
+    with pytest.raises(atencionsismo.ApiEmptyResultError):
+        _run(atencionsismo.fetch_stickers(_client(_pages_handler(pages)), FAKE_USER, FAKE_PASS))
+
+
+# B1: non-advancing/malformed/exhausted pagination no longer returns a
+# silent partial universe — it raises, so the cache's serve-stale/Blob
+# chain kicks in instead of quietly under-counting stickers.
+
+
+def test_fetch_stickers_non_advancing_cursor_raises(monkeypatch):
+    monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
+    seen: list[dict] = []
+    pages = {0: {"ok": True, "stickers": [_sticker(1)], "nextOffset": 0, "done": False}}
+    with pytest.raises(atencionsismo.ApiUnavailableError):
+        _run(atencionsismo.fetch_stickers(_client(_pages_handler(pages, seen)), FAKE_USER, FAKE_PASS))
+    assert len(seen) == 1  # stopped after the one non-advancing page, not looped forever
+
+
+def test_fetch_stickers_coerces_numeric_string_next_offset(monkeypatch):
+    monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
+    seen: list[dict] = []
+    pages = {
+        0: {"ok": True, "stickers": [_sticker(1)], "nextOffset": "200", "done": False},
+        200: {"ok": True, "stickers": [_sticker(2)], "nextOffset": 400, "done": True},
+    }
+    rows = _run(atencionsismo.fetch_stickers(_client(_pages_handler(pages, seen)), FAKE_USER, FAKE_PASS))
+    assert [r["id"] for r in rows] == ["ev-1", "ev-2"]
+    assert [p["offset"] for p in seen] == ["0", "200"]
+
+
+def test_fetch_stickers_non_numeric_cursor_raises(monkeypatch):
+    monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
+    pages = {0: {"ok": True, "stickers": [_sticker(1)], "nextOffset": "abc", "done": False}}
+    with pytest.raises(atencionsismo.ApiUnavailableError):
+        _run(atencionsismo.fetch_stickers(_client(_pages_handler(pages)), FAKE_USER, FAKE_PASS))
+
+
+def test_fetch_stickers_max_pages_exhausted_raises(monkeypatch):
+    monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
+    monkeypatch.setattr(atencionsismo, "MAX_PAGES", 2)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        offset = int(dict(request.url.params).get("offset", "0"))
+        return httpx.Response(
+            200,
+            json={"ok": True, "stickers": [_sticker(offset)], "nextOffset": offset + 200, "done": False},
+        )
+
+    with pytest.raises(atencionsismo.ApiUnavailableError):
+        _run(atencionsismo.fetch_stickers(_client(handler), FAKE_USER, FAKE_PASS))
+
+
+def test_fetch_stickers_missing_done_field_warns_and_completes(monkeypatch, caplog):
+    monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
+    pages = {0: {"ok": True, "stickers": [_sticker(1)]}}  # no `done`, no `nextOffset`
+    with caplog.at_level(logging.WARNING):
+        rows = _run(atencionsismo.fetch_stickers(_client(_pages_handler(pages)), FAKE_USER, FAKE_PASS))
+    assert len(rows) == 1
+    assert any("done" in r.message for r in caplog.records)
+
+
+# B2: any 400..499 status is a client-error, non-retriable failure — no
+# point burning MAX_ATTEMPTS retries on a request that will never succeed.
+
+
+def test_fetch_stickers_400_raises_without_retry(monkeypatch):
+    monkeypatch.setattr(atencionsismo, "RETRY_SLEEP_S", 0)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(400, json={"error": "bad request"})
+
+    with pytest.raises(atencionsismo.ApiUnavailableError):
+        _run(atencionsismo.fetch_stickers(_client(handler), FAKE_USER, FAKE_PASS))
+    assert calls["n"] == 1

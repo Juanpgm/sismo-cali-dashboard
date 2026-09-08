@@ -12,24 +12,76 @@
 import { sectionHtml as evalSectionHtml, initEvaluaciones } from './evaluaciones.js';
 import { initStickersAsignacion } from './stickers-asignacion.js';
 import { apiUrl } from './api-config.js';
+import { escapeHtml } from './utils.js';
 
-// Cached backend read (backend/app/routers/stickers.py GET /evaluaciones,
-// 5-min TTL) — replaces the legacy POST /api/stickers {action:'evaluaciones'}
-// full-collection read.
-async function fetchEvaluacionesOnce(getToken) {
+// Two interchangeable sources for the Evaluaciones section, same response
+// shape (design D2/D3). atencionsismo is the default; the Formulario
+// (Firestore) source stays as the safety valve while the code join is
+// being validated in production.
+const FUENTES = {
+  atencionsismo: { label: 'Atención Sismo', endpoint: 'stickersAtencionsismo' },
+  firestore: { label: 'Formulario', endpoint: 'evaluaciones' },
+};
+let fuente = 'atencionsismo';
+
+// Cached backend read (backend/app/routers/stickers.py GET /evaluaciones and
+// backend/app/routers/stickers_atencionsismo.py GET /stickers-atencionsismo,
+// both 5-min TTL) — replaces the legacy POST /api/stickers
+// {action:'evaluaciones'} full-collection read. `endpoint` selects which of
+// the two the caller wants (see FUENTES above).
+// `degraded` (see backend/app/routers/stickers.py's EvaluacionesCache): true
+// when a cold start served the Blob-redacted last-known-good copy instead of
+// a live read — that copy has inspector.np blanked, which silently wrecks
+// the Fase I/II classification, so evaluaciones.js needs the flag alongside
+// the data to warn about it.
+//
+// `fuente` (design D2): each record carries its own `fuente` from the
+// backend already, but tag it here too from the RESPONSE's top-level
+// `fuente` field (falling back to 'firestore', GET /evaluaciones's shape) so
+// a record missing the field (older cached payload) still classifies
+// correctly for faseDe()/detailHtml() — a RECORD's own `fuente` still wins
+// (object-spread order below), this is only the fallback for records that
+// don't carry one. Exported: pure, so a self-check can exercise it without
+// a fetch/DOM stub.
+export function tagFuente(data) {
+  const fuenteRespuesta = (data && data.fuente) || 'firestore';
+  const list = Array.isArray(data && data.evaluaciones) ? data.evaluaciones : [];
+  return {
+    evaluaciones: list.map((e) => ({ fuente: fuenteRespuesta, ...e })),
+    degraded: Boolean(data && data.degraded),
+  };
+}
+
+// Error message for a failed fetch. Prefers a structured `error`, then a
+// STRING `detail` — a non-string detail (e.g. a FastAPI validation-error
+// array/object slipping through a proxy) must not stringify into a useless
+// "[object Object]" toast, so it falls back to the generic status message
+// instead. Exported: pure, so a self-check can exercise it without a fetch
+// stub.
+export function errorMessageFor(data, status) {
+  const detail = typeof (data && data.detail) === 'string' ? data.detail : null;
+  return (data && data.error) || detail || `Error ${status}`;
+}
+
+async function fetchEvaluacionesOnce(getToken, endpoint) {
   const token = await getToken();
   if (!token) throw new Error('Sesión no válida. Volvé a iniciar sesión.');
-  const res = await fetch(apiUrl('evaluaciones'), {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const res = await fetch(apiUrl(endpoint), { headers: { Authorization: `Bearer ${token}` } });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
-  // `degraded` (see backend/app/routers/stickers.py's EvaluacionesCache):
-  // true when a cold start served the Blob-redacted last-known-good copy
-  // instead of a live read — that copy has inspector.np blanked, which
-  // silently wrecks the Fase I/II classification, so evaluaciones.js needs
-  // the flag alongside the data to warn about it.
-  return { evaluaciones: data.evaluaciones, degraded: Boolean(data.degraded) };
+  if (!res.ok) throw new Error(errorMessageFor(data, res.status));
+  return tagFuente(data);
+}
+
+// Segmented control for the Evaluaciones data source (design D3) — same
+// chip shape as the Evaluaciones/Asignación segment below, one entry per
+// FUENTES key. This one is a TOGGLE (pick one of two data sources), not a
+// tab set (which section is showing) — aria-pressed, not aria-selected/role
+// "tab", is the correct semantics; the wrapper below carries role="group"
+// to match.
+function fuenteSegmentedHtml() {
+  return Object.entries(FUENTES).map(([key, def]) => `
+      <button type="button" class="asignacion-segment${key === fuente ? ' is-active' : ''}"
+        data-sticker-fuente="${key}" aria-pressed="${key === fuente}">${escapeHtml(def.label)}</button>`).join('');
 }
 
 // Rendered once per tab open. Two-way segmented control (Evaluaciones ·
@@ -48,7 +100,12 @@ function shellHtml() {
       <button type="button" class="asignacion-segment" data-sticker-segment="asignacion" role="tab" aria-selected="false">Asignación</button>
     </div>
 
-    <div data-sticker-section="evaluaciones">${evalSectionHtml()}</div>
+    <div data-sticker-section="evaluaciones">
+      <div class="asignacion-segmented eval-fuente" role="group" aria-labelledby="eval-fuente-label">
+        <span class="eval-fuente-label" id="eval-fuente-label">Fuente</span>${fuenteSegmentedHtml()}
+      </div>
+      ${evalSectionHtml()}
+    </div>
     <div data-sticker-section="asignacion" hidden></div>`;
 }
 
@@ -56,6 +113,7 @@ function shellHtml() {
 export function initStickers(root, { getToken }) {
   root.innerHTML = shellHtml();
   const segmentButtons = root.querySelectorAll('[data-sticker-segment]');
+  const fuenteButtons = root.querySelectorAll('[data-sticker-fuente]');
   const sections = {
     evaluaciones: root.querySelector('[data-sticker-section="evaluaciones"]'),
     asignacion: root.querySelector('[data-sticker-section="asignacion"]'),
@@ -69,14 +127,29 @@ export function initStickers(root, { getToken }) {
     // cold serverless connection) shouldn't surface as an error when a second
     // attempt half a second later would have worked.
     fetchEvaluaciones: async () => {
+      const endpoint = FUENTES[fuente].endpoint;
       try {
-        return await fetchEvaluacionesOnce(getToken);
+        return await fetchEvaluacionesOnce(getToken, endpoint);
       } catch (err) {
         await new Promise((r) => setTimeout(r, 500));
-        return await fetchEvaluacionesOnce(getToken);
+        return await fetchEvaluacionesOnce(getToken, endpoint);
       }
     },
   });
+
+  // Switching Fuente re-fetches from the newly selected endpoint instead of
+  // filtering client-side — the two sources are not merged (design D3), so
+  // each switch is a fresh full load through evaluacionesHandle.reload().
+  fuenteButtons.forEach((btn) => btn.addEventListener('click', () => {
+    if (btn.dataset.stickerFuente === fuente) return;
+    fuente = btn.dataset.stickerFuente;
+    fuenteButtons.forEach((b) => {
+      const active = b.dataset.stickerFuente === fuente;
+      b.classList.toggle('is-active', active);
+      b.setAttribute('aria-pressed', String(active));
+    });
+    evaluacionesHandle.reload();
+  }));
 
   function showSegment(name) {
     for (const [key, el] of Object.entries(sections)) el.hidden = key !== name;

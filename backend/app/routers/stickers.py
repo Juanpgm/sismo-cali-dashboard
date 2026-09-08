@@ -34,7 +34,7 @@ import re
 import threading
 import time
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -126,7 +126,17 @@ class EvaluacionesCache:
     fall back to the last-known-good copy instead of a 502 (31-ago-2026, see
     `app.services.blob_lkg`)."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        lkg_blob: str = EVALUACIONES_LKG_BLOB,
+        redact: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
+        failure_backoff_s: float = 0.0,
+    ) -> None:
+        # Parametrized so a sibling dataset (atencionsismo stickers, see
+        # routers/stickers_atencionsismo.py) reuses the serve-stale +
+        # Blob-restore + degraded semantics with its OWN pathname/redaction.
+        self._lkg_blob = lkg_blob
+        self._redact = redact or _redact_for_blob
         self._at: float | None = None
         self._payload: list[dict[str, Any]] | None = None
         self._blob_hash: str | None = None  # hash of the last payload persisted to Blob
@@ -135,6 +145,23 @@ class EvaluacionesCache:
         # (`_redact_for_blob` blanks `inspector.np`, which the Fase I/II
         # classification depends on — see the `degraded` property below).
         self._degraded: bool = False
+        # A sustained upstream outage (e.g. informe/stickers paginating
+        # incompletely on every attempt) would otherwise retry on EVERY
+        # request that lands while stale, each one paying the full
+        # request/retry cost just to fail again. `failure_backoff_s` skips
+        # that: after a fetch failure that ends in serve-stale or
+        # Blob-restore, subsequent calls within the window just serve the
+        # current payload without attempting `fetch` again. Default 0.0
+        # (no backoff) keeps this plain evaluaciones cache byte-identical
+        # to its pre-backoff behavior; the stickers_atencionsismo sibling
+        # cache opts into 60s (see app/main.py).
+        self._failure_backoff_s = failure_backoff_s
+        self._failed_at: float | None = None
+        # Guards the stale-check-and-fetch below: without it, two threads
+        # racing a stale cache would both fetch concurrently. Double-checked
+        # (re-evaluate staleness AFTER acquiring the lock) so the common,
+        # non-stale path never pays the lock's cost.
+        self._lock = threading.Lock()
 
     @property
     def degraded(self) -> bool:
@@ -148,11 +175,36 @@ class EvaluacionesCache:
     def get_or_fetch(self, fetch: Any) -> list[dict[str, Any]]:
         now = time.monotonic()
         stale = self._payload is None or self._at is None or (now - self._at) > EVALUACIONES_CACHE_TTL_SECONDS
-        if stale:
+        if not stale:
+            assert self._payload is not None
+            return self._payload
+
+        with self._lock:
+            # Re-evaluate staleness inside the lock: another thread may have
+            # already refreshed (or failure-serve-staled) the payload while
+            # this one was waiting on the lock — don't fetch twice.
+            now = time.monotonic()
+            stale = self._payload is None or self._at is None or (now - self._at) > EVALUACIONES_CACHE_TTL_SECONDS
+            if not stale:
+                assert self._payload is not None
+                return self._payload
+
+            in_backoff = (
+                self._failure_backoff_s > 0
+                and self._failed_at is not None
+                and (now - self._failed_at) < self._failure_backoff_s
+            )
+            if in_backoff and self._payload is not None:
+                # A recent fetch already failed; don't hammer the upstream
+                # again until the backoff window elapses — serve whatever is
+                # currently cached (stale or Blob-restored, but SOMETHING).
+                return self._payload
+
             try:
                 self._payload = fetch()
                 self._at = now
                 self._degraded = False  # real fresh data, even if it was degraded before
+                self._failed_at = None  # recovered: clear any armed backoff
                 self._persist_last_good()
             except Exception:
                 # Serve-stale-on-error (30-ago-2026): a Firestore 429/
@@ -166,8 +218,9 @@ class EvaluacionesCache:
                     # malformed/wrong-shaped payload — so only a validated
                     # list is ever served. Re-raise only when Firestore
                     # failed AND Blob has nothing usable.
-                    restored = blob_lkg.load_json(EVALUACIONES_LKG_BLOB, list)
+                    restored = blob_lkg.load_json(self._lkg_blob, list)
                     if restored is None:
+                        self._failed_at = now
                         raise
                     logging.exception(
                         "evaluaciones: fetch fallo sin payload previo, sirviendo el ultimo bueno desde Blob"
@@ -179,8 +232,9 @@ class EvaluacionesCache:
                     logging.exception(
                         "evaluaciones: fetch fallo, sirviendo el ultimo payload en cache (stale)"
                     )
-        assert self._payload is not None
-        return self._payload
+                self._failed_at = now
+            assert self._payload is not None
+            return self._payload
 
     def _persist_last_good(self) -> None:
         """Blob write of the fresh payload, gated by content hash so an
@@ -192,13 +246,13 @@ class EvaluacionesCache:
         The Blob copy is projected through the public allowlist (see
         `_redact_for_blob`); the in-process payload and the HTTP response
         stay complete."""
-        redacted = _redact_for_blob(self._payload or [])
+        redacted = self._redact(self._payload or [])
         h = blob_lkg.payload_hash(redacted)
         if h == self._blob_hash:
             return
 
         def _upload() -> None:
-            if blob_lkg.save_json(EVALUACIONES_LKG_BLOB, redacted):
+            if blob_lkg.save_json(self._lkg_blob, redacted):
                 self._blob_hash = h
 
         # ponytail: no locking — two overlapping refreshes may double-upload
@@ -364,6 +418,24 @@ def _np_by_uid(db: Any, uids: set[str]) -> dict[str, str]:
         d = s.to_dict() if s.exists else None
         if d is not None:
             out[s.id] = str(d.get("NP") or "").strip()
+    return out
+
+
+def np_by_codigo(db: Any) -> dict[str, str]:
+    """Roster `inspectores/{uid}.NP` keyed by the 3-digit brigade `codigo`
+    — the segment our sticker codes embed (76001-1-`004`0001), so an
+    atencionsismo sticker of origin "firebase" can reach the inspector's NP
+    without a matching evaluación doc (design D1 step 2). Docs without a
+    code are unreachable from a sticker number and are skipped."""
+    out: dict[str, str] = {}
+    for snap in db.collection(INSPECTORES_COLLECTION).get():
+        d = snap.to_dict() or {}
+        codigo = str(d.get("codigo") or "").strip()
+        if codigo:
+            # zfill(3): same padding _allocate_codigo assigns, so an
+            # unpadded roster code (manual repair, older data) is still
+            # reachable by the 3-digit code every sticker `numero` embeds.
+            out[codigo.zfill(3)] = str(d.get("NP") or "").strip()
     return out
 
 

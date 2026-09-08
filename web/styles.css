@@ -1921,6 +1921,8 @@ body:not([data-role="admin"]) [data-sticker-segment="asignacion"] { display: non
   background: color-mix(in srgb, var(--status-r2) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--status-r2) 35%, transparent);
 }
+.eval-fuente { align-items: center; gap: 6px; }
+.eval-fuente-label { font-size: 12px; color: var(--text-muted); margin-right: 4px; }
 .eval-kpis { margin: 0; }
 /* The placard states read as prose here, not as three shouted labels. */
 .kpi-label-lower { text-transform: lowercase; letter-spacing: .02em; }
@@ -2049,6 +2051,18 @@ body:not([data-role="admin"]) [data-sticker-segment="asignacion"] { display: non
   .sticker-form-grid { grid-template-columns: 1fr; }
 }
 
+/* ---- Reportes ciudadanos tab (atencionsismo-reportes-ciudadanos-stickers
+   change, design D6) — reuses .eval-section/-kpis/-bar/-workspace/-map/
+   -aside/-list/-row/-dot/-pill/-meta/-cta, .kpi-row/-tile, .hab-bar(-seg),
+   .card/-toolbar, .segmented(-btn), .sticker-field/-search-input/-action,
+   .modal/-backdrop/-panel/-header/-body, .detail-group/-fields/-field and
+   .eval-empty as-is (same visual language as Evaluaciones/Stickers); only
+   the section-level width cap and the filter row's search-input width are
+   specific to this tab. */
+.rep-section .asignacion-search { flex: 1 1 220px; margin: 0; }
+.rep-section .asignacion-filters { align-items: flex-end; }
+#view-reportes-ciudadanos { max-width: 1180px; margin: 0 auto; }
+
 /* ============================================================
    ASIGNACIÓN — sub-section inside the Stickers tab (design.md
    ADR-4/ADR-5). Table/pill/map-legend styling all reuses
@@ -2063,6 +2077,14 @@ body:not([data-role="admin"]) [data-sticker-segment="asignacion"] { display: non
 }
 .asignacion-segment:hover { color: var(--text-primary); }
 .asignacion-segment.is-active { color: var(--accent); border-color: var(--accent); }
+/* Fuente selector (Atención Sismo / Formulario, design D3) — reuses
+   .asignacion-segmented/.asignacion-segment styling as-is, just a smaller
+   bottom margin and no border so it reads as a toolbar above the section,
+   not a page-level tab. Two classes (higher specificity) AND placed after
+   .asignacion-segmented above, so it actually wins: equal-specificity,
+   source-order-only overrides were previously clobbered by the plain
+   .asignacion-segmented rule coming later in the file. */
+.asignacion-segmented.eval-fuente { margin-bottom: 12px; border-bottom: none; }
 
 /* Planeación sub-tab panels (Puntos / Grupos / Vehículos). Explicit
    [hidden] rule so no `display:` on <section> can override the attribute. */

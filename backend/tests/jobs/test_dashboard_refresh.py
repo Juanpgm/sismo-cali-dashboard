@@ -483,6 +483,75 @@ def test_fetch_reportes_contact_write_failure_never_breaks_refresh(tmp_path, mon
     assert (tmp_path / "reportes.json").exists()
 
 
+# --- reportes_ciudadanos.json: lightweight public projection written -----
+# --- right after reportes.json, same never-publish-empty guard (design D5,
+# --- Task 6). ---------------------------------------------------------------
+
+
+def test_fetch_reportes_also_writes_reportes_ciudadanos(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setenv("VISITADOS_API_PASS", "secret")
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _fake_day_walk_one_record)
+    fake_db = _FakeContactDb()
+    monkeypatch.setattr(job.credentials, "sismo", lambda: type("_C", (), {"firestore": fake_db})())
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1
+    data = json.loads((tmp_path / "reportes_ciudadanos.json").read_text(encoding="utf-8"))
+    assert isinstance(data, list) and data and "estado" in data[0] and "nombre" not in data[0]
+    assert data[0]["id"] == "14832"
+    assert ("reportes_ciudadanos.json", "data/reportes_ciudadanos.json") in job._PUBLISH_FILES
+
+
+async def _fake_day_walk_empty(client, user, password, desde, *, until_ms=None, mapper=None):
+    return []
+
+
+def test_fetch_reportes_continues_when_ciudadanos_projection_fails(tmp_path, monkeypatch):
+    # The projection sits AFTER reportes_meta.json/reportes_agg.json are
+    # written, and is fail-soft: a bug in the projection must never leave
+    # the main reportes.json/meta/agg trio inconsistent (design D5).
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setenv("VISITADOS_API_PASS", "secret")
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _fake_day_walk_one_record)
+    fake_db = _FakeContactDb()
+    monkeypatch.setattr(job.credentials, "sismo", lambda: type("_C", (), {"firestore": fake_db})())
+
+    def _boom(records):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(job, "build_snapshot", _boom)
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1
+    assert (tmp_path / "reportes.json").exists()
+    assert (tmp_path / "reportes_meta.json").exists()
+    assert (tmp_path / "reportes_agg.json").exists()
+    assert not (tmp_path / "reportes_ciudadanos.json").exists()
+
+
+def test_fetch_reportes_zero_records_keeps_previous_files_and_skips_ciudadanos(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setenv("VISITADOS_API_PASS", "secret")
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _fake_day_walk_empty)
+    (tmp_path / "reportes.json").write_text('[{"id": "old"}]', encoding="utf-8")
+    (tmp_path / "reportes_ciudadanos.json").write_text('[{"id": "old-c"}]', encoding="utf-8")
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 0
+    assert json.loads((tmp_path / "reportes.json").read_text(encoding="utf-8")) == [{"id": "old"}]
+    assert json.loads((tmp_path / "reportes_ciudadanos.json").read_text(encoding="utf-8")) == [{"id": "old-c"}]
+
+
 def test_ingest_survey_cali_failure_does_not_propagate_out_of_run_refresh_step(tmp_path, monkeypatch):
     """The main refresh pipeline (meta_guard/publish_blob) must never be
     blocked by a survey_cali/Firestore hiccup -- same fail-soft convention
