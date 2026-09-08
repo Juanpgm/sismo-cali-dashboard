@@ -521,6 +521,17 @@ export function buildEvaluacionDocDefinition(e, { photos, mapImage } = {}) {
       ['NP', insp.np || 'Sin dato'],
       ['Fecha de registro', formatFechaEval(e?.fecha)],
     ]),
+    // Misattribution-risk caveat (2026-09-08, see evaluaciones.js's quienDe/
+    // inspector_fuente): a roster-by-code fallback names whoever CURRENTLY
+    // holds the brigade code, not necessarily who did this evaluation —
+    // brigade codes are reused after an inspector is deleted.
+    ...(e?.inspector_fuente === 'roster'
+      ? [{
+          text: 'Dato del código de brigada, no verificado contra esta evaluación — puede pertenecer a otro '
+            + 'inspector si el código fue reasignado.',
+          style: 'disclaimer', margin: [0, -6, 0, 10],
+        }]
+      : []),
     { text: 'Coordenadas', style: 'sectionHeader' },
     ...fieldTable([
       ['Latitud', coords ? coords.lat.toFixed(6) : 'Sin coordenadas'],

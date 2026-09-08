@@ -204,6 +204,22 @@ def test_redaction_blanks_persona_and_np():
     assert set(out) == set(router_mod._BLOB_ALLOWED_FIELDS) | {"descripcion", "inspector", "comentarios", "fotos"}
 
 
+def test_redaction_keeps_inspector_fuente_it_is_not_personally_identifying():
+    # inspector_fuente is a bare "evaluacion"|"roster"|"" enum, not PII — it
+    # must survive the public Blob redaction (misattribution-risk fix
+    # 2026-09-08) instead of being silently dropped by the allowlist.
+    payload = [{"id": "1", "fuente": "atencionsismo", "origen": "firebase", "color_etiqueta": "Habitable",
+                "codigo_edificacion": "c", "consecutivo": 1, "municipio": "76001", "area": "1", "area_nombre": "",
+                "clasificacion": "INSPECCIONADA", "alcance": "", "coords": {"lat": 1, "lng": 2, "accuracy": None},
+                "restricciones": "", "acciones_posteriores": {"barricadas": False, "evaluacion_detallada": False},
+                "fecha": None, "descripcion": {"nombre": "Juan", "direccion": "Calle 1"},
+                "inspector_fuente": "roster",
+                "inspector": {"uid": "u", "codigo": "004", "nombre_completo": "Ana", "identificacion": "1",
+                              "entidad": "E", "np": "P4"}, "comentarios": "c", "fotos": ["x"]}]
+    out = router_mod.redact_for_blob(payload)[0]
+    assert out["inspector_fuente"] == "roster"
+
+
 # ── A1: evaluaciones cache degraded -> build_payload fails completo, so the
 # stickers cache runs its OWN serve-stale/Blob-restore chain (design D4:
 # "si Firestore falla, el fetch falla completo") ────────────────────────

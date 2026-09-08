@@ -190,3 +190,78 @@ def test_build_matches_firestore_evaluacion_when_codigo_has_stray_whitespace():
     fs = [_eval_firestore(codigo_edificacion="76001-1-0040007 ")]
     out = sa.build_evaluaciones(rows, roster_by_codigo={}, evaluaciones_firestore=fs)
     assert out[0]["inspector"]["np"] == "P4"
+
+
+# ── inspector_fuente: distinguishes verified identity (matched evaluación)
+# from the current holder of a reused brigade code (roster fallback) ───────
+
+
+def test_inspector_fuente_is_evaluacion_when_matched():
+    matched_eval = _eval_firestore()
+    out = sa.normalize_sticker(_row(), roster_by_codigo={"004": {"nombre_completo": "Otro"}},
+                               evaluacion_by_codigo={"76001-1-0040007": matched_eval})
+    assert out["inspector_fuente"] == "evaluacion"
+
+
+def test_inspector_fuente_is_evaluacion_even_when_matched_identity_is_blank():
+    matched_eval = _eval_firestore(
+        inspector={"uid": "u1", "codigo": "004", "nombre_completo": "", "identificacion": "",
+                   "entidad": "", "np": ""}
+    )
+    out = sa.normalize_sticker(_row(), roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": matched_eval})
+    assert out["inspector_fuente"] == "evaluacion"
+
+
+def test_inspector_fuente_is_roster_when_no_match_and_roster_has_an_identity_field():
+    roster = {"004": {"np": "P4", "nombre_completo": "Ana Gomez", "identificacion": "123",
+                      "entidad": "Curaduria 1", "uid": "u-004"}}
+    out = sa.normalize_sticker(_row(), roster_by_codigo=roster, evaluacion_by_codigo={})
+    assert out["inspector_fuente"] == "roster"
+
+
+def test_inspector_fuente_is_roster_when_only_uid_is_present():
+    # ANY single identity field (uid included) is enough to call it "roster".
+    roster = {"004": {"np": "P4", "uid": "u-004"}}
+    out = sa.normalize_sticker(_row(), roster_by_codigo=roster, evaluacion_by_codigo={})
+    assert out["inspector_fuente"] == "roster"
+
+
+def test_inspector_fuente_is_empty_when_no_match_and_roster_has_only_np():
+    # A roster entry with ONLY `np` set carries a Fase number, not a person —
+    # there is nobody to (mis)attribute, so this is NOT "roster".
+    roster = {"004": {"np": "P4"}}
+    out = sa.normalize_sticker(_row(), roster_by_codigo=roster, evaluacion_by_codigo={})
+    assert out["inspector_fuente"] == ""
+    assert out["inspector"]["np"] == "P4"  # np itself is still set
+
+
+def test_inspector_fuente_is_empty_when_no_match_and_roster_entry_is_entirely_blank():
+    roster = {"004": {}}
+    out = sa.normalize_sticker(_row(), roster_by_codigo=roster, evaluacion_by_codigo={})
+    assert out["inspector_fuente"] == ""
+
+
+def test_inspector_fuente_is_empty_when_no_match_and_no_roster_entry():
+    out = sa.normalize_sticker(_row(), roster_by_codigo={}, evaluacion_by_codigo={})
+    assert out["inspector_fuente"] == ""
+
+
+def test_inspector_fuente_is_empty_when_codigo_does_not_parse():
+    roster = {"004": {"np": "P9", "nombre_completo": "Alguien", "identificacion": "1",
+                      "entidad": "E", "uid": "u-1"}}
+    out = sa.normalize_sticker(_row(origen="sistema", numero="Sin código"), roster_by_codigo=roster,
+                               evaluacion_by_codigo={})
+    assert out["inspector_fuente"] == ""
+
+
+# ── F3: roster fields that are explicitly None (not just missing) must
+# coerce to "", same as the matched-evaluación branch already does ─────────
+
+
+def test_roster_none_identity_values_coerce_to_empty_string_not_none():
+    roster = {"004": {"np": None, "uid": None, "nombre_completo": None,
+                      "identificacion": None, "entidad": None}}
+    out = sa.normalize_sticker(_row(), roster_by_codigo=roster, evaluacion_by_codigo={})
+    assert out["inspector"] == {"uid": "", "codigo": "004", "nombre_completo": "",
+                                "identificacion": "", "entidad": "", "np": ""}
+    assert out["inspector_fuente"] == ""  # all blank after coercion -> no person to attribute

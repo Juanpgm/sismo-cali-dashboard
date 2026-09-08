@@ -16,6 +16,14 @@ with the roster), for the same reason `np` already worked this way: brigade
 codes are reused after an inspector is deleted, so mixing sources within a
 matched record could attach a different inspector's identity to an old
 evaluación.
+
+`inspector_fuente` (2026-09-08): a top-level `"evaluacion" | "roster" | ""`
+flag on every returned record, added because the roster fallback above is a
+real misattribution risk — brigade codes are reused once an inspector is
+deleted, so an old sticker can end up displaying the CURRENT holder's real
+name and cédula (a specific, named, uninvolved person), not just a wrong
+Fase. Callers use this flag to caveat/relabel a roster-sourced identity
+instead of presenting it with the same confidence as a verified match.
 """
 from __future__ import annotations
 
@@ -98,12 +106,27 @@ def normalize_sticker(
         nombre_completo_value = str(insp_match.get("nombre_completo") or "")
         identificacion_value = str(insp_match.get("identificacion") or "")
         entidad_value = str(insp_match.get("entidad") or "")
+        inspector_fuente = "evaluacion"
     else:
-        np_value = roster_match.get("np", "")
-        uid_value = roster_match.get("uid", "")
-        nombre_completo_value = roster_match.get("nombre_completo", "")
-        identificacion_value = roster_match.get("identificacion", "")
-        entidad_value = roster_match.get("entidad", "")
+        # F3 fix: coerce None/other falsy-but-present roster values to "",
+        # same as the matched branch above — `dict.get(k, "")` only applies
+        # its default when the key is ABSENT, so a roster doc with an
+        # explicit `None` field (e.g. a manually repaired Firestore doc)
+        # used to leak a raw `None` into the response instead of "".
+        np_value = str(roster_match.get("np") or "")
+        uid_value = str(roster_match.get("uid") or "")
+        nombre_completo_value = str(roster_match.get("nombre_completo") or "")
+        identificacion_value = str(roster_match.get("identificacion") or "")
+        entidad_value = str(roster_match.get("entidad") or "")
+        # "roster" only when the roster actually names a PERSON (any one of
+        # nombre_completo/identificacion/entidad/uid non-blank) — a roster
+        # entry carrying only `np` (a Fase number) has nobody to attribute,
+        # so it is treated the same as no roster entry at all: "".
+        inspector_fuente = (
+            "roster"
+            if any((nombre_completo_value, identificacion_value, entidad_value, uid_value))
+            else ""
+        )
 
     clase = COLOR_TO_CLASE.get(str(row.get("color") or "").strip().lower(), "")
     desc_match = (match or {}).get("descripcion") or {}
@@ -122,6 +145,7 @@ def normalize_sticker(
         "clasificacion": (match or {}).get("clasificacion") or clase,
         "alcance": (match or {}).get("alcance") or "",
         "coords": _coords(row) or (match or {}).get("coords"),
+        "inspector_fuente": inspector_fuente,
         "inspector": {
             "uid": uid_value,
             "codigo": codigo_inspector,

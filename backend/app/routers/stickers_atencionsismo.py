@@ -40,7 +40,11 @@ STICKERS_LKG_BLOB = "data/stickers_atencionsismo_last_good.json"
 # into the cache's serve-stale/Blob chain instead of hanging the worker.
 STICKERS_FETCH_DEADLINE_S = 45.0
 
-_BLOB_ALLOWED_FIELDS = stickers._BLOB_ALLOWED_FIELDS + ("fuente", "origen", "color_etiqueta")
+# inspector_fuente ("evaluacion"|"roster"|"") is a bare enum, not PII, so it
+# is allowlisted alongside the other atencionsismo-only fields — dropping it
+# on the public Blob copy would silently undo the misattribution-risk
+# caveat callers key off of (stickers_atencionsismo.normalize_sticker).
+_BLOB_ALLOWED_FIELDS = stickers._BLOB_ALLOWED_FIELDS + ("fuente", "origen", "color_etiqueta", "inspector_fuente")
 
 
 def redact_for_blob(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:

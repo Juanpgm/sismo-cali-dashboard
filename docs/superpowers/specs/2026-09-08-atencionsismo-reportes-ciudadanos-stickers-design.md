@@ -49,6 +49,8 @@ Si hay evaluación, su NP es autoritativo aunque esté vacío. El roster solo ap
 
 Extensión (2026-09-08): cuando NO hay evaluación, además del NP se completan `nombre_completo`, `identificacion`, `entidad` y `uid` desde el mismo documento del roster (`inspectores` por código de brigada) — mismo criterio de autoridad que el NP: solo aplica sin match, nunca se mezcla con una evaluación existente.
 
+Extensión (2026-09-08, fix de mala atribución): el paso 2 anterior es un riesgo real de atribución — los códigos de brigada se reutilizan al borrar un inspector, así que un sticker viejo puede terminar mostrando el nombre y la cédula reales de quien HOY tiene ese código, sin relación con ese registro. Cada registro trae ahora `inspector_fuente: "evaluacion" | "roster" | ""` (`"evaluacion"` con match en Firestore, `"roster"` sin match y con al menos un campo de identidad no vacío en el roster, `""` en cualquier otro caso, incluida una entrada de roster que solo trae `np`). El frontend usa este campo para nunca presentar una identidad de roster con la misma confianza que un match verificado (lista, modal, PDF, xlsx).
+
 La regla de negocio `faseInspector(np)` no cambia.
 
 ### D2. Forma normalizada única para Evaluaciones
