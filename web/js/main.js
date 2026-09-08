@@ -11,6 +11,7 @@ import {
 import { initTable, renderTable, setTotalRecords, openDetailModal, configurarRepresentante } from './table.js';
 import { initAccionesTab } from './acciones-capa.js';
 import { initStickers } from './stickers.js';
+import { initReportesCiudadanos } from './reportes-ciudadanos.js';
 import { initPlaneacion } from './planeacion.js';
 import { initPuntosSolicitados } from './puntos_solicitados.js';
 import { initUsuarios } from './usuarios.js';
@@ -224,6 +225,19 @@ function switchView(view) {
   // Stickers pulls live data from /api/stickers — (re)load it each time it opens.
   if (view === 'stickers') {
     initStickers(document.getElementById('view-stickers'), { getToken: getIdToken });
+  }
+  // Reportes ciudadanos reads the public Blob snapshot (no token) — (re)load
+  // it each time it opens, same lifecycle as Stickers.
+  if (view === 'reportes-ciudadanos') {
+    initReportesCiudadanos(document.getElementById('view-reportes-ciudadanos'), {
+      fetchReportes: async () => {
+        const [datos, meta] = await Promise.all([
+          fetchData('reportes_ciudadanos.json').then((r) => (r.ok ? r.json() : [])),
+          fetchData('reportes_meta.json').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+        ]);
+        return { reportes: Array.isArray(datos) ? datos : [], meta };
+      },
+    });
   }
   // Planeación is a top-level tab (design.md ADR-10) — (re)initialize it each
   // time it opens, same lifecycle as Stickers/Usuarios/Analista; it fetches
