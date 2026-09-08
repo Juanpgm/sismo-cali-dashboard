@@ -423,6 +423,116 @@ def test_admin_evaluaciones_returns_flattened_list(monkeypatch):
     assert ev["fecha"] == "2026-01-01T00:00:00Z"
 
 
+def test_admin_evaluaciones_joins_np_from_inspector_doc(monkeypatch):
+    """Fase II business rule input: `inspectores/{uid}.NP` is joined onto
+    each evaluación's `inspector.np`."""
+    fake_auth = _FakeAuth()
+    stores = {
+        "inspectores": {"uid-x": {"NP": "P3"}},
+        "evaluaciones": {"ev-1": {"codigo_edificacion": "76001-1-0010001", "inspector": {"uid": "uid-x", "codigo": "004"}}},
+    }
+    client = _admin_client(monkeypatch, fake_auth, stores)
+
+    resp = client.post("/stickers", json={"action": "evaluaciones"})
+
+    assert resp.status_code == 200
+    assert resp.json()["evaluaciones"][0]["inspector"]["np"] == "P3"
+
+
+def test_admin_evaluaciones_np_is_stripped(monkeypatch):
+    fake_auth = _FakeAuth()
+    stores = {
+        "inspectores": {"uid-x": {"NP": "  P4  "}},
+        "evaluaciones": {"ev-1": {"inspector": {"uid": "uid-x"}}},
+    }
+    client = _admin_client(monkeypatch, fake_auth, stores)
+
+    resp = client.post("/stickers", json={"action": "evaluaciones"})
+
+    assert resp.json()["evaluaciones"][0]["inspector"]["np"] == "P4"
+
+
+def test_admin_evaluaciones_np_blank_when_inspector_doc_has_no_np_field(monkeypatch):
+    fake_auth = _FakeAuth()
+    stores = {
+        "inspectores": {"uid-x": {"nombre_completo": "Ana"}},  # doc exists, no NP
+        "evaluaciones": {"ev-1": {"inspector": {"uid": "uid-x"}}},
+    }
+    client = _admin_client(monkeypatch, fake_auth, stores)
+
+    resp = client.post("/stickers", json={"action": "evaluaciones"})
+
+    assert resp.json()["evaluaciones"][0]["inspector"]["np"] == ""
+
+
+def test_admin_evaluaciones_np_blank_when_no_matching_inspector_doc(monkeypatch):
+    fake_auth = _FakeAuth()
+    stores = {
+        "inspectores": {},  # uid-ghost has no doc at all
+        "evaluaciones": {"ev-1": {"inspector": {"uid": "uid-ghost"}}},
+    }
+    client = _admin_client(monkeypatch, fake_auth, stores)
+
+    resp = client.post("/stickers", json={"action": "evaluaciones"})
+
+    assert resp.status_code == 200
+    assert resp.json()["evaluaciones"][0]["inspector"]["np"] == ""
+
+
+def test_admin_evaluaciones_np_blank_when_uid_missing_no_crash(monkeypatch):
+    """No `inspector.uid` on the evaluación at all — must not attempt a
+    Firestore lookup with a None/empty doc id, and must not crash."""
+    fake_auth = _FakeAuth()
+    stores = {
+        "inspectores": {},
+        "evaluaciones": {"ev-1": {"inspector": {}}},
+    }
+    client = _admin_client(monkeypatch, fake_auth, stores)
+
+    resp = client.post("/stickers", json={"action": "evaluaciones"})
+
+    assert resp.status_code == 200
+    assert resp.json()["evaluaciones"][0]["inspector"]["np"] == ""
+
+
+def test_admin_evaluaciones_np_blank_when_inspector_is_null_no_crash(monkeypatch):
+    """A doc with an explicit `inspector: null` (not just an absent key) must
+    not crash the whole list — `.get("inspector")` returns None here, and the
+    uid-collection step must tolerate that the same way the per-doc loop
+    already does (regression: an unguarded `.get("inspector", {})` default
+    only fires when the key is missing, not when it's present-but-null)."""
+    fake_auth = _FakeAuth()
+    stores = {
+        "inspectores": {},
+        "evaluaciones": {"ev-1": {"codigo_edificacion": "76001-1-0010001", "inspector": None}},
+    }
+    client = _admin_client(monkeypatch, fake_auth, stores)
+
+    resp = client.post("/stickers", json={"action": "evaluaciones"})
+
+    assert resp.status_code == 200
+    assert resp.json()["evaluaciones"][0]["inspector"]["np"] == ""
+
+
+def test_evaluaciones_blob_copy_redacts_np(monkeypatch):
+    """The NP-derived Fase carries the same sensitivity tier as
+    nombre_completo/identificacion — redacted to "" in the public Blob copy,
+    while the live/served payload keeps the real value."""
+    cache = stickers.EvaluacionesCache()
+    saves: list[Any] = []
+    monkeypatch.setattr(stickers.blob_lkg, "save_json",
+                        lambda pathname, payload: saves.append(payload) or True)
+
+    payload = [{"codigo_edificacion": "A",
+                "inspector": {"uid": "u1", "codigo": "004", "entidad": "DAGMA", "np": "P3"}}]
+    served = cache.get_or_fetch(lambda: payload)
+    _join_persist(cache)
+
+    assert served[0]["inspector"]["np"] == "P3"
+    uploaded = saves[0][0]
+    assert uploaded["inspector"]["np"] == ""
+
+
 def test_admin_create_allocates_next_free_codigo(monkeypatch):
     fake_auth = _FakeAuth()
     stores = {"inspectores": {"uid-1": {"codigo": "001"}}, "evaluaciones": {}}

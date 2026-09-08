@@ -1,7 +1,9 @@
 // Self-check for the pure classification logic behind the Stickers tab's
 // evaluaciones panel. Run: node web/js/evaluaciones.test.mjs
 import assert from 'node:assert';
-import { claseDe, contarPorClase, CLASES } from './evaluaciones.js';
+import {
+  claseDe, contarPorClase, CLASES, faseDe, FASES, applyFilters,
+} from './evaluaciones.js';
 
 // The three ATC-20 placard states, in escalating severity.
 assert.deepStrictEqual(CLASES.map((c) => c.key), ['INSPECCIONADA', 'USO_RESTRINGIDO', 'INSEGURO']);
@@ -36,3 +38,33 @@ assert.deepStrictEqual(contarPorClase([]), {
 });
 
 console.log('ok — evaluaciones.js placard classification');
+
+// --- faseDe: Fase I/II derived from inspector.np -----------------------------
+assert.deepStrictEqual(FASES.map((f) => f.key), ['FASE_II', 'FASE_I']);
+assert.strictEqual(faseDe({ inspector: { np: 'P3' } }).key, 'FASE_II');
+assert.strictEqual(faseDe({ inspector: { np: 'P3' } }).label, 'fase II');
+assert.strictEqual(faseDe({ inspector: { np: 'P1' } }).key, 'FASE_I');
+assert.strictEqual(faseDe({ inspector: { np: 'P1' } }).label, 'fase I');
+assert.strictEqual(faseDe({ inspector: { np: '' } }).key, 'FASE_I');
+assert.strictEqual(faseDe({ inspector: {} }).key, 'FASE_I');
+
+// --- applyFilters: fase filter clause ----------------------------------------
+const evaluacionesFase = [
+  { id: '1', inspector: { np: 'P3' }, descripcion: {}, clasificacion: '' },
+  { id: '2', inspector: { np: 'P1' }, descripcion: {}, clasificacion: '' },
+  { id: '3', inspector: {}, descripcion: {}, clasificacion: '' }, // no NP -> Fase I default
+];
+assert.deepStrictEqual(
+  applyFilters(evaluacionesFase, { fase: 'FASE_II' }).map((e) => e.id),
+  ['1'],
+);
+assert.deepStrictEqual(
+  applyFilters(evaluacionesFase, { fase: 'FASE_I' }).map((e) => e.id),
+  ['2', '3'],
+);
+assert.deepStrictEqual(
+  applyFilters(evaluacionesFase, { fase: '' }).map((e) => e.id),
+  ['1', '2', '3'],
+);
+
+console.log('ok — faseDe + applyFilters fase filter');

@@ -223,7 +223,7 @@ def _redact_for_blob(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "descripcion": {"nombre": desc.get("nombre") or "",
                             "direccion": desc.get("direccion") or ""},
             "inspector": {**{k: insp.get(k) or "" for k in _BLOB_ALLOWED_INSPECTOR},
-                          "nombre_completo": "", "identificacion": ""},
+                          "nombre_completo": "", "identificacion": "", "np": ""},
             "comentarios": "",
             "fotos": [],
         })
@@ -335,13 +335,32 @@ def _num_or_none(value: Any) -> float | None:
     return n if n else None
 
 
+def _np_by_uid(db: Any, uids: set[str]) -> dict[str, str]:
+    """Batch-fetch `inspectores/{uid}.NP` for every uid an evaluación
+    references — same `db.get_all(refs)` pattern `list_inspectores` already
+    uses. Missing doc / missing `NP` field both resolve at the call site
+    (this only returns what it could actually read)."""
+    if not uids:
+        return {}
+    refs = [db.collection(INSPECTORES_COLLECTION).document(uid) for uid in uids]
+    snaps = db.get_all(refs)
+    out: dict[str, str] = {}
+    for s in snaps:
+        d = s.to_dict() if s.exists else None
+        if d is not None:
+            out[s.id] = str(d.get("NP") or "").strip()
+    return out
+
+
 def list_evaluaciones(db: Any) -> list[dict[str, Any]]:
     """Every ATC-20 evaluation, flattened for the dashboard's Stickers tab.
     Verbatim port of `api/stickers.js`'s `listEvaluaciones` — read here
     (Admin SDK, bypasses Firestore rules) rather than straight from the
     browser, mirroring the legacy handler's own comment: `evaluaciones` is
     open only to inspectores, and a dashboard admin is deliberately not
-    one.
+    one. Also joins each evaluación's `inspector.np` from its
+    `inspectores/{uid}.NP` field (Fase I/II business rule input, see
+    web/js/evaluaciones.js's `faseDe`).
 
     `e.timestamp` is a Python `datetime` once read via `to_dict()` (the
     google-cloud-firestore client auto-converts Timestamp fields — there is
@@ -349,7 +368,11 @@ def list_evaluaciones(db: Any) -> list[dict[str, Any]]:
     `isoformat()` branch below is the Python-native equivalent of
     `api/stickers.js`'s `typeof e.timestamp.toDate === 'function'` check.
     """
-    docs = db.collection(EVALUACIONES_COLLECTION).get()
+    docs = list(db.collection(EVALUACIONES_COLLECTION).get())
+    uids = {str(((doc.to_dict() or {}).get("inspector") or {}).get("uid") or "").strip() for doc in docs}
+    uids.discard("")
+    np_by_uid = _np_by_uid(db, uids)
+
     result: list[dict[str, Any]] = []
     for doc in docs:
         e = doc.to_dict() or {}
@@ -361,6 +384,7 @@ def list_evaluaciones(db: Any) -> list[dict[str, Any]]:
         acc = e.get("acciones_posteriores") or {}
         ts_value = e.get("timestamp")
         ts = ts_value.isoformat() if isinstance(ts_value, datetime) else None
+        uid = str(insp.get("uid") or "").strip()
         result.append(
             {
                 "id": doc.id,
@@ -382,6 +406,7 @@ def list_evaluaciones(db: Any) -> list[dict[str, Any]]:
                     "nombre_completo": insp.get("nombre_completo") or "",
                     "identificacion": insp.get("identificacion") or "",
                     "entidad": insp.get("entidad") or "",
+                    "np": np_by_uid.get(uid, "") if uid else "",
                 },
                 "descripcion": {"nombre": desc.get("nombre") or "", "direccion": desc.get("direccion") or ""},
                 "restricciones": e.get("restricciones") or "",

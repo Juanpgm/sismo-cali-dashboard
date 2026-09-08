@@ -15,12 +15,13 @@
 // one. The serverless function reads it with the admin SDK behind the same
 // admin gate the rest of this tab already uses.
 import {
-  COLORS, escapeHtml, basemapTileUrl, normalize, loadXlsx, downloadStamp, showToast,
+  COLORS, escapeHtml, basemapTileUrl, normalize, loadXlsx, downloadStamp, showToast, faseInspector,
 } from './utils.js';
 import { buildMiniMap, resolveBarrioComuna } from './mapview.js';
 import { openLightbox } from './table.js';
 import { store } from './data.js';
 import { coverageGaugeHtml } from './coverage-gauge.js';
+import { generarInformeEvaluacion } from './report.js';
 
 const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
 const CALI_CENTER = [3.42, -76.53];
@@ -46,6 +47,22 @@ export function claseDe(evaluacion) {
   const raw = String((evaluacion && evaluacion.clasificacion) || '')
     .trim().toUpperCase().replace(/[\s-]+/g, '_');
   return CLASE_BY_KEY.get(raw) || SIN_CLASE;
+}
+
+// Inspector Fase I/II — see utils.js's faseInspector for the business rule
+// (NP category P3+ = Fase II). FASE_II first: same escalating-severity
+// convention CLASES uses (worse/rarer state first).
+export const FASES = [
+  { key: 'FASE_II', label: 'fase II', color: COLORS.accent },
+  { key: 'FASE_I', label: 'fase I', color: COLORS.unknown },
+];
+const FASE_BY_KEY = new Map(FASES.map((f) => [f.key, f]));
+
+/** Fase I/II of one evaluation's inspector, derived from inspector.np (the
+ *  server-joined inspectores/{uid}.NP value, see backend/app/routers/
+ *  stickers.py's list_evaluaciones). */
+export function faseDe(evaluacion) {
+  return FASE_BY_KEY.get(faseInspector(evaluacion && evaluacion.inspector && evaluacion.inspector.np));
 }
 
 /** Count per placard class, keyed by CLASES[].key (plus SIN_DATO). */
@@ -80,15 +97,27 @@ function claseChipsHtml(activeKey) {
   ].join('');
 }
 
-/** Filtered view of `list`: clasificación ATC-20, comuna/barrio (resolved
- *  client-side, see resolveBarrioComuna) and a free-text search across
- *  inspector + edificación fields. Case/accent-insensitive (normalize() strips
- *  both), same as the rest of the dashboard's search boxes. Exported so a
- *  pure self-check can exercise it without the DOM. */
+/** Chip group for the inspector Fase I/II filter — same shape as
+ *  claseChipsHtml above, one group ('fase') instead of 'clase'. */
+function faseChipsHtml(activeKey) {
+  const chip = (value, label, active) => `<button type="button" class="asignacion-chip${active ? ' is-active' : ''}" data-filter-group="fase" data-filter-value="${value}">${escapeHtml(label)}</button>`;
+  return [
+    chip('', 'Todas', !activeKey),
+    ...FASES.map((f) => chip(f.key, f.label, activeKey === f.key)),
+  ].join('');
+}
+
+/** Filtered view of `list`: clasificación ATC-20, inspector Fase I/II,
+ *  comuna/barrio (resolved client-side, see resolveBarrioComuna) and a
+ *  free-text search across inspector + edificación fields. Case/accent-
+ *  insensitive (normalize() strips both), same as the rest of the
+ *  dashboard's search boxes. Exported so a pure self-check can exercise it
+ *  without the DOM. */
 export function applyFilters(list, filters) {
   const q = filters.search ? normalize(filters.search) : '';
   return list.filter((e) => {
     if (filters.clase && claseDe(e).key !== filters.clase) return false;
+    if (filters.fase && faseDe(e).key !== filters.fase) return false;
     if (filters.comuna && e._comuna !== filters.comuna) return false;
     if (filters.barrio && e._barrio !== filters.barrio) return false;
     if (q) {
@@ -106,6 +135,7 @@ export function applyFilters(list, filters) {
 function describeFilters(f) {
   const parts = [];
   if (f.clase) parts.push(`Clasificación: ${(CLASE_BY_KEY.get(f.clase) || SIN_CLASE).label}`);
+  if (f.fase) parts.push(`Fase: ${(FASE_BY_KEY.get(f.fase) || {}).label}`);
   if (f.comuna) parts.push(`Comuna: ${f.comuna}`);
   if (f.barrio) parts.push(`Barrio: ${f.barrio}`);
   if (f.search) parts.push(`Búsqueda: "${f.search}"`);
@@ -190,6 +220,7 @@ export function sectionHtml() {
         </div>
         <div class="card-toolbar asignacion-filters">
           <div class="asignacion-filters-group" id="eval-clase-chips">${claseChipsHtml('')}</div>
+          <div class="asignacion-filters-group" id="eval-fase-chips">${faseChipsHtml('')}</div>
           <label class="sticker-field asignacion-inline-field">
             <span>Comuna</span>
             <select id="eval-comuna-select" aria-label="Filtrar por comuna"><option value="">— Todas las comunas —</option></select>
@@ -224,6 +255,7 @@ export function sectionHtml() {
         <div class="modal-panel">
           <div class="modal-header">
             <h2 id="eval-modal-title">Detalle de la evaluación</h2>
+            <button type="button" class="btn-icon accion-pdf-btn" id="eval-modal-pdf" title="Descargar informe PDF" aria-label="Descargar informe PDF">${PDF_ICON}</button>
             <button type="button" class="btn-icon" data-eval-close aria-label="Cerrar">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
             </button>
@@ -439,21 +471,34 @@ function listItemHtml(e) {
   const c = claseDe(e);
   const fotos = e.fotos.length ? `${e.fotos.length} foto${e.fotos.length === 1 ? '' : 's'}` : 'sin fotos';
   const quien = e.inspector.nombre_completo || `Brigada ${e.inspector.codigo || '—'}`;
+  // .ps-row-wrap + sibling PDF button — same recipe acciones-capa.js's
+  // accionRowHtml uses (button-in-button is invalid HTML, so the PDF
+  // control lives next to .eval-row, not nested inside it).
   return `<li>
-    <button type="button" class="eval-row" data-eval-detail="${escapeHtml(e.id)}">
-      <span class="eval-dot" style="background:${c.color}" aria-hidden="true"></span>
-      <span class="eval-name">${escapeHtml(tituloDe(e))}</span>
-      <span class="eval-pill" style="--eval-pill:${c.color}">${escapeHtml(c.label)}</span>
-      <span class="eval-meta">${escapeHtml(e.codigo_edificacion)} · ${escapeHtml(quien)}</span>
-      <span class="eval-meta">${escapeHtml(formatFecha(e.fecha))} · ${fotos}</span>
-      <span class="eval-cta">Ver detalle &rsaquo;</span>
-    </button>
+    <div class="ps-row-wrap">
+      <button type="button" class="eval-row" data-eval-detail="${escapeHtml(e.id)}">
+        <span class="eval-dot" style="background:${c.color}" aria-hidden="true"></span>
+        <span class="eval-name">${escapeHtml(tituloDe(e))}</span>
+        <span class="eval-pill" style="--eval-pill:${c.color}">${escapeHtml(c.label)}</span>
+        <span class="eval-meta">${escapeHtml(e.codigo_edificacion)} · ${escapeHtml(quien)}</span>
+        <span class="eval-meta">${escapeHtml(formatFecha(e.fecha))} · ${fotos}</span>
+        <span class="eval-cta">Ver detalle &rsaquo;</span>
+      </button>
+      <button type="button" class="btn-icon accion-pdf-btn" data-eval-pdf="${escapeHtml(e.id)}" title="Descargar informe PDF" aria-label="Descargar informe PDF">${PDF_ICON}</button>
+    </div>
   </li>`;
 }
 
 // ---- Detail modal ------------------------------------------------------------
 
 const siNo = (v) => (v ? 'Sí' : 'No');
+
+// PDF icon, swapped for a spinner while generarInformeEvaluacion runs — same
+// pattern acciones-capa.js's accionRowHtml uses (PDF_ICON/SPINNER_ICON are
+// not exported there, so duplicated here rather than adding a cross-module
+// export just for two SVG strings).
+const PDF_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><polyline points="9 15 12 18 15 15"/></svg>';
+const SPINNER_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" stroke-opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg>';
 
 function detailHtml(e) {
   const c = claseDe(e);
@@ -498,6 +543,8 @@ function detailHtml(e) {
       ['Código de brigada', e.inspector.codigo || 'Sin dato'],
       ['Identificación', e.inspector.identificacion || 'Sin dato'],
       ['Entidad', e.inspector.entidad || 'Sin dato'],
+      ['Fase', faseDe(e).label],
+      ['NP', e.inspector.np || 'Sin dato'],
       ['Fecha de registro', formatFecha(e.fecha)],
     ])}
     ${group('Ubicación', [
@@ -530,15 +577,20 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   const reloadBtn = section.querySelector('#eval-reload');
   const searchEl = section.querySelector('#eval-search');
   const chipsEl = section.querySelector('#eval-clase-chips');
+  const faseChipsEl = section.querySelector('#eval-fase-chips');
   const comunaSelect = section.querySelector('#eval-comuna-select');
   const barrioSelect = section.querySelector('#eval-barrio-select');
   const downloadBtn = section.querySelector('#eval-download');
+  const modalPdfBtn = section.querySelector('#eval-modal-pdf');
   let byId = new Map();
   // Full, geo-resolved dataset from the last successful fetch — filters below
   // read/write these without ever re-fetching or re-resolving geo.
   let allEvaluaciones = [];
   let comunaMap = new Map(); // comuna -> Set(barrio), rebuilt alongside allEvaluaciones
-  let filters = { search: '', clase: '', comuna: '', barrio: '' };
+  let filters = { search: '', clase: '', fase: '', comuna: '', barrio: '' };
+  // Which evaluación the modal is currently showing — the modal's own PDF
+  // button (unlike the row ones) has no per-row index to read from.
+  let modalEvaluacion = null;
 
   // Panel-wide sticker coverage (same figure as the Panel gauge), from the store
   // that main.js populates via /api/sticker-status. Lives on the map itself
@@ -555,6 +607,7 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   function openDetail(id) {
     const e = byId.get(id);
     if (!e) return;
+    modalEvaluacion = e;
     modalTitle.textContent = tituloDe(e);
     modalBody.innerHTML = detailHtml(e);
     modal.classList.add('is-open');
@@ -572,6 +625,45 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
     // Map popups live outside `section` (Leaflet reparents them), so those
     // buttons are wired on popupopen instead; this covers the list rows.
     if (btn && listEl.contains(btn)) openDetail(btn.dataset.evalDetail);
+  });
+
+  // Per-row PDF button — same disable/spinner/restore + error-toast contract
+  // as acciones-capa.js's own [data-accion-pdf] handler.
+  listEl.addEventListener('click', async (ev) => {
+    const pdfBtn = ev.target.closest('[data-eval-pdf]');
+    if (!pdfBtn) return;
+    const e = byId.get(pdfBtn.dataset.evalPdf);
+    if (!e) return;
+    pdfBtn.disabled = true;
+    pdfBtn.classList.add('is-loading');
+    pdfBtn.innerHTML = SPINNER_ICON;
+    try {
+      await generarInformeEvaluacion(e);
+    } catch {
+      showToast('No se pudo generar el informe PDF.', 'error');
+    } finally {
+      pdfBtn.disabled = false;
+      pdfBtn.classList.remove('is-loading');
+      pdfBtn.innerHTML = PDF_ICON;
+    }
+  });
+
+  // Same PDF action inside the detail modal (Acciones has one there too),
+  // over whichever evaluación openDetail() last set.
+  modalPdfBtn.addEventListener('click', async () => {
+    if (!modalEvaluacion) return;
+    modalPdfBtn.disabled = true;
+    modalPdfBtn.classList.add('is-loading');
+    modalPdfBtn.innerHTML = SPINNER_ICON;
+    try {
+      await generarInformeEvaluacion(modalEvaluacion);
+    } catch {
+      showToast('No se pudo generar el informe PDF.', 'error');
+    } finally {
+      modalPdfBtn.disabled = false;
+      modalPdfBtn.classList.remove('is-loading');
+      modalPdfBtn.innerHTML = PDF_ICON;
+    }
   });
 
   // Pointing at a row lights up its point. This is what earns the side-by-side
@@ -612,6 +704,7 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   function renderFiltered() {
     const filtered = applyFilters(allEvaluaciones, filters);
     chipsEl.innerHTML = claseChipsHtml(filters.clase);
+    faseChipsEl.innerHTML = faseChipsHtml(filters.fase);
     kpis.innerHTML = kpisHtml(filtered);
     barEl.innerHTML = barHtml(filtered);
 
@@ -693,6 +786,15 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
     renderFiltered();
   });
 
+  // Same delegated-click shape as the clase chip group above, one group
+  // ('fase') instead of 'clase'.
+  faseChipsEl.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-filter-group="fase"]');
+    if (!btn) return;
+    filters = { ...filters, fase: btn.dataset.filterValue };
+    renderFiltered();
+  });
+
   comunaSelect.addEventListener('change', () => {
     filters = { ...filters, comuna: comunaSelect.value, barrio: '' };
     renderBarrioSelect(barrioSelect, comunaMap, comunaSelect.value);
@@ -723,6 +825,8 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
       inspector_codigo: e.inspector.codigo,
       inspector_identificacion: e.inspector.identificacion,
       inspector_entidad: e.inspector.entidad,
+      inspector_np: e.inspector.np,
+      fase: faseDe(e).label,
       nombre: e.descripcion.nombre,
       direccion: e.descripcion.direccion,
       comuna: e._comuna || 'Sin dato',

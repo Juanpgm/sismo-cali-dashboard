@@ -7,7 +7,7 @@
 import {
   DETAIL_GROUPS, labelForField, formatValue, barrioVeredaDisplay, downloadStamp,
   SURVEY_LAYER_URL, isFirmaAttachment, attachmentUrl, basemapTileUrl,
-  labelForCode, addressDisplay,
+  labelForCode, addressDisplay, faseInspector,
 } from './utils.js';
 
 export const MAX_PHOTOS = 12;
@@ -421,6 +421,158 @@ export async function generarInformePdf(record) {
     pdfMake.createPdf(def).download(filename);
   } catch (err) {
     console.error('generarInformePdf: fallo la generación', err);
+    throw err;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Evaluación ATC-20 report (Stickers tab, see evaluaciones.js): a       */
+/* server-flattened evaluación record — real nested shape (descripcion/  */
+/* inspector/coords/acciones_posteriores), NOT the ArcGIS record.x/y     */
+/* shape buildReportDocDefinition assumes. Reuses the same asset         */
+/* pipeline (readBlobAsDataURL/downscaleDataUrl/buildLocatorMap/         */
+/* loadPdfmake) as the other two reports.                                */
+/* ------------------------------------------------------------------ */
+
+const EVAL_CLASE_LABELS = {
+  INSPECCIONADA: 'inspeccionada',
+  USO_RESTRINGIDO: 'uso restringido',
+  INSEGURO: 'inseguro',
+};
+
+/** Same clasificación normalization evaluaciones.js's claseDe() applies —
+ *  label text only (no color, unneeded in a PDF table row). Kept local
+ *  rather than imported from evaluaciones.js to avoid a circular import
+ *  (evaluaciones.js already imports generarInformeEvaluacion from here). */
+function evalClaseLabel(clasificacion) {
+  const raw = String(clasificacion || '').trim().toUpperCase().replace(/[\s-]+/g, '_');
+  return EVAL_CLASE_LABELS[raw] || 'sin dato';
+}
+
+const EVAL_FASE_LABELS = { FASE_II: 'fase II', FASE_I: 'fase I' };
+
+/** Same derivation as evaluaciones.js's faseDe(), label text only — see
+ *  that module's FASES for the color-carrying counterpart used on screen. */
+function evalFaseLabel(np) {
+  return EVAL_FASE_LABELS[faseInspector(np)];
+}
+
+function formatFechaEval(iso) {
+  if (!iso) return 'Sin fecha';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso);
+  return d.toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+const siNoEval = (v) => (v ? 'Sí' : 'No');
+
+/**
+ * Pure builder for the evaluación ATC-20 report, same style tokens as
+ * buildReportDocDefinition/buildCandidatoDocDefinition. Sections mirror
+ * evaluaciones.js's detailHtml groups verbatim (Edificación, Evaluación,
+ * Inspector — including Fase + NP, Ubicación), then Fotos, then the map.
+ * No Firmas section: ATC-20 evaluaciones carry no firma concept (detailHtml
+ * has none either). `photos`/`mapImage` must already be resolved by the I/O
+ * shell below (gatherEvalPhotos/buildLocatorMap) — this stays pure.
+ */
+export function buildEvaluacionDocDefinition(e, { photos, mapImage } = {}) {
+  const desc = e?.descripcion || {};
+  const insp = e?.inspector || {};
+  const acc = e?.acciones_posteriores || {};
+  const coords = e?.coords;
+
+  const content = [
+    { text: 'Informe de evaluación ATC-20', style: 'title' },
+    { text: `Código de edificación: ${e?.codigo_edificacion || 'Sin código'}`, style: 'subtitle' },
+    { text: `Fecha de generación: ${downloadStamp().legible}`, style: 'subtitle' },
+    { text: DISCLAIMER, style: 'disclaimer', margin: [0, 4, 0, 12] },
+    { text: 'Edificación', style: 'sectionHeader' },
+    ...fieldTable([
+      ['Nombre', desc.nombre || 'Sin dato'],
+      ['Dirección', desc.direccion || 'Sin dato'],
+      ['Área', e?.area_nombre || e?.area || 'Sin dato'],
+      ['Municipio (DIVIPOLA)', e?.municipio || 'Sin dato'],
+      ['Consecutivo', e?.consecutivo],
+    ]),
+    { text: 'Evaluación', style: 'sectionHeader' },
+    ...fieldTable([
+      ['Clasificación', evalClaseLabel(e?.clasificacion)],
+      ['Alcance', e?.alcance || 'Sin dato'],
+      ['Restricciones', e?.restricciones || 'Ninguna registrada'],
+      ['Barricadas', siNoEval(acc.barricadas)],
+      ['Evaluación detallada', siNoEval(acc.evaluacion_detallada)],
+      ['Comentarios', e?.comentarios || 'Sin comentarios'],
+    ]),
+    { text: 'Inspector', style: 'sectionHeader' },
+    ...fieldTable([
+      ['Nombre', insp.nombre_completo || 'Sin dato'],
+      ['Código de brigada', insp.codigo || 'Sin dato'],
+      ['Identificación', insp.identificacion || 'Sin dato'],
+      ['Entidad', insp.entidad || 'Sin dato'],
+      ['Fase', evalFaseLabel(insp.np)],
+      ['NP', insp.np || 'Sin dato'],
+      ['Fecha de registro', formatFechaEval(e?.fecha)],
+    ]),
+    { text: 'Coordenadas', style: 'sectionHeader' },
+    ...fieldTable([
+      ['Latitud', coords ? coords.lat.toFixed(6) : 'Sin coordenadas'],
+      ['Longitud', coords ? coords.lng.toFixed(6) : 'Sin coordenadas'],
+      ['Precisión', coords && coords.accuracy ? `±${Math.round(coords.accuracy)} m` : 'Sin dato'],
+    ]),
+    ...buildImagesSection('Fotos', photos, 'Sin fotos.'),
+    ...buildMapSection(mapImage), // emits its own 'Ubicación' header (the locator map)
+  ];
+
+  return {
+    content,
+    styles: {
+      title: { fontSize: 16, bold: true },
+      subtitle: { fontSize: 9, color: '#555' },
+      disclaimer: { fontSize: 8, italics: true, color: '#777' },
+      sectionHeader: { fontSize: 12, bold: true, margin: [0, 10, 0, 4] },
+      fieldLabel: { fontSize: 9, bold: true },
+      fieldValue: { fontSize: 9 },
+    },
+    defaultStyle: { fontSize: 9 },
+  };
+}
+
+/** Evaluación photos are already-hosted Firebase Storage URLs, NOT ArcGIS
+ *  attachments — fetched directly instead of through gatherAssets'
+ *  attachment-listing flow, reusing the same readBlobAsDataURL/
+ *  downscaleDataUrl pipeline. Never throws: a bad URL degrades to
+ *  {dataURL: null, sourceUrl}, same per-image contract as resolveAttachment,
+ *  so one broken photo link can't abort the rest of the report. */
+export async function gatherEvalPhotos(fotos) {
+  const list = Array.isArray(fotos) ? fotos : [];
+  return Promise.all(list.map(async (url) => {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = await readBlobAsDataURL(await res.blob());
+      const dataURL = await downscaleDataUrl(raw);
+      return { dataURL, sourceUrl: url };
+    } catch {
+      return { dataURL: null, sourceUrl: url };
+    }
+  }));
+}
+
+/** Same orchestration shape as generarInformeCandidato/generarInformePdf:
+ *  gather photos + the locator map + pdfmake in parallel, build the doc
+ *  definition, trigger the download. */
+export async function generarInformeEvaluacion(e) {
+  try {
+    const [photos, mapImage, pdfMake] = await Promise.all([
+      gatherEvalPhotos(e?.fotos),
+      buildLocatorMap({ x: e?.coords?.lng, y: e?.coords?.lat }),
+      loadPdfmake(),
+    ]);
+    const def = buildEvaluacionDocDefinition(e, { photos, mapImage });
+    const filename = `evaluacion_ATC20_${e?.codigo_edificacion || 'registro'}_${downloadStamp().slug}.pdf`;
+    pdfMake.createPdf(def).download(filename);
+  } catch (err) {
+    console.error('generarInformeEvaluacion: fallo la generación', err);
     throw err;
   }
 }

@@ -4,7 +4,7 @@ import {
   normalizeAddressText, buildSearchIndex, barrioVeredaDisplay, resolveBarrioVereda, labelForField,
   filterOptionsByLabel, mountCombobox, isTypedAddress, addressDisplay,
   danoGradoColor, DANO_GRADO_ORDER, formatValue, COLORS, sourceLabel, setSourceLabels,
-  pointInPolygon, resolveZonaInteres, isInsideCali,
+  pointInPolygon, resolveZonaInteres, isInsideCali, faseInspector,
 } from './utils.js';
 
 // Real variants seen in the dataset for the same building should normalize
@@ -621,3 +621,25 @@ assert.equal(
 );
 
 console.log('ok — isInsideCali (municipal-boundary exclusion, MultiPolygon, defensive on bad input)');
+
+// --- faseInspector: Fase I/II business rule from inspectores/{uid}.NP ------
+// Fase II = NP is P3 or higher; Fase I = P1/P2 or anything unparseable
+// (the safe default for a missing/unknown NP value).
+assert.equal(faseInspector('P3'), 'FASE_II');
+assert.equal(faseInspector('P10'), 'FASE_II');
+assert.equal(faseInspector('p3'), 'FASE_II', 'lowercase must still match');
+assert.equal(faseInspector(' P3 '), 'FASE_II', 'surrounding whitespace must not block the match');
+assert.equal(faseInspector('P1'), 'FASE_I');
+assert.equal(faseInspector('P2'), 'FASE_I');
+assert.equal(faseInspector(''), 'FASE_I');
+assert.equal(faseInspector(null), 'FASE_I');
+assert.equal(faseInspector(undefined), 'FASE_I');
+assert.equal(faseInspector('3'), 'FASE_II', 'bare number without a P prefix still reads as the category number');
+assert.equal(faseInspector('N/A'), 'FASE_I', 'unparseable garbage defaults to the safe Fase I');
+// Regression: the match must anchor to the start (after trim) so a stray
+// digit elsewhere in a malformed value can't steal it and misclassify.
+assert.equal(faseInspector('Nivel 2 P3'), 'FASE_I', 'a leading unrelated number must not steal the match');
+assert.equal(faseInspector('Grupo 1 - P3'), 'FASE_I', 'same — the real category sits after other text');
+assert.equal(faseInspector('-3'), 'FASE_I', 'a non-digit/non-P leading character blocks the anchor');
+
+console.log('ok — faseInspector (Fase I/II from inspector NP category)');

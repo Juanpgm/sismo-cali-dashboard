@@ -1,6 +1,6 @@
 // Self-check for the pure PDF-report builder. Run: node web/js/report.test.mjs
 import assert from 'node:assert/strict';
-import { buildReportDocDefinition, MAX_PHOTOS } from './report.js';
+import { buildReportDocDefinition, buildEvaluacionDocDefinition, MAX_PHOTOS } from './report.js';
 import { DETAIL_GROUPS } from './utils.js';
 
 const fullRecord = {
@@ -54,5 +54,60 @@ assert.ok(/Sin firmas en el survey/.test(sparseText), 'empty signatures should b
 
 // --- sparse record (no populated groups) must not throw ------------------
 assert.doesNotThrow(() => buildReportDocDefinition({}, { photos: [], signatures: [], mapImage: null }));
+
+// --- buildEvaluacionDocDefinition ------------------------------------------
+const fullEvaluacion = {
+  codigo_edificacion: '76001-1-0040001',
+  consecutivo: 3,
+  municipio: '76001',
+  area: 'Area 1',
+  area_nombre: 'Comuna 5',
+  clasificacion: 'USO_RESTRINGIDO',
+  alcance: 'Exterior',
+  coords: { lat: 3.45, lng: -76.53, accuracy: 8 },
+  descripcion: { nombre: 'Edificio Test', direccion: 'Calle 5 # 10-20' },
+  restricciones: 'No ingresar al segundo piso',
+  acciones_posteriores: { barricadas: true, evaluacion_detallada: false },
+  comentarios: 'Grietas visibles',
+  inspector: {
+    nombre_completo: 'Ana Perez', codigo: '004', identificacion: '123456',
+    entidad: 'DAGMA', np: 'P3',
+  },
+  fecha: '2026-08-13T10:00:00Z',
+  fotos: [],
+};
+
+const evalDoc = buildEvaluacionDocDefinition(fullEvaluacion, { photos: [], mapImage: null });
+const evalText = JSON.stringify(evalDoc.content);
+assert.ok(/Informe de evaluaci.n ATC-20/.test(evalText), 'title should identify the ATC-20 report');
+assert.ok(evalText.includes('76001-1-0040001'), 'header should show codigo_edificacion');
+assert.ok(evalText.includes('Edificio Test'), 'Edificación group should show the nombre');
+assert.ok(evalText.includes('Calle 5 # 10-20'), 'Edificación group should show the direccion');
+assert.ok(evalText.includes('No ingresar al segundo piso'), 'Evaluación group should show restricciones');
+assert.ok(evalText.includes('Grietas visibles'), 'Evaluación group should show comentarios');
+assert.ok(evalText.includes('Ana Perez'), 'Inspector group should show nombre_completo');
+assert.ok(evalText.includes('fase II'), 'Inspector group should show the derived Fase label');
+assert.ok(evalText.includes('P3'), 'Inspector group should show the raw NP value');
+assert.ok(!/Firmas/.test(evalText), 'evaluaciones have no firma concept: no Firmas section');
+
+// --- buildEvaluacionDocDefinition: fotos: [] -> placeholder, no crash ------
+const sparseFotos = buildEvaluacionDocDefinition(fullEvaluacion, { photos: [], mapImage: null });
+assert.ok(/Sin fotos/i.test(JSON.stringify(sparseFotos.content)), 'empty fotos should render a placeholder, not silently vanish');
+
+// --- buildEvaluacionDocDefinition: coords: null -> no crash, "Sin coordenadas"
+const noCoords = { ...fullEvaluacion, coords: null };
+assert.doesNotThrow(() => buildEvaluacionDocDefinition(noCoords, { photos: [], mapImage: null }));
+const noCoordsText = JSON.stringify(buildEvaluacionDocDefinition(noCoords, { photos: [], mapImage: null }).content);
+assert.ok(noCoordsText.includes('Sin coordenadas'), 'missing coords should read "Sin coordenadas", matching the on-screen modal');
+
+// --- buildEvaluacionDocDefinition: inspector.np === '' -> Fase I fallback --
+const npBlank = { ...fullEvaluacion, inspector: { ...fullEvaluacion.inspector, np: '' } };
+const npBlankText = JSON.stringify(buildEvaluacionDocDefinition(npBlank, { photos: [], mapImage: null }).content);
+assert.ok(npBlankText.includes('fase I'), 'blank NP should default to the Fase I label, never Fase II');
+assert.ok(!npBlankText.includes('fase II'), 'blank NP must not read as Fase II');
+assert.ok(/"NP"[\s\S]{0,40}"Sin dato"/.test(npBlankText) || npBlankText.includes('Sin dato'), 'blank NP row should show "Sin dato", not blank');
+
+// --- buildEvaluacionDocDefinition: sparse record must not throw ------------
+assert.doesNotThrow(() => buildEvaluacionDocDefinition({}, { photos: [], mapImage: null }));
 
 console.log('report.test.mjs: all assertions passed');

@@ -944,6 +944,19 @@ export function habBinary(record) {
 }
 export function isNoHabitableBinary(record) { return habBinary(record) === 'no_habitable'; }
 
+/* ---- Inspector Fase I/II (Stickers' Evaluaciones tab) ------------------- */
+// Business rule: Fase II = inspector's `inspectores/{uid}.NP` category is P3
+// or higher; Fase I = P1/P2, OR anything that doesn't parse as a category
+// number at all (missing uid, no matching doc, no NP value) — Fase I is the
+// safe default for anything unparseable, never a silent Fase II.
+export function faseInspector(np) {
+  // Anchored to the start (after trimming) so a stray digit elsewhere in a
+  // malformed value can't steal the match — e.g. "Nivel 2 P3" must fall back
+  // to Fase I (unparseable), not misread as category 2 off the wrong number.
+  const m = String(np || '').trim().match(/^P?\s*(\d+)/i);
+  return m && Number(m[1]) >= 3 ? 'FASE_II' : 'FASE_I';
+}
+
 /* ---- N.º de pisos buckets / suspensión de servicios / fetch cache-busting */
 // Kept here (not in data.js) because data.js transitively imports the Firebase
 // SDK (via israel-source.js -> firebase-config.js -> a bare https:// specifier).
