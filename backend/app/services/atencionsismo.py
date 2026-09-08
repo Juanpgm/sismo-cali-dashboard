@@ -23,7 +23,9 @@ No conflict, so no "JS wins" substitution was needed for this constant.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
+import logging
 import math
 import os
 import time
@@ -33,6 +35,9 @@ from typing import Callable, Iterable, Mapping
 import httpx
 
 API_URL = "https://atencionsismo.cali.gov.co/api/informe/json"
+STICKERS_URL = "https://atencionsismo.cali.gov.co/api/informe/stickers"
+PAGE_LIMIT = 200  # v2 contract: 1..200 rows per page
+MAX_PAGES = 500  # hard stop (100k rows) against a server that never reports done
 
 USER_ENV = "VISITADOS_API_USER"
 PASS_ENV = "VISITADOS_API_PASS"
@@ -296,8 +301,6 @@ async def fetch_window(
             if attempt == MAX_ATTEMPTS - 1:
                 break
             if RETRY_SLEEP_S:
-                import asyncio
-
                 await asyncio.sleep(RETRY_SLEEP_S)
     if failed_windows is not None:
         failed_windows.append((d0, d1))
@@ -320,8 +323,6 @@ async def day_walk(
     (mapped, NOT deduped/aggregated) record list — `count_reportes()` is
     `summarize(day_walk(...))`; `dashboard_refresh` calls this directly with
     a fuller `mapper` for `reportes.json` (task 7.2)."""
-    import asyncio
-
     start = _parse_desde(desde)
     end = until_ms if until_ms is not None else int(time.time() * 1000) + DAY_MS
     windows = [(d0, d0 + DAY_MS - 1) for d0 in range(start, end, DAY_MS)]
@@ -385,3 +386,114 @@ async def fetch_reportados(
         "fuente": "api:informe/json",
         **counts,
     }
+
+
+async def _get_stickers_page(
+    client: httpx.AsyncClient, headers: dict[str, str], params: dict[str, int]
+) -> dict:
+    """One page of GET /api/informe/stickers with MAX_ATTEMPTS retries on
+    transport/5xx/malformed-body errors. Any 4xx (400..499) is a client-error
+    problem (bad params, unset password, account without `api: read`,
+    password not yet created at /ingresar) — retrying an identical request
+    cannot fix it, so it raises immediately without burning MAX_ATTEMPTS."""
+    last_exc: Exception | None = None
+    for attempt in range(MAX_ATTEMPTS):
+        try:
+            resp = await client.get(STICKERS_URL, params=params, headers=headers, timeout=REQUEST_TIMEOUT_S)
+            if resp.status_code in (401, 403):
+                raise ApiUnavailableError(
+                    f"informe/stickers HTTP {resp.status_code}: credenciales rechazadas", status=503
+                )
+            if 400 <= resp.status_code < 500:
+                raise ApiUnavailableError(
+                    f"informe/stickers HTTP {resp.status_code}: error de cliente, no reintentable",
+                    status=503,
+                )
+            if resp.status_code >= 400:
+                raise httpx.HTTPStatusError(f"HTTP {resp.status_code}", request=resp.request, response=resp)
+            data = resp.json()
+            if not isinstance(data, dict):
+                raise ValueError("el cuerpo no es un objeto JSON")
+            return data
+        except (httpx.HTTPError, ValueError) as exc:
+            last_exc = exc
+            if attempt < MAX_ATTEMPTS - 1 and RETRY_SLEEP_S:
+                await asyncio.sleep(RETRY_SLEEP_S)
+    raise ApiUnavailableError(f"informe/stickers sin respuesta valida: {last_exc}", status=503)
+
+
+def _coerce_offset(value: object) -> int | None:
+    """`nextOffset` as an actual int cursor. Accepts a plain int and a
+    numeric string (some pagination responses have been observed sending
+    the cursor as text); anything else (missing, bool, non-numeric string,
+    float) is not a usable cursor."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+async def fetch_stickers(
+    client: httpx.AsyncClient,
+    user: str,
+    password: str,
+    *,
+    desde_utc: int | None = None,
+    hasta_utc: int | None = None,
+) -> list[dict]:
+    """Full offset-paginated read of GET /api/informe/stickers (v2 contract:
+    `offset`/`limit` <= 200, follow `nextOffset` until `done`). Unlike the
+    `informe/json` day-walk there is no date-window failure mode to split
+    on, so each page is simply retried. Returns the raw `stickers[]` rows.
+
+    Pagination must reach an explicit `done` page to be considered
+    complete: a non-int/non-advancing cursor, or exhausting `MAX_PAGES`
+    without ever seeing `done`, raises `ApiUnavailableError` instead of
+    silently returning a partial universe — a truncated sticker list is
+    worse than a 503 (the cache's serve-stale/Blob chain handles that
+    better than a caller ever could). A page missing the `done` key
+    entirely is treated as the end of pagination (`done=True`), but logged
+    as a warning since the contract doesn't document that shape.
+
+    Zero rows over a COMPLETE walk raises ApiEmptyResultError — never cache
+    an empty universe over a transient failure (same rule as
+    `fetch_reportados`)."""
+    headers = _headers(user, password)
+    rows: list[dict] = []
+    offset = 0
+    complete = False
+    for _ in range(MAX_PAGES):
+        params: dict[str, int] = {"offset": offset, "limit": PAGE_LIMIT}
+        if desde_utc is not None:
+            params["desde_utc"] = desde_utc
+        if hasta_utc is not None:
+            params["hasta_utc"] = hasta_utc
+        body = await _get_stickers_page(client, headers, params)
+        rows.extend(r for r in (body.get("stickers") or []) if isinstance(r, dict))
+        if "done" not in body:
+            logging.warning(
+                "informe/stickers: pagina en offset=%s sin campo 'done'; se asume fin de paginacion", offset
+            )
+            complete = True
+            break
+        if body.get("done"):
+            complete = True
+            break
+        next_offset = _coerce_offset(body.get("nextOffset"))
+        if next_offset is None or next_offset <= offset:
+            break  # malformed/non-advancing cursor: `complete` stays False
+        offset = next_offset
+    if not complete:
+        raise ApiUnavailableError(
+            "informe/stickers: paginacion incompleta (cursor invalido, no avanza, o MAX_PAGES agotado)",
+            status=503,
+        )
+    if not rows:
+        raise ApiEmptyResultError("informe/stickers devolvio 0 filas")
+    return rows

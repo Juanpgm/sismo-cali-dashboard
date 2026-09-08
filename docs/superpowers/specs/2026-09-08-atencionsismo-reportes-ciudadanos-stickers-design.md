@@ -45,6 +45,8 @@ Regla, en orden:
 2. Si no hay evaluación pero el código de inspector `iii` existe en el roster `inspectores` (campo `codigo`), se toma `NP` del roster.
 3. Si no hay forma de conocer el NP, la Fase es **"sin dato"**. Nunca se muestra Fase I por defecto en filas de Atención Sismo. La regla actual (NP vacío = Fase I) se mantiene solo para la fuente Firestore, donde toda evaluación tiene inspector.
 
+Si hay evaluación, su NP es autoritativo aunque esté vacío. El roster solo aplica cuando no hay evaluación, porque los códigos de brigada se reutilizan al borrar un inspector y una evaluación vieja podría heredar el NP del inspector nuevo.
+
 La regla de negocio `faseInspector(np)` no cambia.
 
 ### D2. Forma normalizada única para Evaluaciones

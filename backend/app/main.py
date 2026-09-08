@@ -17,8 +17,8 @@ from app.credentials import clients as credentials
 from app.routers import (
     cruce_sticker,
     health,
-    integracion,
     inspector_asignaciones,
+    integracion,
     panel_representante,
     planeacion_asignaciones,
     planeacion_cruce,
@@ -28,8 +28,9 @@ from app.routers import (
     sign,
     source_status,
     sticker_asignaciones,
-    stickers,
     sticker_status,
+    stickers,
+    stickers_atencionsismo,
     survey_cali,
     usuarios,
 )
@@ -59,6 +60,7 @@ _ROUTERS = (
     panel_representante,
     integracion,
     puntos_solicitados,
+    stickers_atencionsismo,
 )
 
 
@@ -126,6 +128,20 @@ def create_app() -> FastAPI:
     # follow-up 2026-08-29; moves the Evaluaciones tab's full-collection read
     # off Vercel onto this cached backend route).
     app.state.stickers_evaluaciones_cache = EvaluacionesCache()
+
+    # Sibling cache for GET /stickers-atencionsismo (design D4): same
+    # serve-stale/degraded semantics, own Blob pathname and redaction so the
+    # two sources' last-known-good copies never collide.
+    app.state.stickers_atencionsismo_cache = stickers.EvaluacionesCache(
+        lkg_blob=stickers_atencionsismo.STICKERS_LKG_BLOB,
+        redact=stickers_atencionsismo.redact_for_blob,
+        # informe/stickers can walk hundreds of retried pages before giving
+        # up (design D4/atencionsismo.MAX_PAGES) — a sustained outage must
+        # not turn every request landing on a stale cache into another full
+        # walk-and-fail. 60s backoff between failed-fetch attempts; the
+        # plain evaluaciones cache above keeps the default 0.0 (no backoff).
+        failure_backoff_s=60.0,
+    )
 
     # Same convention — stickers.py's roster (`action:"list"`) cache
     # (31-ago-2026 quota-outage follow-up: this action had no cache at all).

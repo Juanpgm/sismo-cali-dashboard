@@ -31,6 +31,8 @@ Also ports the pure validators from `api/stickers.test.js` verbatim
 """
 from __future__ import annotations
 
+import threading
+import time as real_time
 from typing import Any
 
 import pytest
@@ -974,3 +976,194 @@ def test_unrecognized_action_is_rejected(monkeypatch):
     resp = client.post("/stickers", json={"action": "bogus"})
 
     assert resp.status_code == 400
+
+
+# ── np_by_codigo: roster NP keyed by 3-digit brigade code ─────────────────
+# No `fake_sismo`/`seed` fixture exists in this file (plan's fallback
+# instruction): reuse `_FakeFirestore` directly against a plain stores dict,
+# the same convention every other test in this module already uses.
+
+
+def test_np_by_codigo_reads_roster():
+    stores = {
+        "inspectores": {
+            "u1": {"codigo": "004", "NP": "P4", "activo": True},
+            "u2": {"codigo": "007", "NP": "", "activo": False},
+            "u3": {"NP": "P9"},  # no code: unreachable from a sticker number, skipped
+            "u4": {"codigo": " 010 ", "NP": " P1 "},
+        }
+    }
+    db = _FakeFirestore(stores)
+    assert stickers.np_by_codigo(db) == {"004": "P4", "007": "", "010": "P1"}
+
+
+def test_np_by_codigo_empty_roster():
+    db = _FakeFirestore({"inspectores": {}})
+    assert stickers.np_by_codigo(db) == {}
+
+
+def test_np_by_codigo_zero_pads_single_digit_code():
+    # Matches _allocate_codigo's own zfill(3) — a roster doc saved with an
+    # unpadded code (manual repair, older data) must still be reachable by
+    # the padded 3-digit code every sticker `numero` embeds.
+    db = _FakeFirestore({"inspectores": {"u1": {"codigo": "4", "NP": "P4"}}})
+    assert stickers.np_by_codigo(db) == {"004": "P4"}
+
+
+def test_np_by_codigo_zero_pads_two_digit_code():
+    db = _FakeFirestore({"inspectores": {"u1": {"codigo": "04", "NP": "P4"}}})
+    assert stickers.np_by_codigo(db) == {"004": "P4"}
+
+
+def test_np_by_codigo_skips_empty_or_missing_code():
+    db = _FakeFirestore({"inspectores": {
+        "u1": {"codigo": "", "NP": "P9"},
+        "u2": {"NP": "P1"},
+    }})
+    assert stickers.np_by_codigo(db) == {}
+
+
+# ── EvaluacionesCache: parametrized Blob pathname + redaction ────────────
+
+
+def test_cache_defaults_keep_evaluaciones_blob(monkeypatch):
+    saved: dict[str, object] = {}
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "t")
+    monkeypatch.setattr(stickers.blob_lkg, "save_json", lambda path, payload: saved.update({path: payload}) or True)
+    cache = stickers.EvaluacionesCache()
+    cache.get_or_fetch(lambda: [{"id": "1", "inspector": {"np": "P4"}, "descripcion": {}}])
+    cache._persist_thread.join(timeout=2)
+    assert list(saved) == [stickers.EVALUACIONES_LKG_BLOB]
+    assert saved[stickers.EVALUACIONES_LKG_BLOB][0]["inspector"]["np"] == ""
+
+
+def test_cache_custom_blob_and_redact(monkeypatch):
+    saved: dict[str, object] = {}
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "t")
+    monkeypatch.setattr(stickers.blob_lkg, "save_json", lambda path, payload: saved.update({path: payload}) or True)
+    cache = stickers.EvaluacionesCache(lkg_blob="data/custom.json", redact=lambda p: [{"id": e["id"]} for e in p])
+    cache.get_or_fetch(lambda: [{"id": "1", "secreto": "x"}])
+    cache._persist_thread.join(timeout=2)
+    assert saved == {"data/custom.json": [{"id": "1"}]}
+
+
+def test_cache_cold_start_restores_from_custom_blob(monkeypatch):
+    monkeypatch.setattr(stickers.blob_lkg, "load_json", lambda path, t: [{"id": "old"}] if path == "data/custom.json" else None)
+    cache = stickers.EvaluacionesCache(lkg_blob="data/custom.json", redact=lambda p: p)
+
+    def boom():
+        raise RuntimeError("api down")
+
+    assert cache.get_or_fetch(boom) == [{"id": "old"}]
+    assert cache.degraded is True
+
+
+# ── B4: failure_backoff_s + locked double-checked staleness ──────────────
+
+
+def test_evaluaciones_cache_backoff_skips_immediate_refetch_after_failure(monkeypatch):
+    """A sibling cache (stickers_atencionsismo) wires failure_backoff_s=60:
+    once a fetch has just failed, hammering the upstream again on every
+    request within the window is pointless — serve whatever is cached
+    (stale or Blob-restored) until the window elapses."""
+    cache = stickers.EvaluacionesCache(failure_backoff_s=60.0)
+    clock = {"t": 0.0}
+    monkeypatch.setattr(stickers.time, "monotonic", lambda: clock["t"])
+
+    good_payload = [{"codigo_edificacion": "A"}]
+    cache.get_or_fetch(lambda: good_payload)
+
+    clock["t"] += stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1  # force staleness
+    calls = {"n": 0}
+
+    def boom():
+        calls["n"] += 1
+        raise RuntimeError("429 Quota exceeded.")
+
+    result = cache.get_or_fetch(boom)  # fails, serves stale, records the failure
+    assert calls["n"] == 1
+    assert result == good_payload
+
+    clock["t"] += 1  # still well inside the 60s backoff window
+    result = cache.get_or_fetch(boom)
+
+    assert calls["n"] == 1  # NOT re-fetched
+    assert result == good_payload
+
+
+def test_evaluaciones_cache_zero_backoff_refetches_every_stale_call(monkeypatch):
+    """Default failure_backoff_s=0.0 must keep the plain evaluaciones cache
+    byte-identical to its pre-backoff behavior: every stale call retries."""
+    cache = stickers.EvaluacionesCache()  # default failure_backoff_s=0.0
+    clock = {"t": 0.0}
+    monkeypatch.setattr(stickers.time, "monotonic", lambda: clock["t"])
+
+    good_payload = [{"codigo_edificacion": "A"}]
+    cache.get_or_fetch(lambda: good_payload)
+    clock["t"] += stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1
+    calls = {"n": 0}
+
+    def boom():
+        calls["n"] += 1
+        raise RuntimeError("429 Quota exceeded.")
+
+    cache.get_or_fetch(boom)
+    assert calls["n"] == 1
+
+    clock["t"] += 1
+    cache.get_or_fetch(boom)
+    assert calls["n"] == 2  # no backoff: refetches every stale call
+
+
+def test_evaluaciones_cache_backoff_clears_after_a_successful_refetch(monkeypatch):
+    """The backoff window is per-failure, not permanent: a later successful
+    fetch clears it so the very next failure gets a fresh 60s window rather
+    than being silently swallowed by a stale window boundary."""
+    cache = stickers.EvaluacionesCache(failure_backoff_s=60.0)
+    clock = {"t": 0.0}
+    monkeypatch.setattr(stickers.time, "monotonic", lambda: clock["t"])
+
+    cache.get_or_fetch(lambda: [{"codigo_edificacion": "A"}])
+    clock["t"] += stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    cache.get_or_fetch(boom)  # failure #1: backoff armed
+
+    clock["t"] += 70  # past the 60s window: a real fetch is attempted again
+    fresh_payload = [{"codigo_edificacion": "B"}]
+    result = cache.get_or_fetch(lambda: fresh_payload)
+    assert result == fresh_payload
+
+    clock["t"] += stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1
+    calls = {"n": 0}
+
+    def boom2():
+        calls["n"] += 1
+        raise RuntimeError("429 Quota exceeded.")
+
+    cache.get_or_fetch(boom2)  # failure #2: must actually call fetch again
+    assert calls["n"] == 1
+
+
+def test_evaluaciones_cache_concurrent_get_or_fetch_calls_fetch_once():
+    """Locked double-checked staleness: two threads racing a stale cache
+    with a slow fetch must trigger exactly one upstream call — the second
+    thread, once it acquires the lock, must see the payload the first
+    thread just installed and re-use it instead of fetching again."""
+    cache = stickers.EvaluacionesCache()
+    calls = {"n": 0}
+
+    def slow_fetch():
+        calls["n"] += 1
+        real_time.sleep(0.2)
+        return [{"codigo_edificacion": "A"}]
+
+    threads = [threading.Thread(target=cache.get_or_fetch, args=(slow_fetch,)) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert calls["n"] == 1
