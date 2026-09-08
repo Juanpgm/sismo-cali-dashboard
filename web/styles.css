@@ -2051,6 +2051,18 @@ body:not([data-role="admin"]) [data-sticker-segment="asignacion"] { display: non
   .sticker-form-grid { grid-template-columns: 1fr; }
 }
 
+/* ---- Reportes ciudadanos tab (atencionsismo-reportes-ciudadanos-stickers
+   change, design D6) — reuses .eval-section/-kpis/-bar/-workspace/-map/
+   -aside/-list/-row/-dot/-pill/-meta/-cta, .kpi-row/-tile, .hab-bar(-seg),
+   .card/-toolbar, .segmented(-btn), .sticker-field/-search-input/-action,
+   .modal/-backdrop/-panel/-header/-body, .detail-group/-fields/-field and
+   .eval-empty as-is (same visual language as Evaluaciones/Stickers); only
+   the section-level width cap and the filter row's search-input width are
+   specific to this tab. */
+.rep-section .asignacion-search { flex: 1 1 220px; margin: 0; }
+.rep-section .asignacion-filters { align-items: flex-end; }
+#view-reportes-ciudadanos { max-width: 1180px; margin: 0 auto; }
+
 /* ============================================================
    ASIGNACIÓN — sub-section inside the Stickers tab (design.md
    ADR-4/ADR-5). Table/pill/map-legend styling all reuses

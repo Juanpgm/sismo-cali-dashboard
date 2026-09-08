@@ -11,6 +11,7 @@ import {
 import { initTable, renderTable, setTotalRecords, openDetailModal, configurarRepresentante } from './table.js';
 import { initAccionesTab } from './acciones-capa.js';
 import { initStickers } from './stickers.js';
+import { initReportesCiudadanos } from './reportes-ciudadanos.js';
 import { initPlaneacion } from './planeacion.js';
 import { initPuntosSolicitados } from './puntos_solicitados.js';
 import { initUsuarios } from './usuarios.js';
@@ -224,6 +225,26 @@ function switchView(view) {
   // Stickers pulls live data from /api/stickers — (re)load it each time it opens.
   if (view === 'stickers') {
     initStickers(document.getElementById('view-stickers'), { getToken: getIdToken });
+  }
+  // Reportes ciudadanos reads the public Blob snapshot (no token) — (re)load
+  // it each time it opens, same lifecycle as Stickers.
+  if (view === 'reportes-ciudadanos') {
+    initReportesCiudadanos(document.getElementById('view-reportes-ciudadanos'), {
+      fetchReportes: async () => {
+        const [datosRes, meta] = await Promise.all([
+          fetchData('reportes_ciudadanos.json'),
+          fetchData('reportes_meta.json').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+        ]);
+        // `reportes: null` distinguishes "the snapshot isn't published yet"
+        // (neither the Blob copy nor the deploy fallback answered ok, e.g.
+        // the pipeline hasn't run yet on a fresh deploy) from a genuinely
+        // empty snapshot ([], a normal — if unlikely — day with zero
+        // reports). reportes-ciudadanos.js renders each state differently.
+        if (!datosRes.ok) return { reportes: null, meta };
+        const datos = await datosRes.json();
+        return { reportes: Array.isArray(datos) ? datos : null, meta };
+      },
+    });
   }
   // Planeación is a top-level tab (design.md ADR-10) — (re)initialize it each
   // time it opens, same lifecycle as Stickers/Usuarios/Analista; it fetches

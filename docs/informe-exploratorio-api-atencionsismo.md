@@ -184,9 +184,23 @@ El 81,5 % de vacío en evaluación es esperado: solo 2 740 reportes tienen visit
 7. **`afectacion` es autodeclarada al ingreso**, no el resultado técnico. Para severidad real usar `habitabilidad` o `sticker.color`.
 8. **Concentración geográfica.** Comuna 19 acumula el 25 % de reportes y el 60 % de críticos.
 
-## 6. Próximos pasos sugeridos
+## 6. Cierre (2026-09-08)
 
-- Obtener credenciales v2 y cargarlas en `.env` local, Vercel y Railway.
-- Re-descargar `informe/json` con `kpis=1` en el primer lote y confirmar `sticker` en cada fila.
-- Consumir `informe/stickers` por primera vez y guardar `web/data/stickers_api.json`.
-- Capturar un caso real de `visitados-criticos` y documentar sus campos.
+Con credenciales v2 válidas se corrió `scripts/explore_atencionsismo.py` contra los tres endpoints. Resultados:
+
+| Pregunta | Resultado |
+|---|---|
+| ¿`informe/json` incluye `sticker` en cada fila? | Sí, en el 100 %. Aparece además `urbano`, campo no documentado. |
+| ¿`numero` de origen `firebase` coincide con nuestro `codigo_edificacion`? | Sí en 1 436 de 1 470; el resto viene "Sin código". |
+| ¿`descripcion` trae datos personales? | Sí: teléfonos, cédulas y correos sueltos, también en `direccion` y `nombreEdificio`. |
+
+Universo actual: 20 075 reportes, 13 152 inmuebles, 2 253 stickers (973 rojos, 743 amarillos, 537 verdes).
+
+Las credenciales quedaron cargadas en Railway (web y cron) y Vercel (production y preview). El cache local de reportes sigue siendo el del 25 de agosto hasta la próxima corrida del job.
+
+Diseño e implementación derivados de este informe:
+
+- `docs/superpowers/specs/2026-09-08-atencionsismo-reportes-ciudadanos-stickers-design.md`
+- `docs/superpowers/plans/2026-09-08-atencionsismo-reportes-ciudadanos-stickers.md`
+
+Pendiente fuera de este alcance: capturar un caso real de `visitados-criticos` y documentar sus campos; decidir si `reportes.json` recibe la misma máscara de datos personales que `reportes_ciudadanos.json`.
