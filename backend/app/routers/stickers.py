@@ -34,7 +34,7 @@ import re
 import threading
 import time
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -126,7 +126,16 @@ class EvaluacionesCache:
     fall back to the last-known-good copy instead of a 502 (31-ago-2026, see
     `app.services.blob_lkg`)."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        lkg_blob: str = EVALUACIONES_LKG_BLOB,
+        redact: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
+    ) -> None:
+        # Parametrized so a sibling dataset (atencionsismo stickers, see
+        # routers/stickers_atencionsismo.py) reuses the serve-stale +
+        # Blob-restore + degraded semantics with its OWN pathname/redaction.
+        self._lkg_blob = lkg_blob
+        self._redact = redact or _redact_for_blob
         self._at: float | None = None
         self._payload: list[dict[str, Any]] | None = None
         self._blob_hash: str | None = None  # hash of the last payload persisted to Blob
@@ -166,7 +175,7 @@ class EvaluacionesCache:
                     # malformed/wrong-shaped payload — so only a validated
                     # list is ever served. Re-raise only when Firestore
                     # failed AND Blob has nothing usable.
-                    restored = blob_lkg.load_json(EVALUACIONES_LKG_BLOB, list)
+                    restored = blob_lkg.load_json(self._lkg_blob, list)
                     if restored is None:
                         raise
                     logging.exception(
@@ -192,13 +201,13 @@ class EvaluacionesCache:
         The Blob copy is projected through the public allowlist (see
         `_redact_for_blob`); the in-process payload and the HTTP response
         stay complete."""
-        redacted = _redact_for_blob(self._payload or [])
+        redacted = self._redact(self._payload or [])
         h = blob_lkg.payload_hash(redacted)
         if h == self._blob_hash:
             return
 
         def _upload() -> None:
-            if blob_lkg.save_json(EVALUACIONES_LKG_BLOB, redacted):
+            if blob_lkg.save_json(self._lkg_blob, redacted):
                 self._blob_hash = h
 
         # ponytail: no locking — two overlapping refreshes may double-upload
@@ -364,6 +373,21 @@ def _np_by_uid(db: Any, uids: set[str]) -> dict[str, str]:
         d = s.to_dict() if s.exists else None
         if d is not None:
             out[s.id] = str(d.get("NP") or "").strip()
+    return out
+
+
+def np_by_codigo(db: Any) -> dict[str, str]:
+    """Roster `inspectores/{uid}.NP` keyed by the 3-digit brigade `codigo`
+    — the segment our sticker codes embed (76001-1-`004`0001), so an
+    atencionsismo sticker of origin "firebase" can reach the inspector's NP
+    without a matching evaluación doc (design D1 step 2). Docs without a
+    code are unreachable from a sticker number and are skipped."""
+    out: dict[str, str] = {}
+    for snap in db.collection(INSPECTORES_COLLECTION).get():
+        d = snap.to_dict() or {}
+        codigo = str(d.get("codigo") or "").strip()
+        if codigo:
+            out[codigo] = str(d.get("NP") or "").strip()
     return out
 
 

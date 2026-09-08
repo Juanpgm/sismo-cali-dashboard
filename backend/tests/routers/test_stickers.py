@@ -974,3 +974,62 @@ def test_unrecognized_action_is_rejected(monkeypatch):
     resp = client.post("/stickers", json={"action": "bogus"})
 
     assert resp.status_code == 400
+
+
+# ── np_by_codigo: roster NP keyed by 3-digit brigade code ─────────────────
+# No `fake_sismo`/`seed` fixture exists in this file (plan's fallback
+# instruction): reuse `_FakeFirestore` directly against a plain stores dict,
+# the same convention every other test in this module already uses.
+
+
+def test_np_by_codigo_reads_roster():
+    stores = {
+        "inspectores": {
+            "u1": {"codigo": "004", "NP": "P4", "activo": True},
+            "u2": {"codigo": "007", "NP": "", "activo": False},
+            "u3": {"NP": "P9"},  # no code: unreachable from a sticker number, skipped
+            "u4": {"codigo": " 010 ", "NP": " P1 "},
+        }
+    }
+    db = _FakeFirestore(stores)
+    assert stickers.np_by_codigo(db) == {"004": "P4", "007": "", "010": "P1"}
+
+
+def test_np_by_codigo_empty_roster():
+    db = _FakeFirestore({"inspectores": {}})
+    assert stickers.np_by_codigo(db) == {}
+
+
+# ── EvaluacionesCache: parametrized Blob pathname + redaction ────────────
+
+
+def test_cache_defaults_keep_evaluaciones_blob(monkeypatch):
+    saved: dict[str, object] = {}
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "t")
+    monkeypatch.setattr(stickers.blob_lkg, "save_json", lambda path, payload: saved.update({path: payload}) or True)
+    cache = stickers.EvaluacionesCache()
+    cache.get_or_fetch(lambda: [{"id": "1", "inspector": {"np": "P4"}, "descripcion": {}}])
+    cache._persist_thread.join(timeout=2)
+    assert list(saved) == [stickers.EVALUACIONES_LKG_BLOB]
+    assert saved[stickers.EVALUACIONES_LKG_BLOB][0]["inspector"]["np"] == ""
+
+
+def test_cache_custom_blob_and_redact(monkeypatch):
+    saved: dict[str, object] = {}
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "t")
+    monkeypatch.setattr(stickers.blob_lkg, "save_json", lambda path, payload: saved.update({path: payload}) or True)
+    cache = stickers.EvaluacionesCache(lkg_blob="data/custom.json", redact=lambda p: [{"id": e["id"]} for e in p])
+    cache.get_or_fetch(lambda: [{"id": "1", "secreto": "x"}])
+    cache._persist_thread.join(timeout=2)
+    assert saved == {"data/custom.json": [{"id": "1"}]}
+
+
+def test_cache_cold_start_restores_from_custom_blob(monkeypatch):
+    monkeypatch.setattr(stickers.blob_lkg, "load_json", lambda path, t: [{"id": "old"}] if path == "data/custom.json" else None)
+    cache = stickers.EvaluacionesCache(lkg_blob="data/custom.json", redact=lambda p: p)
+
+    def boom():
+        raise RuntimeError("api down")
+
+    assert cache.get_or_fetch(boom) == [{"id": "old"}]
+    assert cache.degraded is True
