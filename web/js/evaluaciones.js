@@ -59,6 +59,10 @@ export const FASES = [
 // Atención Sismo stickers of origin "sistema" carry no inspector at all, so
 // their Fase is unknowable — surfaced as its own state instead of the
 // Firestore default (Fase I), which would be a lie for that source.
+// '#9AA5B1' stays a literal on purpose: utils.js's COLORS has no neutral/
+// unknown token distinct from COLORS.unknown ('#475569'), which SIN_CLASE
+// above already uses — reusing it here would make the Clase and Fase
+// "sin dato" pills indistinguishable on screen.
 export const FASE_SIN_DATO = { key: 'SIN_DATO', label: 'sin dato', color: '#9AA5B1' };
 const FASE_BY_KEY = new Map(FASES.map((f) => [f.key, f]));
 
@@ -331,7 +335,7 @@ function kpisHtml(evaluaciones) {
     <div class="kpi-tile is-neutral">
       <span class="kpi-label kpi-label-lower">registros</span>
       <span class="kpi-value">${total}</span>
-      <div class="kpi-sub-row"><span class="kpi-sub">evaluaciones enviadas desde el formulario</span></div>
+      <div class="kpi-sub-row"><span class="kpi-sub">evaluaciones registradas en la fuente seleccionada</span></div>
     </div>
     ${tiles}`;
 }
@@ -797,7 +801,7 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
     if (!filtered.length) {
       listEl.innerHTML = allEvaluaciones.length
         ? '<li class="eval-empty">Ningún registro coincide con los filtros aplicados.</li>'
-        : '<li class="eval-empty">Todavía no hay evaluaciones registradas desde el formulario.</li>';
+        : '<li class="eval-empty">Todavía no hay evaluaciones en esta fuente.</li>';
       listMeta.textContent = '';
     } else {
       listEl.innerHTML = filtered.map((e) => listItemHtml(e, isDegraded)).join('');

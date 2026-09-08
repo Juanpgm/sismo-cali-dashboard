@@ -12,6 +12,7 @@
 import { sectionHtml as evalSectionHtml, initEvaluaciones } from './evaluaciones.js';
 import { initStickersAsignacion } from './stickers-asignacion.js';
 import { apiUrl } from './api-config.js';
+import { escapeHtml } from './utils.js';
 
 // Two interchangeable sources for the Evaluaciones section, same response
 // shape (design D2/D3). atencionsismo is the default; the Formulario
@@ -73,11 +74,14 @@ async function fetchEvaluacionesOnce(getToken, endpoint) {
 
 // Segmented control for the Evaluaciones data source (design D3) — same
 // chip shape as the Evaluaciones/Asignación segment below, one entry per
-// FUENTES key.
+// FUENTES key. This one is a TOGGLE (pick one of two data sources), not a
+// tab set (which section is showing) — aria-pressed, not aria-selected/role
+// "tab", is the correct semantics; the wrapper below carries role="group"
+// to match.
 function fuenteSegmentedHtml() {
   return Object.entries(FUENTES).map(([key, def]) => `
       <button type="button" class="asignacion-segment${key === fuente ? ' is-active' : ''}"
-        data-sticker-fuente="${key}" role="tab" aria-selected="${key === fuente}">${def.label}</button>`).join('');
+        data-sticker-fuente="${key}" aria-pressed="${key === fuente}">${escapeHtml(def.label)}</button>`).join('');
 }
 
 // Rendered once per tab open. Two-way segmented control (Evaluaciones ·
@@ -97,8 +101,8 @@ function shellHtml() {
     </div>
 
     <div data-sticker-section="evaluaciones">
-      <div class="asignacion-segmented eval-fuente" role="tablist" aria-label="Fuente de datos">
-        <span class="eval-fuente-label">Fuente</span>${fuenteSegmentedHtml()}
+      <div class="asignacion-segmented eval-fuente" role="group" aria-labelledby="eval-fuente-label">
+        <span class="eval-fuente-label" id="eval-fuente-label">Fuente</span>${fuenteSegmentedHtml()}
       </div>
       ${evalSectionHtml()}
     </div>
@@ -142,7 +146,7 @@ export function initStickers(root, { getToken }) {
     fuenteButtons.forEach((b) => {
       const active = b.dataset.stickerFuente === fuente;
       b.classList.toggle('is-active', active);
-      b.setAttribute('aria-selected', String(active));
+      b.setAttribute('aria-pressed', String(active));
     });
     evaluacionesHandle.reload();
   }));
