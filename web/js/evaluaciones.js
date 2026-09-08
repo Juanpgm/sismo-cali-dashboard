@@ -56,13 +56,18 @@ export const FASES = [
   { key: 'FASE_II', label: 'fase II', color: COLORS.accent },
   { key: 'FASE_I', label: 'fase I', color: COLORS.unknown },
 ];
+// Atención Sismo stickers of origin "sistema" carry no inspector at all, so
+// their Fase is unknowable — surfaced as its own state instead of the
+// Firestore default (Fase I), which would be a lie for that source.
+export const FASE_SIN_DATO = { key: 'SIN_DATO', label: 'sin dato', color: '#9AA5B1' };
 const FASE_BY_KEY = new Map(FASES.map((f) => [f.key, f]));
 
-/** Fase I/II of one evaluation's inspector, derived from inspector.np (the
- *  server-joined inspectores/{uid}.NP value, see backend/app/routers/
- *  stickers.py's list_evaluaciones). */
+/** Fase I/II of one evaluation's inspector, derived from inspector.np. For
+ *  the atencionsismo source an empty np means "sin dato" (design D1). */
 export function faseDe(evaluacion) {
-  return FASE_BY_KEY.get(faseInspector(evaluacion && evaluacion.inspector && evaluacion.inspector.np));
+  const np = String((evaluacion && evaluacion.inspector && evaluacion.inspector.np) || '').trim();
+  if (evaluacion && evaluacion.fuente === 'atencionsismo' && !np) return FASE_SIN_DATO;
+  return FASE_BY_KEY.get(faseInspector(np));
 }
 
 // "Colorear por" — same segmented control acciones-capa.js's own
@@ -72,7 +77,7 @@ export function faseDe(evaluacion) {
 // changes which dimension the DOT (map + row) emphasises.
 const COLOR_MODES = {
   clase: { label: 'Clasificación', colorOf: (e) => claseDe(e).color, entries: [...CLASES, SIN_CLASE] },
-  fase: { label: 'Fase', colorOf: (e) => faseDe(e).color, entries: FASES },
+  fase: { label: 'Fase', colorOf: (e) => faseDe(e).color, entries: [...FASES, FASE_SIN_DATO] },
 };
 let colorMode = 'clase';
 
@@ -124,6 +129,7 @@ function faseChipsHtml(activeKey) {
   return [
     chip('', 'Todas', !activeKey),
     ...FASES.map((f) => chip(f.key, f.label, activeKey === f.key, f.color)),
+    chip(FASE_SIN_DATO.key, FASE_SIN_DATO.label, activeKey === FASE_SIN_DATO.key, FASE_SIN_DATO.color),
   ].join('');
 }
 
@@ -155,7 +161,7 @@ export function applyFilters(list, filters) {
 function describeFilters(f) {
   const parts = [];
   if (f.clase) parts.push(`Clasificación: ${(CLASE_BY_KEY.get(f.clase) || SIN_CLASE).label}`);
-  if (f.fase) parts.push(`Fase: ${(FASE_BY_KEY.get(f.fase) || {}).label}`);
+  if (f.fase) parts.push(`Fase: ${(FASE_BY_KEY.get(f.fase) || FASE_SIN_DATO).label}`);
   if (f.comuna) parts.push(`Comuna: ${f.comuna}`);
   if (f.barrio) parts.push(`Barrio: ${f.barrio}`);
   if (f.search) parts.push(`Búsqueda: "${f.search}"`);
@@ -231,9 +237,9 @@ export function sectionHtml() {
       </div>
 
       <div class="eval-degraded-banner" id="eval-degraded-banner" hidden role="status">
-        Mostrando una copia de respaldo porque no hay conexión con los datos en vivo:
-        la clasificación Fase I/Fase II puede no ser correcta, y el nombre del inspector,
-        sus fotos y comentarios no están disponibles hasta que se reconecte.
+        Mostrando una copia de respaldo porque no hay conexión con la fuente en vivo:
+        la clasificación Fase I/Fase II puede no ser correcta, y los nombres, fotos y
+        comentarios no están disponibles hasta que se reconecte.
       </div>
 
       <div class="kpi-row eval-kpis" id="eval-kpis"></div>
@@ -579,6 +585,9 @@ function detailHtml(e) {
       ['Dirección', e.descripcion.direccion || 'Sin dato'],
       ['Área', e.area_nombre || e.area || 'Sin dato'],
       ['Municipio (DIVIPOLA)', e.municipio || 'Sin dato'],
+      ['Fuente', e.fuente === 'atencionsismo' ? 'Atención Sismo' : 'Formulario'],
+      ['Origen del sticker', e.origen === 'firebase' ? 'Importado de Firebase' : (e.origen === 'sistema' ? 'App Atención Sismo' : 'Sin dato')],
+      ['Etiqueta', e.color_etiqueta || 'Sin dato'],
       ['Consecutivo', e.consecutivo],
     ])}
     ${group('Evaluación', [
@@ -821,7 +830,7 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
       // Fingerprint from the RAW fetch, before geo resolution: an unchanged
       // silent poll must short-circuit here, before paying for a single
       // point-in-polygon lookup — and without touching the user's filters.
-      const fingerprint = JSON.stringify(evaluaciones.map((e) => [e.id, e.clasificacion, e.fotos.length]));
+      const fingerprint = JSON.stringify(evaluaciones.map((e) => [e.id, e.clasificacion, (e.fotos || []).length]));
       if (silent && fingerprint === lastFingerprint) return;
       lastFingerprint = fingerprint;
 
@@ -915,6 +924,9 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
     try { XLSX = await loadXlsx(); } catch { showToast('No se pudo cargar el generador de Excel.', 'error'); return; }
     const rows = applyFilters(allEvaluaciones, filters).map((e) => ({
       id: e.id,
+      fuente: e.fuente || 'firestore',
+      origen_sticker: e.origen || '',
+      etiqueta_sticker: e.color_etiqueta || '',
       codigo_edificacion: e.codigo_edificacion,
       consecutivo: e.consecutivo,
       municipio: e.municipio,
@@ -982,5 +994,12 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
       map.invalidateSize();
       if (lastFitBounds) map.fitBounds(lastFitBounds, { padding: [40, 40], maxZoom: 16 });
     },
+    // Full (non-silent) re-fetch, exposed so a caller (stickers.js switching
+    // the Fuente selector) can force a fresh load instead of waiting for the
+    // next auto-refresh tick. `load` is this closure's own internal loader
+    // (async function load({ silent = false } = {}) {...}, line 800) — same
+    // no-arg call the "Actualizar" button already uses, so silent defaults
+    // to false here too.
+    reload: () => load(),
   };
 }
