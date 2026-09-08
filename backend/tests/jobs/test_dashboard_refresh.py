@@ -510,6 +510,32 @@ async def _fake_day_walk_empty(client, user, password, desde, *, until_ms=None, 
     return []
 
 
+def test_fetch_reportes_continues_when_ciudadanos_projection_fails(tmp_path, monkeypatch):
+    # The projection sits AFTER reportes_meta.json/reportes_agg.json are
+    # written, and is fail-soft: a bug in the projection must never leave
+    # the main reportes.json/meta/agg trio inconsistent (design D5).
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setenv("VISITADOS_API_PASS", "secret")
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _fake_day_walk_one_record)
+    fake_db = _FakeContactDb()
+    monkeypatch.setattr(job.credentials, "sismo", lambda: type("_C", (), {"firestore": fake_db})())
+
+    def _boom(records):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(job, "build_snapshot", _boom)
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1
+    assert (tmp_path / "reportes.json").exists()
+    assert (tmp_path / "reportes_meta.json").exists()
+    assert (tmp_path / "reportes_agg.json").exists()
+    assert not (tmp_path / "reportes_ciudadanos.json").exists()
+
+
 def test_fetch_reportes_zero_records_keeps_previous_files_and_skips_ciudadanos(tmp_path, monkeypatch):
     monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
     monkeypatch.setenv("VISITADOS_API_PASS", "secret")

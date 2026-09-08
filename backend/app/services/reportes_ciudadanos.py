@@ -6,20 +6,37 @@ produces; this narrows it further to what the tab renders and parses the
 es-CO formatted creation date into ISO 8601 (Bogota, UTC-5)."""
 from __future__ import annotations
 
+import math
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
-DESCRIPCION_MAX = 500
+DESCRIPCION_MAX = 240
 BOGOTA = timezone(timedelta(hours=-5))
-_DIGIT_RUN_RE = re.compile(r"\d{7,}")
+# 7+ digits, optionally separated by a single space/dot/dash between each
+# pair of digits — catches both contiguous runs ("3113872391") and the
+# spaced/dashed phone numbers citizens also type ("301 226 3431",
+# "311-764-8858"). Short digit groups (house numbers, "# 3-45") stay under
+# 7 digits and survive untouched.
+_DIGIT_RUN_RE = re.compile(r"\d(?:[ .\-]?\d){6,}")
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 
 
-def mask_digit_runs(texto: str) -> str:
-    """Blank phone numbers / cedulas citizens type into the free text (7+
-    consecutive digits) before the text reaches the PUBLIC snapshot. Task 0
-    measured ~2% of descriptions carrying one."""
-    return _DIGIT_RUN_RE.sub("***", texto or "")
+def mask_pii(texto: str) -> str:
+    """Blank phone numbers / cedulas / emails citizens type into free text
+    (`descripcion`, `direccion`, `nombre_edificio`) before it reaches the
+    PUBLIC snapshot. Task 0 measured ~2% of descriptions carrying a digit
+    run; a later review found the same in `direccion`/`nombre_edificio`,
+    plus emails and spaced/dashed phone numbers the digits-only pattern
+    missed. NAMES typed into free text are NOT masked — a known residual
+    exposure, same as today's `reportes.json`."""
+    out = _EMAIL_RE.sub("***", texto or "")
+    return _DIGIT_RUN_RE.sub("***", out)
+
+
+# Backward-compatible alias — `mask_digit_runs` was the original (narrower)
+# name before the email/spaced-digit masking above was added.
+mask_digit_runs = mask_pii
 
 
 _MESES = {"enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6, "julio": 7,
@@ -61,11 +78,16 @@ def parse_fecha_es_co(texto: object) -> str | None:
 
 def _float_or_none(value: object) -> float | None:
     if isinstance(value, (int, float)):
-        return float(value)
-    try:
-        return float(str(value).strip())
-    except (TypeError, ValueError):
-        return None
+        f = float(value)
+    else:
+        try:
+            f = float(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+    # `json.dumps` emits nan/inf/-inf as invalid, non-standard JSON tokens
+    # (NaN/Infinity/-Infinity); reject them here so they never reach the
+    # PUBLIC reportes_ciudadanos.json.
+    return f if math.isfinite(f) else None
 
 
 def _text(value: object) -> str:
@@ -84,25 +106,35 @@ def project_reporte(rep: object) -> dict[str, Any] | None:
     if lat is None or lng is None:
         lat = _float_or_none(rep.get("latitud"))
         lng = _float_or_none(rep.get("longitud"))
-    creado_texto = _text(rep.get("fechaCreacion"))
+    if lat == 0 and lng == 0:
+        # Null-island: not a real Cali coordinate. `_parse_coords` already
+        # nulls a (0, 0) primary lat/lng, but the latitud/longitud string
+        # fallback was resurrecting it — reject it here too.
+        lat = None
+        lng = None
+    fecha_texto = _text(rep.get("fechaCreacion"))
+    creado = parse_fecha_es_co(fecha_texto)
     return {
         "id": rid,
-        "direccion": _text(rep.get("direccion")),
+        "direccion": mask_pii(_text(rep.get("direccion"))),
         "barrio": _text(rep.get("barrio")),
         "comuna": _text(rep.get("comuna")),
         "estado": _text(rep.get("estadoVerificacion")),
         "afectacion": _text(rep.get("afectacion")),
         "tipo_inmueble": _text(rep.get("tipoInmueble")),
-        "nombre_edificio": _text(rep.get("nombreEdificio")),
+        "nombre_edificio": mask_pii(_text(rep.get("nombreEdificio"))),
         "lat": lat,
         "lng": lng,
-        "creado": parse_fecha_es_co(creado_texto),
-        "creado_texto": creado_texto,
+        "creado": creado,
+        # Only kept as a fallback for display when the date failed to
+        # parse — no need to duplicate it once `creado` has a good ISO
+        # value (also keeps the PUBLIC snapshot smaller, D5 Task 0).
+        "creado_texto": "" if creado is not None else fecha_texto,
         "habitabilidad": _text(rep.get("habitabilidad")),
         "visitado": _text(rep.get("visitado")).lower() in ("sí", "si", "true", "1"),
         "pudo_evaluar": _text(rep.get("pudoEvaluar")),
         "alcance": _text(rep.get("alcanceInspeccion")),
-        "descripcion": mask_digit_runs(_text(rep.get("descripcion")))[:DESCRIPCION_MAX],
+        "descripcion": mask_pii(_text(rep.get("descripcion")))[:DESCRIPCION_MAX],
         "sticker": {out_key: _text(sticker.get(in_key)) for in_key, out_key in _STICKER_KEYS},
     }
 
