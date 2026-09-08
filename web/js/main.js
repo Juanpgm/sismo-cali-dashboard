@@ -231,11 +231,18 @@ function switchView(view) {
   if (view === 'reportes-ciudadanos') {
     initReportesCiudadanos(document.getElementById('view-reportes-ciudadanos'), {
       fetchReportes: async () => {
-        const [datos, meta] = await Promise.all([
-          fetchData('reportes_ciudadanos.json').then((r) => (r.ok ? r.json() : [])),
+        const [datosRes, meta] = await Promise.all([
+          fetchData('reportes_ciudadanos.json'),
           fetchData('reportes_meta.json').then((r) => (r.ok ? r.json() : null)).catch(() => null),
         ]);
-        return { reportes: Array.isArray(datos) ? datos : [], meta };
+        // `reportes: null` distinguishes "the snapshot isn't published yet"
+        // (neither the Blob copy nor the deploy fallback answered ok, e.g.
+        // the pipeline hasn't run yet on a fresh deploy) from a genuinely
+        // empty snapshot ([], a normal — if unlikely — day with zero
+        // reports). reportes-ciudadanos.js renders each state differently.
+        if (!datosRes.ok) return { reportes: null, meta };
+        const datos = await datosRes.json();
+        return { reportes: Array.isArray(datos) ? datos : null, meta };
       },
     });
   }

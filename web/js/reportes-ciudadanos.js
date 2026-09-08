@@ -129,6 +129,23 @@ function formatFecha(iso, fallback) {
   return Number.isNaN(d.getTime()) ? (fallback || String(iso)) : d.toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
+const FRESHNESS_BASE = 'Reportes de ingreso vía atencionsismo.cali.gov.co';
+
+/** Freshness line for the KPI header. `count` is always the caller's live
+ *  row count (todos.length), never meta.row_count — the snapshot's row_count
+ *  can drift from what actually rendered (client-side id/shape filtering).
+ *  meta only ever supplies the date; missing meta OR a meta without
+ *  generated_at both fall back to the static line with no dynamic part.
+ *  Exported: pure, so a self-check can assert all three shapes without the
+ *  DOM (design D6 finding 7/9). */
+export function freshnessText(meta, count) {
+  const generatedAt = meta && meta.generated_at;
+  if (!generatedAt) return `${FRESHNESS_BASE}.`;
+  const generado = formatFecha(generatedAt);
+  const n = Number(count || 0).toLocaleString('es-CO');
+  return `${FRESHNESS_BASE} · actualizado ${generado} · ${n} registros`;
+}
+
 const pct = (part, total) => (total ? Math.round((part / total) * 1000) / 10 : 0);
 
 function selectFieldHtml(id, label, opciones, todos) {
@@ -505,53 +522,78 @@ export function initReportesCiudadanos(root, { fetchReportes }) {
     // filtered out (mandatory edge case — same guard as evaluaciones.js's
     // downloadBtn handler, added here since the plan's draft omitted it).
     if (!visibles.length) { showToast('No hay reportes para exportar.', 'error'); return; }
-    let XLSX;
-    try { XLSX = await loadXlsx(); } catch { showToast('No se pudo cargar el generador de Excel.', 'error'); return; }
-    const rows = visibles.map((r) => ({
-      id: r.id, estado: r.estado, afectacion: r.afectacion, tipo_inmueble: r.tipo_inmueble, direccion: r.direccion,
-      nombre_edificio: r.nombre_edificio, barrio: r.barrio, comuna: r.comuna, lat: r.lat, lng: r.lng, creado: r.creado,
-      habitabilidad: r.habitabilidad, visitado: r.visitado ? 'Sí' : 'No', pudo_evaluar: r.pudo_evaluar, alcance: r.alcance,
-      sticker_numero: r.sticker ? r.sticker.numero : '', sticker_color: r.sticker ? r.sticker.color : '',
-      sticker_etiqueta: r.sticker ? r.sticker.etiqueta : '', sticker_origen: r.sticker ? r.sticker.origen : '',
-      descripcion: r.descripcion,
-    }));
-    const { legible, slug } = downloadStamp();
-    const ws = XLSX.utils.aoa_to_sheet([
-      ['Reportes ciudadanos — atencionsismo.cali.gov.co'],
-      ['Fecha de generación:', legible],
-      ['Registros:', rows.length],
-      [],
-    ]);
-    XLSX.utils.sheet_add_json(ws, rows, { origin: 'A5' });
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'reportes');
-    XLSX.writeFile(wb, `reportes_ciudadanos_${slug}.xlsx`);
+    downloadBtn.disabled = true;
+    try {
+      let XLSX;
+      try { XLSX = await loadXlsx(); } catch { showToast('No se pudo cargar el generador de Excel.', 'error'); return; }
+      const rows = visibles.map((r) => ({
+        id: r.id, estado: r.estado, afectacion: r.afectacion, tipo_inmueble: r.tipo_inmueble, direccion: r.direccion,
+        nombre_edificio: r.nombre_edificio, barrio: r.barrio, comuna: r.comuna, lat: r.lat, lng: r.lng, creado: r.creado,
+        habitabilidad: r.habitabilidad, visitado: r.visitado ? 'Sí' : 'No', pudo_evaluar: r.pudo_evaluar, alcance: r.alcance,
+        sticker_numero: r.sticker ? r.sticker.numero : '', sticker_color: r.sticker ? r.sticker.color : '',
+        sticker_etiqueta: r.sticker ? r.sticker.etiqueta : '', sticker_origen: r.sticker ? r.sticker.origen : '',
+        descripcion: r.descripcion,
+      }));
+      const { legible, slug } = downloadStamp();
+      const ws = XLSX.utils.aoa_to_sheet([
+        ['Reportes ciudadanos — atencionsismo.cali.gov.co'],
+        ['Fecha de generación:', legible],
+        ['Registros:', rows.length],
+        [],
+      ]);
+      XLSX.utils.sheet_add_json(ws, rows, { origin: 'A5' });
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'reportes');
+      XLSX.writeFile(wb, `reportes_ciudadanos_${slug}.xlsx`);
+      showToast('Archivo generado.');
+    } finally {
+      downloadBtn.disabled = false;
+    }
   });
 
   (async () => {
     // Claims this call's slot in the stale-response race (finding 3): a
     // tab reopened before this fetch resolves bumps loadSeq again, and the
-    // check right after the await below drops this response instead of
-    // rendering over whatever the newer init already put on screen.
+    // checks below drop this response instead of rendering over whatever
+    // the newer init already put on screen.
     const seq = ++loadSeq;
-    countEl.textContent = 'Cargando…';
+    kpisEl.innerHTML = '<p class="sticker-loading">Cargando reportes…</p>';
+    barEl.innerHTML = '';
+    listEl.innerHTML = '';
+    countEl.textContent = '';
     try {
       const { reportes, meta } = await fetchReportes();
       if (seq !== loadSeq) return;
-      todos = (reportes || []).filter((r) => r && r.id);
+      if (reportes === null) {
+        // Distinguishes "the snapshot isn't published yet" (fetchReportes
+        // resolves { reportes: null, ... } when neither the Blob copy nor
+        // the deploy fallback answered ok) from a genuinely empty snapshot
+        // ([], handled by renderList's existing empty-state copy below) —
+        // finding 6.
+        todos = [];
+        visibles = [];
+        byId.clear();
+        kpisEl.innerHTML = '<p class="sticker-error" role="alert">El snapshot de reportes ciudadanos todavía no está publicado. Se genera en la próxima corrida del refresh.</p>';
+        barEl.innerHTML = '';
+        listEl.innerHTML = '';
+        countEl.textContent = '';
+        freshnessEl.hidden = true;
+        return;
+      }
+      todos = reportes.filter((r) => r && r.id);
       byId.clear();
       for (const r of todos) byId.set(r.id, r);
-      if (meta && meta.generated_at) {
-        const generado = formatFecha(meta.generated_at);
-        const n = Number(meta.row_count != null ? meta.row_count : todos.length).toLocaleString('es-CO');
-        freshnessEl.textContent = `Reportes de ingreso vía atencionsismo.cali.gov.co · actualizado ${generado} · ${n} registros`;
-      }
+      freshnessEl.hidden = false;
+      freshnessEl.textContent = freshnessText(meta, todos.length);
       renderFilters();
       renderColorMode();
       render();
     } catch (err) {
       if (seq !== loadSeq) return;
-      countEl.textContent = `No se pudieron cargar los reportes: ${err && err.message ? err.message : err}`;
+      kpisEl.innerHTML = `<p class="sticker-error" role="alert">No se pudieron cargar los reportes: ${escapeHtml(err && err.message ? err.message : String(err))}</p>`;
+      barEl.innerHTML = '';
+      listEl.innerHTML = '';
+      countEl.textContent = '';
     }
   })();
 

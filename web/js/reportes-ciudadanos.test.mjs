@@ -2,7 +2,7 @@
 // Run: node web/js/reportes-ciudadanos.test.mjs
 import assert from 'node:assert';
 import {
-  ESTADOS, estadoDe, contarPor, opcionesDe, applyFiltrosReportes, colorSticker, COLOR_MODES_REPORTES,
+  ESTADOS, estadoDe, contarPor, opcionesDe, applyFiltrosReportes, colorSticker, COLOR_MODES_REPORTES, freshnessText,
 } from './reportes-ciudadanos.js';
 
 const r = (over = {}) => ({
@@ -83,3 +83,20 @@ assert.deepStrictEqual(applyFiltrosReportes([null, r(), undefined], { afectacion
 assert.deepStrictEqual(applyFiltrosReportes([null, undefined], {}), []);
 
 console.log('reportes-ciudadanos.test.mjs edge cases OK');
+
+// ── freshnessText (fix(reportes) finding 6/7/9) ──────────────────────────
+// Count always comes from todos.length (the caller's live count), never
+// from meta.row_count — meta only ever supplies the date.
+assert.ok(freshnessText(null, 42).includes('42') === false, 'freshnessText: meta null has no dynamic (count/date) part');
+assert.strictEqual(freshnessText(null, 42), freshnessText(undefined, 0), 'freshnessText: meta null/undefined render identically regardless of count');
+
+const metaSinFecha = { row_count: 999 };
+assert.strictEqual(freshnessText(metaSinFecha, 42), freshnessText(null, 42), 'freshnessText: meta without generated_at omits the dynamic part, same as meta null');
+
+const metaCompleto = { generated_at: '2026-09-08T12:00:00-05:00', row_count: 999 };
+const full = freshnessText(metaCompleto, 42);
+assert.ok(full.includes('actualizado'), 'freshnessText: full meta includes the "actualizado" date phrase');
+assert.ok(full.includes('42'), 'freshnessText: full meta uses the passed-in count (42)');
+assert.ok(!full.includes('999'), 'freshnessText: full meta ignores meta.row_count for the count (uses todos.length instead)');
+
+console.log('reportes-ciudadanos.test.mjs freshnessText OK');
