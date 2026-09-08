@@ -1288,6 +1288,16 @@ td { padding: 10px 14px; vertical-align: top; color: var(--text-primary); max-wi
 .detail-field dt { font-size: 0.7rem; color: var(--text-muted); margin-bottom: 2px; }
 .detail-field dd { margin: 0; font-size: 0.85rem; color: var(--text-primary); overflow-wrap: break-word; }
 
+/* Misattribution-risk caveat under the Inspector group (see
+   evaluaciones.js's quienDe/inspector_fuente): shown only when the name
+   came from the roster-by-code fallback, not a verified evaluación match.
+   Same "caution" orange as .eval-degraded-banner, but a plain inline note
+   (no card chrome) since it qualifies one field group, not the whole tab. */
+.detail-inspector-caveat {
+  margin: -4px 0 20px; font-size: 0.78rem; line-height: 1.4;
+  color: var(--status-r2);
+}
+
 /* ============================================================
    Error overlay / toasts
    ============================================================ */

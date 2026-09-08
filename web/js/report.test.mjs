@@ -140,3 +140,22 @@ assert.ok(atencionsismoBlankNpText.includes('sin dato'), 'atencionsismo + blank 
 assert.ok(!atencionsismoBlankNpText.includes('"fase I"'), 'atencionsismo + blank NP must not fall back to the "fase I" value');
 
 console.log('report.test.mjs: all assertions passed');
+
+// --- buildEvaluacionDocDefinition: roster-fallback identity gets a
+// misattribution-risk caveat in the printed Inspector section (2026-09-08) --
+const CAVEAT_TEXT = 'no verificado contra esta evaluación';
+
+const rosterFallback = { ...fullEvaluacion, inspector_fuente: 'roster' };
+const rosterFallbackText = JSON.stringify(buildEvaluacionDocDefinition(rosterFallback, { photos: [], mapImage: null }).content);
+assert.ok(rosterFallbackText.includes(CAVEAT_TEXT), 'inspector_fuente "roster" should print the unverified-identity caveat');
+
+const verifiedMatch = { ...fullEvaluacion, inspector_fuente: 'evaluacion' };
+const verifiedMatchText = JSON.stringify(buildEvaluacionDocDefinition(verifiedMatch, { photos: [], mapImage: null }).content);
+assert.ok(!verifiedMatchText.includes(CAVEAT_TEXT), 'inspector_fuente "evaluacion" must not print the caveat');
+
+const noFuenteField = { ...fullEvaluacion };
+delete noFuenteField.inspector_fuente;
+const noFuenteFieldText = JSON.stringify(buildEvaluacionDocDefinition(noFuenteField, { photos: [], mapImage: null }).content);
+assert.ok(!noFuenteFieldText.includes(CAVEAT_TEXT), 'Firestore-sourced records with no inspector_fuente field must not print the caveat');
+
+console.log('report.test.mjs: roster-fallback inspector caveat OK');

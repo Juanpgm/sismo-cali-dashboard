@@ -978,49 +978,73 @@ def test_unrecognized_action_is_rejected(monkeypatch):
     assert resp.status_code == 400
 
 
-# ── np_by_codigo: roster NP keyed by 3-digit brigade code ─────────────────
-# No `fake_sismo`/`seed` fixture exists in this file (plan's fallback
-# instruction): reuse `_FakeFirestore` directly against a plain stores dict,
-# the same convention every other test in this module already uses.
+# ── inspector_profile_by_codigo: full roster profile keyed by 3-digit
+# brigade code (zero-padded, same convention _allocate_codigo assigns),
+# extended to the full identity so a no-match sticker can show WHO holds
+# the code, not just NP) ─
 
 
-def test_np_by_codigo_reads_roster():
+def test_inspector_profile_by_codigo_returns_full_profile():
     stores = {
         "inspectores": {
-            "u1": {"codigo": "004", "NP": "P4", "activo": True},
-            "u2": {"codigo": "007", "NP": "", "activo": False},
-            "u3": {"NP": "P9"},  # no code: unreachable from a sticker number, skipped
-            "u4": {"codigo": " 010 ", "NP": " P1 "},
+            "u1": {
+                "codigo": "004",
+                "NP": "P4",
+                "nombre_completo": "Ana Gomez",
+                "identificacion": "123",
+                "entidad": "Curaduria 1",
+            },
         }
     }
     db = _FakeFirestore(stores)
-    assert stickers.np_by_codigo(db) == {"004": "P4", "007": "", "010": "P1"}
+    assert stickers.inspector_profile_by_codigo(db) == {
+        "004": {
+            "uid": "u1",
+            "nombre_completo": "Ana Gomez",
+            "identificacion": "123",
+            "entidad": "Curaduria 1",
+            "np": "P4",
+        }
+    }
 
 
-def test_np_by_codigo_empty_roster():
-    db = _FakeFirestore({"inspectores": {}})
-    assert stickers.np_by_codigo(db) == {}
+def test_inspector_profile_by_codigo_zero_pads_single_and_two_digit_codes():
+    db = _FakeFirestore({
+        "inspectores": {
+            "u1": {"codigo": "4", "NP": "P4", "nombre_completo": "Ana"},
+            "u2": {"codigo": "07", "NP": "P2", "nombre_completo": "Bea"},
+        }
+    })
+    out = stickers.inspector_profile_by_codigo(db)
+    assert out["004"]["nombre_completo"] == "Ana"
+    assert out["004"]["np"] == "P4"
+    assert out["004"]["uid"] == "u1"
+    assert out["007"]["nombre_completo"] == "Bea"
 
 
-def test_np_by_codigo_zero_pads_single_digit_code():
-    # Matches _allocate_codigo's own zfill(3) — a roster doc saved with an
-    # unpadded code (manual repair, older data) must still be reachable by
-    # the padded 3-digit code every sticker `numero` embeds.
-    db = _FakeFirestore({"inspectores": {"u1": {"codigo": "4", "NP": "P4"}}})
-    assert stickers.np_by_codigo(db) == {"004": "P4"}
-
-
-def test_np_by_codigo_zero_pads_two_digit_code():
-    db = _FakeFirestore({"inspectores": {"u1": {"codigo": "04", "NP": "P4"}}})
-    assert stickers.np_by_codigo(db) == {"004": "P4"}
-
-
-def test_np_by_codigo_skips_empty_or_missing_code():
+def test_inspector_profile_by_codigo_skips_empty_or_missing_code():
     db = _FakeFirestore({"inspectores": {
-        "u1": {"codigo": "", "NP": "P9"},
-        "u2": {"NP": "P1"},
+        "u1": {"codigo": "", "NP": "P9", "nombre_completo": "Nadie"},
+        "u2": {"NP": "P1", "nombre_completo": "Tampoco"},
     }})
-    assert stickers.np_by_codigo(db) == {}
+    assert stickers.inspector_profile_by_codigo(db) == {}
+
+
+def test_inspector_profile_by_codigo_defaults_missing_fields_to_empty_string():
+    db = _FakeFirestore({"inspectores": {"u1": {"codigo": "004"}}})
+    assert stickers.inspector_profile_by_codigo(db) == {
+        "004": {"uid": "u1", "nombre_completo": "", "identificacion": "", "entidad": "", "np": ""}
+    }
+
+
+def test_inspector_profile_by_codigo_uid_is_doc_id_not_a_field():
+    db = _FakeFirestore({"inspectores": {"u1": {"codigo": "004", "uid": "not-this-one"}}})
+    assert stickers.inspector_profile_by_codigo(db)["004"]["uid"] == "u1"
+
+
+def test_inspector_profile_by_codigo_empty_roster():
+    db = _FakeFirestore({"inspectores": {}})
+    assert stickers.inspector_profile_by_codigo(db) == {}
 
 
 # ── EvaluacionesCache: parametrized Blob pathname + redaction ────────────

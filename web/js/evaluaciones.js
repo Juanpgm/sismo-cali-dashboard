@@ -113,6 +113,37 @@ function formatFecha(iso) {
 // without the DOM. The row title and modal heading must never render blank.
 export const tituloDe = (e) => e.descripcion.nombre || e.descripcion.direccion || e.codigo_edificacion || 'Sin dirección';
 
+// "Who did this" label for the list row (misattribution-risk fix
+// 2026-09-08, see backend/app/services/stickers_atencionsismo.py's
+// inspector_fuente doc comment): brigade codes are reused after an
+// inspector is deleted, so a roster-fallback identity (`inspector_fuente
+// === 'roster'`) names whoever CURRENTLY holds the code, not necessarily
+// who did this evaluation — it must never read as a confirmed name. A
+// record with no `inspector_fuente` field at all (Firestore-sourced, or a
+// matched atencionsismo evaluación) keeps today's plain behaviour.
+// Exported: pure, so a self-check can assert this without the DOM.
+export function quienDe(e) {
+  const nombre = (e.inspector && e.inspector.nombre_completo) || '';
+  const codigo = (e.inspector && e.inspector.codigo) || '—';
+  if (e.inspector_fuente === 'roster') {
+    return nombre
+      ? `Código ${codigo} · titular actual: ${nombre}`
+      : `Código ${codigo} (sin identidad verificada)`;
+  }
+  return nombre || `Brigada ${codigo}`;
+}
+
+// xlsx export's "inspector_verificado" column (misattribution-risk fix
+// 2026-09-08): flags whether the exported name/identificación came from a
+// verified Firestore match or an unverified roster-by-code fallback,
+// alongside the raw values (never mutates them — a spreadsheet consumer
+// needs both). Exported: pure, so a self-check can assert it without xlsx.
+export function inspectorFuenteLabel(e) {
+  if (e.inspector_fuente === 'evaluacion') return 'Sí';
+  if (e.inspector_fuente === 'roster') return 'No (código de brigada)';
+  return '';
+}
+
 // ---- Filters -------------------------------------------------------------
 
 /** Chip group for the ATC-20 classification filter — same shape as
@@ -525,7 +556,7 @@ function listItemHtml(e, degraded) {
   const f = faseDe(e);
   const numFotos = (e.fotos || []).length;
   const fotos = numFotos ? `${numFotos} foto${numFotos === 1 ? '' : 's'}` : 'sin fotos';
-  const quien = e.inspector.nombre_completo || `Brigada ${e.inspector.codigo || '—'}`;
+  const quien = quienDe(e);
   // .ps-row-wrap + sibling PDF button — same recipe acciones-capa.js's
   // accionRowHtml uses (button-in-button is invalid HTML, so the PDF
   // control lives next to .eval-row, not nested inside it). Disabled while
@@ -619,6 +650,9 @@ function detailHtml(e) {
       ['NP', e.inspector.np || 'Sin dato'],
       ['Fecha de registro', formatFecha(e.fecha)],
     ])}
+    ${e.inspector_fuente === 'roster'
+      ? '<p class="detail-inspector-caveat">Dato del código de brigada, no verificado contra esta evaluación — puede pertenecer a otro inspector si el código fue reasignado.</p>'
+      : ''}
     ${group('Ubicación', [
       ['Latitud', e.coords ? e.coords.lat.toFixed(6) : 'Sin coordenadas'],
       ['Longitud', e.coords ? e.coords.lng.toFixed(6) : 'Sin coordenadas'],
@@ -973,6 +1007,7 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
       inspector_identificacion: e.inspector.identificacion,
       inspector_entidad: e.inspector.entidad,
       inspector_np: e.inspector.np,
+      inspector_verificado: inspectorFuenteLabel(e),
       fase: faseDe(e).label,
       nombre: e.descripcion.nombre,
       direccion: e.descripcion.direccion,

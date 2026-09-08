@@ -40,7 +40,11 @@ STICKERS_LKG_BLOB = "data/stickers_atencionsismo_last_good.json"
 # into the cache's serve-stale/Blob chain instead of hanging the worker.
 STICKERS_FETCH_DEADLINE_S = 45.0
 
-_BLOB_ALLOWED_FIELDS = stickers._BLOB_ALLOWED_FIELDS + ("fuente", "origen", "color_etiqueta")
+# inspector_fuente ("evaluacion"|"roster"|"") is a bare enum, not PII, so it
+# is allowlisted alongside the other atencionsismo-only fields — dropping it
+# on the public Blob copy would silently undo the misattribution-risk
+# caveat callers key off of (stickers_atencionsismo.normalize_sticker).
+_BLOB_ALLOWED_FIELDS = stickers._BLOB_ALLOWED_FIELDS + ("fuente", "origen", "color_etiqueta", "inspector_fuente")
 
 
 def redact_for_blob(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -79,7 +83,7 @@ def build_payload(db: Any, evaluaciones_cache: stickers.EvaluacionesCache) -> li
             ) from exc
 
     rows = asyncio.run(_pull_with_deadline())  # sync route runs in the threadpool: no running loop here
-    np_map = stickers.np_by_codigo(db)
+    roster_map = stickers.inspector_profile_by_codigo(db)
     firestore_evals = evaluaciones_cache.get_or_fetch(lambda: stickers.list_evaluaciones(db))
     if evaluaciones_cache.degraded:
         # design D4: "si Firestore falla, el fetch falla completo" — a
@@ -90,7 +94,7 @@ def build_payload(db: Any, evaluaciones_cache: stickers.EvaluacionesCache) -> li
         # serve-stale / Blob-restore chain instead of serving a payload with
         # a poisoned Fase.
         raise RuntimeError("evaluaciones degradado: sin NP no hay Fase")
-    return build_evaluaciones(rows, np_by_codigo=np_map, evaluaciones_firestore=firestore_evals)
+    return build_evaluaciones(rows, roster_by_codigo=roster_map, evaluaciones_firestore=firestore_evals)
 
 
 @router.get("/stickers-atencionsismo")

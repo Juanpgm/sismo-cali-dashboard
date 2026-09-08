@@ -3,7 +3,7 @@
 import assert from 'node:assert';
 import {
   claseDe, contarPorClase, CLASES, faseDe, FASES, applyFilters, FASE_SIN_DATO,
-  describeFilters, COLOR_MODES, tituloDe,
+  describeFilters, COLOR_MODES, tituloDe, quienDe, inspectorFuenteLabel,
 } from './evaluaciones.js';
 
 // The three ATC-20 placard states, in escalating severity.
@@ -133,3 +133,42 @@ assert.strictEqual(
 );
 
 console.log('evaluaciones.test.mjs: tituloDe "Sin dirección" fallback OK');
+
+// ── quienDe: the list row's "who did this" label must never overstate an
+// unverified roster fallback as a confirmed identity (misattribution-risk
+// fix 2026-09-08) ─────────────────────────────────────────────────────────
+assert.strictEqual(
+  quienDe({ inspector: { nombre_completo: 'Ana', codigo: '004' }, inspector_fuente: 'evaluacion' }),
+  'Ana',
+  'a verified (evaluacion) match shows the bare name, unchanged',
+);
+assert.strictEqual(
+  quienDe({ inspector: { nombre_completo: '', codigo: '004' }, inspector_fuente: 'evaluacion' }),
+  'Brigada 004',
+  'a verified match with no name falls back to "Brigada {codigo}", unchanged',
+);
+assert.strictEqual(
+  quienDe({ inspector: { nombre_completo: 'Ana Gomez', codigo: '004' }, inspector_fuente: 'roster' }),
+  'Código 004 · titular actual: Ana Gomez',
+  'a roster-fallback identity is labeled as the CURRENT holder, not asserted as who did the work',
+);
+assert.strictEqual(
+  quienDe({ inspector: { nombre_completo: '', codigo: '004' }, inspector_fuente: 'roster' }),
+  'Código 004 (sin identidad verificada)',
+  'roster fallback with no name at all reads as unverified, not blank',
+);
+assert.strictEqual(
+  quienDe({ inspector: { nombre_completo: 'Ana', codigo: '004' } }),
+  'Ana',
+  'no inspector_fuente field at all (Firestore-sourced records) behaves exactly like today',
+);
+
+console.log('evaluaciones.test.mjs: quienDe OK');
+
+// ── inspectorFuenteLabel: xlsx export's "inspector_verificado" column ──────
+assert.strictEqual(inspectorFuenteLabel({ inspector_fuente: 'evaluacion' }), 'Sí');
+assert.strictEqual(inspectorFuenteLabel({ inspector_fuente: 'roster' }), 'No (código de brigada)');
+assert.strictEqual(inspectorFuenteLabel({ inspector_fuente: '' }), '');
+assert.strictEqual(inspectorFuenteLabel({}), '', 'Firestore-sourced records with no inspector_fuente field are also blank');
+
+console.log('evaluaciones.test.mjs: inspectorFuenteLabel OK');
