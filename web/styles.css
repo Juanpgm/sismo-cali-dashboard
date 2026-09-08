@@ -1580,7 +1580,12 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tabs-toggle { disp
 }
 .accion-pdf-btn:hover { background: color-mix(in srgb, var(--accent) 26%, transparent); }
 .accion-pdf-btn:active { transform: scale(0.92); }
-.accion-pdf-btn:disabled { cursor: wait; }
+/* Two distinct disabled reasons: mid-generation (.is-loading, "wait" — it's
+   working) vs. blocked because the Evaluaciones tab is serving the degraded
+   backup copy (evaluaciones.js) — that one reads as genuinely unavailable,
+   not busy, so it gets the dimmed "not-allowed" treatment instead. */
+.accion-pdf-btn.is-loading { cursor: wait; }
+.accion-pdf-btn:disabled:not(.is-loading) { opacity: .5; cursor: not-allowed; }
 /* Swapped-in spinner icon (acciones-capa.js's SPINNER_ICON) while the PDF
    is generating — spins in place instead of the button just going inert. */
 .accion-pdf-btn.is-loading svg { animation: accion-spin .7s linear infinite; }
@@ -1905,6 +1910,16 @@ body:not([data-role="admin"]) [data-sticker-segment="asignacion"] { display: non
    one card side by side; the list drives the map on hover.
    ============================================================ */
 .eval-section { display: flex; flex-direction: column; gap: 14px; }
+/* Cold-start Blob fallback warning (see backend EvaluacionesCache.degraded):
+   the restored copy has inspector.np blanked, so Fase I/II may misreport —
+   reuses --status-r2 (the same "caution" orange the r2/medio badges and the
+   asig-badge-pending pill already use) rather than a new colour. */
+.eval-degraded-banner {
+  padding: 10px 14px; font-size: .84rem; font-weight: 600; line-height: 1.4;
+  color: var(--status-r2); border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--status-r2) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--status-r2) 35%, transparent);
+}
 .eval-kpis { margin: 0; }
 /* The placard states read as prose here, not as three shouted labels. */
 .kpi-label-lower { text-transform: lowercase; letter-spacing: .02em; }

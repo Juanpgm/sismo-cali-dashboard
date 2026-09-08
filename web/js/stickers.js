@@ -24,7 +24,12 @@ async function fetchEvaluacionesOnce(getToken) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
-  return data.evaluaciones;
+  // `degraded` (see backend/app/routers/stickers.py's EvaluacionesCache):
+  // true when a cold start served the Blob-redacted last-known-good copy
+  // instead of a live read — that copy has inspector.np blanked, which
+  // silently wrecks the Fase I/II classification, so evaluaciones.js needs
+  // the flag alongside the data to warn about it.
+  return { evaluaciones: data.evaluaciones, degraded: Boolean(data.degraded) };
 }
 
 // Rendered once per tab open. Two-way segmented control (Evaluaciones ·

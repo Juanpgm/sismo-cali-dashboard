@@ -210,6 +210,12 @@ export function sectionHtml() {
         <button type="button" class="sticker-action" id="eval-reload">Actualizar</button>
       </div>
 
+      <div class="eval-degraded-banner" id="eval-degraded-banner" hidden role="status">
+        Mostrando una copia de respaldo porque no hay conexión con los datos en vivo:
+        la clasificación Fase I/Fase II puede no ser correcta, y el nombre del inspector,
+        sus fotos y comentarios no están disponibles hasta que se reconecte.
+      </div>
+
       <div class="kpi-row eval-kpis" id="eval-kpis"></div>
       <div class="eval-bar" id="eval-bar"></div>
 
@@ -467,13 +473,14 @@ function renderMap(containerId, evaluaciones, onDetail) {
 // out in a strip, and the whole row is the button — a separate "Ver detalle"
 // control would eat a third of the width. The label stays visible so the
 // affordance is not hidden behind a hover.
-function listItemHtml(e) {
+function listItemHtml(e, degraded) {
   const c = claseDe(e);
   const fotos = e.fotos.length ? `${e.fotos.length} foto${e.fotos.length === 1 ? '' : 's'}` : 'sin fotos';
   const quien = e.inspector.nombre_completo || `Brigada ${e.inspector.codigo || '—'}`;
   // .ps-row-wrap + sibling PDF button — same recipe acciones-capa.js's
   // accionRowHtml uses (button-in-button is invalid HTML, so the PDF
-  // control lives next to .eval-row, not nested inside it).
+  // control lives next to .eval-row, not nested inside it). Disabled while
+  // serving the degraded backup copy — see isDegraded above.
   return `<li>
     <div class="ps-row-wrap">
       <button type="button" class="eval-row" data-eval-detail="${escapeHtml(e.id)}">
@@ -484,7 +491,7 @@ function listItemHtml(e) {
         <span class="eval-meta">${escapeHtml(formatFecha(e.fecha))} · ${fotos}</span>
         <span class="eval-cta">Ver detalle &rsaquo;</span>
       </button>
-      <button type="button" class="btn-icon accion-pdf-btn" data-eval-pdf="${escapeHtml(e.id)}" title="Descargar informe PDF" aria-label="Descargar informe PDF">${PDF_ICON}</button>
+      <button type="button" class="btn-icon accion-pdf-btn" data-eval-pdf="${escapeHtml(e.id)}" ${degraded ? 'disabled' : ''} title="${degraded ? DEGRADED_TITLE : 'Descargar informe PDF'}" aria-label="Descargar informe PDF">${PDF_ICON}</button>
     </div>
   </li>`;
 }
@@ -499,6 +506,9 @@ const siNo = (v) => (v ? 'Sí' : 'No');
 // export just for two SVG strings).
 const PDF_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><polyline points="9 15 12 18 15 15"/></svg>';
 const SPINNER_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" stroke-opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/></svg>';
+// Shared by listItemHtml (module scope) and initEvaluaciones's own
+// download/modal-PDF wiring — one string, one place to reword.
+const DEGRADED_TITLE = 'No disponible: mostrando una copia de respaldo con datos incompletos.';
 
 function detailHtml(e) {
   const c = claseDe(e);
@@ -566,6 +576,7 @@ let autoRefreshTimer = null;
  *  `fetchEvaluaciones` returns the array; failures render inline so a broken
  *  evaluations read never takes the inspector roster down with it. */
 export function initEvaluaciones(section, { fetchEvaluaciones }) {
+  const bannerEl = section.querySelector('#eval-degraded-banner');
   const kpis = section.querySelector('#eval-kpis');
   const barEl = section.querySelector('#eval-bar');
   const listEl = section.querySelector('#eval-list');
@@ -591,6 +602,11 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   // Which evaluación the modal is currently showing — the modal's own PDF
   // button (unlike the row ones) has no per-row index to read from.
   let modalEvaluacion = null;
+  // Mirrors the last `degraded` flag load() saw (see there): a PDF/xlsx
+  // generated from the redacted backup copy would carry a wrong Fase I/II
+  // reading with nothing on the exported file to say so, so every export
+  // path is blocked outright while this is true, not just banner-warned.
+  let isDegraded = false;
 
   // Panel-wide sticker coverage (same figure as the Panel gauge), from the store
   // that main.js populates via /api/sticker-status. Lives on the map itself
@@ -642,7 +658,10 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
     } catch {
       showToast('No se pudo generar el informe PDF.', 'error');
     } finally {
-      pdfBtn.disabled = false;
+      // Not unconditionally false: if a poll flipped isDegraded to true
+      // WHILE this generation was in flight, the button must land back on
+      // disabled, not re-enable itself into a now-blocked state.
+      pdfBtn.disabled = isDegraded;
       pdfBtn.classList.remove('is-loading');
       pdfBtn.innerHTML = PDF_ICON;
     }
@@ -660,7 +679,8 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
     } catch {
       showToast('No se pudo generar el informe PDF.', 'error');
     } finally {
-      modalPdfBtn.disabled = false;
+      // Same isDegraded-aware restore as the per-row handler above.
+      modalPdfBtn.disabled = isDegraded;
       modalPdfBtn.classList.remove('is-loading');
       modalPdfBtn.innerHTML = PDF_ICON;
     }
@@ -714,7 +734,7 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
         : '<li class="eval-empty">Todavía no hay evaluaciones registradas desde el formulario.</li>';
       listMeta.textContent = '';
     } else {
-      listEl.innerHTML = filtered.map(listItemHtml).join('');
+      listEl.innerHTML = filtered.map((e) => listItemHtml(e, isDegraded)).join('');
       listMeta.textContent = `${filtered.length} · más reciente primero`;
     }
 
@@ -735,7 +755,27 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
       mapMeta.textContent = '';
     }
     try {
-      const evaluaciones = await fetchEvaluaciones();
+      const { evaluaciones, degraded } = await fetchEvaluaciones();
+      // Toggled BEFORE the fingerprint short-circuit below, on purpose: a
+      // silent poll can flip `degraded` (Blob-restore recovering, or a fresh
+      // outage starting) even when the evaluaciones themselves are byte-for-
+      // byte identical, and the banner (and the disabled export controls
+      // below) must track that regardless of whether the rest of the render
+      // below actually runs.
+      isDegraded = degraded;
+      bannerEl.hidden = !degraded;
+      // A PDF/xlsx built from the redacted backup copy would carry a wrong
+      // Fase I/II reading with nothing on the exported file to flag it (the
+      // on-screen banner doesn't travel with a downloaded document) — so
+      // every export path is blocked outright, not just banner-warned. The
+      // per-row buttons pick this up next render via listItemHtml(e,
+      // isDegraded); these two don't get re-rendered from scratch, so they're
+      // set directly here.
+      downloadBtn.disabled = degraded;
+      downloadBtn.title = degraded ? DEGRADED_TITLE : '';
+      modalPdfBtn.disabled = degraded;
+      modalPdfBtn.title = degraded ? DEGRADED_TITLE : 'Descargar informe PDF';
+
       // Fingerprint from the RAW fetch, before geo resolution: an unchanged
       // silent poll must short-circuit here, before paying for a single
       // point-in-polygon lookup — and without touching the user's filters.
@@ -764,6 +804,10 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
       if (silent) return;
       teardownMap();
       barEl.innerHTML = '';
+      // A total load failure is its own error state (nothing to show at
+      // all) — don't leave a stale "backup copy" banner contradicting it.
+      isDegraded = false;
+      bannerEl.hidden = true;
       kpis.innerHTML = `<p class="sticker-error" role="alert">No se pudieron cargar las evaluaciones: ${escapeHtml(err.message)}</p>`;
     }
   }

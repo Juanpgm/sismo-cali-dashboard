@@ -131,6 +131,19 @@ class EvaluacionesCache:
         self._payload: list[dict[str, Any]] | None = None
         self._blob_hash: str | None = None  # hash of the last payload persisted to Blob
         self._persist_thread: threading.Thread | None = None  # last persist worker (tests join it)
+        # True only while the served payload is the Blob-redacted copy
+        # (`_redact_for_blob` blanks `inspector.np`, which the Fase I/II
+        # classification depends on — see the `degraded` property below).
+        self._degraded: bool = False
+
+    @property
+    def degraded(self) -> bool:
+        """Read-only: True while the currently-served payload is the public
+        Blob last-known-good copy, whose `inspector.np` (and thus Fase I/II)
+        is blanked by `_redact_for_blob` — unlike a plain serve-stale, this
+        is actually-wrong data, not just a few minutes old. Callers (the
+        `/evaluaciones` route) surface this so the dashboard can warn."""
+        return self._degraded
 
     def get_or_fetch(self, fetch: Any) -> list[dict[str, Any]]:
         now = time.monotonic()
@@ -139,6 +152,7 @@ class EvaluacionesCache:
             try:
                 self._payload = fetch()
                 self._at = now
+                self._degraded = False  # real fresh data, even if it was degraded before
                 self._persist_last_good()
             except Exception:
                 # Serve-stale-on-error (30-ago-2026): a Firestore 429/
@@ -160,6 +174,7 @@ class EvaluacionesCache:
                     )
                     self._payload = restored
                     self._at = now  # behaves as a normal (stale-able) payload from here on
+                    self._degraded = True  # blanked np, see the `degraded` property above
                 else:
                     logging.exception(
                         "evaluaciones: fetch fallo, sirviendo el ultimo payload en cache (stale)"
@@ -580,4 +595,4 @@ def get_evaluaciones(
         # "blocked by CORS policy" / "Failed to fetch" instead of the real
         # cause. A normal HTTPException always carries CORS headers.
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return JSONResponse({"ok": True, "evaluaciones": evaluaciones})
+    return JSONResponse({"ok": True, "evaluaciones": evaluaciones, "degraded": cache.degraded})

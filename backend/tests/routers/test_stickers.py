@@ -727,6 +727,112 @@ def test_evaluaciones_cache_cold_start_rejects_malformed_blob_payload(monkeypatc
         cache.get_or_fetch(boom)
 
 
+def test_evaluaciones_cache_cold_start_restore_marks_degraded(monkeypatch):
+    """A Blob-restored cold start carries a blanked `inspector.np`
+    (`_redact_for_blob`), which silently wrecks the Fase I/II classification
+    every evaluación renders under — the cache must expose that so the route
+    (and the dashboard) can warn, unlike a normal serve-stale which is real
+    (if slightly old) data."""
+    blob_payload = [{"codigo_edificacion": "76001-1-0010001"}]
+    monkeypatch.setattr(stickers.blob_lkg, "load_json",
+                        lambda pathname, expected_type: blob_payload)
+    cache = stickers.EvaluacionesCache()
+    assert cache.degraded is False  # nothing has happened yet
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    cache.get_or_fetch(boom)
+
+    assert cache.degraded is True
+
+
+def test_evaluaciones_cache_plain_stale_serve_does_not_mark_degraded(monkeypatch):
+    """A plain serve-stale-on-error (payload already existed from a prior
+    successful fetch) is NOT the Blob-restore case — the served payload is
+    the real previous one, just possibly a few minutes old, so `degraded`
+    must never flip on for it."""
+    cache = stickers.EvaluacionesCache()
+    clock = {"t": 0.0}
+    monkeypatch.setattr(stickers.time, "monotonic", lambda: clock["t"])
+
+    good_payload = [{"codigo_edificacion": "76001-1-0010001"}]
+    cache.get_or_fetch(lambda: good_payload)
+    assert cache.degraded is False
+
+    clock["t"] += stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1  # force staleness
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    cache.get_or_fetch(boom)
+
+    assert cache.degraded is False
+
+
+def test_evaluaciones_cache_degraded_survives_a_second_stale_serve(monkeypatch):
+    """Regression guard: once a cold-start Blob restore has marked the cache
+    degraded, a SUBSEQUENT plain serve-stale (outage still ongoing, no new
+    Blob restore involved) must not accidentally clear the flag — the
+    `else` branch that logs and reuses `self._payload` must never touch
+    `degraded` in either direction. Closes the gap where every other test
+    here only exercises restore->success or a stale-serve that never was
+    degraded to begin with, so a stray `self._degraded = False` on that
+    `else` branch would slip through undetected."""
+    blob_payload = [{"codigo_edificacion": "76001-1-0010001"}]
+    monkeypatch.setattr(stickers.blob_lkg, "load_json",
+                        lambda pathname, expected_type: blob_payload)
+    cache = stickers.EvaluacionesCache()
+    clock = {"t": 0.0}
+    monkeypatch.setattr(stickers.time, "monotonic", lambda: clock["t"])
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    cache.get_or_fetch(boom)  # cold-start restore
+    assert cache.degraded is True
+
+    clock["t"] += stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1  # outage continues
+    cache.get_or_fetch(boom)  # plain serve-stale, no Blob involved this time
+
+    assert cache.degraded is True
+
+
+def test_evaluaciones_cache_degraded_flips_back_after_next_successful_fetch(monkeypatch):
+    """Once real data replaces a degraded Blob-restored payload — a
+    subsequent refresh that actually succeeds — `degraded` must clear."""
+    blob_payload = [{"codigo_edificacion": "76001-1-0010001"}]
+    monkeypatch.setattr(stickers.blob_lkg, "load_json",
+                        lambda pathname, expected_type: blob_payload)
+    cache = stickers.EvaluacionesCache()
+    clock = {"t": 0.0}
+    monkeypatch.setattr(stickers.time, "monotonic", lambda: clock["t"])
+
+    def boom():
+        raise RuntimeError("429 Quota exceeded.")
+
+    cache.get_or_fetch(boom)
+    assert cache.degraded is True
+
+    clock["t"] += stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1  # force staleness
+    fresh_payload = [{"codigo_edificacion": "76001-1-0020002"}]
+    result = cache.get_or_fetch(lambda: fresh_payload)
+
+    assert result == fresh_payload
+    assert cache.degraded is False
+
+
+def test_evaluaciones_cache_fresh_first_fetch_is_not_degraded():
+    """No outage at all: a brand-new cache's first, successful fetch must
+    never report degraded."""
+    cache = stickers.EvaluacionesCache()
+    assert cache.degraded is False
+
+    cache.get_or_fetch(lambda: [{"codigo_edificacion": "76001-1-0010001"}])
+
+    assert cache.degraded is False
+
+
 def _join_persist(cache) -> None:
     """The Blob persist runs on a daemon thread (off the request path);
     tests join it so assertions on the uploaded payload are deterministic."""
@@ -803,6 +909,41 @@ def test_evaluaciones_cache_persists_to_blob_only_when_payload_changed(monkeypat
     cache.get_or_fetch(lambda: [{"codigo_edificacion": "B"}])
     _join_persist(cache)
     assert len(saves) == 2
+
+
+def test_get_evaluaciones_route_reports_not_degraded_normally(monkeypatch):
+    """Normal path (no outage): the route's JSON envelope carries
+    `degraded: false` so the frontend always has the flag to read."""
+    fake_auth = _FakeAuth()
+    client = _admin_client(monkeypatch, fake_auth)
+
+    resp = client.get("/evaluaciones")
+
+    assert resp.status_code == 200
+    assert resp.json()["degraded"] is False
+
+
+def test_get_evaluaciones_route_reports_degraded_after_blob_restore(monkeypatch):
+    """Route-level: when a cold-start fetch failure falls back to the Blob
+    last-known-good copy, the JSON response says so — the dashboard cannot
+    otherwise tell a Blob-restored payload (blanked `inspector.np`, so every
+    evaluación misreports its Fase I/II) from a normal fresh read."""
+    fake_auth = _FakeAuth()
+    client = _admin_client(monkeypatch, fake_auth)
+
+    blob_payload = [{"codigo_edificacion": "76001-1-0010001"}]
+    monkeypatch.setattr(stickers.blob_lkg, "load_json",
+                        lambda pathname, expected_type: blob_payload)
+
+    def boom(db):
+        raise RuntimeError("429 Quota exceeded.")
+
+    monkeypatch.setattr(stickers, "list_evaluaciones", boom)
+
+    resp = client.get("/evaluaciones")
+
+    assert resp.status_code == 200
+    assert resp.json()["degraded"] is True
 
 
 def test_get_evaluaciones_non_admin_is_403(monkeypatch):
