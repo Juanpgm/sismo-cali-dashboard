@@ -28,28 +28,47 @@ let fuente = 'atencionsismo';
 // both 5-min TTL) — replaces the legacy POST /api/stickers
 // {action:'evaluaciones'} full-collection read. `endpoint` selects which of
 // the two the caller wants (see FUENTES above).
+// `degraded` (see backend/app/routers/stickers.py's EvaluacionesCache): true
+// when a cold start served the Blob-redacted last-known-good copy instead of
+// a live read — that copy has inspector.np blanked, which silently wrecks
+// the Fase I/II classification, so evaluaciones.js needs the flag alongside
+// the data to warn about it.
+//
+// `fuente` (design D2): each record carries its own `fuente` from the
+// backend already, but tag it here too from the RESPONSE's top-level
+// `fuente` field (falling back to 'firestore', GET /evaluaciones's shape) so
+// a record missing the field (older cached payload) still classifies
+// correctly for faseDe()/detailHtml() — a RECORD's own `fuente` still wins
+// (object-spread order below), this is only the fallback for records that
+// don't carry one. Exported: pure, so a self-check can exercise it without
+// a fetch/DOM stub.
+export function tagFuente(data) {
+  const fuenteRespuesta = (data && data.fuente) || 'firestore';
+  const list = Array.isArray(data && data.evaluaciones) ? data.evaluaciones : [];
+  return {
+    evaluaciones: list.map((e) => ({ fuente: fuenteRespuesta, ...e })),
+    degraded: Boolean(data && data.degraded),
+  };
+}
+
+// Error message for a failed fetch. Prefers a structured `error`, then a
+// STRING `detail` — a non-string detail (e.g. a FastAPI validation-error
+// array/object slipping through a proxy) must not stringify into a useless
+// "[object Object]" toast, so it falls back to the generic status message
+// instead. Exported: pure, so a self-check can exercise it without a fetch
+// stub.
+export function errorMessageFor(data, status) {
+  const detail = typeof (data && data.detail) === 'string' ? data.detail : null;
+  return (data && data.error) || detail || `Error ${status}`;
+}
+
 async function fetchEvaluacionesOnce(getToken, endpoint) {
   const token = await getToken();
   if (!token) throw new Error('Sesión no válida. Volvé a iniciar sesión.');
   const res = await fetch(apiUrl(endpoint), { headers: { Authorization: `Bearer ${token}` } });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || data.detail || `Error ${res.status}`);
-  // `degraded` (see backend/app/routers/stickers.py's EvaluacionesCache):
-  // true when a cold start served the Blob-redacted last-known-good copy
-  // instead of a live read — that copy has inspector.np blanked, which
-  // silently wrecks the Fase I/II classification, so evaluaciones.js needs
-  // the flag alongside the data to warn about it.
-  //
-  // `fuente` (design D2): each record carries its own `fuente` from the
-  // backend already, but tag it here too from the RESPONSE's top-level
-  // `fuente` field (falling back to 'firestore', GET /evaluaciones's shape)
-  // so a record missing the field (older cached payload) still classifies
-  // correctly for faseDe()/detailHtml().
-  const fuenteRespuesta = data.fuente || 'firestore';
-  return {
-    evaluaciones: (data.evaluaciones || []).map((e) => ({ fuente: fuenteRespuesta, ...e })),
-    degraded: Boolean(data.degraded),
-  };
+  if (!res.ok) throw new Error(errorMessageFor(data, res.status));
+  return tagFuente(data);
 }
 
 // Segmented control for the Evaluaciones data source (design D3) — same

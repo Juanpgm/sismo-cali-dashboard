@@ -75,7 +75,9 @@ export function faseDe(evaluacion) {
 // three: which one drives the map marker + list dot colour. Both pills in
 // listItemHtml stay visible regardless of the active mode — this only
 // changes which dimension the DOT (map + row) emphasises.
-const COLOR_MODES = {
+// Exported: pure data, so a self-check can assert both entries lists carry
+// their SIN_DATO state without the DOM.
+export const COLOR_MODES = {
   clase: { label: 'Clasificación', colorOf: (e) => claseDe(e).color, entries: [...CLASES, SIN_CLASE] },
   fase: { label: 'Fase', colorOf: (e) => faseDe(e).color, entries: [...FASES, FASE_SIN_DATO] },
 };
@@ -103,7 +105,9 @@ function formatFecha(iso) {
   return d.toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
-const tituloDe = (e) => e.descripcion.nombre || e.descripcion.direccion || e.codigo_edificacion;
+// Exported: pure, so a self-check can assert the 'Sin dirección' fallback
+// without the DOM. The row title and modal heading must never render blank.
+export const tituloDe = (e) => e.descripcion.nombre || e.descripcion.direccion || e.codigo_edificacion || 'Sin dirección';
 
 // ---- Filters -------------------------------------------------------------
 
@@ -157,8 +161,10 @@ export function applyFilters(list, filters) {
   });
 }
 
-/** Human-readable summary of the active filters, for the xlsx header block. */
-function describeFilters(f) {
+/** Human-readable summary of the active filters, for the xlsx header block.
+ *  Exported: pure, so a self-check can exercise the SIN_DATO fallbacks
+ *  without the DOM. */
+export function describeFilters(f) {
   const parts = [];
   if (f.clase) parts.push(`Clasificación: ${(CLASE_BY_KEY.get(f.clase) || SIN_CLASE).label}`);
   if (f.fase) parts.push(`Fase: ${(FASE_BY_KEY.get(f.fase) || FASE_SIN_DATO).label}`);
@@ -422,7 +428,7 @@ function popupHtml(e) {
         <dt>Dirección</dt><dd>${escapeHtml(e.descripcion.direccion || 'Sin dato')}</dd>
         <dt>Inspector</dt><dd>${escapeHtml(e.inspector.nombre_completo || e.inspector.codigo || 'Sin dato')}</dd>
         <dt>Fecha</dt><dd>${escapeHtml(formatFecha(e.fecha))}</dd>
-        <dt>Fotos</dt><dd>${e.fotos.length}</dd>
+        <dt>Fotos</dt><dd>${(e.fotos || []).length}</dd>
       </dl>
       <button type="button" class="btn-link" data-eval-detail="${escapeHtml(e.id)}">Ver detalle &rarr;</button>
     </div>`;
@@ -513,7 +519,8 @@ function renderMap(containerId, evaluaciones, onDetail) {
 function listItemHtml(e, degraded) {
   const c = claseDe(e);
   const f = faseDe(e);
-  const fotos = e.fotos.length ? `${e.fotos.length} foto${e.fotos.length === 1 ? '' : 's'}` : 'sin fotos';
+  const numFotos = (e.fotos || []).length;
+  const fotos = numFotos ? `${numFotos} foto${numFotos === 1 ? '' : 's'}` : 'sin fotos';
   const quien = e.inspector.nombre_completo || `Brigada ${e.inspector.codigo || '—'}`;
   // .ps-row-wrap + sibling PDF button — same recipe acciones-capa.js's
   // accionRowHtml uses (button-in-button is invalid HTML, so the PDF
@@ -567,8 +574,9 @@ function detailHtml(e) {
     return body ? `<div class="detail-group"><h3>${escapeHtml(titulo)}</h3><dl class="detail-fields">${body}</dl></div>` : '';
   };
 
-  const fotos = e.fotos.length
-    ? e.fotos.map((url, i) => `<button type="button" class="detail-photo" data-foto-idx="${i}" aria-label="Ampliar foto ${i + 1}"><img src="${escapeHtml(url)}" alt="Foto ${i + 1} de la edificación" loading="lazy"></button>`).join('')
+  const fotosList = e.fotos || [];
+  const fotos = fotosList.length
+    ? fotosList.map((url, i) => `<button type="button" class="detail-photo" data-foto-idx="${i}" aria-label="Ampliar foto ${i + 1}"><img src="${escapeHtml(url)}" alt="Foto ${i + 1} de la edificación" loading="lazy"></button>`).join('')
     : '<span class="detail-photos-empty">Este registro no tiene fotos.</span>';
 
   return `
@@ -658,6 +666,13 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   // reading with nothing on the exported file to say so, so every export
   // path is blocked outright while this is true, not just banner-warned.
   let isDegraded = false;
+  // Guards against an out-of-order response: switching Fuente triggers
+  // reload() while a previous load() for the OLD source may still be
+  // in-flight, and network timing gives no guarantee the old request
+  // resolves first. Each load() call claims the next seq; a response whose
+  // seq no longer matches the latest is a stale race loser and is dropped
+  // without touching any UI state the newer call already owns.
+  let loadSeq = 0;
 
   // Panel-wide sticker coverage (same figure as the Panel gauge), from the store
   // that main.js populates via /api/sticker-status. Lives on the map itself
@@ -798,6 +813,7 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   }
 
   async function load({ silent = false } = {}) {
+    const seq = ++loadSeq;
     if (!silent) {
       kpis.innerHTML = '<p class="sticker-loading">Cargando evaluaciones…</p>';
       barEl.innerHTML = '';
@@ -807,6 +823,10 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
     }
     try {
       const { evaluaciones, degraded } = await fetchEvaluaciones();
+      // A newer load() (e.g. switching Fuente again before this fetch
+      // resolved) has already claimed loadSeq — drop this stale response
+      // rather than let it overwrite the newer call's UI state below.
+      if (seq !== loadSeq) return;
       // Toggled BEFORE the fingerprint short-circuit below, on purpose: a
       // silent poll can flip `degraded` (Blob-restore recovering, or a fresh
       // outage starting) even when the evaluaciones themselves are byte-for-
@@ -837,6 +857,9 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
       allEvaluaciones = await Promise.all(
         evaluaciones.map(async (e) => ({ ...e, ...(await resolveGeoFor(e.coords)) })),
       );
+      // Same stale-response guard, re-checked after the async geo resolution
+      // above (its own await gives an even newer load() more time to win).
+      if (seq !== loadSeq) return;
       byId = new Map(allEvaluaciones.map((e) => [e.id, e]));
 
       comunaMap = comunaBarrioMap(allEvaluaciones);
@@ -859,6 +882,13 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
       // all) — don't leave a stale "backup copy" banner contradicting it.
       isDegraded = false;
       bannerEl.hidden = true;
+      // Same reasoning: nothing loaded, so nothing to export — the
+      // degraded-copy block above must not survive into this error state
+      // and leave the export controls stuck disabled.
+      downloadBtn.disabled = false;
+      downloadBtn.title = '';
+      modalPdfBtn.disabled = false;
+      modalPdfBtn.title = 'Descargar informe PDF';
       kpis.innerHTML = `<p class="sticker-error" role="alert">No se pudieron cargar las evaluaciones: ${escapeHtml(err.message)}</p>`;
     }
   }
@@ -952,7 +982,7 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
       lng: e.coords ? e.coords.lng : '',
       accuracy: e.coords ? e.coords.accuracy : '',
       fecha: e.fecha,
-      num_fotos: e.fotos.length,
+      num_fotos: (e.fotos || []).length,
     }));
     if (!rows.length) {
       showToast('No hay evaluaciones con los filtros aplicados.', 'error');
