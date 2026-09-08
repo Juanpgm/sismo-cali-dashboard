@@ -1601,8 +1601,9 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tabs-toggle { disp
    the columns were split — .eval-row's card layout has no column headers to
    truncate, so the rows carry as much text as they need instead. Only the
    download-icon grouping (.accion-aside-actions) and the taller map/wider
-   aside below are genuinely new. */
-#view-acciones .eval-aside-head { align-items: center; }
+   aside below are genuinely new. The aside head itself is unstyled here —
+   it inherits Stickers' own align-items:baseline as-is; the icon button's
+   own centering lives on .accion-aside-actions below, not on the head. */
 .accion-aside-actions { display: flex; align-items: center; gap: 8px; }
 /* Without the "Sí/No" pill, .eval-row's minmax(0,1fr) name column (inside a
    row stretched to fill .ps-row-wrap via flex:1) left a wide gap between
