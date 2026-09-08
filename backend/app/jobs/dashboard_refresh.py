@@ -53,6 +53,7 @@ import httpx
 from app.credentials import clients as credentials
 from app.integracion import runlog
 from app.services import atencionsismo, survey_cali
+from app.services.reportes_ciudadanos import build_snapshot
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
@@ -104,6 +105,7 @@ _PUBLISH_FILES: tuple[tuple[str, str], ...] = (
     ("reportes.json", "data/reportes.json"),
     ("reportes_meta.json", "data/reportes_meta.json"),
     ("reportes_agg.json", "data/reportes_agg.json"),
+    ("reportes_ciudadanos.json", "data/reportes_ciudadanos.json"),
     (os.path.join("geocode", "geocode_cache.json"), "data/geocode/geocode_cache.json"),
 )
 _PUBLISH_MAX_AGE_S = 60
@@ -318,6 +320,12 @@ async def fetch_reportes() -> int:
     generated_at = atencionsismo.now_iso()
     WEB_DATA_DIR.mkdir(parents=True, exist_ok=True)
     _atomic_write_json(WEB_DATA_DIR / "reportes.json", records, compact=True)
+    # Lightweight public projection for the "Reportes ciudadanos" tab
+    # (design D5); same never-publish-empty guard as reportes.json above
+    # (the `if not records: return 0` check earlier already skipped this
+    # whole block when the API returns 0 rows).
+    ciudadanos = build_snapshot(records)
+    _atomic_write_json(WEB_DATA_DIR / "reportes_ciudadanos.json", ciudadanos, compact=True)
     _atomic_write_json(
         WEB_DATA_DIR / "reportes_meta.json",
         {
