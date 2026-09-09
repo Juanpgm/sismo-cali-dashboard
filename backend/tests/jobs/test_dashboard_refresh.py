@@ -22,6 +22,7 @@ import json
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
 
 from app.jobs import dashboard_refresh as job
@@ -606,6 +607,260 @@ def test_fetch_reportes_panel_hook_failure_still_fails_soft(tmp_path, monkeypatc
     assert (tmp_path / "reportes_meta.json").exists()
     assert (tmp_path / "reportes_agg.json").exists()
     assert not (tmp_path / "reportes_ciudadanos.json").exists()
+
+
+# --- reportes_historico backfill wiring: rolling window (always re-walked, --
+# --- overwrite=True) + bounded historical backfill chunk (overwrite=False), -
+# --- budget-guarded and fail-soft (see reportes_historico.py's module -------
+# --- docstring for the creadoEn-only-filter rationale). ---------------------
+
+
+def _rolling_record(rid="14832"):
+    return {
+        "id": rid,
+        "estadoVerificacion": "Reportado",
+        "latitud": "3.1",
+        "longitud": "-76.1",
+    }
+
+
+def _backfill_record(rid="9000"):
+    return {
+        "id": rid,
+        "estadoVerificacion": "Visitado",
+        "latitud": "3.2",
+        "longitud": "-76.2",
+    }
+
+
+def _make_day_walk_recorder(calls, *, backfill_records=None, backfill_exc=None, backfill_sleep=None):
+    """Fake `atencionsismo.day_walk`: the rolling-window call site never
+    passes `until_ms`, the backfill call site always does — used here to
+    distinguish which call is which without depending on call order."""
+    if backfill_records is None:
+        backfill_records = [_backfill_record()]
+
+    async def _fake(client, user, password, desde, *, until_ms=None, mapper=None):
+        calls.append({"desde": desde, "until_ms": until_ms})
+        is_backfill = until_ms is not None
+        if is_backfill:
+            if backfill_sleep is not None:
+                import asyncio as _asyncio
+
+                await _asyncio.sleep(backfill_sleep)
+            if backfill_exc is not None:
+                raise backfill_exc
+            raw_list = backfill_records
+        else:
+            raw_list = [_rolling_record()]
+        return [mapper(r) if mapper else r for r in raw_list]
+
+    return _fake
+
+
+def _patch_credentials_and_fake_firestore(monkeypatch):
+    monkeypatch.setenv("VISITADOS_API_PASS", "secret")
+    fake_db = _FakeContactDb()
+    monkeypatch.setattr(job.credentials, "sismo", lambda: type("_C", (), {"firestore": fake_db})())
+    return fake_db
+
+
+def test_fetch_reportes_backfill_runs_and_advances_state_on_normal_call(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    _patch_credentials_and_fake_firestore(monkeypatch)
+
+    calls: list[dict] = []
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _make_day_walk_recorder(calls))
+    monkeypatch.setattr(job.reportes_historico, "load_state", lambda: {})
+    monkeypatch.setattr(job.reportes_historico, "load_pool", lambda: {})
+    saved_state: list[dict] = []
+    monkeypatch.setattr(job.reportes_historico, "save_state", lambda s: saved_state.append(s))
+    monkeypatch.setattr(job.reportes_historico, "save_pool", lambda p: None)
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 2  # rolling record + backfill record, both merged into the pool
+    assert len(calls) == 2
+    assert calls[0]["until_ms"] is None  # rolling window call
+    assert calls[1]["until_ms"] is not None  # backfill call
+
+    written = json.loads((tmp_path / "reportes.json").read_text(encoding="utf-8"))
+    assert {r["id"] for r in written} == {"14832", "9000"}
+
+    assert len(saved_state) == 1
+    assert saved_state[0]["backfill_complete"] is False  # chunk had records -> not genesis
+    assert "backfill_frontier_ms" in saved_state[0]
+
+
+def test_fetch_reportes_skips_backfill_when_already_complete(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    _patch_credentials_and_fake_firestore(monkeypatch)
+
+    calls: list[dict] = []
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _make_day_walk_recorder(calls))
+    monkeypatch.setattr(
+        job.reportes_historico,
+        "load_state",
+        lambda: {"backfill_complete": True, "backfill_frontier_ms": 1_600_000_000_000},
+    )
+    monkeypatch.setattr(job.reportes_historico, "load_pool", lambda: {})
+    saved_state: list[dict] = []
+    monkeypatch.setattr(job.reportes_historico, "save_state", lambda s: saved_state.append(s))
+    monkeypatch.setattr(job.reportes_historico, "save_pool", lambda p: None)
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1  # only the rolling-window record
+    assert len(calls) == 1  # the backfill day_walk call site was never reached
+    assert saved_state == []  # state never re-saved once already complete
+
+    meta = json.loads((tmp_path / "reportes_meta.json").read_text(encoding="utf-8"))
+    assert meta["backfill_completo"] is True
+    assert meta["cobertura_desde"] == job.reportes_historico.date_from_ms(1_600_000_000_000)
+
+
+def test_fetch_reportes_skips_backfill_when_remaining_budget_too_low(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    _patch_credentials_and_fake_firestore(monkeypatch)
+
+    calls: list[dict] = []
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _make_day_walk_recorder(calls))
+    monkeypatch.setattr(job.reportes_historico, "load_state", lambda: {})
+    monkeypatch.setattr(job.reportes_historico, "load_pool", lambda: {})
+    saved_state: list[dict] = []
+    monkeypatch.setattr(job.reportes_historico, "save_state", lambda s: saved_state.append(s))
+    monkeypatch.setattr(job.reportes_historico, "save_pool", lambda p: None)
+
+    # started_at reads 1000.0, the elapsed-time read later reads 1000.0+200 ->
+    # elapsed=200s, remaining_budget = 240-200 = 40s < BACKFILL_MIN_REMAINING_BUDGET_S (90s).
+    # Patches job._monotonic (a thin wrapper), NOT the real time.monotonic --
+    # asyncio's own ProactorEventLoop teardown calls time.monotonic()
+    # internally on Windows, so patching the global directly starves it.
+    times = iter([1000.0, 1200.0])
+    monkeypatch.setattr(job, "_monotonic", lambda: next(times))
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1  # only the rolling-window record
+    assert len(calls) == 1  # backfill never attempted -> budget guard worked
+    assert saved_state == []
+
+
+def test_fetch_reportes_backfill_chunk_failure_is_swallowed(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    _patch_credentials_and_fake_firestore(monkeypatch)
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        job.atencionsismo,
+        "day_walk",
+        _make_day_walk_recorder(calls, backfill_exc=httpx.HTTPError("boom")),
+    )
+    monkeypatch.setattr(job.reportes_historico, "load_state", lambda: {})
+    monkeypatch.setattr(job.reportes_historico, "load_pool", lambda: {})
+    saved_state: list[dict] = []
+    monkeypatch.setattr(job.reportes_historico, "save_state", lambda s: saved_state.append(s))
+    saved_pool: list[dict] = []
+    monkeypatch.setattr(job.reportes_historico, "save_pool", lambda p: saved_pool.append(p))
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    # The backfill exception must not affect the rolling-window data at all:
+    # reportes.json/meta/agg still get written from the rolling-window pool.
+    assert count == 1
+    assert (tmp_path / "reportes.json").exists()
+    assert (tmp_path / "reportes_meta.json").exists()
+    assert (tmp_path / "reportes_agg.json").exists()
+    written = json.loads((tmp_path / "reportes.json").read_text(encoding="utf-8"))
+    assert {r["id"] for r in written} == {"14832"}
+    assert saved_state == []  # backfill progress state must not advance on failure
+    assert len(saved_pool) == 1
+    assert set(saved_pool[0].keys()) == {"14832"}  # backfill record never merged in
+
+
+def test_fetch_reportes_backfill_chunk_timeout_is_swallowed(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    _patch_credentials_and_fake_firestore(monkeypatch)
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        job.atencionsismo,
+        "day_walk",
+        _make_day_walk_recorder(calls, backfill_sleep=0.2),
+    )
+    monkeypatch.setattr(job.reportes_historico, "BACKFILL_CHUNK_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(job.reportes_historico, "load_state", lambda: {})
+    monkeypatch.setattr(job.reportes_historico, "load_pool", lambda: {})
+    saved_state: list[dict] = []
+    monkeypatch.setattr(job.reportes_historico, "save_state", lambda s: saved_state.append(s))
+    monkeypatch.setattr(job.reportes_historico, "save_pool", lambda p: None)
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1  # rolling-window data still written despite the hung backfill chunk
+    assert (tmp_path / "reportes.json").exists()
+    assert saved_state == []
+
+
+def test_reportes_meta_carries_backfill_fields_when_backfill_reaches_genesis(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    _patch_credentials_and_fake_firestore(monkeypatch)
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        job.atencionsismo,
+        "day_walk",
+        _make_day_walk_recorder(calls, backfill_records=[]),  # empty chunk -> genesis reached
+    )
+    monkeypatch.setattr(job.reportes_historico, "load_state", lambda: {})
+    monkeypatch.setattr(job.reportes_historico, "load_pool", lambda: {})
+    saved_state: list[dict] = []
+    monkeypatch.setattr(job.reportes_historico, "save_state", lambda s: saved_state.append(s))
+    monkeypatch.setattr(job.reportes_historico, "save_pool", lambda p: None)
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1
+    meta = json.loads((tmp_path / "reportes_meta.json").read_text(encoding="utf-8"))
+    assert meta["backfill_completo"] is True
+    assert meta["cobertura_desde"] == job.reportes_historico.date_from_ms(saved_state[0]["backfill_frontier_ms"])
+    assert isinstance(meta["cobertura_desde"], str)
+
+
+def test_reportes_meta_cobertura_desde_is_null_when_backfill_never_started(tmp_path, monkeypatch):
+    # Backfill skipped entirely (budget too low) and state was never
+    # persisted before -> cobertura_desde must be null, not raise/omit.
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    _patch_credentials_and_fake_firestore(monkeypatch)
+
+    calls: list[dict] = []
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _make_day_walk_recorder(calls))
+    monkeypatch.setattr(job.reportes_historico, "load_state", lambda: {})
+    monkeypatch.setattr(job.reportes_historico, "load_pool", lambda: {})
+    monkeypatch.setattr(job.reportes_historico, "save_state", lambda s: None)
+    monkeypatch.setattr(job.reportes_historico, "save_pool", lambda p: None)
+    times = iter([1000.0, 1200.0])
+    monkeypatch.setattr(job, "_monotonic", lambda: next(times))
+
+    import asyncio
+
+    asyncio.run(job.fetch_reportes())
+
+    meta = json.loads((tmp_path / "reportes_meta.json").read_text(encoding="utf-8"))
+    assert meta["backfill_completo"] is False
+    assert meta["cobertura_desde"] is None
 
 
 def test_ingest_survey_cali_failure_does_not_propagate_out_of_run_refresh_step(tmp_path, monkeypatch):
