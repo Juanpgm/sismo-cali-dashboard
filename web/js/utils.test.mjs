@@ -4,7 +4,7 @@ import {
   normalizeAddressText, buildSearchIndex, barrioVeredaDisplay, resolveBarrioVereda, labelForField,
   filterOptionsByLabel, mountCombobox, isTypedAddress, addressDisplay,
   danoGradoColor, DANO_GRADO_ORDER, formatValue, COLORS, sourceLabel, setSourceLabels,
-  pointInPolygon, resolveZonaInteres, isInsideCali, faseInspector,
+  pointInPolygon, resolveZonaInteres, isInsideCali, faseInspector, faseKeyDe,
 } from './utils.js';
 
 // Real variants seen in the dataset for the same building should normalize
@@ -643,3 +643,41 @@ assert.equal(faseInspector('Grupo 1 - P3'), 'FASE_I', 'same — the real categor
 assert.equal(faseInspector('-3'), 'FASE_I', 'a non-digit/non-P leading character blocks the anchor');
 
 console.log('ok — faseInspector (Fase I/II from inspector NP category)');
+
+// --- faseKeyDe: single Fase rule shared by evaluaciones.js's faseDe() and
+// report.js's evalFaseLabelDe() (contrato v3, 2026-09-08, API developer
+// confirmation) — see both modules' docstrings. For fuente ===
+// 'atencionsismo', `fase` (1|2 exactly) drives the result; inspector.np
+// (via faseInspector) is the FALLBACK, used only when `fase` doesn't match
+// 1 or 2 exactly — an empty np in that fallback reads 'SIN_DATO', never a
+// silent 'FASE_I'. Any other fuente keeps the plain legacy rule:
+// faseInspector(np) alone (empty np -> 'FASE_I'). ---------------------------
+
+assert.equal(faseKeyDe({ fuente: 'atencionsismo', fase: 1, inspector: { np: 'P4' } }), 'FASE_I');
+assert.equal(faseKeyDe({ fuente: 'atencionsismo', fase: 2, inspector: { np: 'P1' } }), 'FASE_II');
+assert.equal(
+  faseKeyDe({ fuente: 'atencionsismo', fase: '2', inspector: { np: 'P1' } }),
+  'FASE_I',
+  'a string "2" must NOT match the strict fase check -- falls back to inspector.np',
+);
+assert.equal(
+  faseKeyDe({ fuente: 'atencionsismo', fase: 2.0, inspector: { np: 'P1' } }),
+  'FASE_II',
+  'a JS number 2.0 is the same value as 2 -- must match',
+);
+assert.equal(
+  faseKeyDe({ fase: 2, inspector: { np: 'P1' } }),
+  'FASE_I',
+  'missing fuente is NOT atencionsismo -- fase is ignored entirely, the np rule applies',
+);
+assert.equal(faseKeyDe({ fuente: 'atencionsismo', fase: null, inspector: { np: '' } }), 'SIN_DATO');
+assert.equal(faseKeyDe({ fuente: 'atencionsismo', inspector: { np: '' } }), 'SIN_DATO');
+assert.equal(faseKeyDe({ fuente: 'atencionsismo' }), 'SIN_DATO', 'missing inspector must not throw');
+assert.equal(faseKeyDe({ fuente: 'firestore', fase: 2, inspector: { np: 'P1' } }), 'FASE_I');
+assert.equal(faseKeyDe({ fuente: 'firestore', inspector: { np: '' } }), 'FASE_I');
+assert.equal(faseKeyDe({ inspector: { np: '' } }), 'FASE_I');
+assert.equal(faseKeyDe({}), 'FASE_I');
+assert.equal(faseKeyDe(null), 'FASE_I', 'null record must not throw -- same legacy default as faseDe(null)');
+assert.equal(faseKeyDe(undefined), 'FASE_I');
+
+console.log('ok — faseKeyDe (single Fase rule shared by faseDe/evalFaseLabelDe)');

@@ -7,7 +7,7 @@
 import {
   DETAIL_GROUPS, labelForField, formatValue, barrioVeredaDisplay, downloadStamp,
   SURVEY_LAYER_URL, isFirmaAttachment, attachmentUrl, basemapTileUrl,
-  labelForCode, addressDisplay, faseInspector,
+  labelForCode, addressDisplay, faseKeyDe,
 } from './utils.js';
 
 export const MAX_PHOTOS = 12;
@@ -449,20 +449,18 @@ function evalClaseLabel(clasificacion) {
   return EVAL_CLASE_LABELS[raw] || 'sin dato';
 }
 
-const EVAL_FASE_LABELS = { FASE_II: 'fase II', FASE_I: 'fase I' };
+const EVAL_FASE_LABELS = { FASE_II: 'fase II', FASE_I: 'fase I', SIN_DATO: 'sin dato' };
 
-/** Fase label for the evaluación PDF's Inspector group — same derivation as
- *  evaluaciones.js's faseDe()/FASE_SIN_DATO (design D1 step 3): an
- *  atencionsismo record with a blank inspector.np has no knowable Fase, so
- *  it must read "sin dato" rather than silently defaulting to "fase I" (a
- *  lie the exported PDF would carry with nothing on the page to flag it).
- *  Kept local — not imported from evaluaciones.js — to avoid a circular
- *  import (evaluaciones.js already imports generarInformeEvaluacion from
- *  here). Exported: pure, so a self-check can exercise it directly. */
+/** Fase label for the evaluación PDF's Inspector group. The Fase KEY itself
+ *  is derived by utils.js's `faseKeyDe` — the single rule evaluaciones.js's
+ *  `faseDe()` also maps through its own {label, color} shape, so the
+ *  contrato v3 logic (fase field vs inspector.np fallback, 2026-09-08 API
+ *  developer confirmation) lives in exactly one place. Kept local (this
+ *  label table, not evaluaciones.js's FASE_BY_KEY) to avoid a circular
+ *  import — evaluaciones.js already imports generarInformeEvaluacion from
+ *  here. Exported: pure, so a self-check can exercise it directly. */
 export function evalFaseLabelDe(e) {
-  const np = String((e && e.inspector && e.inspector.np) || '').trim();
-  if (e && e.fuente === 'atencionsismo' && !np) return 'sin dato';
-  return EVAL_FASE_LABELS[faseInspector(np)];
+  return EVAL_FASE_LABELS[faseKeyDe(e)];
 }
 
 function formatFechaEval(iso) {
@@ -556,10 +554,13 @@ export function buildEvaluacionDocDefinition(e, { photos, mapImage } = {}) {
   };
 }
 
-/** Evaluación photos are already-hosted Firebase Storage URLs, NOT ArcGIS
- *  attachments — fetched directly instead of through gatherAssets'
- *  attachment-listing flow, reusing the same readBlobAsDataURL/
- *  downscaleDataUrl pipeline. Never throws: a bad URL degrades to
+/** Evaluación photos are already-hosted URLs, NOT ArcGIS attachments —
+ *  fetched directly instead of through gatherAssets' attachment-listing
+ *  flow, reusing the same readBlobAsDataURL/downscaleDataUrl pipeline. A
+ *  matched Firestore evaluación still points at Firebase Storage; an
+ *  unmatched atencionsismo row (contrato v3, 2026-09-08, see
+ *  stickers_atencionsismo.py's `fotografias` -> `fotos` mapping) points at
+ *  atencionsismo-hosted URLs instead. Never throws: a bad URL degrades to
  *  {dataURL: null, sourceUrl}, same per-image contract as resolveAttachment,
  *  so one broken photo link can't abort the rest of the report. */
 export async function gatherEvalPhotos(fotos) {

@@ -382,7 +382,10 @@ Reglas de fechas: iguales al informe JSON (`desde_utc` ≤ `hasta_utc`, enteros 
       "personaAfectada": "Juan Pérez",
       "origen": "sistema",
       "color": "verde",
-      "colorEtiqueta": "Habitable"
+      "colorEtiqueta": "Habitable",
+      "fase": 1,
+      "profesional": { "cedula": "123", "nombre": "Ana Gómez", "rango": "P2" },
+      "fotografias": [{ "id": "img-1", "url": "https://atencionsismo.cali.gov.co/media/img-1.jpg" }]
     }
   ]
 }
@@ -400,8 +403,17 @@ Reglas de fechas: iguales al informe JSON (`desde_utc` ≤ `hasta_utc`, enteros 
 | `origen` | `gpsOrigen === "firebase-sticker"` → `"firebase"`, resto → `"sistema"` | `"sistema"` |
 | `color` | derivado (ATC-20 / EDE / habitabilidad) | `""` |
 | `colorEtiqueta` | Habitable, Acceso restringido, No habitable | `"Sin clasificación"` |
+| `fase` | `1` si el número viene de `codigoEvaluacion`, `2` si viene de `codigoEvaluacionEsp` | `null` |
+| `profesional` | `evaluacion.tecnico` (`cedula`, `nombre`, `addlInfo.rango`) | `{ "cedula": "", "nombre": "", "rango": "" }` |
+| `fotografias` | `evaluacion.imagenes` | `[]` |
 
 Evaluaciones invalidadas (`invalida === true`) no aparecen en `stickers[]`.
+
+#### Nota de integración (2026-09-08)
+
+El equipo desarrollador de la API de atencionsismo confirmó (2026-09-08) que `fase` es su propia variable de Fase de negocio — `1` = Fase I, `2` = Fase II — según el proceso propio de atencionsismo (paso 1 vs paso 2 / evaluación especializada). El dashboard consumidor (pestaña Stickers) usa `fase` directamente como su Fase I/II, cayendo a `inspector.np` (roster/Firestore) solo cuando `fase` no llega en `1` ni `2`.
+
+Nota factual, verificada contra datos en vivo: para toda fila con `origen: "firebase"` (importada desde NUESTRO Firebase), `fase` llega en `2` de forma sistemática — incluidas filas cuyo inspector real (por Firestore) es P1/P2. La pestaña Evaluaciones del mismo dashboard (fuente Firestore) sigue clasificando esas mismas evaluaciones por la categoría NP del inspector, sin cambios — por lo tanto ambas pestañas pueden mostrar una Fase distinta para el mismo registro, por diseño: son dos señales de Fase independientes.
 
 ### Errores
 

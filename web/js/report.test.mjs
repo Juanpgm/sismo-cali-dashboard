@@ -126,6 +126,23 @@ assert.strictEqual(evalFaseLabelDe({ fuente: 'atencionsismo' }), 'sin dato');
 assert.strictEqual(evalFaseLabelDe({ fuente: 'firestore' }), 'fase I');
 assert.strictEqual(evalFaseLabelDe({}), 'fase I');
 
+// --- evalFaseLabelDe: contrato v3 (2026-09-08) — `fase` (API developer
+// confirmation: 1 = Fase I, 2 = Fase II) drives atencionsismo records,
+// `inspector.np` is only the fallback (mirrors evaluaciones.js's faseDe). --
+assert.strictEqual(evalFaseLabelDe({ fuente: 'atencionsismo', fase: 1, inspector: { np: 'P4' } }), 'fase I',
+  'fase 1 wins over a np that would otherwise read as Fase II');
+assert.strictEqual(evalFaseLabelDe({ fuente: 'atencionsismo', fase: 2, inspector: { np: 'P1' } }), 'fase II',
+  'fase 2 wins over a np that would otherwise read as Fase I');
+assert.strictEqual(evalFaseLabelDe({ fuente: 'atencionsismo', fase: null, inspector: { np: 'P4' } }), 'fase II',
+  'fase null falls back to np-derived Fase');
+assert.strictEqual(evalFaseLabelDe({ fuente: 'atencionsismo', fase: '2', inspector: { np: 'P1' } }), 'fase I',
+  'fase as the STRING "2" must not match — falls back to np');
+assert.strictEqual(evalFaseLabelDe({ fuente: 'atencionsismo', fase: 3, inspector: { np: 'P1' } }), 'fase I',
+  'an out-of-range fase falls back to np-derived Fase, not a crash');
+// A Firestore-sourced record ignores `fase` entirely, even when present.
+assert.strictEqual(evalFaseLabelDe({ fuente: 'firestore', fase: 2, inspector: { np: 'P1' } }), 'fase I',
+  'a Firestore record with fase 2 and np P1 stays fase I: fase is atencionsismo-only');
+
 console.log('report.test.mjs: evalFaseLabelDe OK');
 
 // --- buildEvaluacionDocDefinition: atencionsismo + blank NP shows "sin dato"
@@ -157,5 +174,12 @@ const noFuenteField = { ...fullEvaluacion };
 delete noFuenteField.inspector_fuente;
 const noFuenteFieldText = JSON.stringify(buildEvaluacionDocDefinition(noFuenteField, { photos: [], mapImage: null }).content);
 assert.ok(!noFuenteFieldText.includes(CAVEAT_TEXT), 'Firestore-sourced records with no inspector_fuente field must not print the caveat');
+
+// F5: 'api' (contrato v3, 2026-09-08) is the API's own `profesional`, joined
+// by the unique cédula — no code-reuse risk, so it must not print the
+// roster's unverified-identity caveat either.
+const apiSourced = { ...fullEvaluacion, inspector_fuente: 'api' };
+const apiSourcedText = JSON.stringify(buildEvaluacionDocDefinition(apiSourced, { photos: [], mapImage: null }).content);
+assert.ok(!apiSourcedText.includes(CAVEAT_TEXT), 'inspector_fuente "api" must not print the roster caveat');
 
 console.log('report.test.mjs: roster-fallback inspector caveat OK');

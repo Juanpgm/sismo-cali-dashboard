@@ -1047,6 +1047,109 @@ def test_inspector_profile_by_codigo_empty_roster():
     assert stickers.inspector_profile_by_codigo(db) == {}
 
 
+# ── inspector_profile_by_identificacion: same roster, keyed by stripped
+# `identificacion` (cédula) — used for the atencionsismo `profesional.cedula`
+# join, a unique per-person key with no brigade-code reuse risk ─────────────
+
+
+def test_inspector_profile_by_identificacion_returns_full_profile():
+    db = _FakeFirestore({
+        "inspectores": {
+            "u1": {
+                "codigo": "004",
+                "NP": "P4",
+                "nombre_completo": "Ana Gomez",
+                "identificacion": "123",
+                "entidad": "Curaduria 1",
+            },
+        }
+    })
+    assert stickers.inspector_profile_by_identificacion(db) == {
+        "123": {
+            "uid": "u1",
+            "nombre_completo": "Ana Gomez",
+            "identificacion": "123",
+            "entidad": "Curaduria 1",
+            "np": "P4",
+        }
+    }
+
+
+def test_inspector_profile_by_identificacion_skips_blank_identificacion():
+    db = _FakeFirestore({"inspectores": {
+        "u1": {"identificacion": "", "nombre_completo": "Nadie"},
+        "u2": {"nombre_completo": "Tampoco"},
+    }})
+    assert stickers.inspector_profile_by_identificacion(db) == {}
+
+
+def test_inspector_profile_by_identificacion_keeps_first_on_duplicate():
+    db = _FakeFirestore({"inspectores": {
+        "u1": {"identificacion": "123", "nombre_completo": "Primero"},
+        "u2": {"identificacion": "123", "nombre_completo": "Segundo"},
+    }})
+    out = stickers.inspector_profile_by_identificacion(db)
+    assert len(out) == 1 and out["123"]["nombre_completo"] == "Primero"
+
+
+def test_inspector_profile_by_identificacion_empty_roster():
+    db = _FakeFirestore({"inspectores": {}})
+    assert stickers.inspector_profile_by_identificacion(db) == {}
+
+
+def test_inspector_profile_by_identificacion_strips_whitespace():
+    db = _FakeFirestore({"inspectores": {"u1": {"identificacion": "  123  ", "nombre_completo": "Ana"}}})
+    assert stickers.inspector_profile_by_identificacion(db) == {
+        "123": {"uid": "u1", "nombre_completo": "Ana", "identificacion": "123", "entidad": "", "np": ""}
+    }
+
+
+# ── F7: the by_identificacion join key is digits-only (`cedula_key`), so a
+# formatted cédula still resolves to the same key as its digits-only form —
+# the STORED `identificacion` field itself stays verbatim/stripped. ────────
+
+
+def test_inspector_profile_by_identificacion_normalises_dotted_cedula_key():
+    db = _FakeFirestore({"inspectores": {"u1": {"identificacion": "1.234.567", "nombre_completo": "Ana"}}})
+    out = stickers.inspector_profile_by_identificacion(db)
+    assert "1234567" in out
+    assert out["1234567"]["identificacion"] == "1.234.567"
+
+
+def test_inspector_profile_by_identificacion_numeric_identificacion_key():
+    db = _FakeFirestore({"inspectores": {"u1": {"identificacion": 1234567, "nombre_completo": "Ana"}}})
+    out = stickers.inspector_profile_by_identificacion(db)
+    assert "1234567" in out
+
+
+def test_inspector_profile_by_identificacion_whitespace_only_is_skipped():
+    db = _FakeFirestore({"inspectores": {"u1": {"identificacion": "   ", "nombre_completo": "Ana"}}})
+    assert stickers.inspector_profile_by_identificacion(db) == {}
+
+
+# ── F6: `inspector_profiles` is the public single-scan builder both thin
+# wrappers delegate to — one Firestore read for both lookup shapes, with
+# each map holding its OWN copy of the profile dict (no aliasing). ─────────
+
+
+def test_inspector_profiles_returns_both_maps_from_one_scan():
+    db = _FakeFirestore({
+        "inspectores": {"u1": {"codigo": "004", "identificacion": "123", "nombre_completo": "Ana"}},
+    })
+    by_codigo, by_identificacion = stickers.inspector_profiles(db)
+    assert by_codigo["004"]["nombre_completo"] == "Ana"
+    assert by_identificacion["123"]["nombre_completo"] == "Ana"
+
+
+def test_inspector_profiles_maps_do_not_alias_the_same_profile_dict():
+    db = _FakeFirestore({
+        "inspectores": {"u1": {"codigo": "004", "identificacion": "123", "nombre_completo": "Ana"}},
+    })
+    by_codigo, by_identificacion = stickers.inspector_profiles(db)
+    by_codigo["004"]["nombre_completo"] = "Mutated"
+    assert by_identificacion["123"]["nombre_completo"] == "Ana"
+
+
 # ── EvaluacionesCache: parametrized Blob pathname + redaction ────────────
 
 

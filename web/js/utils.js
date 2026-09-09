@@ -957,6 +957,33 @@ export function faseInspector(np) {
   return m && Number(m[1]) >= 3 ? 'FASE_II' : 'FASE_I';
 }
 
+/** Single source of truth for the Fase I/II/"sin dato" KEY of one record —
+ *  shared by evaluaciones.js's `faseDe()` (list/map/xlsx) and report.js's
+ *  `evalFaseLabelDe()` (PDF), so the rule lives in exactly one place instead
+ *  of two independent copies drifting apart. Contrato v3 (2026-09-08, API
+ *  developer confirmation): for `fuente === 'atencionsismo'`, the record's
+ *  own `fase` field IS the Fase signal — `1` -> 'FASE_I', `2` -> 'FASE_II',
+ *  checked with `===` against the numbers 1/2 only (a string "1"/"2", or
+ *  any other value, does NOT match). `inspector.np` (via faseInspector) is
+ *  only the FALLBACK for that source, used when `fase` is anything else
+ *  (null, missing, out of range) — an empty np in that fallback returns
+ *  'SIN_DATO', never a silent 'FASE_I'. Any other fuente (or no fuente at
+ *  all, e.g. a Firestore-sourced record) ignores `fase` entirely and always
+ *  derives from `inspector.np` alone via faseInspector — the plain legacy
+ *  rule, unchanged (an empty/missing np there still reads 'FASE_I', the
+ *  safe default). Tolerant of a null/undefined `record` or a missing
+ *  `inspector` — never throws. */
+export function faseKeyDe(record) {
+  if (record && record.fuente === 'atencionsismo') {
+    if (record.fase === 1) return 'FASE_I';
+    if (record.fase === 2) return 'FASE_II';
+    const np = String((record.inspector && record.inspector.np) || '').trim();
+    return np ? faseInspector(np) : 'SIN_DATO';
+  }
+  const np = String((record && record.inspector && record.inspector.np) || '').trim();
+  return faseInspector(np);
+}
+
 /* ---- N.º de pisos buckets / suspensión de servicios / fetch cache-busting */
 // Kept here (not in data.js) because data.js transitively imports the Firebase
 // SDK (via israel-source.js -> firebase-config.js -> a bare https:// specifier).

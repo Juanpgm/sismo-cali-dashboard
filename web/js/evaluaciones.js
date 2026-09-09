@@ -15,7 +15,7 @@
 // one. The serverless function reads it with the admin SDK behind the same
 // admin gate the rest of this tab already uses.
 import {
-  COLORS, escapeHtml, basemapTileUrl, normalize, loadXlsx, downloadStamp, showToast, faseInspector,
+  COLORS, escapeHtml, basemapTileUrl, normalize, loadXlsx, downloadStamp, showToast, faseKeyDe,
 } from './utils.js';
 import { buildMiniMap, resolveBarrioComuna } from './mapview.js';
 import { openLightbox } from './table.js';
@@ -56,9 +56,9 @@ export const FASES = [
   { key: 'FASE_II', label: 'fase II', color: COLORS.accent },
   { key: 'FASE_I', label: 'fase I', color: COLORS.unknown },
 ];
-// Atención Sismo stickers of origin "sistema" carry no inspector at all, so
-// their Fase is unknowable — surfaced as its own state instead of the
-// Firestore default (Fase I), which would be a lie for that source.
+// Some Atención Sismo stickers carry no NP at all, so their Fase is
+// unknowable — surfaced as its own state instead of the Firestore default
+// (Fase I), which would be a lie for that source.
 // '#9AA5B1' stays a literal on purpose: utils.js's COLORS has no neutral/
 // unknown token distinct from COLORS.unknown ('#475569'), which SIN_CLASE
 // above already uses — reusing it here would make the Clase and Fase
@@ -66,12 +66,16 @@ export const FASES = [
 export const FASE_SIN_DATO = { key: 'SIN_DATO', label: 'sin dato', color: '#9AA5B1' };
 const FASE_BY_KEY = new Map(FASES.map((f) => [f.key, f]));
 
-/** Fase I/II of one evaluation's inspector, derived from inspector.np. For
- *  the atencionsismo source an empty np means "sin dato" (design D1). */
+/** Fase I/II of one evaluation. The Fase KEY itself ('FASE_I' | 'FASE_II' |
+ *  'SIN_DATO') is derived by utils.js's `faseKeyDe` — the single shared
+ *  rule report.js's `evalFaseLabelDe` also maps through its own label
+ *  table, so the contrato v3 logic (fase field vs inspector.np fallback)
+ *  lives in exactly one place. This wrapper only resolves that key to the
+ *  {label, color} shape the rest of this module (chips, KPI colouring,
+ *  filters) already expects. */
 export function faseDe(evaluacion) {
-  const np = String((evaluacion && evaluacion.inspector && evaluacion.inspector.np) || '').trim();
-  if (evaluacion && evaluacion.fuente === 'atencionsismo' && !np) return FASE_SIN_DATO;
-  return FASE_BY_KEY.get(faseInspector(np));
+  const key = faseKeyDe(evaluacion);
+  return key === 'SIN_DATO' ? FASE_SIN_DATO : FASE_BY_KEY.get(key);
 }
 
 // "Colorear por" — same segmented control acciones-capa.js's own
@@ -121,26 +125,38 @@ export const tituloDe = (e) => e.descripcion.nombre || e.descripcion.direccion |
 // who did this evaluation — it must never read as a confirmed name. A
 // record with no `inspector_fuente` field at all (Firestore-sourced, or a
 // matched atencionsismo evaluación) keeps today's plain behaviour.
+// `inspector_fuente === 'api'` (contrato v3, 2026-09-08) is the API's own
+// `profesional`, joined by the unique cédula — no code-reuse risk — so it
+// behaves exactly like a verified 'evaluacion' match, no caveat.
 // Exported: pure, so a self-check can assert this without the DOM.
 export function quienDe(e) {
   const nombre = (e.inspector && e.inspector.nombre_completo) || '';
-  const codigo = (e.inspector && e.inspector.codigo) || '—';
+  const codigo = (e.inspector && e.inspector.codigo) || '';
   if (e.inspector_fuente === 'roster') {
     return nombre
-      ? `Código ${codigo} · titular actual: ${nombre}`
-      : `Código ${codigo} (sin identidad verificada)`;
+      ? `Código ${codigo || '—'} · titular actual: ${nombre}`
+      : `Código ${codigo || '—'} (sin identidad verificada)`;
   }
-  return nombre || `Brigada ${codigo}`;
+  if (nombre) return nombre;
+  // 'Sin identificar' also covers a plain Firestore-sourced record (no
+  // inspector_fuente field at all) with no name and no código — not just
+  // the atencionsismo sources above.
+  return codigo ? `Brigada ${codigo}` : 'Sin identificar';
 }
 
 // xlsx export's "inspector_verificado" column (misattribution-risk fix
 // 2026-09-08): flags whether the exported name/identificación came from a
-// verified Firestore match or an unverified roster-by-code fallback,
-// alongside the raw values (never mutates them — a spreadsheet consumer
-// needs both). Exported: pure, so a self-check can assert it without xlsx.
+// verified Firestore match, an unverified roster-by-code fallback, or the
+// API's own `profesional` (contrato v3, 2026-09-08), alongside the raw
+// values (never mutates them — a spreadsheet consumer needs both).
+// 'api' reads "Según Atención Sismo", not "Sí": this column asks whether
+// WE verified the identity locally, and an 'api'-sourced identity is the
+// upstream API's own unverified report, not a local match.
+// Exported: pure, so a self-check can assert it without xlsx.
 export function inspectorFuenteLabel(e) {
   if (e.inspector_fuente === 'evaluacion') return 'Sí';
   if (e.inspector_fuente === 'roster') return 'No (código de brigada)';
+  if (e.inspector_fuente === 'api') return 'Según Atención Sismo';
   return '';
 }
 
@@ -170,6 +186,23 @@ function faseChipsHtml(activeKey) {
     ...FASES.map((f) => chip(f.key, f.label, activeKey === f.key, f.color)),
     chip(FASE_SIN_DATO.key, FASE_SIN_DATO.label, activeKey === FASE_SIN_DATO.key, FASE_SIN_DATO.color),
   ].join('');
+}
+
+// F7: the Stickers tab shows two Fase signals depending on the active
+// source (module docstring: for atencionsismo, `fase` per the API's own
+// process; for Formulario/Firestore, the inspector's NP category) — the
+// same evaluación can land on a different Fase in each. Every record in
+// `evaluaciones` shares one `fuente` (a Fuente switch re-fetches the whole
+// list, design D3 — sources are never merged), so the FIRST record's
+// `fuente` speaks for the whole loaded set. Returns `null` (not '') when
+// the note should not show — the caller drives the element's `.hidden`
+// directly off truthiness, no separate empty-string check needed.
+// Exported: pure, so a self-check can assert it without the DOM.
+export function fuenteFaseNotaDe(evaluaciones) {
+  const activeFuente = Array.isArray(evaluaciones) && evaluaciones.length ? evaluaciones[0].fuente : null;
+  if (activeFuente !== 'atencionsismo') return null;
+  return 'Fase según el proceso de Atención Sismo (paso 1 = Fase I, paso 2 = Fase II); '
+    + 'puede diferir de la Fase por NP del Formulario.';
 }
 
 /** Filtered view of `list`: clasificación ATC-20, inspector Fase I/II,
@@ -304,6 +337,7 @@ export function sectionHtml() {
           </label>
           <button type="button" class="sticker-action" id="eval-download">Descargar .xlsx</button>
         </div>
+        <p class="sticker-note" id="eval-fase-fuente-note" hidden></p>
       </div>
 
       <div class="card eval-workspace-card">
@@ -685,6 +719,7 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   const searchEl = section.querySelector('#eval-search');
   const chipsEl = section.querySelector('#eval-clase-chips');
   const faseChipsEl = section.querySelector('#eval-fase-chips');
+  const faseFuenteNoteEl = section.querySelector('#eval-fase-fuente-note');
   const colorGroupEl = section.querySelector('[data-eval-color-group]');
   const comunaSelect = section.querySelector('#eval-comuna-select');
   const barrioSelect = section.querySelector('#eval-barrio-select');
@@ -829,6 +864,9 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
     const filtered = applyFilters(allEvaluaciones, filters);
     chipsEl.innerHTML = claseChipsHtml(filters.clase);
     faseChipsEl.innerHTML = faseChipsHtml(filters.fase);
+    const fuenteFaseNota = fuenteFaseNotaDe(allEvaluaciones);
+    faseFuenteNoteEl.hidden = !fuenteFaseNota;
+    faseFuenteNoteEl.textContent = fuenteFaseNota || '';
     kpis.innerHTML = kpisHtml(filtered);
     barEl.innerHTML = barHtml(filtered);
 

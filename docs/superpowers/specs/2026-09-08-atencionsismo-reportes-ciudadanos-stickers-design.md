@@ -37,30 +37,42 @@ El cache local de reportes (14 804 filas, 25 de agosto) está desactualizado en 
 
 ## 3. Decisiones
 
-### D1. Fase I/II sobre stickers de Atención Sismo: derivación por código de inspector
+### D1. Fase I/II sobre stickers de Atención Sismo: derivación por código de inspector (ahora el fallback — ver Extensión contrato v3)
 
-Regla, en orden:
+Regla, en orden — esta sección describe cómo se completa `inspector.np` (y de ahí, hoy solo como FALLBACK de la Fase; ver más abajo):
 
 1. Si `numero` parsea como `76001-{a}-{iii}{cccc}` y existe una evaluación en Firestore con ese `codigo_edificacion`, se toma `inspector.np` de esa evaluación (join ya cacheado en `EvaluacionesCache`). Además se enriquecen `fecha`, `fotos`, `inspector.*`, `alcance`, `comentarios`.
 2. Si no hay evaluación pero el código de inspector `iii` existe en el roster `inspectores` (campo `codigo`), se toma `NP` del roster.
-3. Si no hay forma de conocer el NP, la Fase es **"sin dato"**. Nunca se muestra Fase I por defecto en filas de Atención Sismo. La regla actual (NP vacío = Fase I) se mantiene solo para la fuente Firestore, donde toda evaluación tiene inspector.
+3. Si no hay forma de conocer el NP, la Fase (por esta vía) es **"sin dato"**. Nunca se muestra Fase I por defecto en filas de Atención Sismo. La regla actual (NP vacío = Fase I) se mantiene solo para la fuente Firestore, donde toda evaluación tiene inspector.
 
 Si hay evaluación, su NP es autoritativo aunque esté vacío. El roster solo aplica cuando no hay evaluación, porque los códigos de brigada se reutilizan al borrar un inspector y una evaluación vieja podría heredar el NP del inspector nuevo.
 
+**Vigencia (contrato v3, 2026-09-08):** para la pestaña Stickers, `inspector.np` derivado aquí ya NO es la fuente primaria de la Fase — es el FALLBACK que usa `faseDe` cuando el campo `fase` de la API (ver Extensión contrato v3 más abajo) no es `1` ni `2`. `inspector.np` en sí sigue completándose exactamente igual (identidad/NP sin cambios) y sigue siendo la fuente de Fase para la pestaña Evaluaciones (Firestore).
+
 Extensión (2026-09-08): cuando NO hay evaluación, además del NP se completan `nombre_completo`, `identificacion`, `entidad` y `uid` desde el mismo documento del roster (`inspectores` por código de brigada) — mismo criterio de autoridad que el NP: solo aplica sin match, nunca se mezcla con una evaluación existente.
 
-Extensión (2026-09-08, fix de mala atribución): el paso 2 anterior es un riesgo real de atribución — los códigos de brigada se reutilizan al borrar un inspector, así que un sticker viejo puede terminar mostrando el nombre y la cédula reales de quien HOY tiene ese código, sin relación con ese registro. Cada registro trae ahora `inspector_fuente: "evaluacion" | "roster" | ""` (`"evaluacion"` con match en Firestore, `"roster"` sin match y con al menos un campo de identidad no vacío en el roster, `""` en cualquier otro caso, incluida una entrada de roster que solo trae `np`). El frontend usa este campo para nunca presentar una identidad de roster con la misma confianza que un match verificado (lista, modal, PDF, xlsx).
+Extensión (2026-09-08, fix de mala atribución): el paso 2 anterior es un riesgo real de atribución — los códigos de brigada se reutilizan al borrar un inspector, así que un sticker viejo puede terminar mostrando el nombre y la cédula reales de quien HOY tiene ese código, sin relación con ese registro. Cada registro trae ahora `inspector_fuente: "evaluacion" | "api" | "roster" | ""` (`"evaluacion"` con match en Firestore, `"api"` con identidad tomada del `profesional` propio de la API — ver Extensión contrato v3 más abajo —, `"roster"` sin match y con al menos uno de `nombre_completo`/`identificacion`/`entidad` no vacío en el roster — `uid` NO cuenta, porque `inspector_profiles` siempre lo completa con el id del documento de Firestore y por sí solo no identifica a nadie —, `""` en cualquier otro caso, incluida una entrada de roster que solo trae `np`). El frontend usa este campo para nunca presentar una identidad de roster o de API con la misma confianza que un match verificado (lista, modal, PDF, xlsx).
 
 La regla de negocio `faseInspector(np)` no cambia.
 
+#### Extensión contrato v3 (2026-09-08)
+
+La API de atencionsismo agregó tres campos por sticker: `fase`, `profesional` (`{cedula, nombre, rango}`) y `fotografias`.
+
+- **`fase` SÍ es la Fase de negocio para la pestaña Stickers.** El equipo desarrollador de la API de atencionsismo confirmó (2026-09-08) que `fase` es su propia variable de Fase — `1` = Fase I, `2` = Fase II — según el proceso propio de atencionsismo (paso 1 vs paso 2 / evaluación especializada), no un artefacto de almacenamiento. `evaluaciones.js` `faseDe` lo usa directamente para registros `fuente === "atencionsismo"`, cayendo a `inspector.np` (vía `faseInspector`) solo cuando `fase` no es exactamente `1` ni `2`. Nota factual: toda fila importada de NUESTRO Firebase (`origen == "firebase"`) trae `fase: 2` sin importar el NP real del inspector en Firestore (verificado: 1068 de 1436 filas así). La pestaña Evaluaciones (fuente Firestore) sigue clasificando esas mismas evaluaciones por NP del inspector, sin cambios — por diseño, las dos pestañas pueden mostrar una Fase distinta para el mismo registro, porque ahora son dos señales independientes.
+- **`profesional` solo es confiable cuando `origen` (recortado, en minúsculas) es `"sistema"`.** La misma importación que escribe `fase: 2` en esas filas también escribió `profesional` en esas filas, y su confiabilidad ahí no está verificada — para filas `origen == "firebase"` (o en blanco/desconocido) NUESTRO Firestore es la fuente de verdad y `profesional` se ignora por completo, aplicando el fallback de roster por código de brigada de siempre.
+- Con `origen == "sistema"` y sin match de evaluación, la identidad puede venir de `profesional` (`inspector_fuente = "api"`): la cédula de la API es una clave única por persona (a diferencia del código de brigada reutilizable), así que el join contra el roster por cédula no tiene el riesgo de mala atribución que sí tiene el join por código. Ese join normaliza la cédula a solo dígitos en ambos lados (`cedula_key`) — "1.234.567" y "1234567" son la misma clave — pero el valor de `identificacion` guardado sigue siendo el de la API, verbatim.
+
 ### D2. Forma normalizada única para Evaluaciones
 
-El backend devuelve para ambas fuentes la MISMA forma que hoy produce `list_evaluaciones`, más tres campos:
+El backend devuelve para ambas fuentes la MISMA forma que hoy produce `list_evaluaciones`, más cinco campos:
 
 ```
 fuente: "atencionsismo" | "firestore"
 origen: "sistema" | "firebase" | ""
 color_etiqueta: "Habitable" | "Acceso restringido" | "No habitable" | "Sin clasificación"
+inspector_fuente: "evaluacion" | "api" | "roster" | ""
+fase: 1 | 2 | null
 ```
 
 Así `evaluaciones.js` cambia lo mínimo: `faseDe` aprende "sin dato", el modal muestra `Origen` y `Fuente`, el banner de degradación generaliza su texto.
@@ -75,7 +87,7 @@ Un control segmentado "Fuente" con dos valores: `Atención Sismo` (default) y `F
 
 - TTL 5 minutos; al fallar la API sirve el último payload en memoria.
 - Arranque en frío sin payload: restaura desde Blob y marca `degraded: true`.
-- Si Firestore falla (roster o evaluaciones), el fetch falla completo y aplica la cadena anterior. Sin NP no hay Fase, y una Fase silenciosamente vacía es peor que un dato viejo.
+- Si Firestore falla (roster o evaluaciones), el fetch falla completo y aplica la cadena anterior. El match de evaluación en Firestore sigue siendo la fuente de identidad autoritativa (contrato v3): un caché de evaluaciones degradado sigue haciendo fallar el fetch aunque el roster esté disponible, porque sin ese match no hay identidad verificada, y el NP del roster (por código de brigada) es ahora solo el FALLBACK de Fase e identidad cuando no hay match — sin Firestore no hay ninguna de las dos cosas, y una Fase o identidad silenciosamente vacía (o, peor, mal atribuida) es peor que servir un dato viejo.
 - La copia en Blob redacta `descripcion.nombre` (persona afectada) y `inspector.np`.
 - `fetch_stickers` con 0 filas lanza `ApiEmptyResultError`: nunca se cachea un universo vacío.
 

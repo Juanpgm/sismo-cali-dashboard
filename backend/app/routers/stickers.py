@@ -44,6 +44,7 @@ from pydantic import BaseModel
 from app.auth.deps import require_role
 from app.credentials import clients as credentials
 from app.services import blob_lkg
+from app.services.stickers_atencionsismo import cedula_key
 
 # `sismo` is already unconditionally in credentials.WEB_STARTUP_CLIENTS, but
 # this router still declares it per ADR-4's declaration mechanism (same
@@ -421,6 +422,53 @@ def _np_by_uid(db: Any, uids: set[str]) -> dict[str, str]:
     return out
 
 
+def inspector_profiles(db: Any) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]]:
+    """ONE Firestore read of the `inspectores` collection, projected into
+    the two roster lookup shapes callers need — by 3-digit brigade `codigo`
+    (see `inspector_profile_by_codigo`) and by digits-only cédula key (see
+    `inspector_profile_by_identificacion`) — so a caller that needs both
+    (`stickers_atencionsismo.build_payload`) builds them from a single
+    collection scan instead of two separate ones. Public: callers that want
+    both maps should call this directly rather than the two wrappers below,
+    which each still trigger their OWN full scan.
+
+    Each map gets its OWN COPY of every profile dict (`dict(profile)`) —
+    never the same object referenced from both maps — so a caller that
+    mutates one map's entry (e.g. `stickers_atencionsismo.normalize_sticker`
+    building its output dict) can never leak that mutation into the other
+    map.
+
+    Duplicate-key policy, by map:
+    - by_identificacion: first doc read wins (documented on
+      `inspector_profile_by_identificacion`) — a data-quality issue, not
+      expected in practice.
+    - by_codigo: last doc read wins (plain dict-assignment overwrite,
+      Firestore iteration order not guaranteed). This is NOT a deliberate
+      business rule: `_allocate_codigo`'s transaction guarantees at most
+      one active inspector holds a given `codigo` at a time, so two docs
+      sharing one here is itself a data-quality anomaly the allocator is
+      supposed to prevent, not a case this function was designed to
+      resolve one particular way."""
+    by_codigo: dict[str, dict[str, str]] = {}
+    by_identificacion: dict[str, dict[str, str]] = {}
+    for snap in db.collection(INSPECTORES_COLLECTION).get():
+        d = snap.to_dict() or {}
+        profile = {
+            "uid": snap.id,
+            "nombre_completo": str(d.get("nombre_completo") or "").strip(),
+            "identificacion": str(d.get("identificacion") or "").strip(),
+            "entidad": str(d.get("entidad") or "").strip(),
+            "np": str(d.get("NP") or "").strip(),
+        }
+        raw_codigo = str(d.get("codigo") or "").strip()
+        if raw_codigo:
+            by_codigo[raw_codigo.zfill(3)] = dict(profile)
+        identificacion_key = cedula_key(profile["identificacion"])
+        if identificacion_key and identificacion_key not in by_identificacion:
+            by_identificacion[identificacion_key] = dict(profile)
+    return by_codigo, by_identificacion
+
+
 def inspector_profile_by_codigo(db: Any) -> dict[str, dict[str, str]]:
     """Roster profile keyed by the 3-digit brigade `codigo` — zero-padded
     (same padding `_allocate_codigo` assigns), extended to the full identity
@@ -433,22 +481,30 @@ def inspector_profile_by_codigo(db: Any) -> dict[str, dict[str, str]]:
     brigade codes are reused after an inspector is deleted and mixing
     sources field-by-field within a matched record could attach a
     different inspector's identity to an old evaluación. Docs without a
-    code are unreachable from a sticker number and are skipped."""
-    out: dict[str, dict[str, str]] = {}
-    for snap in db.collection(INSPECTORES_COLLECTION).get():
-        d = snap.to_dict() or {}
-        raw_codigo = str(d.get("codigo") or "").strip()
-        if not raw_codigo:
-            continue
-        codigo = raw_codigo.zfill(3)
-        out[codigo] = {
-            "uid": snap.id,
-            "nombre_completo": str(d.get("nombre_completo") or "").strip(),
-            "identificacion": str(d.get("identificacion") or "").strip(),
-            "entidad": str(d.get("entidad") or "").strip(),
-            "np": str(d.get("NP") or "").strip(),
-        }
-    return out
+    code are unreachable from a sticker number and are skipped. Thin
+    wrapper around `inspector_profiles` — triggers its own full collection
+    scan; a caller that needs both maps should call `inspector_profiles`
+    directly instead of this plus `inspector_profile_by_identificacion`."""
+    return inspector_profiles(db)[0]
+
+
+def inspector_profile_by_identificacion(db: Any) -> dict[str, dict[str, str]]:
+    """Same roster profile as `inspector_profile_by_codigo`, keyed by the
+    digits-only cédula (`cedula_key`, F7) instead of brigade `codigo` — a
+    formatted `identificacion` like "1.234.567" is still reachable under
+    "1234567". Used on the atencionsismo no-match path when the API's own
+    `profesional.cedula` names a person (contrato v3, 2026-09-08,
+    stickers_atencionsismo.normalize_sticker step 2): a cédula is a unique
+    per-person key, unlike the brigade code, so this join carries none of
+    the code-reuse misattribution risk `inspector_profile_by_codigo`'s
+    caveat above describes. Docs with a blank (or non-digit) `identificacion`
+    are skipped; if two docs somehow share one (a data-quality issue, not
+    expected in practice), the first one read wins rather than raising.
+    Thin wrapper around `inspector_profiles` — triggers its own full
+    collection scan; a caller that needs both maps should call
+    `inspector_profiles` directly instead of this plus
+    `inspector_profile_by_codigo`."""
+    return inspector_profiles(db)[1]
 
 
 def list_evaluaciones(db: Any) -> list[dict[str, Any]]:

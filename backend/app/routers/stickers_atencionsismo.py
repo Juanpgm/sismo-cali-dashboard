@@ -8,8 +8,11 @@ Cache: `stickers.EvaluacionesCache` parametrized with its own Blob
 last-known-good pathname and an allowlist redaction that blanks the
 affected person's name and the inspector NP (same sensitivity class as the
 evaluaciones copy). A Firestore failure (roster or evaluaciones) fails the
-whole fetch on purpose: without NP there is no Fase, and a silently empty
-Fase is worse than a stale payload.
+whole fetch on purpose: NP is still the FALLBACK Fase source (contrato v3,
+2026-09-08 — the API's own `fase` is primary, see
+stickers_atencionsismo.py) for rows where `fase` is `None`, and it also
+carries inspector identity (nombre_completo, uid, entidad) — a silently
+empty Fase/identity for those rows is worse than a stale payload.
 """
 from __future__ import annotations
 
@@ -40,11 +43,16 @@ STICKERS_LKG_BLOB = "data/stickers_atencionsismo_last_good.json"
 # into the cache's serve-stale/Blob chain instead of hanging the worker.
 STICKERS_FETCH_DEADLINE_S = 45.0
 
-# inspector_fuente ("evaluacion"|"roster"|"") is a bare enum, not PII, so it
-# is allowlisted alongside the other atencionsismo-only fields — dropping it
-# on the public Blob copy would silently undo the misattribution-risk
-# caveat callers key off of (stickers_atencionsismo.normalize_sticker).
-_BLOB_ALLOWED_FIELDS = stickers._BLOB_ALLOWED_FIELDS + ("fuente", "origen", "color_etiqueta", "inspector_fuente")
+# inspector_fuente ("evaluacion"|"roster"|"api"|"") is a bare enum, not PII,
+# so it is allowlisted alongside the other atencionsismo-only fields —
+# dropping it on the public Blob copy would silently undo the
+# misattribution-risk caveat callers key off of
+# (stickers_atencionsismo.normalize_sticker). fase (contrato v3, 2026-09-08)
+# is likewise a bare 1|2|None value, not PII — it is the Stickers tab's own
+# Fase I/II signal (API developer confirmation), not a raw storage artifact.
+_BLOB_ALLOWED_FIELDS = stickers._BLOB_ALLOWED_FIELDS + (
+    "fuente", "origen", "color_etiqueta", "inspector_fuente", "fase",
+)
 
 
 def redact_for_blob(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -83,18 +91,29 @@ def build_payload(db: Any, evaluaciones_cache: stickers.EvaluacionesCache) -> li
             ) from exc
 
     rows = asyncio.run(_pull_with_deadline())  # sync route runs in the threadpool: no running loop here
-    roster_map = stickers.inspector_profile_by_codigo(db)
+    # F6: ONE `inspectores` collection scan for both roster shapes — calling
+    # inspector_profile_by_codigo + inspector_profile_by_identificacion
+    # separately would each trigger their own full scan of the same
+    # collection. roster_by_cedula (contrato v3, 2026-09-08) is used for
+    # rows whose `profesional.cedula` names a person but has no matching
+    # Firestore evaluación (stickers_atencionsismo.normalize_sticker step 2).
+    roster_map, roster_by_cedula = stickers.inspector_profiles(db)
     firestore_evals = evaluaciones_cache.get_or_fetch(lambda: stickers.list_evaluaciones(db))
     if evaluaciones_cache.degraded:
         # design D4: "si Firestore falla, el fetch falla completo" — a
-        # Blob-restored evaluaciones payload has `inspector.np` blanked
+        # Blob-restored evaluaciones payload has `inspector.np`,
+        # `nombre_completo` AND `identificacion` all blanked
         # (`stickers._redact_for_blob`), so silently joining it here would
-        # produce a WRONG Fase (not just a stale one). Fail this fetch too
-        # so THIS cache (`stickers_atencionsismo_cache`) runs its own
-        # serve-stale / Blob-restore chain instead of serving a payload with
-        # a poisoned Fase.
-        raise RuntimeError("evaluaciones degradado: sin NP no hay Fase")
-    return build_evaluaciones(rows, roster_by_codigo=roster_map, evaluaciones_firestore=firestore_evals)
+        # poison BOTH the Fase fallback and the identity of a matched record
+        # (not just serve a stale one). Fail this fetch too so THIS cache
+        # (`stickers_atencionsismo_cache`) runs its own serve-stale /
+        # Blob-restore chain instead of serving a payload with a poisoned
+        # identity/Fase.
+        raise RuntimeError("evaluaciones degradado: sin match de Firestore no hay identidad ni NP de respaldo")
+    return build_evaluaciones(
+        rows, roster_by_codigo=roster_map, evaluaciones_firestore=firestore_evals,
+        roster_by_cedula=roster_by_cedula,
+    )
 
 
 @router.get("/stickers-atencionsismo")
@@ -112,7 +131,8 @@ def get_stickers_atencionsismo(
     except (atencionsismo.ApiUnavailableError, atencionsismo.ApiCredentialsError,
             atencionsismo.ApiEmptyResultError, RuntimeError) as exc:
         # RuntimeError: `build_payload`'s own "evaluaciones cache is
-        # degraded, sin NP no hay Fase" guard above, re-raised verbatim by
+        # degraded, sin match de Firestore no hay identidad ni NP de
+        # respaldo" guard above, re-raised verbatim by
         # `EvaluacionesCache.get_or_fetch` when this (stickers) cache is
         # ALSO cold and has nothing in Blob to restore. Maps to 503 like
         # every other upstream-unavailable case — this is the "nothing

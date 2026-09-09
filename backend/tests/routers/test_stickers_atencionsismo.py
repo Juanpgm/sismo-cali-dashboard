@@ -26,7 +26,7 @@ from app.services import atencionsismo
 # importing them (pytest collects fixtures from imported modules only when
 # re-exported here):
 from tests.routers.test_stickers import (  # noqa: F401
-    FAKE_CLAIMS_ADMIN, FAKE_CLAIMS_INSTITUCIONAL, FAKE_CLAIMS_VIEWER, _app, _FakeAuth,
+    FAKE_CLAIMS_ADMIN, FAKE_CLAIMS_INSTITUCIONAL, FAKE_CLAIMS_VIEWER, _app, _FakeAuth, _FakeFirestore,
 )
 
 ROWS = [
@@ -156,6 +156,79 @@ def test_matched_sticker_uses_evaluacion_identity_not_roster(monkeypatch):
     }
 
 
+def test_build_payload_passes_cedula_roster_from_new_helper(monkeypatch):
+    # Contrato v3 (2026-09-08): build_payload must join `profesional.cedula`
+    # against the roster-by-cedula map returned by the NEW
+    # `stickers.inspector_profiles` single-scan helper (patched here, per
+    # the F6 single-read contract), not the two old separate helpers, for a
+    # row with no matching Firestore evaluación.
+    monkeypatch.setattr(atencionsismo, "credentials_from_env", lambda: ("u", "p"))
+
+    async def fake_fetch(client, user, password, **kw):
+        return [{"id": "ev-1", "numero": "76001001-999-0001", "origen": "sistema",
+                 "profesional": {"cedula": "999", "nombre": "Juan Perez", "rango": "P2"}}]
+
+    monkeypatch.setattr(atencionsismo, "fetch_stickers", fake_fetch)
+    monkeypatch.setattr(
+        stickers, "inspector_profiles",
+        lambda db: ({}, {"999": {"uid": "u9", "entidad": "E9", "nombre_completo": "", "np": ""}}),
+    )
+    monkeypatch.setattr(stickers, "list_evaluaciones", lambda db: [])
+
+    class _FakeEvalCache:
+        degraded = False
+
+        def get_or_fetch(self, fn):
+            return fn()
+
+    payload = router_mod.build_payload(db=object(), evaluaciones_cache=_FakeEvalCache())
+
+    assert payload[0]["inspector"]["uid"] == "u9"
+    assert payload[0]["inspector"]["entidad"] == "E9"
+    assert payload[0]["inspector_fuente"] == "api"
+
+
+def test_build_payload_reads_inspectores_collection_exactly_once(monkeypatch):
+    # F6: build_payload must call `inspector_profiles` exactly once —
+    # calling the two old wrapper helpers separately meant TWO Firestore
+    # scans of the same 'inspectores' collection for one request.
+    monkeypatch.setattr(atencionsismo, "credentials_from_env", lambda: ("u", "p"))
+
+    async def fake_fetch(client, user, password, **kw):
+        return []
+
+    monkeypatch.setattr(atencionsismo, "fetch_stickers", fake_fetch)
+    monkeypatch.setattr(stickers, "list_evaluaciones", lambda db: [])
+
+    class _FakeEvalCache:
+        degraded = False
+
+        def get_or_fetch(self, fn):
+            return fn()
+
+    inner = _FakeFirestore({"inspectores": {}})
+    calls = {"n": 0}
+    real_collection = inner.collection
+
+    def counting_collection(name):
+        col = real_collection(name)
+        if name == "inspectores":
+            orig_get = col.get
+
+            def counted_get():
+                calls["n"] += 1
+                return orig_get()
+
+            col.get = counted_get
+        return col
+
+    inner.collection = counting_collection
+
+    router_mod.build_payload(db=inner, evaluaciones_cache=_FakeEvalCache())
+
+    assert calls["n"] == 1
+
+
 def test_api_failure_serves_stale(client, monkeypatch):
     assert client.get("/stickers-atencionsismo").status_code == 200
 
@@ -204,8 +277,27 @@ def test_redaction_blanks_persona_and_np():
     assert set(out) == set(router_mod._BLOB_ALLOWED_FIELDS) | {"descripcion", "inspector", "comentarios", "fotos"}
 
 
+def test_redaction_keeps_fase_it_is_a_bare_1_2_none_not_pii():
+    # fase (contrato v3, 2026-09-08) is a bare 1|2|None value — the Stickers
+    # tab's own Fase signal (API developer confirmation: 1/2 = Fase I/II by
+    # atencionsismo's process), not PII — it must survive the public Blob
+    # redaction like inspector_fuente, while np/nombre/identificacion stay
+    # blanked.
+    payload = [{"id": "1", "fuente": "atencionsismo", "origen": "firebase", "color_etiqueta": "Habitable",
+                "codigo_edificacion": "c", "consecutivo": 1, "municipio": "76001", "area": "1", "area_nombre": "",
+                "clasificacion": "INSPECCIONADA", "alcance": "", "coords": {"lat": 1, "lng": 2, "accuracy": None},
+                "restricciones": "", "acciones_posteriores": {"barricadas": False, "evaluacion_detallada": False},
+                "fecha": None, "descripcion": {"nombre": "Juan", "direccion": "Calle 1"},
+                "fase": 2,
+                "inspector": {"uid": "u", "codigo": "004", "nombre_completo": "Ana", "identificacion": "1",
+                              "entidad": "E", "np": "P4"}, "comentarios": "c", "fotos": ["x"]}]
+    out = router_mod.redact_for_blob(payload)[0]
+    assert out["fase"] == 2
+    assert out["inspector"]["np"] == "" and out["inspector"]["nombre_completo"] == "" and out["inspector"]["identificacion"] == ""
+
+
 def test_redaction_keeps_inspector_fuente_it_is_not_personally_identifying():
-    # inspector_fuente is a bare "evaluacion"|"roster"|"" enum, not PII — it
+    # inspector_fuente is a bare "evaluacion"|"api"|"roster"|"" enum, not PII — it
     # must survive the public Blob redaction (misattribution-risk fix
     # 2026-09-08) instead of being silently dropped by the allowlist.
     payload = [{"id": "1", "fuente": "atencionsismo", "origen": "firebase", "color_etiqueta": "Habitable",
