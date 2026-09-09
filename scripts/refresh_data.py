@@ -398,11 +398,31 @@ def add_date_fields(df: pd.DataFrame) -> pd.DataFrame:
     # no se tocan.
     if "CreationDate" in df.columns:
         creation_dt = pd.to_datetime(df["CreationDate"], errors="coerce")
-        bad = (fecha_dt.notna() & creation_dt.notna()
-               & (fecha_dt.dt.normalize() > creation_dt.dt.normalize()))
-        if bad.any():
-            log.info("Fechas posteriores al envío corregidas a CreationDate: %d.", int(bad.sum()))
-        fecha_dt = fecha_dt.where(~bad, creation_dt)
+        bad_future = (fecha_dt.notna() & creation_dt.notna()
+                      & (fecha_dt.dt.normalize() > creation_dt.dt.normalize()))
+        if bad_future.any():
+            log.info("Fechas posteriores al envío corregidas a CreationDate: %d.", int(bad_future.sum()))
+        fecha_dt = fecha_dt.where(~bad_future, creation_dt)
+
+        # Corrección espejo: una fecha de inspección años ANTES del envío es
+        # tan imposible como una posterior -- típicamente un año mal
+        # digitado en el selector de fecha del formulario (visto en vivo:
+        # 2026-09-09, GlobalID d83f01ee-45d7-4568-82a5-80c08c54882a, fecha
+        # "2022-09-15" vs CreationDate "2026-08-28", 1443 días de brecha).
+        # Umbral de 180 días: en los 1728 registros con ambas fechas, la
+        # brecha real (envío tardío de una inspección legítima) es 0-17 días
+        # (mediana 3, p99 11) -- 180 deja más de 10x de margen, así que
+        # ningún envío tardío real puede activar esta regla por accidente.
+        PAST_GAP_DAYS = 180
+        gap_days = (creation_dt - fecha_dt).dt.days
+        bad_past = (fecha_dt.notna() & creation_dt.notna()
+                    & ~bad_future & (gap_days > PAST_GAP_DAYS))
+        if bad_past.any():
+            log.info(
+                "Fechas de inspección implausiblemente antiguas (>%d días antes del envío) "
+                "corregidas a CreationDate: %d.", PAST_GAP_DAYS, int(bad_past.sum()),
+            )
+        fecha_dt = fecha_dt.where(~bad_past, creation_dt)
     df["fecha_inspeccion"] = fecha_dt.dt.strftime("%Y-%m-%d")
 
     hora_str = df["hora"].astype("string")
