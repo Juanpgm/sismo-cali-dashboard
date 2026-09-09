@@ -619,18 +619,6 @@ test.describe('Recuperación ante código duplicado', () => {
 });
 
 test.describe('Puntos asignados: se muestran en el formulario del inspector', () => {
-  // A Planeación (EDAN survey) point, shaped exactly like the backend's
-  // `misPuntosPlaneacion` output that buildPlaneacionCard consumes.
-  const PUNTO_SURVEY = {
-    id: 'plan-1',
-    direccion: 'Carrera 10 #20-30',
-    coords: { lat: 3.4520, lon: -76.5325 },
-    prioridad: 'alta',
-    afectacion: 'Colapso parcial',
-    nombre_solicitante: 'Juan Pérez',
-    telefono_solicitante: '3001234567',
-    survey_web: 'https://survey123.example/web?p=plan-1',
-  };
   // A sticker point, shaped like `misPuntos` for buildAsignacionCard.
   const PUNTO_STICKER = {
     id: 'stk-1',
@@ -640,26 +628,11 @@ test.describe('Puntos asignados: se muestran en el formulario del inspector', ()
     colapso: 'parcial',
   };
 
-  test('un punto de Planeación asignado aparece como tarjeta con dirección, prioridad y enlace de encuesta', async ({ page }) => {
-    const seed = defaultSeed();
-    seed.asignaciones.planeacion = [PUNTO_SURVEY];
-    await boot(page, seed);
-    await login(page);
-
-    // Con trabajo en Survey, el picker abre en esa pestaña.
-    await expect(page.locator('#asignaciones')).toBeVisible();
-    await expect(page.locator('#asig-tab-survey-count')).toHaveText('1');
-    await expect(page.locator('#planeacion-asignaciones-section')).toBeVisible();
-
-    const card = page.locator('#planeacion-asignaciones-lista .asignacion-card');
-    await expect(card).toHaveCount(1);
-    await expect(card.locator('.asignacion-dir')).toHaveText('Carrera 10 #20-30');
-    await expect(card.getByText('Prioridad ALTA')).toBeVisible();
-    await expect(card.getByText('Colapso parcial')).toBeVisible();
-
-    const encuesta = card.getByText('Abrir encuesta');
-    await expect(encuesta).toHaveAttribute('href', PUNTO_SURVEY.survey_web);
-  });
+  // UI access to Planeación (EDAN survey) points was removed app-wide: the
+  // Survey tab/section and its card no longer exist, so there is no longer
+  // a scenario here for an assigned Planeación point rendering as a card —
+  // see git history for the removed test (it asserted on
+  // #asig-tab-survey-count / #planeacion-asignaciones-section, both gone).
 
   test('un punto de sticker asignado se registra: "Registrar Sticker" abre el formulario con la dirección precargada', async ({ page }) => {
     const seed = defaultSeed();
@@ -667,7 +640,7 @@ test.describe('Puntos asignados: se muestran en el formulario del inspector', ()
     await boot(page, seed);
     await login(page);
 
-    // Sin puntos de Survey pero con stickers, el picker abre en Stickers.
+    // Con puntos de sticker, el picker abre en Stickers.
     await expect(page.locator('#asignaciones')).toBeVisible();
     await expect(page.locator('#asig-tab-stickers-count')).toHaveText('1');
     await expect(page.locator('#asignaciones-stickers-section')).toBeVisible();
@@ -685,7 +658,6 @@ test.describe('Puntos asignados: se muestran en el formulario del inspector', ()
     await boot(page); // seed por defecto: todo vacío
     await login(page);
     await expect(page.locator('#asignaciones')).toBeVisible();
-    await expect(page.locator('#asig-tab-survey-count')).toHaveText('0');
     await expect(page.locator('#asig-tab-stickers-count')).toHaveText('0');
     await expect(page.locator('#btn-registro-libre')).toBeVisible();
   });

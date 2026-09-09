@@ -424,7 +424,7 @@ button:focus-visible, summary:focus-visible, label:has(:focus-visible) {
 .asignaciones-intro { margin: -0.25rem 0 1rem; color: var(--text-secondary); font-size: 0.95rem; }
 .asignaciones-lista { display: grid; gap: 1rem; }
 
-/* Two-tab picker (Survey / Stickers): full-width, thumb-sized, equal split
+/* Two-tab picker (Stickers / Cercanos): full-width, thumb-sized, equal split
    so either tab is a clean single tap one-handed. */
 .asig-tabs {
   display: flex;
@@ -468,10 +468,10 @@ button:focus-visible, summary:focus-visible, label:has(:focus-visible) {
 }
 .asig-tab.is-active .asig-tab-count { background: rgba(0, 0, 0, 0.28); }
 
-/* `puntos-disponibles` change: the third tab (nearby, UNASSIGNED points —
+/* `puntos-disponibles` change: this tab (nearby, UNASSIGNED points —
    "up for grabs") gets its OWN accent color, green, deliberately different
-   from the brand-yellow the two "mine" tabs (Survey/Stickers) use when
-   active. Binding requirement: an inspector must never confuse "assigned
+   from the brand-yellow the "mine" tab (Stickers) uses when active.
+   Binding requirement: an inspector must never confuse "assigned
    to me" with "up for grabs" — a distinct color is the fastest signal at a
    glance, before even reading the tab label. */
 .asig-tab-cercanos.is-active { background: var(--verde); color: var(--bg); }
@@ -531,36 +531,9 @@ button:focus-visible, summary:focus-visible, label:has(:focus-visible) {
 }
 .pill-colapso { background: var(--rojo); }
 
-/* puntos-solicitados, field-form-session delta: PRIORIDAD badge for
-   admin-flagged solicited points. Deliberately NOT `.pill` — brand gold,
-   square-ish corners and a border (vs. the pills' fully-rounded severity
-   colors) so it reads as "a different KIND of flag", not another severity
-   level on the alta/media/baja scale. */
-.badge-prioridad {
-  display: inline-block;
-  margin: 0 0 0.6rem;
-  padding: 0.25rem 0.7rem;
-  border: 1.5px solid var(--brand);
-  border-radius: 6px;
-  background: var(--brand-dim);
-  color: var(--brand);
-  font-size: 0.8rem;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-}
-
-/* planeacion-flujo-confiable, design.md ADR-3: reporter contact — a plain
-   text line above the action buttons, null-safe (absent when no contact
-   data came back from misPuntosPlaneacion). */
-.asignacion-solicitante {
-  margin: 0 0 0.6rem;
-  font-size: 0.95rem;
-  color: var(--muted, inherit);
-}
-
 .asignacion-acciones { display: grid; gap: 0.6rem; }
 
-.asignacion-maps, .asignacion-llamar {
+.asignacion-maps {
   display: flex;
   align-items: center;
   justify-content: center;

@@ -12,8 +12,8 @@ import {
   MUNICIPIO, buildCodigo, parseConsecutivo, siguienteConsecutivo, validarSegmento, canAddSlot, MAX_FOTOS,
   siguienteDesdeMax, plegarConsecutivoGuardado, consecutivosExistentes,
   habitabilidadColor, colapsoLabel, mapsDirUrl,
-  prioridadColor, elegirEnlaceEncuesta,
-  ordenarPorCercania, distanciaM, formatDistancia, solicitadosPrimero, prioridadVisual,
+  elegirEnlaceEncuesta,
+  ordenarPorCercania, distanciaM, formatDistancia,
   etiquetaCampana, etiquetaAccionCercano, mensajeEstadoCercanos, cercanosMuestraLista,
   mensajeTomarPunto, mensajeErrorTomarPunto,
   CERCANOS_ESPERANDO, CERCANOS_SIN_GPS, CERCANOS_CARGANDO, CERCANOS_VACIO, CERCANOS_LISTO, CERCANOS_ERROR,
@@ -75,11 +75,13 @@ const state = {
   // { id, coords, direccion }. Drives the sticker_matches "hecho" flip on submit.
   asignacion: null,
   // Assigned Planeación (EDAN survey) points for this inspector, still
-  // pending. A DIFFERENT task from applying a sticker — opens Survey123,
-  // not this ATC-20 form — so it is tracked and rendered separately, never
-  // merged into `asignaciones` above. Empty array = none assigned.
+  // pending. The Survey tab/section that used to render these was removed
+  // (UI access to Planeación dropped app-wide) — this is now fetched ONLY
+  // so a survey-type point claimed from Cercanos (see onTomarPunto) can
+  // resolve its own prefilled Survey123 link via elegirEnlaceEncuesta.
+  // Empty array = none assigned.
   puntosPlaneacion: [],
-  // Which assignments tab is showing ('survey' | 'stickers'). null before
+  // Which assignments tab is showing ('stickers' | 'cercanos'). null before
   // the first render — renderAsignaciones() picks a default then. Kept
   // across GPS-driven re-sorts so a better fix never yanks the inspector
   // off the tab they are looking at.
@@ -129,7 +131,6 @@ function boot(inspector) {
   $('#eval-form').addEventListener('submit', onSubmit);
   $('#btn-nuevo').addEventListener('click', nuevoRegistro);
 
-  $('#asig-tab-survey').addEventListener('click', () => activarTabAsignaciones('survey'));
   $('#asig-tab-stickers').addEventListener('click', () => activarTabAsignaciones('stickers'));
   $('#asig-tab-cercanos').addEventListener('click', () => activarTabAsignaciones('cercanos'));
   $('#btn-registro-libre').addEventListener('click', () => mostrarFormulario());
@@ -231,34 +232,20 @@ function mostrarFormulario() {
 // default the first time (state.tabAsigActiva starts null).
 function renderAsignaciones() {
   const stickersOrdenados = ordenarPorCercania(state.asignaciones, state.origenAsignaciones);
-  // puntos-solicitados, field-form-session delta: solicited points ("PRIORIDAD")
-  // sort before every other point, keeping nearest-first within each group.
-  const planeacionOrdenados = solicitadosPrimero(ordenarPorCercania(state.puntosPlaneacion, state.origenAsignaciones));
 
   const cont = $('#asignaciones-lista');
   cont.innerHTML = '';
   stickersOrdenados.forEach((a) => cont.append(buildAsignacionCard(a, state.origenAsignaciones)));
   $('#asignaciones-vacio').hidden = stickersOrdenados.length > 0;
 
-  const contPlaneacion = $('#planeacion-asignaciones-lista');
-  contPlaneacion.innerHTML = '';
-  planeacionOrdenados.forEach((p) => contPlaneacion.append(buildPlaneacionCard(p, state.origenAsignaciones)));
-  $('#planeacion-asignaciones-vacio').hidden = planeacionOrdenados.length > 0;
-
-  $('#asig-tab-survey-count').textContent = String(planeacionOrdenados.length);
   $('#asig-tab-stickers-count').textContent = String(stickersOrdenados.length);
 
-  // Open on whichever tab actually has work; if both have work, default to
-  // Survey. If NEITHER has work, default to Cercanos instead — an inspector
-  // with nothing individually assigned should land straight on the one tab
-  // that might still have something to do, not on an empty Survey tab that
-  // gives no hint the Cercanos tab exists (`puntos-disponibles` change).
+  // Open on whichever tab actually has work: Stickers if there's any pending,
+  // Cercanos otherwise — an inspector with nothing individually assigned
+  // should land straight on the one tab that might still have something to
+  // do (`puntos-disponibles` change).
   if (!state.tabAsigActiva) {
-    if (planeacionOrdenados.length === 0 && stickersOrdenados.length === 0) {
-      state.tabAsigActiva = 'cercanos';
-    } else {
-      state.tabAsigActiva = (planeacionOrdenados.length === 0 && stickersOrdenados.length > 0) ? 'stickers' : 'survey';
-    }
+    state.tabAsigActiva = stickersOrdenados.length > 0 ? 'stickers' : 'cercanos';
   }
   activarTabAsignaciones(state.tabAsigActiva);
   renderCercanos();
@@ -272,26 +259,21 @@ function renderAsignaciones() {
 // anything, so it is safe to call on every re-sort re-render too.
 function activarTabAsignaciones(tab) {
   state.tabAsigActiva = tab;
-  const esSurvey = tab === 'survey';
   const esStickers = tab === 'stickers';
   const esCercanos = tab === 'cercanos';
-  $('#asig-tab-survey').classList.toggle('is-active', esSurvey);
-  $('#asig-tab-survey').setAttribute('aria-selected', String(esSurvey));
   $('#asig-tab-stickers').classList.toggle('is-active', esStickers);
   $('#asig-tab-stickers').setAttribute('aria-selected', String(esStickers));
   $('#asig-tab-cercanos').classList.toggle('is-active', esCercanos);
   $('#asig-tab-cercanos').setAttribute('aria-selected', String(esCercanos));
-  $('#planeacion-asignaciones-section').hidden = !esSurvey;
   $('#asignaciones-stickers-section').hidden = !esStickers;
   $('#cercanos-asignaciones-section').hidden = !esCercanos;
   ocultarErrorTomarPunto(); // a stale claim rejection must not linger across tab switches
 }
 
 // Inline SVG chrome replacing the emoji this UI used to prefix "Cómo
-// llegar"/"Llamar" with (Feather `map-pin`/`phone`, 24x24, stroke=currentColor,
-// no fill, `aria-hidden` since the adjacent text already names the action).
+// llegar" with (Feather `map-pin`, 24x24, stroke=currentColor, no fill,
+// `aria-hidden` since the adjacent text already names the action).
 const ICONO_MAPA_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path><circle cx="12" cy="10" r="3"></circle></svg>';
-const ICONO_TELEFONO_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"></path></svg>';
 
 // Prepends an icon span + plain-text label onto a link, replacing whatever
 // emoji-prefixed textContent the 4 call sites used to set directly.
@@ -378,107 +360,11 @@ function registrarSticker(a) {
   mostrarFormulario();
 }
 
-// A Planeación point is a DIFFERENT task from a sticker point — it opens an
-// external Survey123 EDAN form, it never touches this ATC-20 form/state,
-// and it does not call marcarHechoPlaneacion here: the field crew closes it
-// FROM Survey123's own submit, the same "the survey closes itself" flow
-// `app/jobs/planeacion_cruce.py`'s exact-key auto-close already relies on
-// (its own module docstring, "the ONE binding auto-close exception").
-function buildPlaneacionCard(p, origen) {
-  const card = document.createElement('article');
-  card.className = 'card asignacion-card';
-  card.style.borderLeftColor = prioridadColor(p.prioridad);
-
-  card.append(buildDistanciaLinea(p.coords, origen));
-
-  // Badge vs. pill decision is a pure function (formulario/js/logic.js,
-  // prioridadVisual) so it has real test coverage instead of only being
-  // exercised by eyeballing a deployed session.
-  const visual = prioridadVisual(p);
-  if (visual.badge) {
-    const badge = document.createElement('span');
-    badge.className = 'badge-prioridad';
-    badge.textContent = 'PRIORIDAD';
-    card.append(badge);
-  }
-
-  const dir = document.createElement('h3');
-  dir.className = 'asignacion-dir';
-  dir.textContent = p.direccion || 'Dirección no registrada';
-  card.append(dir);
-
-  const pills = document.createElement('div');
-  pills.className = 'asignacion-pills';
-  if (visual.pill) {
-    const pr = document.createElement('span');
-    pr.className = 'pill';
-    pr.style.background = prioridadColor(p.prioridad);
-    pr.textContent = `Prioridad ${String(p.prioridad).toUpperCase()}`;
-    pills.append(pr);
-  }
-  if (p.afectacion) {
-    const af = document.createElement('span');
-    af.className = 'pill pill-colapso';
-    af.textContent = p.afectacion;
-    pills.append(af);
-  }
-  card.append(pills);
-
-  // planeacion-flujo-confiable, design.md ADR-3: reporter contact, when
-  // `misPuntosPlaneacion` included it (own/group points only — never a
-  // public surface). Null-safe: no contact data -> no block, no gap.
-  if (p.nombre_solicitante) {
-    const solicitante = document.createElement('p');
-    solicitante.className = 'asignacion-solicitante';
-    solicitante.textContent = `Solicitante: ${p.nombre_solicitante}`;
-    card.append(solicitante);
-  }
-
-  const acciones = document.createElement('div');
-  acciones.className = 'asignacion-acciones';
-
-  const mapsUrl = mapsDirUrl(p.coords);
-  if (mapsUrl) {
-    const link = document.createElement('a');
-    link.className = 'btn-secondary asignacion-maps';
-    link.href = mapsUrl;
-    link.target = '_blank';
-    link.rel = 'noopener';
-    conIcono(link, ICONO_MAPA_SVG, 'Cómo llegar');
-    acciones.append(link);
-  }
-  if (p.telefono_solicitante) {
-    const llamar = document.createElement('a');
-    llamar.className = 'btn-secondary asignacion-llamar';
-    llamar.href = `tel:${p.telefono_solicitante}`;
-    conIcono(llamar, ICONO_TELEFONO_SVG, 'Llamar');
-    acciones.append(llamar);
-  }
-
-  const encuestaUrl = elegirEnlaceEncuesta(p, esDispositivoMovil());
-  const btn = document.createElement('a');
-  btn.className = 'btn-primary';
-  btn.textContent = 'Abrir encuesta';
-  if (encuestaUrl) {
-    btn.href = encuestaUrl;
-    btn.target = '_blank';
-    btn.rel = 'noopener';
-  } else {
-    // No SURVEY123_FORM_URL configured for this point (misPuntosPlaneacion
-    // fails OPEN on that, per its own contract) — an inert-looking button
-    // with no href is safer than a dead link that silently does nothing.
-    btn.setAttribute('aria-disabled', 'true');
-    btn.title = 'Enlace de encuesta no disponible todavía.';
-  }
-  acciones.append(btn);
-
-  card.append(acciones);
-  return card;
-}
-
 // Coarse device check for elegirEnlaceEncuesta's app-vs-web preference —
-// the ATC-20 field app itself only runs on a phone/tablet in practice, but
-// this still guards the desktop-dev-server case sanely.
+// used only by onTomarPunto's Cercanos survey-claim flow now that the
+// Survey tab/card (which used to be this function's other caller) was
+// removed. The ATC-20 field app itself only runs on a phone/tablet in
+// practice, but this still guards the desktop-dev-server case sanely.
 function esDispositivoMovil() {
   return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
 }
@@ -498,8 +384,7 @@ function renderCercanos() {
   status.textContent = mensajeEstadoCercanos(state.cercanosEstado);
   status.hidden = mostrarLista;
   // `cont` is left visible (not `.hidden`-toggled) on purpose, matching the
-  // existing `#asignaciones-lista`/`#planeacion-asignaciones-lista`
-  // convention above: `.asignaciones-lista` sets `display: grid`
+  // existing `#asignaciones-lista` convention above: `.asignaciones-lista` sets `display: grid`
   // unconditionally, which — like `.foto-actions .foto-action-btn` (see
   // form.css's own note on that) — would silently defeat the UA `[hidden]`
   // rule. An empty grid with zero children renders nothing, so simply not
@@ -588,11 +473,13 @@ function buildCercanoCard(p, origen) {
 // se te asignó X" outcome (mensajeTomarPunto — never swallowed), and hands
 // the right instrument: a sticker claim jumps straight into THIS form
 // (same as tapping "Registrar Sticker"); a survey claim opens the freshly
-// prefilled Survey123 link when misPuntosPlaneacion's re-fetch has it,
-// otherwise just switches to the Survey tab (fail open — never a dead
-// link). Failure (lost race / already covered / network): shows
-// mensajeErrorTomarPunto's message on the status line and refreshes the
-// list so a stale card cannot be tapped again.
+// prefilled Survey123 link when misPuntosPlaneacion's re-fetch has it, or —
+// if that link isn't available yet — surfaces a status line saying the
+// point was claimed anyway (never a silent disappearance from the list;
+// there is no Survey tab to fall back to anymore). Failure (lost race /
+// already covered / network): shows mensajeErrorTomarPunto's message on the
+// same status line and refreshes the list so a stale card cannot be tapped
+// again.
 function mostrarErrorTomarPunto(msg) {
   const box = $('#cercanos-claim-error');
   box.textContent = msg;
@@ -636,14 +523,24 @@ async function onTomarPunto(p, btn) {
       registrarSticker({ id: p.id, coords: p.coords, direccion: p.direccion });
       return;
     }
-    // Survey: hand the freshly prefilled Survey123 link when available.
+    // Survey: hand the freshly prefilled Survey123 link when available. There
+    // is no Survey tab to switch to anymore (removed app-wide) — the
+    // inspector stays on Cercanos; renderAsignaciones() below only refreshes
+    // counts/state for whatever tab (state.tabAsigActiva) is already active.
     const propio = state.puntosPlaneacion.find((x) => x.id === p.id);
     const encuestaUrl = propio ? elegirEnlaceEncuesta(propio, esDispositivoMovil()) : '';
     if (encuestaUrl && surveyTab) surveyTab.location.href = encuestaUrl;
     else if (encuestaUrl) window.open(encuestaUrl, '_blank', 'noopener');
     else if (surveyTab) surveyTab.close();
-    state.tabAsigActiva = 'survey';
     renderAsignaciones();
+    // No usable link (misPuntosPlaneacion fails OPEN, or SURVEY123_FORM_URL
+    // isn't configured): the point is still claimed server-side, but without
+    // this it would just silently vanish from the Cercanos list with zero
+    // explanation. Shown AFTER renderAsignaciones() on purpose — every render
+    // clears this same status line via activarTabAsignaciones()'s own
+    // ocultarErrorTomarPunto() call, so showing it any earlier would have it
+    // wiped immediately.
+    if (!encuestaUrl) mostrarErrorTomarPunto('Punto tomado; el enlace de la encuesta no está disponible todavía.');
   } catch (err) {
     if (surveyTab) surveyTab.close();
     console.warn('tomarPunto falló:', err);
@@ -1345,12 +1242,15 @@ function nuevoRegistro() {
   state.asignacion = null;
   window.scrollTo(0, 0);
 
-  // If assigned points remain in EITHER tab, go back to the picker for the
-  // next one — a sticker-only check here would strand an inspector with
-  // pending Survey points on a blank form. Bug fix: the original single-tab
-  // version only checked state.asignaciones (stickers), silently skipping
-  // the picker whenever only Planeación points remained.
-  if (state.asignaciones.length > 0 || state.puntosPlaneacion.length > 0) {
+  // If sticker points remain, go back to the picker for the next one.
+  // state.puntosPlaneacion (assigned Planeación/EDAN points) is deliberately
+  // NOT checked here: the Survey tab was removed, so those points have no UI
+  // of their own to land the inspector on, and their count has no bearing on
+  // whether Cercanos — renderAsignaciones()'s own deliberate fallback tab
+  // when nothing else is pending, see its comment there — actually has
+  // anything nearby. An inspector who wants to check Cercanos can still
+  // reach it via "Volver a asignaciones".
+  if (state.asignaciones.length > 0) {
     // Fresh visit to the picker: let renderAsignaciones() re-pick whichever
     // tab actually has work now (the just-finished sticker may have emptied
     // its tab) instead of sticking to wherever the inspector was before.
