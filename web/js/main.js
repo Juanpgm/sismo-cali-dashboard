@@ -12,8 +12,6 @@ import { initTable, renderTable, setTotalRecords, openDetailModal, configurarRep
 import { initAccionesTab } from './acciones-capa.js';
 import { initStickers } from './stickers.js';
 import { initReportesCiudadanos } from './reportes-ciudadanos.js';
-import { initPlaneacion } from './planeacion.js';
-import { initPuntosSolicitados } from './puntos_solicitados.js';
 import { initUsuarios } from './usuarios.js';
 import { initAnalista } from './analista.js';
 import { initTheme } from './theme.js';
@@ -247,17 +245,6 @@ function switchView(view) {
         return { reportes: Array.isArray(datos) ? datos : null, meta };
       },
     });
-  }
-  // Planeación is a top-level tab (design.md ADR-10) — (re)initialize it each
-  // time it opens, same lifecycle as Stickers/Usuarios/Analista; it fetches
-  // its own inspector roster since nothing else has loaded it for this tab.
-  if (view === 'planeacion') {
-    initPlaneacion(document.getElementById('view-planeacion'), { getToken: getIdToken });
-  }
-  // Puntos Solicitados is a top-level tab (admin-only, same gate as
-  // Stickers/Usuarios/Planeación) — (re)initialize it each time it opens.
-  if (view === 'puntos-solicitados') {
-    initPuntosSolicitados(document.getElementById('view-puntos-solicitados'), { getToken: getIdToken });
   }
   // Usuarios pulls live data from /api/usuarios — (re)load it each time it opens.
   if (view === 'usuarios') {

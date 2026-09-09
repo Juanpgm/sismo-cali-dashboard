@@ -19,13 +19,10 @@ assert.deepEqual(
   { endpoint: 'stickers', body: { action: 'create', cedula: '123', nombre_completo: 'Ana Torres', entidad: 'SGRED', password: 'secret6' } },
 );
 
-// ---- conductor -> apiUrl('planeacionAsignaciones') crearConductor ---------
-// Reuses planeacion.js's own buildConductorPayload (design.md ADR-1) — same
-// trimming/shape, no duplicated logic.
-assert.deepEqual(
-  payloadForTipo('conductor', { nombre_completo: ' Ana ', cedula: ' 123 ', email: ' a@x.com ', telefono: ' 555 ' }),
-  { endpoint: 'planeacionAsignaciones', body: { action: 'crearConductor', nombre_completo: 'Ana', cedula: '123', email: 'a@x.com', telefono: '555' } },
-);
+// ---- conductor tipo was removed (UI access to Planeación dropped
+// app-wide; the conductor record was only ever manageable from Planeación's
+// Conductores subtab) — it now falls through to the "unknown tipo" case
+// below, same as any other bogus value.
 
 // ---- @sismocali.gov.co under a non-inspector tipo -> rejected, names inspector
 for (const tipo of ['admin', 'viewer', 'usuario']) {
@@ -41,5 +38,8 @@ assert.doesNotThrow(() => payloadForTipo('inspector', { cedula: '1', nombre_comp
 // ---- unknown tipo -> throws -------------------------------------------------
 assert.throws(() => payloadForTipo('bogus', {}));
 assert.throws(() => payloadForTipo(undefined, {}));
+// 'conductor' was a real tipo before UI access to Planeación was dropped
+// app-wide; it must now throw exactly like any other unknown tipo.
+assert.throws(() => payloadForTipo('conductor', { nombre_completo: 'Ana' }), /desconocido/i);
 
 console.log('ok — usuarios.js payloadForTipo routing');

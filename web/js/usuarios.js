@@ -9,7 +9,6 @@
 // action URL). See design.md ADR-5/ADR-6.
 import { escapeHtml } from './utils.js';
 import { apiUrl } from './api-config.js';
-import { buildConductorPayload } from './planeacion.js';
 
 // `getFirebaseApp`/`getAuth`/`sendPasswordResetEmail` are only needed once
 // this tab actually runs in a browser (reload()'s ownUid lookup, and the
@@ -25,11 +24,11 @@ async function loadFirebaseAuth() {
 }
 
 // Parameterized so the SAME helper (same headers/error-unwrap shape) also
-// serves the `stickers` and `planeacionAsignaciones` branches of the
-// unified creation modal's fan-out (design.md ADR-1) — no forked near-
-// identical fetch functions. Existing call sites (list/setEnabled/delete/
-// setRole/setPassword) are untouched: they never pass `endpointName`, so
-// they keep hitting `apiUrl('usuarios')` exactly as before.
+// serves the `stickers` branch of the unified creation modal's fan-out
+// (design.md ADR-1) — no forked near-identical fetch functions. Existing
+// call sites (list/setEnabled/delete/setRole/setPassword) are untouched:
+// they never pass `endpointName`, so they keep hitting `apiUrl('usuarios')`
+// exactly as before.
 async function callApi(getToken, body, endpointName = 'usuarios') {
   const token = await getToken();
   if (!token) throw new Error('Sesión no válida. Volvé a iniciar sesión.');
@@ -44,24 +43,27 @@ async function callApi(getToken, body, endpointName = 'usuarios') {
 }
 
 const INSPECTOR_DOMAIN = '@sismocali.gov.co';
-const TIPO_LABEL = { admin: 'Administrador', viewer: 'Viewer', usuario: 'Usuario', inspector: 'Inspector', conductor: 'Conductor' };
+const TIPO_LABEL = { admin: 'Administrador', viewer: 'Viewer', usuario: 'Usuario', inspector: 'Inspector' };
 const DEFAULT_TIPO_NOTE = 'Crea una cuenta de usuario (contraseña): ve solo el Panel. Se puede promover a administrador después con "Cambiar rol" si hace falta.';
 const TIPO_NOTE = {
   admin: DEFAULT_TIPO_NOTE,
   viewer: DEFAULT_TIPO_NOTE,
   usuario: DEFAULT_TIPO_NOTE,
   inspector: 'El código de brigada se asigna solo: el servidor toma el número libre más bajo (001, 002, …) y nunca reutiliza uno ya entregado.',
-  conductor: 'El conductor queda como un registro de datos, sin cuenta ni acceso al dashboard — visible en Planeación.',
 };
 
 /** tipo + form fields -> {endpoint, body} for the unified creation modal's
  *  fan-out (design.md ADR-1). Pure — no DOM, no fetch. Each tipo maps to
- *  exactly one endpoint/body shape; conductor reuses planeacion.js's own
- *  `buildConductorPayload` (same trimming, no duplicated logic). Throws on
- *  an unknown tipo, or on a `@sismocali.gov.co` email typed under a
- *  non-inspector tipo (client-side fast-fail mirroring the spec scenario —
- *  `api/usuarios.js`'s own server-side guard, untouched, remains the
- *  authoritative check). */
+ *  exactly one endpoint/body shape. Throws on an unknown tipo, or on a
+ *  `@sismocali.gov.co` email typed under a non-inspector tipo (client-side
+ *  fast-fail mirroring the spec scenario — `api/usuarios.js`'s own
+ *  server-side guard, untouched, remains the authoritative check).
+ *
+ *  The `conductor` tipo (routed to `planeacionAsignaciones`) was removed:
+ *  it created an Auth-less record only ever listable/editable via
+ *  Planeación's Conductores subtab, which is unreachable now that UI
+ *  access to Planeación was dropped app-wide. The backend endpoint itself
+ *  is untouched. */
 export function payloadForTipo(tipo, fields = {}) {
   if (tipo === 'admin' || tipo === 'viewer' || tipo === 'usuario') {
     const email = (fields.email || '').trim();
@@ -81,9 +83,6 @@ export function payloadForTipo(tipo, fields = {}) {
         password: fields.password || '',
       },
     };
-  }
-  if (tipo === 'conductor') {
-    return { endpoint: 'planeacionAsignaciones', body: buildConductorPayload(fields) };
   }
   throw new Error(`Tipo de usuario desconocido: ${tipo}`);
 }
@@ -221,7 +220,6 @@ function rosterHtml(usuarios, filtered, pageItems, ownUid, { role, status, query
                 <option value="viewer">Viewer</option>
                 <option value="usuario">Usuario</option>
                 <option value="inspector">Inspector</option>
-                <option value="conductor">Conductor</option>
               </select>
             </label>
             <div class="sticker-form-grid" data-tipo-group="admin,viewer,usuario">
@@ -233,12 +231,6 @@ function rosterHtml(usuarios, filtered, pageItems, ownUid, { role, status, query
               ${field('nombre_completo', 'Nombre completo', 'placeholder="Andrés Torres" autocomplete="off" disabled')}
               ${field('entidad', 'Entidad', 'placeholder="SGRED" autocomplete="off" disabled')}
               ${field('password', 'Contraseña *', 'type="text" required placeholder="mínimo 6 caracteres" autocomplete="off" disabled')}
-            </div>
-            <div class="sticker-form-grid" data-tipo-group="conductor" hidden>
-              ${field('nombre_completo', 'Nombre completo', 'placeholder="Ana Ríos" autocomplete="off" disabled')}
-              ${field('cedula', 'Cédula', 'placeholder="1020735324" autocomplete="off" disabled')}
-              ${field('email', 'Email', 'type="email" placeholder="conductor@ejemplo.com" autocomplete="off" disabled')}
-              ${field('telefono', 'Teléfono', 'placeholder="3001234567" autocomplete="off" disabled')}
             </div>
             <p class="sticker-note" id="usuario-form-note">Crea una cuenta de usuario (contraseña): ve solo el Panel. Se puede promover a administrador después con "Cambiar rol" si hace falta.</p>
             <p class="sticker-error" id="usuario-form-error" role="alert" hidden></p>
@@ -616,21 +608,13 @@ export function initUsuarios(root, { getToken }) {
         const result = await callApi(getToken, routed.body, routed.endpoint);
         if (tipo === 'inspector') {
           notice = `Inspector creado. Código: ${result.codigo}.`;
-        } else if (tipo === 'conductor') {
-          notice = 'Conductor creado. Visible en Planeación.';
         } else {
           notice = `Usuario creado: ${routed.body.email}.`;
         }
         closeModal();
-        if (tipo === 'conductor') {
-          // No Auth account is created, so it never appears in THIS list
-          // (v1 scope) — just surface the confirmation, no refetch.
-          render();
-        } else {
-          // admin/viewer/usuario/inspector are all Auth-backed and DO appear
-          // in `api/usuarios.js`'s own listUsers() on the next load.
-          await reload();
-        }
+        // admin/viewer/usuario/inspector are all Auth-backed and DO appear
+        // in `api/usuarios.js`'s own listUsers() on the next load.
+        await reload();
       } catch (err) {
         // Per-tipo inline error, modal stays open on the SAME tipo, no
         // follow-up call to either of the other two endpoints (spec "Per-tipo
