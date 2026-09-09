@@ -117,7 +117,10 @@ function subLine(html) {
 }
 
 // Small inline qualifier next to a headline label: "procesado" for Total
-// registros (agrupado por edificio, ver soloRepresentantes) and
+// registros cuando NO hay cifra cruda disponible (raw.recolectados ausente) —
+// en ese caso el valor grande sigue siendo el agrupado por edificio (ver
+// soloRepresentantes). Cuando sí hay cifra cruda, el tile la usa como valor
+// principal en su lugar (ver tileHtml) y este tag no aplica. También
 // "recategorizado" SOLO para Colapso total — es la única tarjeta donde
 // colapso_resuelto cambia la cifra de forma visible (34→~15 en producción).
 // Colapso parcial se queda prácticamente igual (la mayoría de los conflictos
@@ -197,17 +200,21 @@ export function renderKpis(container, filteredRecords, allRecords, raw = {}) {
       sub = subLine(spans.join(''));
     } else if (def.key === 'colapso_parcial' && filtersActive) {
       sub = subLine(`<span class="kpi-sub">Refleja los filtros activos · ${globalColapso.colapso_parcial} sin filtrar</span>`);
-    } else if (def.key === 'total' && Number.isFinite(raw.recolectados)) {
-      // El valor grande ya es la cifra SANITIZADA (un edificio = un registro,
-      // ver soloRepresentantes/es_representante). Esta línea, en tono
-      // secundario, deja explícito de cuántos envíos crudos sale ese número —
-      // para que "menos registros que antes" no lea como pérdida de datos.
-      sub = subLine(`<span class="kpi-sub kpi-sub-raw">de ${raw.recolectados} recolectados (sin agrupar)</span>`);
+    } else if (def.key === 'total' && Number.isFinite(raw.recolectados) && raw.recolectados !== values.total) {
+      // El valor grande ahora es la cifra CRUDA (envíos sin agrupar por
+      // edificio, ver soloRepresentantes/es_representante). Esta línea, en
+      // tono secundario, deja explícito cuántos de esos envíos representan
+      // edificios únicos una vez agrupados — la cifra que antes era la
+      // principal — para no perder esa referencia.
+      sub = subLine(`<span class="kpi-sub kpi-sub-raw">${values.total} agrupados por edificio</span>`);
     }
+    const isRawTotal = def.key === 'total' && Number.isFinite(raw.recolectados);
+    const label = isRawTotal ? def.label : `${def.label}${kpiLabelTag(def.key)}`;
+    const value = isRawTotal ? raw.recolectados : values[def.key];
     return `
       <div class="kpi-tile" style="${def.accent ? `--kpi-accent:${def.accent}` : ''}">
-        <span class="kpi-label">${def.label}${kpiLabelTag(def.key)}</span>
-        <span class="kpi-value">${values[def.key]}</span>
+        <span class="kpi-label">${label}</span>
+        <span class="kpi-value">${value}</span>
         ${sub}
       </div>
     `;
