@@ -227,7 +227,7 @@ export function renderKpis(container, filteredRecords, allRecords, raw = {}) {
   const tilesFor = (section) => TILE_DEFS
     .filter((d) => d.group === 'headline' && d.section === section)
     .map(tileHtml).join('');
-  const headlineHtml = sectionTitle('Por número de registros', 'Cuenta INSPECCIONES (un registro por edificación evaluada) y se recalcula con los filtros.')
+  const headlineHtml = sectionTitle('Por número de registros', 'Cuenta INSPECCIONES de visitas especializadas (un registro por edificación evaluada) y se recalcula con los filtros.')
     + tilesFor('registros')
     + sectionTitle('Por unidades habitacionales (viviendas)', 'Aquí se suman VIVIENDAS (n_residenciales), un aproximado según cada inspección — no inspecciones. Sirve para dimensionar cuántos hogares hay detrás de cada estado de habitabilidad.')
     + tilesFor('residenciales')

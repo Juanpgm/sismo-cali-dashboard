@@ -1734,7 +1734,8 @@ body:not([data-role="admin"]) .view-tab[data-view="acciones"],
 body:not([data-role="admin"]) .view-tab[data-view="planeacion"],
 body:not([data-role="admin"]) .view-tab[data-view="usuarios"],
 body:not([data-role="admin"]) .view-tab[data-view="analista"],
-body:not([data-role="admin"]) .view-tab[data-view="puntos-solicitados"] { display: none !important; }
+body:not([data-role="admin"]) .view-tab[data-view="puntos-solicitados"],
+body:not([data-role="admin"]) .view-tab[data-view="reportes-ciudadanos"] { display: none !important; }
 
 /* Stickers is the exception: viewers (institucional) may see its data too.
    The read endpoint (Railway GET /evaluaciones) admits admin+viewer; the

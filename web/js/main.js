@@ -227,8 +227,10 @@ function switchView(view) {
     initStickers(document.getElementById('view-stickers'), { getToken: getIdToken });
   }
   // Reportes ciudadanos reads the public Blob snapshot (no token) — (re)load
-  // it each time it opens, same lifecycle as Stickers.
-  if (view === 'reportes-ciudadanos') {
+  // it each time it opens, same lifecycle as Stickers. Admin-only for now
+  // (tab is CSS-hidden for other roles; this closes the direct-console call,
+  // same defense-in-depth as the acciones/refresh guards above).
+  if (view === 'reportes-ciudadanos' && isAdmin()) {
     initReportesCiudadanos(document.getElementById('view-reportes-ciudadanos'), {
       fetchReportes: async () => {
         const [datosRes, meta] = await Promise.all([
