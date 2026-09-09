@@ -379,38 +379,47 @@ assert.equal(formatValue('danos_estructura', 'fuerte_xyz'), 'Fuerte xyz');
 console.log('ok — danoGradoColor + DANO_GRADO_ORDER (Daños en la estructura)');
 console.log('ok — formatValue routes danos_*/cielos_instalaciones through labelForCode');
 
-// --- sourceLabel: LABEL_OVERRIDES beats the EDAN-F3 question text -----------
-// The sidebar speaks the survey's numbered wording for every other field, so
-// this override is the exception, not the rule -- assert BOTH halves.
+// --- sourceLabel: every field speaks the EDAN-F3 question text ---------------
+// danos_estructura used to be renamed to "Daños en la estructura" by a local
+// override. Users coming from ArcGIS look for the filter by its numbered
+// wording ("5.7 Daño en muros de carga...") and could not find it, so the
+// override was removed: no field is an exception to the sidebar's shared
+// language. Assert the shared precedence on the formerly-overridden field.
 {
   setSourceLabels({
     danos_estructura: '5.7 Daño en muros de carga, columnas y otros elementos',
     severidad_danos: '6.2 Severidad de daños:',
   });
 
-  // Overridden field: the source label loses, no matter what fallback is passed.
-  assert.equal(sourceLabel('danos_estructura', 'Daños en la estructura'), 'Daños en la estructura');
-  assert.equal(sourceLabel('danos_estructura', 'cualquier otro fallback'), 'Daños en la estructura');
-  assert.equal(sourceLabel('danos_estructura'), 'Daños en la estructura');
-
-  // Non-overridden field: the source label still wins over the fallback, which
-  // is the whole point of the sidebar's shared language.
+  // Source label wins over any fallback, same as every other field.
+  assert.equal(
+    sourceLabel('danos_estructura', 'Daños en la estructura'),
+    '5.7 Daño en muros de carga, columnas y otros elementos',
+  );
+  assert.equal(
+    sourceLabel('danos_estructura'),
+    '5.7 Daño en muros de carga, columnas y otros elementos',
+  );
   assert.equal(sourceLabel('severidad_danos', 'Severidad de daños'), '6.2 Severidad de daños:');
 
   // Unknown field: fallback, then labelForField -- unchanged precedence.
   assert.equal(sourceLabel('nivel_dano', 'Nivel de daño'), 'Nivel de daño');
   assert.equal(sourceLabel('comuna'), labelForField('comuna'));
 
-  // The override must survive meta.json arriving empty/absent (source_labels
-  // missing is a real state: setSourceLabels(undefined) on a cold/failed load).
+  // meta.json absent/empty (cold or failed load): fall back like any field.
   setSourceLabels(undefined);
-  assert.equal(sourceLabel('danos_estructura', 'x'), 'Daños en la estructura');
+  assert.equal(sourceLabel('danos_estructura', 'Daños en la estructura'), 'Daños en la estructura');
+  assert.equal(sourceLabel('danos_estructura'), labelForField('danos_estructura'));
   assert.equal(sourceLabel('severidad_danos', 'Severidad de daños'), 'Severidad de daños');
+
+  // Blank source label must not shadow the fallback.
+  setSourceLabels({ danos_estructura: '' });
+  assert.equal(sourceLabel('danos_estructura', 'Daños en la estructura'), 'Daños en la estructura');
 
   setSourceLabels({}); // leave the module in a clean state for later assertions
 }
 
-console.log('ok — sourceLabel override for danos_estructura');
+console.log('ok — sourceLabel follows the shared source-label precedence for danos_estructura');
 
 // --- pointInPolygon: ray-casting helper for zona_interes --------------------
 // A 10x10 square, both explicitly closed (first point repeated) and left
