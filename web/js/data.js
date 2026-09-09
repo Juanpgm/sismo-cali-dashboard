@@ -117,6 +117,11 @@ export const FILTER_FIELDS = [
   // checking "Colapso total" here can never disagree with what that card shows.
   { field: 'colapso_total_resuelto', label: 'Colapso total', group: 'severidad' },
   { field: 'colapso_parcial_resuelto', label: 'Colapso parcial', group: 'severidad' },
+  // Raw si/no flag from Survey123 (5.3). Not derived: unlike colapso_* there is
+  // no sibling field it can disagree with, so the source column is filtered as-is.
+  // emptyLabel follows danos_estructura: blanks may exist in production even
+  // though the local sample has none, and they must stay reachable when filtering.
+  { field: 'asentamiento_severo', label: labelForField('asentamiento_severo'), group: 'severidad', emptyLabel: 'Sin dato' },
   // NOTE: adjacent-building external risk (41_a / 42_a / riesgo_caida) is no
   // longer a filter group — it's now colorable directly on the map points
   // ("Colorear por" → Riesgo externo). See mapview.js RISK_FIELDS.
