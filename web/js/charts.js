@@ -86,7 +86,10 @@ export function resetCharts() {
   registry.clear();
 }
 
-function baseOptions(overrides = {}) {
+// Exported so other tabs with their own Chart.js instances (e.g. seguimiento.js's
+// timeline) can build on the same themed ticks/grid/legend/tooltip colors
+// instead of hand-rolling a second, drifting copy of this palette.
+export function baseOptions(overrides = {}) {
   const textPrimary = themeColor('--text-primary', '#f4f7fb');
   const textSecondary = themeColor('--text-secondary', '#b9c4d4');
   const textMuted = themeColor('--text-muted', '#7c8ca3');

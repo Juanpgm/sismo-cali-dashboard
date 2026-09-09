@@ -12,6 +12,7 @@ import { initTable, renderTable, setTotalRecords, openDetailModal, configurarRep
 import { initAccionesTab } from './acciones-capa.js';
 import { initStickers } from './stickers.js';
 import { initReportesCiudadanos } from './reportes-ciudadanos.js';
+import { initSeguimiento, updateSeguimientoRecords } from './seguimiento.js';
 import { initUsuarios } from './usuarios.js';
 import { initAnalista } from './analista.js';
 import { initTheme } from './theme.js';
@@ -139,6 +140,19 @@ function onStoreChange() {
   if (isAdmin() && currentView === 'acciones') {
     initAccionesTab(document.getElementById('view-acciones'), { records: store.records });
   }
+  // Seguimiento's Survey half is a snapshot of store.records captured at
+  // initSeguimiento() call time — without this, a store refresh (manual
+  // "Actualizar datos", or the periodic sticker-status poll's notify(), ~3
+  // times per 15-min auto-refresh cycle) that lands while the tab is already
+  // open would leave it reading stale records until the next tab switch.
+  // updateSeguimientoRecords() (NOT initSeguimiento) on purpose: a full
+  // re-init would wipe the user's filters/sort/search AND re-fetch stickers
+  // from the network on every single store notify, for no reason — this
+  // only swaps the Survey array in place and re-renders. Same guard as
+  // Acciones above (admin only, and only while the tab is actually visible).
+  if (isAdmin() && currentView === 'seguimiento') {
+    updateSeguimientoRecords(store.records);
+  }
 }
 
 function openFiltersDrawer() {
@@ -245,6 +259,14 @@ function switchView(view) {
         return { reportes: Array.isArray(datos) ? datos : null, meta };
       },
     });
+  }
+  // Seguimiento cross-references stickers (live, same lifecycle as Stickers)
+  // with the Survey records already in store.records — (re)load it each
+  // time it opens. Admin-only (tab is CSS-hidden for other roles; this
+  // closes the direct-console call, same defense-in-depth as the
+  // acciones/reportes-ciudadanos guards above).
+  if (view === 'seguimiento' && isAdmin()) {
+    initSeguimiento(document.getElementById('view-seguimiento'), { getToken: getIdToken, records: store.records });
   }
   // Usuarios pulls live data from /api/usuarios — (re)load it each time it opens.
   if (view === 'usuarios') {

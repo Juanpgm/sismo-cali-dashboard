@@ -63,7 +63,11 @@ export function errorMessageFor(data, status) {
   return (data && data.error) || detail || `Error ${status}`;
 }
 
-async function fetchEvaluacionesOnce(getToken, endpoint) {
+// Exported so seguimiento.js can pull the same stickersAtencionsismo feed
+// without duplicating the fetch/error-handling logic — it isn't a "Fuente"
+// toggle there (Seguimiento only ever wants Atención Sismo's stickers), just
+// this same one-shot authenticated read.
+export async function fetchEvaluacionesOnce(getToken, endpoint) {
   const token = await getToken();
   if (!token) throw new Error('Sesión no válida. Volvé a iniciar sesión.');
   const res = await fetch(apiUrl(endpoint), { headers: { Authorization: `Bearer ${token}` } });

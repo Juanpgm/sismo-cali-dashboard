@@ -1716,7 +1716,8 @@ body:not([data-role="admin"]) #detail-report-btn,
 body:not([data-role="admin"]) .view-tab[data-view="acciones"],
 body:not([data-role="admin"]) .view-tab[data-view="usuarios"],
 body:not([data-role="admin"]) .view-tab[data-view="analista"],
-body:not([data-role="admin"]) .view-tab[data-view="reportes-ciudadanos"] { display: none !important; }
+body:not([data-role="admin"]) .view-tab[data-view="reportes-ciudadanos"],
+body:not([data-role="admin"]) .view-tab[data-view="seguimiento"] { display: none !important; }
 
 /* Stickers is the exception: viewers (institucional) may see its data too.
    The read endpoint (Railway GET /evaluaciones) admits admin+viewer; the
@@ -2043,6 +2044,21 @@ body:not([data-role="admin"]) [data-sticker-segment="asignacion"] { display: non
 .rep-section .asignacion-search { flex: 1 1 220px; margin: 0; }
 .rep-section .asignacion-filters { align-items: flex-end; }
 #view-reportes-ciudadanos { max-width: 1180px; margin: 0 auto; }
+
+/* ---- Seguimiento tab — reuses .eval-section/-kpis, .kpi-row/-tile,
+   .card/-toolbar, .sticker-field/-search-input/-action/-note, .chart-tile,
+   .table-scroll/.tipologia-table and .eval-empty as-is; only the sortable
+   header buttons and the roster caveat mark are genuinely new. */
+.seg-section .asignacion-search { flex: 1 1 220px; margin: 0; }
+.seg-section .asignacion-filters { align-items: flex-end; }
+#view-seguimiento { max-width: 1180px; margin: 0 auto; }
+.seg-sort-btn {
+  display: flex; align-items: center; gap: 4px; background: none; border: none;
+  color: inherit; font: inherit; font-weight: 600; padding: 0; cursor: pointer;
+  white-space: nowrap;
+}
+.seg-sort-btn.is-active { color: var(--accent); }
+.seg-caveat { cursor: help; color: var(--accent); }
 
 /* ============================================================
    ASIGNACIÓN — sub-section inside the Stickers tab (design.md
