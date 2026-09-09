@@ -377,7 +377,17 @@ async def fetch_window(
         if next_offset is None or next_offset <= offset:
             return records  # malformed/non-advancing cursor: stop, not a failure
         offset = next_offset
-    return records  # MAX_PAGES_PER_WINDOW safety cap reached
+    # MAX_PAGES_PER_WINDOW safety cap reached WITHOUT the API ever reporting
+    # done: True — reintroducing the exact silent-truncation shape this fix
+    # closes (just at 10,000 rows/day instead of 200). Never expected in
+    # practice (see the module's own docstring for the real observed
+    # ceiling), but loud on the way out rather than a quiet return.
+    logging.warning(
+        "fetch_window: tope de %d paginas alcanzado para [%d, %d] sin done=true; "
+        "puede haber reportes sin traer",
+        MAX_PAGES_PER_WINDOW, d0, d1,
+    )
+    return records
 
 
 async def day_walk(

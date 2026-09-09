@@ -453,7 +453,10 @@ def test_fetch_window_safety_cap_stops_never_ending_done_false_response(monkeypa
 
     records = _run(go())
 
-    assert calls["n"] <= atencionsismo.MAX_PAGES_PER_WINDOW
+    # Exact, not <=: a implementation that quietly stopped early (e.g. after
+    # page 1) would satisfy "<=" too -- this response never reports done, so
+    # the loop must run every page up to the cap, no fewer.
+    assert calls["n"] == atencionsismo.MAX_PAGES_PER_WINDOW
     assert len(records) == calls["n"]
 
 
@@ -506,6 +509,16 @@ def test_fetch_window_splittable_status_on_a_later_page_still_splits_the_whole_w
     assert "abandoned" not in ids  # page 1 of the superseded whole-window attempt must not leak
     assert ids == {f"r{d0}" for d0, _d1 in seen_windows}
     assert len(records) == len(seen_windows)  # no duplicate/wrong data from the abandoned attempt
+
+    # The split halves must actually COVER the whole original [d0, d1] with
+    # no gap and no overlap -- self-consistency between records/seen_windows
+    # alone (asserted above) doesn't prove that; a split at the wrong
+    # midpoint could drop or double-cover a slice and still pass those.
+    ordered = sorted(seen_windows)
+    assert ordered[0][0] == 0
+    assert ordered[-1][1] == 4 * atencionsismo.MIN_WINDOW_MS - 1
+    for (_prev_d0, prev_d1), (next_d0, _next_d1) in zip(ordered, ordered[1:]):
+        assert next_d0 == prev_d1 + 1  # contiguous: no gap, no overlap
 
 
 # --- count_reportes: concurrency batching + dedup across windows + retry ---
