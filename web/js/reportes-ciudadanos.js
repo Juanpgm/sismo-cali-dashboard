@@ -51,6 +51,18 @@ export const COLOR_MODES_REPORTES = {
   estado: { label: 'Estado', colorOf: (r) => estadoDe(r).color },
   afectacion: { label: 'Afectación', colorOf: colorAfectacion },
   sticker: { label: 'Sticker', colorOf: colorSticker },
+  // Panel = Survey123/EDE field inspection (a DIFFERENT system from this
+  // report, matched server-side by proximity — app/services/
+  // reportes_panel_state.py). Green: visitado en Panel + sticker confirmado.
+  // Amber: visitado en Panel, sticker aún sin confirmar. Gray: sin match en
+  // Panel todavía (r.panel absent/null covers "not matched yet" the same
+  // way as a malformed value — never crashes, never misclassifies).
+  panel: {
+    label: 'Panel',
+    colorOf: (r) => (r.panel && r.panel.visitado && r.panel.sticker) ? COLORS.status.h
+      : (r.panel && r.panel.visitado) ? COLORS.status.r2
+      : COLORS.unknown,
+  },
 };
 
 export function contarPor(list, keyFn) {
@@ -265,6 +277,7 @@ function listItemHtml(r) {
       <span class="eval-pill-group">
         <span class="eval-pill" style="--eval-pill:${e.color}">${escapeHtml(e.label)}</span>
         ${stickerColor ? `<span class="eval-pill" style="--eval-pill:${stickerColor}">sticker ${escapeHtml(r.sticker.etiqueta || r.sticker.color)}</span>` : ''}
+        ${r.panel && r.panel.visitado ? `<span class="eval-pill" style="--eval-pill:${r.panel.sticker ? COLORS.status.h : COLORS.status.r2}">panel ${r.panel.sticker ? 'con sticker' : 'sin sticker'}</span>` : ''}
       </span>
       <span class="eval-meta">${escapeHtml(r.barrio || 'Sin barrio')} · ${escapeHtml(r.comuna || 'Sin comuna')} · ${escapeHtml(r.tipo_inmueble || 'Sin dato')}</span>
       <span class="eval-meta">${escapeHtml(r.afectacion || 'sin afectación')} · ${escapeHtml(formatFecha(r.creado, r.creado_texto))}</span>

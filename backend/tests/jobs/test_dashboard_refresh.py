@@ -552,6 +552,62 @@ def test_fetch_reportes_zero_records_keeps_previous_files_and_skips_ciudadanos(t
     assert json.loads((tmp_path / "reportes_ciudadanos.json").read_text(encoding="utf-8")) == [{"id": "old-c"}]
 
 
+# --- Panel cross-reference hook: reportes_ciudadanos.json rows gain a -----
+# --- 'panel' key from app.services.reportes_panel_state.apply_panel_match -
+# --- (design "reportes ciudadanos vs Panel" — see reportes_panel_state.py).
+
+
+def test_fetch_reportes_calls_panel_cross_reference_and_writes_panel_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setenv("VISITADOS_API_PASS", "secret")
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _fake_day_walk_one_record)
+    fake_db = _FakeContactDb()
+    monkeypatch.setattr(job.credentials, "sismo", lambda: type("_C", (), {"firestore": fake_db})())
+
+    calls: list[list[dict]] = []
+
+    def _fake_apply_panel_match(reportes):
+        calls.append(reportes)
+        return [{**r, "panel": {"visitado": True, "sticker": True}} for r in reportes]
+
+    monkeypatch.setattr(job.reportes_panel_state, "apply_panel_match", _fake_apply_panel_match)
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1
+    assert len(calls) == 1  # the hook ran exactly once, over the projected snapshot
+    data = json.loads((tmp_path / "reportes_ciudadanos.json").read_text(encoding="utf-8"))
+    assert data[0]["panel"] == {"visitado": True, "sticker": True}
+
+
+def test_fetch_reportes_panel_hook_failure_still_fails_soft(tmp_path, monkeypatch):
+    # Same fail-soft guarantee as build_snapshot itself (design D5): a bug in
+    # the Panel cross-reference must never leave reportes.json/meta/agg
+    # (already written, already the source of truth) inconsistent.
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setenv("VISITADOS_API_PASS", "secret")
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _fake_day_walk_one_record)
+    fake_db = _FakeContactDb()
+    monkeypatch.setattr(job.credentials, "sismo", lambda: type("_C", (), {"firestore": fake_db})())
+
+    def _boom(reportes):
+        raise RuntimeError("panel cross-reference blew up")
+
+    monkeypatch.setattr(job.reportes_panel_state, "apply_panel_match", _boom)
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1
+    assert (tmp_path / "reportes.json").exists()
+    assert (tmp_path / "reportes_meta.json").exists()
+    assert (tmp_path / "reportes_agg.json").exists()
+    assert not (tmp_path / "reportes_ciudadanos.json").exists()
+
+
 def test_ingest_survey_cali_failure_does_not_propagate_out_of_run_refresh_step(tmp_path, monkeypatch):
     """The main refresh pipeline (meta_guard/publish_blob) must never be
     blocked by a survey_cali/Firestore hiccup -- same fail-soft convention

@@ -53,7 +53,7 @@ import httpx
 
 from app.credentials import clients as credentials
 from app.integracion import runlog
-from app.services import atencionsismo, survey_cali
+from app.services import atencionsismo, reportes_panel_state, survey_cali
 from app.services.reportes_ciudadanos import build_snapshot
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -347,6 +347,15 @@ async def fetch_reportes() -> int:
     # whole block when the API returns 0 rows).
     try:
         ciudadanos = build_snapshot(records)
+        # Panel cross-reference (proximity match against Survey123/EDE Panel
+        # points, "reportes ciudadanos" vs "Panel" — see
+        # app.services.reportes_panel_state's module docstring): adds a
+        # 'panel' key per row so the tab can distinguish reports already
+        # covered by a Panel inspection (with/without a confirmed sticker)
+        # from ones that aren't yet. Same try/except as the projection
+        # itself — a failure here must degrade to "no panel field", never
+        # block this write.
+        ciudadanos = reportes_panel_state.apply_panel_match(ciudadanos)
         _atomic_write_json(WEB_DATA_DIR / "reportes_ciudadanos.json", ciudadanos, compact=True)
     except Exception:  # noqa: BLE001 - fail-soft, refresh continues (design.md ADR-2)
         logging.exception("reportes_ciudadanos projection falló, sigo sin bloquear el refresh")
