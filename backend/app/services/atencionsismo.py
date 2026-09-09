@@ -48,6 +48,10 @@ DEFAULT_DESDE = os.environ.get(DESDE_ENV, "2026-08-01")
 
 DAY_MS = 86_400_000
 MIN_WINDOW_MS = 60_000  # smallest window before giving up on a split
+MAX_PAGES_PER_WINDOW = 50  # hard stop (50*PAGE_LIMIT=10k rows/day) against a
+# server that never reports done=true within one fetch_window call — a
+# SEPARATE constant from MAX_PAGES (fetch_stickers' own cap), same naming
+# convention, different scope.
 CONCURRENCY = 4  # parallel day windows (api/reportados.js CONCURRENCY)
 MAX_ATTEMPTS = 3
 RETRY_SLEEP_S = 2.0
@@ -248,36 +252,40 @@ def _map_summary_record(r: dict) -> dict:
     }
 
 
-async def fetch_window(
+async def _fetch_window_page(
     client: httpx.AsyncClient,
     user: str,
     password: str,
+    headers: dict[str, str],
     d0: int,
     d1: int,
+    offset: int,
     *,
-    failed_windows: list[tuple[int, int]] | None = None,
-    mapper: RecordMapper | None = None,
-) -> list[dict]:
-    """Fetch [d0, d1] (ms UTC epoch). Recursively halves SEQUENTIALLY (not
-    concurrently — a concurrent split would fan a dense window out into an
-    exponential request burst) on any `SPLITTABLE_STATUSES` response wider
-    than `MIN_WINDOW_MS`. Otherwise retries up to `MAX_ATTEMPTS` times with
-    a `RETRY_SLEEP_S` backoff, then gives up and returns `[]` — appending
-    `(d0, d1)` to `failed_windows` if the caller passed one, for a later
-    sequential recovery pass (api/reportados.js's fetchWindow, ported).
+    failed_windows: list[tuple[int, int]] | None,
+    mapper: RecordMapper | None,
+) -> tuple[str, object]:
+    """Fetch ONE page (`offset`/`limit=PAGE_LIMIT`) of `[d0, d1]`, with
+    `MAX_ATTEMPTS` retries on transport errors / non-2xx (unchanged
+    semantics from before pagination — just scoped to a single page now).
 
-    `mapper` shapes each raw API record into the caller's desired dict;
-    defaults to `_map_summary_record` (the `/reportados` snapshot's slim
-    shape) so every existing caller/test is unaffected. `dashboard_refresh`
-    passes a fuller mapper to reuse this exact split/retry mechanics for
-    `reportes.json` instead of duplicating it (task 7.2)."""
-    active_mapper = mapper or _map_summary_record
-    headers = _headers(user, password)
+    Returns a `(status, payload)` tag:
+    - `("ok", body)` — the page's raw decoded JSON body.
+    - `("split", records)` — a `SPLITTABLE_STATUSES` response was hit on
+      THIS page (first or later) while the window is still wider than
+      `MIN_WINDOW_MS`; the window was recursively halved right here (same
+      `SPLITTABLE_STATUSES` behavior as before, now reachable from any
+      page) and `records` is the two halves' own independently-paginated
+      result — the caller must return it AS-IS, discarding any records
+      already accumulated from earlier pages of this now-abandoned
+      whole-window attempt.
+    - `("gave_up", None)` — this page's retries were exhausted (not
+      splittable, or already at `MIN_WINDOW_MS`); the caller must treat the
+      WHOLE window as failed, not just this page."""
     for attempt in range(MAX_ATTEMPTS):
         try:
             resp = await client.get(
                 API_URL,
-                params={"desde_utc": d0, "hasta_utc": d1},
+                params={"desde_utc": d0, "hasta_utc": d1, "offset": offset, "limit": PAGE_LIMIT},
                 headers=headers,
                 timeout=REQUEST_TIMEOUT_S,
             )
@@ -290,21 +298,86 @@ async def fetch_window(
                 second = await fetch_window(
                     client, user, password, mid + 1, d1, failed_windows=failed_windows, mapper=mapper
                 )
-                return first + second
+                return "split", first + second
             if resp.status_code >= 400:
                 raise httpx.HTTPStatusError(
                     f"HTTP {resp.status_code}", request=resp.request, response=resp
                 )
-            data = resp.json()
-            return [active_mapper(r) for r in data.get("reportes", [])]
+            return "ok", resp.json()
         except httpx.HTTPError:
             if attempt == MAX_ATTEMPTS - 1:
                 break
             if RETRY_SLEEP_S:
                 await asyncio.sleep(RETRY_SLEEP_S)
-    if failed_windows is not None:
-        failed_windows.append((d0, d1))
-    return []
+    return "gave_up", None
+
+
+async def fetch_window(
+    client: httpx.AsyncClient,
+    user: str,
+    password: str,
+    d0: int,
+    d1: int,
+    *,
+    failed_windows: list[tuple[int, int]] | None = None,
+    mapper: RecordMapper | None = None,
+) -> list[dict]:
+    """Fetch [d0, d1] (ms UTC epoch), fully paginating within the window via
+    `offset`/`nextOffset` (v2 contract, `PAGE_LIMIT` rows/page) before
+    returning — a day can hold far more than one page's worth of reports,
+    and returning only page 1 silently truncates dense days.
+
+    A missing `done` key is treated as `True` (single page, stop) — every
+    existing mock fixture omits `done`/`nextOffset` entirely and must keep
+    behaving as a single-page fetch. A `False` `done` follows `nextOffset`;
+    a missing, non-int, or non-advancing `nextOffset` stops pagination for
+    this window (malformed-but-200 response, NOT a transport/status
+    failure, so `failed_windows` is left untouched) rather than looping
+    forever — the same "stop rather than loop forever" discipline
+    `fetch_stickers` already uses for its own offset cursor. A hard
+    `MAX_PAGES_PER_WINDOW` cap guards against a server that never reports
+    `done` at all.
+
+    Recursively halves SEQUENTIALLY (not concurrently — a concurrent split
+    would fan a dense window out into an exponential request burst) on any
+    `SPLITTABLE_STATUSES` response wider than `MIN_WINDOW_MS`, whether it
+    hits on the first page or a later one — the two halves each
+    independently paginate the range they cover, superseding (not
+    appending to) whatever partial pages this window had already
+    accumulated. Otherwise a page's `MAX_ATTEMPTS` retries (with
+    `RETRY_SLEEP_S` backoff) exhausting means the WHOLE window gives up and
+    returns `[]` — appending `(d0, d1)` to `failed_windows` if the caller
+    passed one, for a later sequential recovery pass (api/reportados.js's
+    fetchWindow, ported).
+
+    `mapper` shapes each raw API record into the caller's desired dict;
+    defaults to `_map_summary_record` (the `/reportados` snapshot's slim
+    shape) so every existing caller/test is unaffected. `dashboard_refresh`
+    passes a fuller mapper to reuse this exact split/retry mechanics for
+    `reportes.json` instead of duplicating it (task 7.2)."""
+    active_mapper = mapper or _map_summary_record
+    headers = _headers(user, password)
+    offset = 0
+    records: list[dict] = []
+    for _page in range(MAX_PAGES_PER_WINDOW):
+        status, payload = await _fetch_window_page(
+            client, user, password, headers, d0, d1, offset, failed_windows=failed_windows, mapper=mapper
+        )
+        if status == "split":
+            return payload  # supersedes anything accumulated so far — do not merge
+        if status == "gave_up":
+            if failed_windows is not None:
+                failed_windows.append((d0, d1))
+            return []
+        body = payload
+        records.extend(active_mapper(r) for r in body.get("reportes", []))
+        if "done" not in body or body.get("done"):
+            return records
+        next_offset = _coerce_offset(body.get("nextOffset"))
+        if next_offset is None or next_offset <= offset:
+            return records  # malformed/non-advancing cursor: stop, not a failure
+        offset = next_offset
+    return records  # MAX_PAGES_PER_WINDOW safety cap reached
 
 
 async def day_walk(
