@@ -45,6 +45,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,7 +54,7 @@ import httpx
 
 from app.credentials import clients as credentials
 from app.integracion import runlog
-from app.services import atencionsismo, survey_cali
+from app.services import atencionsismo, reportes_historico, reportes_panel_state, survey_cali
 from app.services.reportes_ciudadanos import build_snapshot
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -73,6 +74,13 @@ RUNS_FILE = "runs_dashboard_refresh.jsonl"
 REFRESH_DATA_TIMEOUT_S = 300  # deploy/refresh.sh: timeout 300 python refresh_data.py
 FETCH_REPORTES_TIMEOUT_S = 240  # deploy/refresh.sh: timeout 240 python fetch_reportes_api.py
 SEED_GEOCODE_TIMEOUT_S = 30
+# Skip the panel cross-reference step this run if less of the outer
+# FETCH_REPORTES_TIMEOUT_S budget remains than this — checked SEPARATELY
+# from reportes_historico.BACKFILL_MIN_REMAINING_BUDGET_S because panel-match
+# runs LATER in fetch_reportes(), after backfill has already consumed part
+# of the budget. Same pattern/rationale as that guard: a slow/unbounded
+# panel-match batch must never risk the outer asyncio.wait_for timeout.
+PANEL_MATCH_MIN_REMAINING_BUDGET_S = 60
 
 # Never publish these to a static, world-readable file — verbatim from
 # scripts/fetch_reportes_api.py's PII_FIELDS/HEAVY_FIELDS (task 7.2: the
@@ -281,6 +289,16 @@ def _dedupe_sorted(records: list[dict]) -> list[dict]:
     return [seen[k] for k in sorted(seen, key=str)]
 
 
+def _monotonic() -> float:
+    """Thin wrapper around `time.monotonic()` so `fetch_reportes()`'s
+    elapsed-budget check can be monkeypatched in tests WITHOUT touching the
+    real `time.monotonic` — on Windows, `asyncio.run`'s ProactorEventLoop
+    calls `time.monotonic()` internally during loop teardown, so patching
+    the global function directly starves that internal call and raises
+    `StopIteration`/`RuntimeError` once a test's canned sequence runs out."""
+    return time.monotonic()
+
+
 def _atomic_write_json(path: Path, obj, *, compact: bool = False) -> None:
     kwargs = {"separators": (",", ":")} if compact else {"indent": 2}
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -289,11 +307,40 @@ def _atomic_write_json(path: Path, obj, *, compact: bool = False) -> None:
 
 
 async def fetch_reportes() -> int:
-    """Absorbs `fetch_reportes_api.py`'s `run()`: day-walk via
-    `app.services.atencionsismo.day_walk` (instead of duplicating the
-    split/retry logic), then write `reportes.json` + `reportes_meta.json` +
-    `reportes_agg.json`. Fail-soft (returns 0, logs, main refresh continues)
-    when `VISITADOS_API_PASS` is unset — verbatim behavior from the legacy
+    """Absorbs `fetch_reportes_api.py`'s `run()`, but no longer re-downloads
+    the ENTIRE atencionsismo history from a fixed floor date on every run
+    (the old `REPORTES_DESDE` "event floor" behavior). Instead accumulates a
+    Blob-persisted `{id: record}` pool (`app.services.reportes_historico`)
+    across two day-walks per call:
+
+    1. **Rolling window** (`reportes_historico.ROLLING_WINDOW_DAYS`,
+       currently 30 days): walked in FULL every run and merged into the
+       pool with `overwrite=True`, so a report's `estadoVerificacion`/
+       sticker changing days after `creadoEn` is never missed (the
+       `desde_utc`/`hasta_utc` params only filter by creation date — see
+       `reportes_historico.py`'s module docstring).
+    2. **Historical backfill** (`reportes_historico.BACKFILL_CHUNK_DAYS`
+       per run, currently 7 days): one bounded chunk walking backward from
+       wherever the previous run's frontier left off, merged with
+       `overwrite=False` (older data is assumed settled, never clobbers
+       fresher rolling-window data). Runs only if there's a comfortable
+       remaining slice of `FETCH_REPORTES_TIMEOUT_S` left after the
+       rolling walk (`reportes_historico.BACKFILL_MIN_REMAINING_BUDGET_S`)
+       and only until `backfill_complete` is set (an empty chunk = reached
+       the platform's genesis). The chunk itself is wrapped in its own
+       `asyncio.wait_for(..., BACKFILL_CHUNK_TIMEOUT_S)` and ANY failure
+       (timeout, network, Blob) degrades to a no-op for this run — logged,
+       never raised — so the backfill can never threaten the outer 240s
+       budget or block reportes.json/reportes_ciudadanos.json from being
+       written from the rolling-window data alone. This is also a
+       robustness improvement over the old fetch-and-overwrite behavior:
+       even if THIS run's rolling walk hiccups and returns nothing, the
+       persisted pool still holds everything from prior runs, so
+       reportes.json no longer spuriously empties out.
+
+    Writes `reportes.json` + `reportes_meta.json` + `reportes_agg.json`.
+    Fail-soft (returns 0, logs, main refresh continues) when
+    `VISITADOS_API_PASS` is unset — verbatim behavior from the legacy
     script's own fail-soft credentials guard."""
     try:
         user, password = atencionsismo.credentials_from_env()
@@ -301,14 +348,67 @@ async def fetch_reportes() -> int:
         print(f"  {exc}; sigo sin actualizar reportes (refresh principal continúa).")
         return 0
 
-    desde = os.environ.get("REPORTES_DESDE", atencionsismo.DEFAULT_DESDE)
+    now_ms = int(time.time() * 1000)
+    r_start_ms = reportes_historico.rolling_start_ms(now_ms)
+    desde = reportes_historico.rolling_start_date(now_ms)
+
     contactos: list[dict] = []
+    started_at = _monotonic()
+    state = reportes_historico.load_state()
     async with httpx.AsyncClient() as client:
-        raw_records = await atencionsismo.day_walk(
+        recientes = await atencionsismo.day_walk(
             client, user, password, desde, mapper=_make_raw_mapper(contactos)
         )
 
-    records = _dedupe_sorted(raw_records)
+        pool = reportes_historico.load_pool()
+        pool = reportes_historico.merge_records(pool, recientes, overwrite=True)
+        # Fix 2b (defense in depth): persist the rolling window's data
+        # DURABLY right away, BEFORE the backfill/panel-match attempts below
+        # — so even if something unexpected still cancels this run during
+        # backfill or panel-match, the already-fetched rolling window isn't
+        # lost, and the NEXT run's load_pool() picks it up. The EXISTING
+        # save_pool(pool) call further below (after backfill) still runs
+        # too — a second, idempotent save reflecting any backfill additions.
+        reportes_historico.save_pool(pool)
+
+        elapsed = _monotonic() - started_at
+        remaining_budget = FETCH_REPORTES_TIMEOUT_S - elapsed
+        if (
+            not state.get("backfill_complete")
+            and remaining_budget >= reportes_historico.BACKFILL_MIN_REMAINING_BUDGET_S
+        ):
+            try:
+                chunk_start_ms, chunk_end_ms = reportes_historico.next_backfill_chunk(state, r_start_ms)
+                chunk_desde = reportes_historico.date_from_ms(chunk_start_ms)
+                chunk_records = await asyncio.wait_for(
+                    atencionsismo.day_walk(
+                        client, user, password, chunk_desde,
+                        until_ms=chunk_end_ms - 1, mapper=_make_raw_mapper(contactos),
+                    ),
+                    timeout=reportes_historico.BACKFILL_CHUNK_TIMEOUT_S,
+                )
+                if reportes_historico.is_genesis_reached(chunk_records):
+                    # An empty chunk during a genuine API outage must NOT be
+                    # trusted as "reached the platform's genesis" —
+                    # day_walk/fetch_window silently swallow persistent
+                    # per-window failures into [], indistinguishable from a
+                    # genuinely empty range. probe_api raises
+                    # ApiUnavailableError on an actual outage, caught by the
+                    # SAME except Exception: below — which already skips
+                    # save_state entirely, so neither the frontier nor
+                    # backfill_complete advance this run, and the same chunk
+                    # range is retried automatically once the API recovers.
+                    await atencionsismo.probe_api(client, user, password)
+                pool = reportes_historico.merge_records(pool, chunk_records, overwrite=False)
+                state = reportes_historico.advance_state_after_chunk(
+                    state, chunk_start_ms, chunk_was_empty=reportes_historico.is_genesis_reached(chunk_records)
+                )
+                reportes_historico.save_state(state)
+            except Exception:  # noqa: BLE001 - backfill is best-effort, never blocks the refresh
+                logging.exception("reportes_historico backfill chunk falló, sigo sin bloquear el refresh")
+
+    reportes_historico.save_pool(pool)
+    records = _dedupe_sorted(list(pool.values()))
     if not records:
         print("  API devolvió 0 reportes; conservo los archivos previos, nada escrito.")
         return 0
@@ -321,6 +421,7 @@ async def fetch_reportes() -> int:
     generated_at = atencionsismo.now_iso()
     WEB_DATA_DIR.mkdir(parents=True, exist_ok=True)
     _atomic_write_json(WEB_DATA_DIR / "reportes.json", records, compact=True)
+    backfill_frontier_ms = state.get("backfill_frontier_ms")
     _atomic_write_json(
         WEB_DATA_DIR / "reportes_meta.json",
         {
@@ -328,6 +429,10 @@ async def fetch_reportes() -> int:
             "row_count": len(records),
             "source": "api:informe/json",
             "date_range": {"generated_at": generated_at, "desde": desde},
+            "backfill_completo": state.get("backfill_complete", False),
+            "cobertura_desde": reportes_historico.date_from_ms(backfill_frontier_ms)
+            if backfill_frontier_ms
+            else None,
         },
     )
     # Reuse atencionsismo.summarize() for the aggregation — same "single
@@ -347,6 +452,29 @@ async def fetch_reportes() -> int:
     # whole block when the API returns 0 rows).
     try:
         ciudadanos = build_snapshot(records)
+        # Panel cross-reference (proximity match against Survey123/EDE Panel
+        # points, "reportes ciudadanos" vs "Panel" — see
+        # app.services.reportes_panel_state's module docstring): adds a
+        # 'panel' key per row so the tab can distinguish reports already
+        # covered by a Panel inspection (with/without a confirmed sticker)
+        # from ones that aren't yet. Same try/except as the projection
+        # itself — a failure here must degrade to "no panel field", never
+        # block this write.
+        #
+        # Budget-guarded (checked separately from, and LATER than, the
+        # backfill guard — panel-match runs after backfill has already
+        # consumed part of the outer FETCH_REPORTES_TIMEOUT_S budget) AND
+        # run off the event loop via asyncio.to_thread: apply_panel_match's
+        # worst case (an unbounded backlog of never-matched reportes each
+        # falling through to a full linear address-index scan) is
+        # synchronous, CPU-bound work that would otherwise starve
+        # asyncio.wait_for's own cooperative cancellation. Skipped entirely
+        # when the budget is too low — same accepted fail-soft degradation
+        # as an exception here (no 'panel' key added this run), just
+        # triggered by budget instead.
+        remaining_for_panel_match = FETCH_REPORTES_TIMEOUT_S - (_monotonic() - started_at)
+        if remaining_for_panel_match >= PANEL_MATCH_MIN_REMAINING_BUDGET_S:
+            ciudadanos = await asyncio.to_thread(reportes_panel_state.apply_panel_match, ciudadanos)
         _atomic_write_json(WEB_DATA_DIR / "reportes_ciudadanos.json", ciudadanos, compact=True)
     except Exception:  # noqa: BLE001 - fail-soft, refresh continues (design.md ADR-2)
         logging.exception("reportes_ciudadanos projection falló, sigo sin bloquear el refresh")

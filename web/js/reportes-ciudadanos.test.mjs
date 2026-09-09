@@ -4,6 +4,7 @@ import assert from 'node:assert';
 import {
   ESTADOS, estadoDe, contarPor, opcionesDe, applyFiltrosReportes, colorSticker, COLOR_MODES_REPORTES, freshnessText,
 } from './reportes-ciudadanos.js';
+import { COLORS } from './utils.js';
 
 const r = (over = {}) => ({
   id: 'r1', direccion: 'Calle 1', barrio: 'San Antonio', comuna: 'Comuna 3', estado: 'Reportado',
@@ -49,8 +50,22 @@ assert.deepStrictEqual(applyFiltrosReportes([], { estado: 'Visitado' }), []);
 assert.notStrictEqual(colorSticker(r({ sticker: { color: 'rojo' } })), colorSticker(r()));
 assert.strictEqual(colorSticker(r({ sticker: { color: 'ROJO' } })), colorSticker(r({ sticker: { color: 'rojo' } })));
 assert.strictEqual(colorSticker(r({ sticker: null })), colorSticker(r()));
-assert.deepStrictEqual(Object.keys(COLOR_MODES_REPORTES), ['estado', 'afectacion', 'sticker']);
+assert.deepStrictEqual(Object.keys(COLOR_MODES_REPORTES), ['estado', 'afectacion', 'sticker', 'panel']);
 console.log('reportes-ciudadanos.test.mjs OK');
+
+// ── panel colour mode (visita especializada / sticker confirmados en Panel) ─
+// green = visitado en Panel + sticker confirmado; amber = visitado sin sticker
+// aún; gray = sin match en Panel todavía. Proximity match against Survey123/
+// EDE Panel points, computed server-side (app/services/reportes_panel_state.py)
+// — this module only ever reads the resulting r.panel.{visitado,sticker} flags.
+const panelColorOf = COLOR_MODES_REPORTES.panel.colorOf;
+assert.strictEqual(panelColorOf(r({ panel: { visitado: true, sticker: true } })), COLORS.status.h);
+assert.strictEqual(panelColorOf(r({ panel: { visitado: true, sticker: false } })), COLORS.status.r2);
+assert.strictEqual(panelColorOf(r({ panel: { visitado: false, sticker: false } })), COLORS.unknown);
+assert.strictEqual(panelColorOf(r({})), COLORS.unknown); // no panel key at all -> not yet matched
+assert.strictEqual(panelColorOf(r({ panel: null })), COLORS.unknown); // malformed/null panel -> not yet matched
+assert.strictEqual(panelColorOf(r({ panel: { visitado: false, sticker: true } })), COLORS.unknown); // sticker without visitado never happens server-side, but must not crash/misclassify
+console.log('reportes-ciudadanos.test.mjs panel colour mode OK');
 
 // ── Mandatory edge cases beyond the plan's tests ─────────────────────────
 
