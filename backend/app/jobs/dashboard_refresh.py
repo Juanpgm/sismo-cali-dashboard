@@ -74,6 +74,13 @@ RUNS_FILE = "runs_dashboard_refresh.jsonl"
 REFRESH_DATA_TIMEOUT_S = 300  # deploy/refresh.sh: timeout 300 python refresh_data.py
 FETCH_REPORTES_TIMEOUT_S = 240  # deploy/refresh.sh: timeout 240 python fetch_reportes_api.py
 SEED_GEOCODE_TIMEOUT_S = 30
+# Skip the panel cross-reference step this run if less of the outer
+# FETCH_REPORTES_TIMEOUT_S budget remains than this — checked SEPARATELY
+# from reportes_historico.BACKFILL_MIN_REMAINING_BUDGET_S because panel-match
+# runs LATER in fetch_reportes(), after backfill has already consumed part
+# of the budget. Same pattern/rationale as that guard: a slow/unbounded
+# panel-match batch must never risk the outer asyncio.wait_for timeout.
+PANEL_MATCH_MIN_REMAINING_BUDGET_S = 60
 
 # Never publish these to a static, world-readable file — verbatim from
 # scripts/fetch_reportes_api.py's PII_FIELDS/HEAVY_FIELDS (task 7.2: the
@@ -355,6 +362,14 @@ async def fetch_reportes() -> int:
 
         pool = reportes_historico.load_pool()
         pool = reportes_historico.merge_records(pool, recientes, overwrite=True)
+        # Fix 2b (defense in depth): persist the rolling window's data
+        # DURABLY right away, BEFORE the backfill/panel-match attempts below
+        # — so even if something unexpected still cancels this run during
+        # backfill or panel-match, the already-fetched rolling window isn't
+        # lost, and the NEXT run's load_pool() picks it up. The EXISTING
+        # save_pool(pool) call further below (after backfill) still runs
+        # too — a second, idempotent save reflecting any backfill additions.
+        reportes_historico.save_pool(pool)
 
         elapsed = _monotonic() - started_at
         remaining_budget = FETCH_REPORTES_TIMEOUT_S - elapsed
@@ -372,6 +387,18 @@ async def fetch_reportes() -> int:
                     ),
                     timeout=reportes_historico.BACKFILL_CHUNK_TIMEOUT_S,
                 )
+                if reportes_historico.is_genesis_reached(chunk_records):
+                    # An empty chunk during a genuine API outage must NOT be
+                    # trusted as "reached the platform's genesis" —
+                    # day_walk/fetch_window silently swallow persistent
+                    # per-window failures into [], indistinguishable from a
+                    # genuinely empty range. probe_api raises
+                    # ApiUnavailableError on an actual outage, caught by the
+                    # SAME except Exception: below — which already skips
+                    # save_state entirely, so neither the frontier nor
+                    # backfill_complete advance this run, and the same chunk
+                    # range is retried automatically once the API recovers.
+                    await atencionsismo.probe_api(client, user, password)
                 pool = reportes_historico.merge_records(pool, chunk_records, overwrite=False)
                 state = reportes_historico.advance_state_after_chunk(
                     state, chunk_start_ms, chunk_was_empty=reportes_historico.is_genesis_reached(chunk_records)
@@ -433,7 +460,21 @@ async def fetch_reportes() -> int:
         # from ones that aren't yet. Same try/except as the projection
         # itself — a failure here must degrade to "no panel field", never
         # block this write.
-        ciudadanos = reportes_panel_state.apply_panel_match(ciudadanos)
+        #
+        # Budget-guarded (checked separately from, and LATER than, the
+        # backfill guard — panel-match runs after backfill has already
+        # consumed part of the outer FETCH_REPORTES_TIMEOUT_S budget) AND
+        # run off the event loop via asyncio.to_thread: apply_panel_match's
+        # worst case (an unbounded backlog of never-matched reportes each
+        # falling through to a full linear address-index scan) is
+        # synchronous, CPU-bound work that would otherwise starve
+        # asyncio.wait_for's own cooperative cancellation. Skipped entirely
+        # when the budget is too low — same accepted fail-soft degradation
+        # as an exception here (no 'panel' key added this run), just
+        # triggered by budget instead.
+        remaining_for_panel_match = FETCH_REPORTES_TIMEOUT_S - (_monotonic() - started_at)
+        if remaining_for_panel_match >= PANEL_MATCH_MIN_REMAINING_BUDGET_S:
+            ciudadanos = await asyncio.to_thread(reportes_panel_state.apply_panel_match, ciudadanos)
         _atomic_write_json(WEB_DATA_DIR / "reportes_ciudadanos.json", ciudadanos, compact=True)
     except Exception:  # noqa: BLE001 - fail-soft, refresh continues (design.md ADR-2)
         logging.exception("reportes_ciudadanos projection falló, sigo sin bloquear el refresh")

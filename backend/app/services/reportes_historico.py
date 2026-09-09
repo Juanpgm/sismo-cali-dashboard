@@ -53,7 +53,18 @@ BACKFILL_CHUNK_TIMEOUT_S = 120
 # Skip the backfill step this run if less of the outer fetch_reportes()
 # budget remains than this — a slow/stuck backfill chunk must never risk
 # the outer 240s timeout that also guards reportes.json/reportes_ciudadanos.json.
-BACKFILL_MIN_REMAINING_BUDGET_S = 90
+#
+# MUST exceed BACKFILL_CHUNK_TIMEOUT_S, not just be "some margin": this guard
+# only fires BEFORE a chunk starts, so a guard value <= the chunk's own
+# timeout can admit a chunk that then takes up to BACKFILL_CHUNK_TIMEOUT_S
+# itself, pushing total elapsed past the outer 240s asyncio.wait_for budget —
+# which raises CancelledError (a BaseException, NOT caught by this module's
+# own `except Exception:`), propagating out of fetch_reportes() and
+# discarding the whole run's already-fetched data. 150 = 120s chunk timeout
+# + 30s safety margin for the write phase that follows (including the
+# now-budget-checked panel-match step, see dashboard_refresh.py's
+# PANEL_MATCH_MIN_REMAINING_BUDGET_S).
+BACKFILL_MIN_REMAINING_BUDGET_S = 150
 
 
 def date_from_ms(ms: int) -> str:
@@ -71,6 +82,11 @@ def rolling_start_ms(now_ms: int) -> int:
 def rolling_start_date(now_ms: int) -> str:
     """`rolling_start_ms(now_ms)` as a `YYYY-MM-DD` UTC date string."""
     return date_from_ms(rolling_start_ms(now_ms))
+
+
+def _floor_to_utc_day(ms: int) -> int:
+    """Floor `ms` to that UTC day's midnight, in ms epoch."""
+    return (ms // DAY_MS) * DAY_MS
 
 
 def load_pool() -> dict[str, dict]:
@@ -153,10 +169,24 @@ def next_backfill_chunk(state: dict, rolling_start_ms_value: int) -> tuple[int, 
     defaulting to `rolling_start_ms_value` on a fresh state) — backfill
     starts exactly where the rolling window's own coverage begins, no gap,
     no overlap. `chunk_start_ms` is `chunk_end_ms` minus exactly
-    `BACKFILL_CHUNK_DAYS` days."""
+    `BACKFILL_CHUNK_DAYS` days.
+
+    The FIRST chunk's `chunk_end_ms` (the fresh-state default, derived from
+    `rolling_start_ms_value`) is floored to that UTC day's midnight
+    (`_floor_to_utc_day`) — `rolling_start_ms_value` itself usually isn't
+    day-aligned (it's `now_ms` minus a fixed offset). Flooring only here
+    makes every SUBSEQUENT frontier value day-aligned by construction too
+    (each is exactly `BACKFILL_CHUNK_DAYS * DAY_MS` — itself a whole number
+    of days — less than the previous one), which in turn makes
+    `dashboard_refresh.py`'s `date_from_ms(chunk_start_ms)` truncation (used
+    to build `day_walk`'s `desde` string) a no-op: without this, that
+    truncation silently widens every chunk's REAL walked range by up to
+    ~24h, overlapping the previous chunk's tail (harmless due to
+    `merge_records(..., overwrite=False)`'s id-keyed dedup, but contradicts
+    this docstring's own "no gap, no overlap" claim)."""
     chunk_end_ms = state.get("backfill_frontier_ms")
     if not isinstance(chunk_end_ms, int):
-        chunk_end_ms = rolling_start_ms_value
+        chunk_end_ms = _floor_to_utc_day(rolling_start_ms_value)
     chunk_start_ms = chunk_end_ms - BACKFILL_CHUNK_DAYS * DAY_MS
     return chunk_start_ms, chunk_end_ms
 

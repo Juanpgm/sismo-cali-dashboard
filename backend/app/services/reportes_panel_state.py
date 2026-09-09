@@ -34,6 +34,21 @@ PANEL_MATCH_STATE_BLOB = "data/reportes_panel_match_state.json"
 # for a string constant isn't worth the coupling).
 STICKER_STATUS_BLOB = "data/sticker_status_last_good.json"
 
+# Bounds the worst-case per-run cost of apply_panel_match. select_candidatos
+# returns EVERY reporte not yet matched — including every reporte that has
+# NEVER matched, by design (see select_candidatos' own docstring) — and a
+# geo miss falls through to cruce_gestor.match_by_direccion, a full linear
+# SequenceMatcher scan of the whole Panel address index (~O(roster_sin_geo ×
+# evaluaciones)). With hundreds-to-thousands of permanently-unmatched
+# reportes (very plausible — most citizen self-reports have no corresponding
+# EDE survey point), handing the WHOLE backlog to cross_reference every run
+# can take minutes, synchronously. Slicing here spreads that cost across
+# many runs — the reportes past the cap simply remain candidates for the
+# NEXT run, exactly like an unmatched reporte already does — same "bounded
+# work per run" philosophy reportes_historico.py's backfill chunking
+# already established. ~300 * ~300ms worst-case address-fallback ≈ 90s.
+PANEL_MATCH_MAX_CANDIDATES_PER_RUN = 300
+
 
 # ── Blob I/O, parameterized so apply_panel_match can inject a fake without
 # monkeypatching the module-level `blob_lkg` reference (see its own kwargs).
@@ -82,11 +97,12 @@ def load_sticker_coverage() -> set[str]:
 
 def select_candidatos(reportes: list[dict], state: dict) -> list[dict]:
     """Reportes whose 'id' is NOT already a key in `state['matches']`. Pure,
-    no I/O — this is the core incremental invariant: a reporte already
-    resolved (matched OR confirmed unmatched-but-attempted... no — see
-    module docstring) is only ever excluded once it actually has a
-    `state['matches']` entry, so an unmatched reporte keeps being retried on
-    every future run (a Panel point added later can still match it)."""
+    no I/O — this is the core incremental invariant: a reporte is excluded
+    ONCE it actually has a `state['matches']` entry; an unmatched reporte
+    remains a candidate on every future run (a Panel point added later can
+    still match it), subject only to `apply_panel_match`'s own per-run cap
+    (`PANEL_MATCH_MAX_CANDIDATES_PER_RUN`) on how many of the candidates
+    returned here actually get matched in a single call."""
     matches = (state or {}).get("matches") or {}
     out = []
     for r in reportes:
@@ -131,6 +147,11 @@ def apply_panel_match(reportes: list[dict], *, panel_loader=None, blob_lkg_modul
     blm = blob_lkg_module if blob_lkg_module is not None else blob_lkg
     state = _load_state(blm)
     candidatos = select_candidatos(reportes, state)
+    # Bound the batch (Fix 1a) — see PANEL_MATCH_MAX_CANDIDATES_PER_RUN's own
+    # comment: spreads the cost of a large permanently-unmatched backlog
+    # across many runs instead of paying for all of it in one. Reportes past
+    # the cap simply remain candidates for the NEXT run.
+    candidatos = candidatos[:PANEL_MATCH_MAX_CANDIDATES_PER_RUN]
 
     if candidatos:
         try:

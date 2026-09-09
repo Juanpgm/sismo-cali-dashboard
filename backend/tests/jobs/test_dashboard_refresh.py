@@ -609,6 +609,50 @@ def test_fetch_reportes_panel_hook_failure_still_fails_soft(tmp_path, monkeypatc
     assert not (tmp_path / "reportes_ciudadanos.json").exists()
 
 
+# --- Fix 1b: panel-match has its OWN, separately-checked remaining-budget --
+# --- guard (checked LATER than backfill's, since panel-match runs after ----
+# --- backfill has already consumed part of the outer 240s budget), and -----
+# --- runs off the event loop via asyncio.to_thread so a slow run can't ----
+# --- starve asyncio.wait_for's own cancellation machinery. -----------------
+
+
+def test_fetch_reportes_skips_panel_match_when_remaining_budget_too_low_but_backfill_still_ran(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    _patch_credentials_and_fake_firestore(monkeypatch)
+
+    calls: list[dict] = []
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _make_day_walk_recorder(calls))
+    monkeypatch.setattr(job.reportes_historico, "load_state", lambda: {})
+    monkeypatch.setattr(job.reportes_historico, "load_pool", lambda: {})
+    saved_state: list[dict] = []
+    monkeypatch.setattr(job.reportes_historico, "save_state", lambda s: saved_state.append(s))
+    monkeypatch.setattr(job.reportes_historico, "save_pool", lambda p: None)
+
+    panel_calls: list[list[dict]] = []
+    monkeypatch.setattr(
+        job.reportes_panel_state, "apply_panel_match", lambda reportes: panel_calls.append(reportes) or reportes
+    )
+
+    # started_at=1000.0; backfill's own elapsed read = 1050.0 -> remaining=190s,
+    # comfortably >= BACKFILL_MIN_REMAINING_BUDGET_S (150s, Fix 2a) -> backfill
+    # runs normally. panel-match's own elapsed read (Fix 1b, checked LATER,
+    # separately) = 1190.0 -> remaining=50s < PANEL_MATCH_MIN_REMAINING_BUDGET_S
+    # (60s) -> panel-match is skipped even though backfill already ran.
+    times = iter([1000.0, 1050.0, 1190.0])
+    monkeypatch.setattr(job, "_monotonic", lambda: next(times))
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 2  # rolling + backfill record both merged in -> backfill DID run
+    assert len(calls) == 2
+    assert len(saved_state) == 1  # backfill progressed and persisted state
+    assert panel_calls == []  # panel-match skipped by its OWN, later budget check
+    data = json.loads((tmp_path / "reportes_ciudadanos.json").read_text(encoding="utf-8"))
+    assert "panel" not in data[0]
+
+
 # --- reportes_historico backfill wiring: rolling window (always re-walked, --
 # --- overwrite=True) + bounded historical backfill chunk (overwrite=False), -
 # --- budget-guarded and fail-soft (see reportes_historico.py's module -------
@@ -736,12 +780,21 @@ def test_fetch_reportes_skips_backfill_when_remaining_budget_too_low(tmp_path, m
     monkeypatch.setattr(job.reportes_historico, "save_pool", lambda p: None)
 
     # started_at reads 1000.0, the elapsed-time read later reads 1000.0+200 ->
-    # elapsed=200s, remaining_budget = 240-200 = 40s < BACKFILL_MIN_REMAINING_BUDGET_S (90s).
-    # Patches job._monotonic (a thin wrapper), NOT the real time.monotonic --
-    # asyncio's own ProactorEventLoop teardown calls time.monotonic()
-    # internally on Windows, so patching the global directly starves it.
-    times = iter([1000.0, 1200.0])
+    # elapsed=200s, remaining_budget = 240-200 = 40s < BACKFILL_MIN_REMAINING_BUDGET_S (150s).
+    # A third read (Fix 1b's panel-match budget check, later in the function)
+    # reads 1200.0 again -> still 40s remaining, well under
+    # PANEL_MATCH_MIN_REMAINING_BUDGET_S (60s) too, so panel-match is also
+    # skipped this run. Patches job._monotonic (a thin wrapper), NOT the real
+    # time.monotonic -- asyncio's own ProactorEventLoop teardown calls
+    # time.monotonic() internally on Windows, so patching the global directly
+    # starves it.
+    times = iter([1000.0, 1200.0, 1200.0])
     monkeypatch.setattr(job, "_monotonic", lambda: next(times))
+
+    panel_calls: list[list[dict]] = []
+    monkeypatch.setattr(
+        job.reportes_panel_state, "apply_panel_match", lambda reportes: panel_calls.append(reportes) or reportes
+    )
 
     import asyncio
 
@@ -750,6 +803,9 @@ def test_fetch_reportes_skips_backfill_when_remaining_budget_too_low(tmp_path, m
     assert count == 1  # only the rolling-window record
     assert len(calls) == 1  # backfill never attempted -> budget guard worked
     assert saved_state == []
+    assert panel_calls == []  # panel-match never attempted either -> budget guard worked
+    data = json.loads((tmp_path / "reportes_ciudadanos.json").read_text(encoding="utf-8"))
+    assert "panel" not in data[0]  # skipped -> no panel key added this run
 
 
 def test_fetch_reportes_backfill_chunk_failure_is_swallowed(tmp_path, monkeypatch):
@@ -782,8 +838,14 @@ def test_fetch_reportes_backfill_chunk_failure_is_swallowed(tmp_path, monkeypatc
     written = json.loads((tmp_path / "reportes.json").read_text(encoding="utf-8"))
     assert {r["id"] for r in written} == {"14832"}
     assert saved_state == []  # backfill progress state must not advance on failure
-    assert len(saved_pool) == 1
-    assert set(saved_pool[0].keys()) == {"14832"}  # backfill record never merged in
+    # Fix 2b (defense in depth): save_pool now also runs right after the
+    # rolling-window merge, BEFORE the backfill attempt -- so it's called
+    # TWICE here (once durably before backfill, once again after, a harmless
+    # idempotent duplicate) and every save reflects the rolling-window data,
+    # since the failed backfill chunk was never merged in.
+    assert len(saved_pool) == 2
+    for saved in saved_pool:
+        assert set(saved.keys()) == {"14832"}  # backfill record never merged in
 
 
 def test_fetch_reportes_backfill_chunk_timeout_is_swallowed(tmp_path, monkeypatch):
@@ -812,6 +874,13 @@ def test_fetch_reportes_backfill_chunk_timeout_is_swallowed(tmp_path, monkeypatc
     assert saved_state == []
 
 
+async def _fake_probe_api_ok(client, user, password):
+    """Fix 3: an empty backfill chunk now triggers a probe_api health check
+    before it's trusted as genesis. Mocked to succeed here so this test's
+    empty-chunk-is-genesis path still behaves as before."""
+    return None
+
+
 def test_reportes_meta_carries_backfill_fields_when_backfill_reaches_genesis(tmp_path, monkeypatch):
     monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
     _patch_credentials_and_fake_firestore(monkeypatch)
@@ -822,6 +891,7 @@ def test_reportes_meta_carries_backfill_fields_when_backfill_reaches_genesis(tmp
         "day_walk",
         _make_day_walk_recorder(calls, backfill_records=[]),  # empty chunk -> genesis reached
     )
+    monkeypatch.setattr(job.atencionsismo, "probe_api", _fake_probe_api_ok)
     monkeypatch.setattr(job.reportes_historico, "load_state", lambda: {})
     monkeypatch.setattr(job.reportes_historico, "load_pool", lambda: {})
     saved_state: list[dict] = []
@@ -839,6 +909,49 @@ def test_reportes_meta_carries_backfill_fields_when_backfill_reaches_genesis(tmp
     assert isinstance(meta["cobertura_desde"], str)
 
 
+async def _fake_probe_api_down(client, user, password):
+    raise job.atencionsismo.ApiUnavailableError("API caída durante el chunk vacío")
+
+
+def test_fetch_reportes_backfill_empty_chunk_during_api_outage_leaves_state_unsaved(tmp_path, monkeypatch):
+    """Fix 3: an empty backfill chunk during a genuine API outage must NOT be
+    trusted as 'reached genesis' -- the probe_api health check raising here
+    must be caught by the SAME existing except Exception: around the whole
+    backfill block (no new except needed), leaving state completely unsaved
+    so the SAME chunk range is retried next run once the API recovers
+    (mirrors test_fetch_reportes_backfill_chunk_failure_is_swallowed's
+    shape)."""
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    _patch_credentials_and_fake_firestore(monkeypatch)
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        job.atencionsismo,
+        "day_walk",
+        _make_day_walk_recorder(calls, backfill_records=[]),  # empty chunk
+    )
+    monkeypatch.setattr(job.atencionsismo, "probe_api", _fake_probe_api_down)
+    monkeypatch.setattr(job.reportes_historico, "load_state", lambda: {})
+    monkeypatch.setattr(job.reportes_historico, "load_pool", lambda: {})
+    saved_state: list[dict] = []
+    monkeypatch.setattr(job.reportes_historico, "save_state", lambda s: saved_state.append(s))
+    saved_pool: list[dict] = []
+    monkeypatch.setattr(job.reportes_historico, "save_pool", lambda p: saved_pool.append(p))
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    # Rolling-window data is entirely unaffected -- reportes.json still gets
+    # written normally (fail-soft, same as every other backfill failure mode).
+    assert count == 1
+    assert len(calls) == 2  # rolling walk + the (empty) backfill attempt both ran
+    assert saved_state == []  # neither the frontier nor backfill_complete advanced
+    assert len(saved_pool) >= 1  # Fix 2b: pool still durably saved from the rolling merge
+    written = json.loads((tmp_path / "reportes.json").read_text(encoding="utf-8"))
+    assert {r["id"] for r in written} == {"14832"}
+
+
 def test_reportes_meta_cobertura_desde_is_null_when_backfill_never_started(tmp_path, monkeypatch):
     # Backfill skipped entirely (budget too low) and state was never
     # persisted before -> cobertura_desde must be null, not raise/omit.
@@ -851,7 +964,8 @@ def test_reportes_meta_cobertura_desde_is_null_when_backfill_never_started(tmp_p
     monkeypatch.setattr(job.reportes_historico, "load_pool", lambda: {})
     monkeypatch.setattr(job.reportes_historico, "save_state", lambda s: None)
     monkeypatch.setattr(job.reportes_historico, "save_pool", lambda p: None)
-    times = iter([1000.0, 1200.0])
+    # 3rd read is Fix 1b's panel-match budget check, later in the function.
+    times = iter([1000.0, 1200.0, 1200.0])
     monkeypatch.setattr(job, "_monotonic", lambda: next(times))
 
     import asyncio

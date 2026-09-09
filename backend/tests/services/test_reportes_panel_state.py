@@ -276,6 +276,31 @@ def test_apply_panel_match_empty_reportes_list():
     assert st.apply_panel_match([], panel_loader=lambda: [], blob_lkg_module=_FakeBlob(load_result=None)) == []
 
 
+def test_apply_panel_match_caps_candidatos_passed_to_cross_reference_per_run(monkeypatch):
+    """Fix 1a: an unbounded backlog of never-matched reportes must never be
+    handed to reportes_panel_match.cross_reference in a single call — only
+    PANEL_MATCH_MAX_CANDIDATES_PER_RUN of them, spread across future runs
+    (the same way an unmatched reporte already remains a candidate on every
+    future run). Proven via a spy on cross_reference's own argument length,
+    not just the final output shape."""
+    calls: list[list[dict]] = []
+
+    def _spy_cross_reference(candidatos, panel_points_yx):
+        calls.append(candidatos)
+        return {}
+
+    monkeypatch.setattr(st.reportes_panel_match, "cross_reference", _spy_cross_reference)
+
+    total = st.PANEL_MATCH_MAX_CANDIDATES_PER_RUN + 137
+    reportes = [_reporte(f"r{i}") for i in range(total)]
+    panel = [_panel("1", 3.42, -76.53, "Calle 1 # 2-3")]
+
+    st.apply_panel_match(reportes, panel_loader=lambda: panel, blob_lkg_module=_FakeBlob(load_result=None))
+
+    assert len(calls) == 1
+    assert len(calls[0]) == st.PANEL_MATCH_MAX_CANDIDATES_PER_RUN
+
+
 def test_apply_panel_match_default_panel_loader_used_when_not_given(monkeypatch):
     """No panel_loader kwarg -> falls back to app.jobs.cruce_sticker.load_panel
     (imported locally, per the module docstring)."""

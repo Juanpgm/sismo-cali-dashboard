@@ -181,14 +181,30 @@ def test_merge_records_overwrite_false_redundant_refetch_does_not_duplicate():
     assert len(out) == 1
 
 
+# ── BACKFILL_MIN_REMAINING_BUDGET_S must exceed BACKFILL_CHUNK_TIMEOUT_S ────
+# ── (Fix 2a: 90 < 120 let a guard-passing chunk still blow the outer 240s ───
+# ── asyncio.wait_for budget, whose CancelledError is a BaseException that ──
+# ── skips every write after it, discarding the whole run). ─────────────────
+
+
+def test_backfill_min_remaining_budget_exceeds_chunk_timeout_with_safety_margin():
+    assert rh.BACKFILL_MIN_REMAINING_BUDGET_S > rh.BACKFILL_CHUNK_TIMEOUT_S
+    assert rh.BACKFILL_MIN_REMAINING_BUDGET_S == 150
+
+
 # ── next_backfill_chunk ──────────────────────────────────────────────────────
 
 
 def test_next_backfill_chunk_fresh_state_starts_at_rolling_start_with_no_gap():
+    # Fix 4: the FIRST chunk_end_ms is floored to that UTC day's midnight
+    # (rolling_start itself usually isn't day-aligned) so every subsequent
+    # frontier stays day-aligned by construction -- see next_backfill_chunk's
+    # own docstring and _floor_to_utc_day.
     rolling_start = 1_700_000_000_000
+    floored_rolling_start = rh._floor_to_utc_day(rolling_start)
     chunk_start, chunk_end = rh.next_backfill_chunk({}, rolling_start)
-    assert chunk_end == rolling_start
-    assert chunk_start == rolling_start - rh.BACKFILL_CHUNK_DAYS * DAY_MS
+    assert chunk_end == floored_rolling_start
+    assert chunk_start == floored_rolling_start - rh.BACKFILL_CHUNK_DAYS * DAY_MS
 
 
 def test_next_backfill_chunk_width_is_exactly_backfill_chunk_days():
@@ -253,14 +269,48 @@ def test_advance_state_after_chunk_once_complete_stays_complete():
 
 def test_two_consecutive_backfill_chunks_walk_adjoining_non_overlapping_windows():
     rolling_start = 1_700_000_000_000
+    floored_rolling_start = rh._floor_to_utc_day(rolling_start)  # Fix 4: see next_backfill_chunk's docstring
     state: dict = {}
     chunk1_start, chunk1_end = rh.next_backfill_chunk(state, rolling_start)
     state = rh.advance_state_after_chunk(state, chunk1_start, chunk_was_empty=False)
     chunk2_start, chunk2_end = rh.next_backfill_chunk(state, rolling_start)
     state = rh.advance_state_after_chunk(state, chunk2_start, chunk_was_empty=False)
 
-    assert chunk1_end == rolling_start
-    assert chunk1_start == rolling_start - rh.BACKFILL_CHUNK_DAYS * DAY_MS
+    assert chunk1_end == floored_rolling_start
+    assert chunk1_start == floored_rolling_start - rh.BACKFILL_CHUNK_DAYS * DAY_MS
     assert chunk2_end == chunk1_start  # adjoining: chunk2 ends exactly where chunk1 began
     assert chunk2_start == chunk1_start - rh.BACKFILL_CHUNK_DAYS * DAY_MS
     assert chunk1_start != chunk2_start and chunk1_end != chunk2_end
+
+
+# ── Fix 4: the REAL walked range (through date_from_ms's UTC-midnight ──────
+# ── truncation, which is what dashboard_refresh.py actually feeds ──────────
+# ── atencionsismo.day_walk's `desde`) must not overlap either, not just the
+# ── raw (chunk_start_ms, chunk_end_ms) tuple the test above checks. ────────
+
+
+def test_two_consecutive_backfill_chunks_real_walked_ranges_do_not_overlap():
+    """`next_backfill_chunk`'s raw ms tuple boundaries can look adjoining
+    while the REAL walked range (after `date_from_ms` truncates
+    `chunk_start_ms` down to that day's UTC midnight for `day_walk`'s
+    `desde`) actually extends further back than the raw tuple claims,
+    overlapping the previous chunk's tail. Simulates the real runtime path:
+    a chunk's walked range is [floor_to_utc_day(chunk_start_ms),
+    chunk_end_ms - 1]."""
+    rolling_start = 1_700_000_123_456  # deliberately NOT already day-aligned
+    state: dict = {}
+    chunk1_start, chunk1_end = rh.next_backfill_chunk(state, rolling_start)
+    state = rh.advance_state_after_chunk(state, chunk1_start, chunk_was_empty=False)
+    chunk2_start, chunk2_end = rh.next_backfill_chunk(state, rolling_start)
+
+    def _walked_lower_bound(chunk_start_ms: int) -> int:
+        floored = datetime.strptime(rh.date_from_ms(chunk_start_ms), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        return int(floored.timestamp() * 1000)
+
+    chunk1_walked_lower = _walked_lower_bound(chunk1_start)
+    chunk2_walked_upper = chunk2_end - 1  # chunk2_end == chunk1_start (adjoining, by construction)
+
+    assert chunk2_walked_upper < chunk1_walked_lower, (
+        "chunk2's real walked upper bound must land strictly before chunk1's "
+        "real (day-floored) walked lower bound"
+    )
