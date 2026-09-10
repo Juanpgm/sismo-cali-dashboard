@@ -875,6 +875,7 @@ a { color: var(--accent); }
 }
 .filter-toggle > span:first-child { flex: 1; min-width: 0; }
 .filter-toggle:hover { border-color: var(--accent); }
+.filter-toggle:disabled { opacity: .5; cursor: not-allowed; }
 /* Caret makes the dropdown affordance explicit; rotates when the panel opens. */
 .filter-toggle::after {
   content: "";
@@ -2146,6 +2147,32 @@ details[open] > summary.card-title::before { transform: rotate(90deg); }
 .asignacion-actions-bar { justify-content: flex-start; }
 
 .asignacion-filters { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-start; }
+/* renderMultiSelect's own `.filter-block` was designed for the sidebar's
+   vertical `.filter-group` stack, where `.filter-toggle`'s width:100% has a
+   real full-width parent to size against. Mounted inline in this horizontal
+   toolbar (Evaluaciones' comuna/barrio filters) that parent is a bare flex
+   item with no width of its own, so the toggle would otherwise collapse to
+   its shrink-to-fit content size instead of sitting like the old <select>s
+   did — pin a compact width instead, scoped here so the sidebar stack (which
+   needs the full-width behaviour) is untouched. */
+.asignacion-filters .filter-block { width: 180px; margin-bottom: 0; }
+/* The sidebar's `.filter-options` (styles.css above, ~line 905) is in normal
+   flow because `.filter-group` stacks vertically there and pushing the next
+   field down reads fine. Mounted in this horizontal toolbar instead, normal
+   flow pushes the map+list card ~300px down every time Comuna/Barrio opens —
+   float it like the table's `.columns-popover` (same recipe: absolute,
+   z-index 40, box-shadow) so it overlays instead of shoving the layout.
+   Wider than the 180px toggle button on purpose (same idea as
+   `.columns-popover`'s own min-width): long barrio names wrapped badly at
+   the toggle's own width. */
+.asignacion-filters .filter-options {
+  position: absolute;
+  z-index: 40;
+  min-width: 240px;
+}
+@media (max-width: 640px) {
+  .asignacion-filters .filter-options { max-width: calc(100vw - 2rem); }
+}
 .asignacion-chip {
   padding: 5px 12px; border-radius: 999px; font-size: .78rem; font-weight: 600; cursor: pointer;
   color: var(--text-secondary); background: var(--surface-2); border: 1px solid var(--border);

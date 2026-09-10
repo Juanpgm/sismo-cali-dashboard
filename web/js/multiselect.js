@@ -78,12 +78,20 @@ export function renderMultiSelect(root, { field, label, options, selectedSet, on
     }
   });
   searchInput.addEventListener('input', () => renderList(searchInput.value));
-  root.addEventListener('keydown', (e) => {
+  // Property assignment (not addEventListener): evaluaciones.js's mountBarrio()
+  // re-renders this SAME persistent root on every comuna toggle (unlike
+  // filters.js, which recreates root from scratch each render) — an
+  // addEventListener here would stack a new keydown handler per toggle,
+  // leaking a closure over the previous, now-detached panel/list/search
+  // subtree. Assigning .onkeydown replaces any prior handler instead of
+  // accumulating, which is also the correct behaviour for a dropdown: one
+  // Escape should do exactly one thing.
+  root.onkeydown = (e) => {
     if (e.key === 'Escape') {
       panel.classList.remove('is-open');
       toggleBtn.focus();
     }
-  });
+  };
   installOutsideClickHandler();
 
   refresh();

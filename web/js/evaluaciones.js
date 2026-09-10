@@ -20,6 +20,7 @@ import {
 import { buildMiniMap, resolveBarrioComuna } from './mapview.js';
 import { openLightbox } from './table.js';
 import { store } from './data.js';
+import { renderMultiSelect } from './multiselect.js';
 import { coverageGaugeHtml } from './coverage-gauge.js';
 import { generarInformeEvaluacion } from './report.js';
 
@@ -216,8 +217,11 @@ export function applyFilters(list, filters) {
   return list.filter((e) => {
     if (filters.clase && claseDe(e).key !== filters.clase) return false;
     if (filters.fase && faseDe(e).key !== filters.fase) return false;
-    if (filters.comuna && e._comuna !== filters.comuna) return false;
-    if (filters.barrio && e._barrio !== filters.barrio) return false;
+    // comuna/barrio are Sets (multiselect, 2026-09 conversion): an empty or
+    // missing Set means "todas" — only a non-empty Set actually narrows, and
+    // a record with no resolved comuna/barrio (null) can never satisfy one.
+    if (filters.comuna && filters.comuna.size && !filters.comuna.has(e._comuna)) return false;
+    if (filters.barrio && filters.barrio.size && !filters.barrio.has(e._barrio)) return false;
     if (q) {
       const hay = normalize([
         e.inspector.nombre_completo, e.inspector.codigo,
@@ -236,8 +240,9 @@ export function describeFilters(f) {
   const parts = [];
   if (f.clase) parts.push(`Clasificación: ${(CLASE_BY_KEY.get(f.clase) || SIN_CLASE).label}`);
   if (f.fase) parts.push(`Fase: ${(FASE_BY_KEY.get(f.fase) || FASE_SIN_DATO).label}`);
-  if (f.comuna) parts.push(`Comuna: ${f.comuna}`);
-  if (f.barrio) parts.push(`Barrio: ${f.barrio}`);
+  // Multi-select: every chosen value joins the line, not just one.
+  if (f.comuna && f.comuna.size) parts.push(`Comuna: ${[...f.comuna].join(', ')}`);
+  if (f.barrio && f.barrio.size) parts.push(`Barrio: ${[...f.barrio].join(', ')}`);
   if (f.search) parts.push(`Búsqueda: "${f.search}"`);
   return parts.length ? parts.join(' · ') : 'Todos los registros';
 }
@@ -273,25 +278,75 @@ function comunaBarrioMap(list) {
   return map;
 }
 
-/** Repopulate the comuna <select>, preserving the current selection when it
- *  is still a valid option — same pattern as planeacion.js's renderAutoScopeSelects. */
-function renderComunaSelect(selectEl, comunaMap) {
-  const comunas = [...comunaMap.keys()].sort();
-  const prev = selectEl.value;
-  selectEl.innerHTML = '<option value="">— Todas las comunas —</option>'
-    + comunas.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
-  selectEl.value = comunas.includes(prev) ? prev : '';
+/** Sorted {value,label} options for the comuna multiselect — same source
+ *  comunaBarrioMap already builds, reshaped for renderMultiSelect's own
+ *  `options` contract. Exported: pure, so a self-check can assert the sort/
+ *  empty-map cases without the DOM. */
+export function comunaOptionsFrom(comunaMap) {
+  return [...comunaMap.keys()].sort().map((c) => ({ value: c, label: c }));
 }
 
-/** Repopulate the barrio <select>, dependent on the chosen comuna — disabled
- *  until one is picked, same pattern as planeacion.js's renderAutoBarrioSelect. */
-function renderBarrioSelect(selectEl, comunaMap, comuna) {
-  const barrios = comuna ? [...(comunaMap.get(comuna) || [])].sort() : [];
-  const prev = selectEl.value;
-  selectEl.innerHTML = '<option value="">— Todos los barrios —</option>'
-    + barrios.map((b) => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join('');
-  selectEl.disabled = !comuna;
-  selectEl.value = barrios.includes(prev) ? prev : '';
+/** Barrio options = union of barrios across EVERY currently selected comuna,
+ *  not just one — a "Comuna 5 + Comuna 8" selection offers both comunas'
+ *  barrios together, the same way the map/list below show both comunas'
+ *  records together. Zero selected comunas -> zero options, which the
+ *  caller (initEvaluaciones) reads as "disable the barrio control" —
+ *  renderMultiSelect has no disabled state of its own, so the mounted
+ *  toggle button's `.disabled` is set directly, same idea as the old
+ *  `selectEl.disabled = !comuna`. Exported: pure, so a self-check can
+ *  assert the union/empty rules without the DOM. */
+export function barrioOptionsFrom(comunaMap, comunaSet) {
+  if (!comunaSet || !comunaSet.size) return [];
+  const barrios = new Set();
+  for (const comuna of comunaSet) {
+    for (const b of comunaMap.get(comuna) || []) barrios.add(b);
+  }
+  return [...barrios].sort().map((b) => ({ value: b, label: b }));
+}
+
+/** New Set holding only the members of `set` still present in `validValues`
+ *  (an array or Set) — the one prune rule behind two different moments: a
+ *  load() refresh dropping a comuna/barrio no longer offered by the fresh
+ *  data, and a comuna toggle dropping a barrio that no longer belongs to
+ *  ANY currently selected comuna. Exported: pure, so a self-check can assert
+ *  what survives/what's dropped without the DOM. */
+export function pruneToValid(set, validValues) {
+  const valid = validValues instanceof Set ? validValues : new Set(validValues);
+  return new Set([...set].filter((v) => valid.has(v)));
+}
+
+/** Drops any member of `barrioSet` that no longer belongs to ANY comuna in
+ *  `comunaSet`, per `comunaMap` (comuna -> Set(barrio)) — composes
+ *  barrioOptionsFrom + pruneToValid, the one rule behind two different
+ *  moments: a comuna toggle narrowing the selection, and a load() refresh
+ *  rebuilding comunaMap from fresh data. A barrio belonging to a comuna that
+ *  is STILL selected is kept even if it also belonged to a comuna that was
+ *  just deselected (union semantics, same as barrioOptionsFrom itself) —
+ *  never over-pruned. Exported: pure, so a self-check can assert every case
+ *  (still valid / no longer under any selected comuna / empty comunaSet /
+ *  already-empty barrioSet) without the DOM. */
+export function pruneInvalidBarrios(barrioSet, comunaSet, comunaMap) {
+  return pruneToValid(barrioSet, barrioOptionsFrom(comunaMap, comunaSet).map((o) => o.value));
+}
+
+/** has/delete/add dance for a multiselect's onToggle callback — one place
+ *  instead of duplicating it for comuna and for barrio. Mutates `set`
+ *  in place (matches Set.prototype.add/delete's own contract) and returns
+ *  nothing; callers that need the new state read the same Set reference
+ *  back, same as today's onToggle callbacks in mountComuna/mountBarrio do.
+ *  Exported: pure/DOM-free, so a self-check can assert the mutate-in-place
+ *  contract directly. */
+export function toggleSetValue(set, value) {
+  if (set.has(value)) set.delete(value); else set.add(value);
+}
+
+/** Whether the Barrio toggle button should be disabled: true only when no
+ *  comuna is selected (an empty comunaSet, mirroring pruneInvalidBarrios /
+ *  barrioOptionsFrom's own "zero comunas -> zero options" rule) — barrio has
+ *  nothing to filter by until at least one comuna narrows the option list.
+ *  Exported: pure, so a self-check can assert both states without the DOM. */
+export function barrioDisabledFor(comunaSet) {
+  return !comunaSet || comunaSet.size === 0;
 }
 
 // ---- Static markup -----------------------------------------------------------
@@ -327,14 +382,8 @@ export function sectionHtml() {
         <div class="card-toolbar asignacion-filters">
           <div class="asignacion-filters-group" id="eval-clase-chips">${claseChipsHtml('')}</div>
           <div class="asignacion-filters-group" id="eval-fase-chips">${faseChipsHtml('')}</div>
-          <label class="sticker-field asignacion-inline-field">
-            <span>Comuna</span>
-            <select id="eval-comuna-select" aria-label="Filtrar por comuna"><option value="">— Todas las comunas —</option></select>
-          </label>
-          <label class="sticker-field asignacion-inline-field">
-            <span>Barrio</span>
-            <select id="eval-barrio-select" aria-label="Filtrar por barrio" disabled><option value="">— Todos los barrios —</option></select>
-          </label>
+          <div class="filter-block" id="eval-comuna-filter"></div>
+          <div class="filter-block" id="eval-barrio-filter"></div>
           <button type="button" class="sticker-action" id="eval-download">Descargar .xlsx</button>
         </div>
         <p class="sticker-note" id="eval-fase-fuente-note" hidden></p>
@@ -721,8 +770,8 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   const faseChipsEl = section.querySelector('#eval-fase-chips');
   const faseFuenteNoteEl = section.querySelector('#eval-fase-fuente-note');
   const colorGroupEl = section.querySelector('[data-eval-color-group]');
-  const comunaSelect = section.querySelector('#eval-comuna-select');
-  const barrioSelect = section.querySelector('#eval-barrio-select');
+  const comunaFilterRoot = section.querySelector('#eval-comuna-filter');
+  const barrioFilterRoot = section.querySelector('#eval-barrio-filter');
   const downloadBtn = section.querySelector('#eval-download');
   const modalPdfBtn = section.querySelector('#eval-modal-pdf');
   let byId = new Map();
@@ -730,7 +779,13 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   // read/write these without ever re-fetching or re-resolving geo.
   let allEvaluaciones = [];
   let comunaMap = new Map(); // comuna -> Set(barrio), rebuilt alongside allEvaluaciones
-  let filters = { search: '', clase: '', fase: '', comuna: '', barrio: '' };
+  // comuna/barrio are Sets (multiselect, 2026-09 conversion) — an empty Set
+  // is "todas", same meaning the old '' string carried.
+  let filters = { search: '', clase: '', fase: '', comuna: new Set(), barrio: new Set() };
+  // Multiselect handles, so a comuna toggle can .refresh() its own control
+  // and re-mount the barrio one (whose OPTIONS list itself changes).
+  let comunaHandle = null;
+  let barrioHandle = null;
   // Which evaluación the modal is currently showing — the modal's own PDF
   // button (unlike the row ones) has no per-row index to read from.
   let modalEvaluacion = null;
@@ -888,6 +943,59 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
       : `${conCoords} en el mapa`;
   }
 
+  // Drops any selected barrio that no longer belongs to ANY currently
+  // selected comuna — called after every comuna toggle and after each
+  // load() rebuilds comunaMap, so filters.barrio never points at a barrio
+  // the active comuna selection (or the freshly loaded data) no longer
+  // offers. Thin DOM-state wrapper over the exported pure
+  // pruneInvalidBarrios(barrioSet, comunaSet, comunaMap) above.
+  function syncBarrioFilter() {
+    filters.barrio = pruneInvalidBarrios(filters.barrio, filters.comuna, comunaMap);
+  }
+
+  // Re-mounted (not just .refresh()'d) on every comuna change: its OPTIONS
+  // list itself changes (union across selected comunas), and
+  // renderMultiSelect's refresh() only re-renders the CURRENT options
+  // against a changed selectedSet — it has no way to pick up a new options
+  // array. renderMultiSelect has no disabled state of its own, so the
+  // toggle button's `.disabled` is set directly here, same idea as the old
+  // `selectEl.disabled = !comuna`.
+  function mountBarrio() {
+    barrioHandle = renderMultiSelect(barrioFilterRoot, {
+      field: 'barrio',
+      label: 'Barrio',
+      options: barrioOptionsFrom(comunaMap, filters.comuna),
+      selectedSet: filters.barrio,
+      onToggle: (value) => {
+        toggleSetValue(filters.barrio, value);
+        barrioHandle.refresh();
+        renderFiltered();
+      },
+    });
+    const toggleBtn = barrioFilterRoot.querySelector('.filter-toggle');
+    if (toggleBtn) toggleBtn.disabled = barrioDisabledFor(filters.comuna);
+  }
+
+  // Comuna's own options only change when comunaMap itself is rebuilt (a
+  // fresh load()), so this is only re-mounted there — toggling a comuna
+  // just mutates the Set and refreshes in place. Barrio depends on WHICH
+  // comunas are selected, so every toggle here re-mounts it too.
+  function mountComuna() {
+    comunaHandle = renderMultiSelect(comunaFilterRoot, {
+      field: 'comuna',
+      label: 'Comuna',
+      options: comunaOptionsFrom(comunaMap),
+      selectedSet: filters.comuna,
+      onToggle: (value) => {
+        toggleSetValue(filters.comuna, value);
+        syncBarrioFilter();
+        comunaHandle.refresh();
+        mountBarrio();
+        renderFiltered();
+      },
+    });
+  }
+
   async function load({ silent = false } = {}) {
     const seq = ++loadSeq;
     if (!silent) {
@@ -939,13 +1047,15 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
       byId = new Map(allEvaluaciones.map((e) => [e.id, e]));
 
       comunaMap = comunaBarrioMap(allEvaluaciones);
-      renderComunaSelect(comunaSelect, comunaMap);
-      renderBarrioSelect(barrioSelect, comunaMap, comunaSelect.value);
-      // The selects may have dropped the previous value (comuna/barrio no
-      // longer present in the refreshed data) — keep `filters` in sync with
-      // what's actually selected instead of filtering by a stale value.
-      filters.comuna = comunaSelect.value;
-      filters.barrio = barrioSelect.value;
+      // Same "keep filters in sync with what's actually offered" rule the
+      // old single-select had (a stale value silently dropped after a
+      // refresh) — generalized to Sets: any selected comuna/barrio no
+      // longer present in the freshly loaded data is dropped, not just
+      // reset wholesale to "todas".
+      filters.comuna = pruneToValid(filters.comuna, comunaMap.keys());
+      syncBarrioFilter();
+      mountComuna();
+      mountBarrio();
 
       renderFiltered();
     } catch (err) {
@@ -1011,16 +1121,9 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
     renderFiltered();
   });
 
-  comunaSelect.addEventListener('change', () => {
-    filters = { ...filters, comuna: comunaSelect.value, barrio: '' };
-    renderBarrioSelect(barrioSelect, comunaMap, comunaSelect.value);
-    renderFiltered();
-  });
-
-  barrioSelect.addEventListener('change', () => {
-    filters = { ...filters, barrio: barrioSelect.value };
-    renderFiltered();
-  });
+  // comuna/barrio filter wiring lives in mountComuna()/mountBarrio() above
+  // (their onToggle callbacks) — mounted once after the first load() and
+  // re-mounted whenever comunaMap or the comuna selection itself changes.
 
   // Same xlsx header-block convention used elsewhere in the dashboard (title,
   // filtro aplicado, fecha de generación, registros, blank row) but built

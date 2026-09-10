@@ -4,6 +4,8 @@ import assert from 'node:assert';
 import {
   claseDe, contarPorClase, CLASES, faseDe, FASES, applyFilters, FASE_SIN_DATO,
   describeFilters, COLOR_MODES, tituloDe, quienDe, inspectorFuenteLabel, fuenteFaseNotaDe,
+  comunaOptionsFrom, barrioOptionsFrom, pruneToValid, pruneInvalidBarrios, toggleSetValue,
+  barrioDisabledFor,
 } from './evaluaciones.js';
 
 // The three ATC-20 placard states, in escalating severity.
@@ -130,7 +132,9 @@ assert.strictEqual(describeFilters({}), 'Todos los registros');
 assert.ok(describeFilters({ clase: 'SIN_DATO' }).includes('sin dato'), 'clase SIN_DATO should describe as "sin dato"');
 assert.ok(describeFilters({ fase: 'SIN_DATO' }).includes('sin dato'), 'fase SIN_DATO should describe as "sin dato"');
 assert.ok(describeFilters({ fase: 'FASE_II' }).includes('fase II'), 'a known fase key should describe by its own label');
-assert.ok(describeFilters({ clase: 'INSEGURO', fase: 'FASE_I', comuna: 'Comuna 5' })
+// comuna/barrio are Sets (multiselect conversion, 2026-09) — a single
+// selected value still reads exactly like the old bare-string filter did.
+assert.ok(describeFilters({ clase: 'INSEGURO', fase: 'FASE_I', comuna: new Set(['Comuna 5']) })
   .includes('Comuna: Comuna 5'), 'multiple filters should all appear, joined');
 
 // ── COLOR_MODES.fase/.clase entries must include their SIN_DATO state ───────
@@ -238,3 +242,300 @@ assert.strictEqual(fuenteFaseNotaDe(null), null, 'must not throw on a null list'
 assert.strictEqual(fuenteFaseNotaDe(undefined), null, 'must not throw on an undefined list');
 
 console.log('evaluaciones.test.mjs: fuenteFaseNotaDe OK');
+
+// ── comuna/barrio filters: converted from single-select <select> elements to
+// Set-based multiselects (user needed to pick MORE THAN ONE comuna/barrio at
+// once) — applyFilters/describeFilters below take Sets; comunaOptionsFrom/
+// barrioOptionsFrom/pruneToValid are the pure helpers behind the DOM wiring
+// in initEvaluaciones (option lists, and dropping stale selections). ───────
+
+const evalsCB = [
+  {
+    id: 'a', _comuna: 'Comuna 1', _barrio: 'Barrio A', inspector: { np: 'P3' },
+    descripcion: { direccion: 'Calle 1' }, clasificacion: 'INSEGURO',
+  },
+  {
+    id: 'b', _comuna: 'Comuna 1', _barrio: 'Barrio B', inspector: { np: 'P1' },
+    descripcion: { direccion: 'Calle 2' }, clasificacion: 'INSPECCIONADA',
+  },
+  {
+    id: 'c', _comuna: 'Comuna 2', _barrio: 'Barrio B', inspector: { np: 'P3' },
+    descripcion: { direccion: 'Calle 1' }, clasificacion: 'INSEGURO',
+  },
+  {
+    id: 'd', _comuna: 'Comuna 3', _barrio: 'Barrio C', inspector: {},
+    descripcion: {}, clasificacion: '',
+  },
+  // Unresolved geo (no coords, or fell outside every polygon) — must never
+  // match a non-empty comuna/barrio filter.
+  {
+    id: 'e', _comuna: null, _barrio: null, inspector: {},
+    descripcion: {}, clasificacion: '',
+  },
+];
+
+// Boundary: zero comunas selected -> no filter, everything passes (same as
+// the old '' single-select value).
+assert.deepStrictEqual(
+  applyFilters(evalsCB, { comuna: new Set() }).map((e) => e.id),
+  ['a', 'b', 'c', 'd', 'e'],
+);
+// Boundary: exactly one comuna selected -> old single-select behaviour preserved.
+assert.deepStrictEqual(
+  applyFilters(evalsCB, { comuna: new Set(['Comuna 1']) }).map((e) => e.id),
+  ['a', 'b'],
+);
+// Boundary: multiple comunas selected simultaneously -> union, not intersection.
+assert.deepStrictEqual(
+  applyFilters(evalsCB, { comuna: new Set(['Comuna 1', 'Comuna 3']) }).map((e) => e.id),
+  ['a', 'b', 'd'],
+);
+// Boundary: every available comuna selected -> everything with a resolved
+// comuna passes (record 'e', unresolved, still never matches).
+assert.deepStrictEqual(
+  applyFilters(evalsCB, { comuna: new Set(['Comuna 1', 'Comuna 2', 'Comuna 3']) }).map((e) => e.id),
+  ['a', 'b', 'c', 'd'],
+);
+// Malformed/missing input: filters.comuna/filters.barrio undefined must not
+// throw — the existing partial-filter-object tests above already rely on this.
+assert.doesNotThrow(() => applyFilters(evalsCB, { fase: 'FASE_II' }));
+assert.deepStrictEqual(applyFilters(evalsCB, {}).map((e) => e.id), ['a', 'b', 'c', 'd', 'e']);
+// Empty Set behaves identically to the old '' for barrio too.
+assert.deepStrictEqual(
+  applyFilters(evalsCB, { barrio: new Set() }).map((e) => e.id),
+  ['a', 'b', 'c', 'd', 'e'],
+);
+// A null _comuna/_barrio (unresolved geo) never matches a non-empty set.
+assert.strictEqual(
+  applyFilters(evalsCB, { comuna: new Set(['Comuna 1']) }).some((e) => e.id === 'e'), false,
+);
+assert.strictEqual(
+  applyFilters(evalsCB, { barrio: new Set(['Barrio A']) }).some((e) => e.id === 'e'), false,
+);
+// comuna + barrio combined narrows further (AND between the two fields, OR
+// within each field's own Set).
+assert.deepStrictEqual(
+  applyFilters(evalsCB, { comuna: new Set(['Comuna 1', 'Comuna 2']), barrio: new Set(['Barrio B']) }).map((e) => e.id),
+  ['b', 'c'],
+);
+// Combined with clase/fase/search — extends the existing applyFilters test
+// pattern above rather than inventing a new style.
+assert.deepStrictEqual(
+  applyFilters(evalsCB, { comuna: new Set(['Comuna 1']), clase: 'INSEGURO' }).map((e) => e.id),
+  ['a'],
+);
+assert.deepStrictEqual(
+  applyFilters(evalsCB, { comuna: new Set(['Comuna 1', 'Comuna 2']), fase: 'FASE_II' }).map((e) => e.id),
+  ['a', 'c'],
+);
+assert.deepStrictEqual(
+  applyFilters(evalsCB, { barrio: new Set(['Barrio A']), search: 'calle 1' }).map((e) => e.id),
+  ['a'],
+);
+
+console.log('evaluaciones.test.mjs: applyFilters comuna/barrio Sets OK');
+
+// ── describeFilters: multi-value comuna/barrio summary ──────────────────────
+assert.strictEqual(describeFilters({ comuna: new Set() }), 'Todos los registros', 'zero selected comunas omit the field entirely');
+assert.strictEqual(describeFilters({ comuna: new Set(['Comuna 5']) }), 'Comuna: Comuna 5', 'one selected value reads exactly like the old bare string');
+assert.strictEqual(describeFilters({ comuna: new Set(['Comuna 5', 'Comuna 8']) }), 'Comuna: Comuna 5, Comuna 8', 'multiple values join with ", "');
+assert.strictEqual(describeFilters({ barrio: new Set(['Barrio A', 'Barrio B']) }), 'Barrio: Barrio A, Barrio B');
+assert.strictEqual(
+  describeFilters({ clase: 'INSEGURO', comuna: new Set(['Comuna 5', 'Comuna 8']), barrio: new Set(['Barrio A']) }),
+  'Clasificación: inseguro · Comuna: Comuna 5, Comuna 8 · Barrio: Barrio A',
+  'combined with other active filters, all parts still appear joined',
+);
+
+console.log('evaluaciones.test.mjs: describeFilters comuna/barrio Sets OK');
+
+// ── comunaOptionsFrom / barrioOptionsFrom / pruneToValid: pure helpers
+// behind the multiselect DOM wiring in initEvaluaciones ─────────────────────
+const comunaMap = new Map([
+  ['Comuna 2', new Set(['Barrio C', 'Barrio B'])],
+  ['Comuna 1', new Set(['Barrio A', 'Barrio B'])],
+  ['Comuna 3', new Set()], // resolved comuna, no barrio resolved for any record
+]);
+
+assert.deepStrictEqual(
+  comunaOptionsFrom(comunaMap).map((o) => o.value),
+  ['Comuna 1', 'Comuna 2', 'Comuna 3'],
+  'options are sorted, independent of Map insertion order',
+);
+assert.deepStrictEqual(comunaOptionsFrom(new Map()), [], 'no comuna resolved yet -> no options');
+
+// Barrio options = union across EVERY selected comuna, not just one.
+assert.deepStrictEqual(
+  barrioOptionsFrom(comunaMap, new Set(['Comuna 1'])).map((o) => o.value),
+  ['Barrio A', 'Barrio B'],
+);
+assert.deepStrictEqual(
+  barrioOptionsFrom(comunaMap, new Set(['Comuna 1', 'Comuna 2'])).map((o) => o.value),
+  ['Barrio A', 'Barrio B', 'Barrio C'],
+  'union across two selected comunas, deduped and sorted',
+);
+assert.deepStrictEqual(
+  barrioOptionsFrom(comunaMap, new Set()), [],
+  'zero comunas selected -> barrio control has no options (reads as disabled)',
+);
+assert.deepStrictEqual(barrioOptionsFrom(comunaMap, new Set(['Comuna 3'])), [], 'a comuna with no resolved barrios offers none');
+assert.deepStrictEqual(barrioOptionsFrom(comunaMap, undefined), [], 'must not throw when comunaSet is undefined');
+assert.deepStrictEqual(barrioOptionsFrom(comunaMap, null), [], 'must not throw when comunaSet is null');
+
+// pruneToValid: what survives a comuna/barrio no longer offered.
+assert.deepStrictEqual(
+  pruneToValid(new Set(['Barrio A', 'Barrio Z']), ['Barrio A', 'Barrio B']),
+  new Set(['Barrio A']),
+  'drops a selection no longer present, keeps the one that is still valid',
+);
+assert.deepStrictEqual(pruneToValid(new Set(), ['Barrio A']), new Set(), 'nothing selected stays empty');
+assert.deepStrictEqual(pruneToValid(new Set(['Barrio A']), []), new Set(), 'no valid values left -> everything dropped');
+
+console.log('evaluaciones.test.mjs: comunaOptionsFrom / barrioOptionsFrom / pruneToValid OK');
+
+// ── State-machine transitions: comuna toggles driving the barrio Set, the
+// same composition (barrioOptionsFrom + pruneToValid) initEvaluaciones's
+// mountComuna()/load() use. ─────────────────────────────────────────────────
+
+// Selecting a SECOND comuna after a barrio from the first is already
+// selected keeps that barrio selected if it's still valid.
+{
+  const selectedComunas = new Set(['Comuna 1']);
+  let selectedBarrios = new Set(['Barrio A']);
+  selectedComunas.add('Comuna 2');
+  selectedBarrios = pruneToValid(selectedBarrios, barrioOptionsFrom(comunaMap, selectedComunas).map((o) => o.value));
+  assert.deepStrictEqual(selectedBarrios, new Set(['Barrio A']), 'Barrio A still belongs to Comuna 1, stays selected');
+}
+
+// Deselecting the comuna that OWNS a currently-selected barrio removes just
+// that barrio, not unrelated ones from other still-selected comunas.
+{
+  const selectedComunas = new Set(['Comuna 1', 'Comuna 2']);
+  let selectedBarrios = new Set(['Barrio A', 'Barrio C']); // A only under Comuna 1, C only under Comuna 2
+  selectedComunas.delete('Comuna 1');
+  selectedBarrios = pruneToValid(selectedBarrios, barrioOptionsFrom(comunaMap, selectedComunas).map((o) => o.value));
+  assert.deepStrictEqual(selectedBarrios, new Set(['Barrio C']), 'Barrio A dropped with Comuna 1; Barrio C (still under Comuna 2) kept');
+}
+
+// Deselecting ALL comunas clears every barrio selection, and the option list
+// itself becomes empty.
+{
+  const selectedComunas = new Set(['Comuna 1', 'Comuna 2']);
+  let selectedBarrios = new Set(['Barrio A', 'Barrio C']);
+  selectedComunas.clear();
+  const options = barrioOptionsFrom(comunaMap, selectedComunas);
+  selectedBarrios = pruneToValid(selectedBarrios, options.map((o) => o.value));
+  assert.deepStrictEqual(options, [], 'no comunas selected -> no barrio options left to offer');
+  assert.deepStrictEqual(selectedBarrios, new Set(), 'every barrio selection cleared');
+}
+
+// A load() refresh that no longer offers a previously-selected comuna drops
+// it (and, transitively, any barrio that depended on it) — same composition,
+// this time pruning the comuna Set itself against the freshly loaded map's keys.
+{
+  const freshComunaMap = new Map([['Comuna 2', new Set(['Barrio B', 'Barrio C'])]]); // 'Comuna 1' no longer present
+  let selectedComunas = new Set(['Comuna 1', 'Comuna 2']);
+  let selectedBarrios = new Set(['Barrio A', 'Barrio B']); // A only under the now-gone Comuna 1
+  selectedComunas = pruneToValid(selectedComunas, freshComunaMap.keys());
+  selectedBarrios = pruneToValid(selectedBarrios, barrioOptionsFrom(freshComunaMap, selectedComunas).map((o) => o.value));
+  assert.deepStrictEqual(selectedComunas, new Set(['Comuna 2']), 'stale comuna dropped after refresh');
+  assert.deepStrictEqual(selectedBarrios, new Set(['Barrio B']), 'barrio tied to the dropped comuna is dropped too');
+}
+
+console.log('evaluaciones.test.mjs: comuna/barrio multiselect state transitions OK');
+
+// ── pruneInvalidBarrios: the extracted pure function initEvaluaciones's
+// mountComuna() onToggle and post-load() both call instead of duplicating
+// the barrioOptionsFrom + pruneToValid composition inline. ─────────────────
+{
+  const cbMap = new Map([
+    ['Comuna 1', new Set(['Barrio A', 'Barrio B'])],
+    ['Comuna 2', new Set(['Barrio B', 'Barrio C'])],
+  ]);
+
+  // A barrio that still belongs to SOME comuna in the new selection is kept.
+  assert.deepStrictEqual(
+    pruneInvalidBarrios(new Set(['Barrio A']), new Set(['Comuna 1']), cbMap),
+    new Set(['Barrio A']),
+    'a barrio still valid under the selected comunas is kept',
+  );
+
+  // A barrio that no longer belongs to ANY selected comuna is dropped.
+  assert.deepStrictEqual(
+    pruneInvalidBarrios(new Set(['Barrio A']), new Set(['Comuna 2']), cbMap),
+    new Set(),
+    'a barrio that stopped belonging to every selected comuna is dropped',
+  );
+
+  // Union semantics: a barrio belonging to a comuna that is STILL selected
+  // must survive even though it also belonged to a comuna that was just
+  // deselected — must not be over-pruned by the deselection.
+  assert.deepStrictEqual(
+    pruneInvalidBarrios(new Set(['Barrio B']), new Set(['Comuna 2']), cbMap),
+    new Set(['Barrio B']),
+    'Barrio B (under both Comuna 1 and Comuna 2) survives when only Comuna 1 is deselected',
+  );
+
+  // Boundary: empty comuna Set -> empty barrio Set (barrioOptionsFrom itself
+  // returns no options for zero comunas selected).
+  assert.deepStrictEqual(
+    pruneInvalidBarrios(new Set(['Barrio A', 'Barrio B']), new Set(), cbMap),
+    new Set(),
+    'zero selected comunas -> every barrio dropped',
+  );
+
+  // Boundary: an already-empty barrio Set must not throw and stays empty.
+  assert.deepStrictEqual(
+    pruneInvalidBarrios(new Set(), new Set(['Comuna 1']), cbMap),
+    new Set(),
+    'an already-empty barrio Set is a no-op',
+  );
+}
+
+console.log('evaluaciones.test.mjs: pruneInvalidBarrios OK');
+
+// ── toggleSetValue: has/delete/add dance behind a multiselect's onToggle —
+// mutates the Set IN PLACE (the real contract: onToggle callbacks in
+// mountComuna/mountBarrio call it and then read the SAME `filters.comuna`/
+// `filters.barrio` Set reference back), and returns undefined. ─────────────
+{
+  // Adds a value not yet present.
+  const s1 = new Set(['a']);
+  const ret1 = toggleSetValue(s1, 'b');
+  assert.deepStrictEqual(s1, new Set(['a', 'b']), 'toggling an absent value adds it');
+  assert.strictEqual(ret1, undefined, 'toggleSetValue does not return a value — callers read the mutated Set back');
+
+  // Removes a value already present.
+  const s2 = new Set(['a', 'b']);
+  toggleSetValue(s2, 'b');
+  assert.deepStrictEqual(s2, new Set(['a']), 'toggling a present value removes it');
+
+  // Rapid on/off/on returns to the original state.
+  const s3 = new Set(['a']);
+  toggleSetValue(s3, 'x');
+  toggleSetValue(s3, 'x');
+  toggleSetValue(s3, 'x');
+  assert.deepStrictEqual(s3, new Set(['a', 'x']), 'on/off/on lands back on "on" (odd number of toggles)');
+
+  // Mutates in place: the same Set reference passed in is the one changed —
+  // this is the real contract onToggle relies on (filters.comuna/filters.barrio
+  // are never reassigned by toggleSetValue itself, only their contents).
+  const original = new Set(['keep']);
+  const sameRef = original;
+  toggleSetValue(original, 'added');
+  assert.strictEqual(sameRef, original, 'no new Set is created — the caller\'s reference is mutated directly');
+  assert.ok(sameRef.has('added'), 'the mutation is visible through the original reference');
+}
+
+console.log('evaluaciones.test.mjs: toggleSetValue OK');
+
+// ── barrioDisabledFor: the Barrio toggle button's disabled condition,
+// extracted from mountBarrio()'s DOM wiring so it can be asserted without
+// the DOM (renderMultiSelect/Leaflet make mountBarrio itself untestable
+// under plain Node assert without jsdom). ───────────────────────────────────
+assert.strictEqual(barrioDisabledFor(new Set()), true, 'zero comunas selected -> Barrio stays disabled');
+assert.strictEqual(barrioDisabledFor(new Set(['Comuna 1'])), false, 'at least one comuna selected -> Barrio is enabled');
+assert.strictEqual(barrioDisabledFor(new Set(['Comuna 1', 'Comuna 2'])), false, 'multiple comunas selected -> still enabled');
+assert.strictEqual(barrioDisabledFor(null), true, 'must not throw on a null comunaSet — reads as disabled');
+assert.strictEqual(barrioDisabledFor(undefined), true, 'must not throw on an undefined comunaSet — reads as disabled');
+
+console.log('evaluaciones.test.mjs: barrioDisabledFor OK');
