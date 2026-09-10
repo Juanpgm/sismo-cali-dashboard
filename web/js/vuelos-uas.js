@@ -7,6 +7,7 @@
 // READ-ONLY here — never open anonymous editing on it (Create/Update are
 // exposed publicly, an edit UI would let anyone alter field records).
 import { COLORS, escapeHtml, basemapTileUrl, themeColor, showToast } from './utils.js';
+import { mountDriveCarousel } from './drive-viewer.js';
 
 /* global L, Chart */
 
@@ -304,8 +305,6 @@ function kpisHtml(rows, grupos) {
   const colTotal = porEstado('colapso_total');
   const colParcial = porEstado('colapso_parcial');
   const riesgo = rows.filter((r) => code(r.estado_edificacion) === 'riesgo_caida').length;
-  const demolicion = rows.filter((r) => code(r.definicion) === 'demolicion_confirmada').length;
-  const porConfirmar = rows.filter((r) => code(r.definicion) === 'se_debe_confirmar').length;
   const conDrive = rows.filter((r) => driveLink(r.enlace_drive)).length;
   const dias = new Set(rows.map((r) => diaKey(r.dia_captura)).filter(Boolean)).size;
   return `
@@ -323,11 +322,6 @@ function kpisHtml(rows, grupos) {
       <span class="kpi-label">Riesgo de caída</span>
       <span class="kpi-value">${riesgo}</span>
       <div class="kpi-sub-row"><span class="kpi-sub">${pct(riesgo)}% de los vuelos</span></div>
-    </div>
-    <div class="kpi-tile" style="--kpi-accent:${COLORS.status.i2}">
-      <span class="kpi-label">Demolición confirmada</span>
-      <span class="kpi-value">${demolicion}</span>
-      <div class="kpi-sub-row"><span class="kpi-sub">${porConfirmar} por confirmar</span></div>
     </div>
     <div class="kpi-tile" style="--kpi-accent:${COLORS.accent}">
       <span class="kpi-label">Con carpeta Drive</span>
@@ -475,9 +469,7 @@ function renderVuelos(sectionEl) {
             <button type="button" class="btn-icon" data-uas-fotos-close aria-label="Cerrar"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg></button>
           </div>
         </div>
-        <div class="modal-body uas-fotos-body">
-          <iframe class="uas-fotos-frame" data-uas-fotos-frame title="Fotos del vuelo en Google Drive"></iframe>
-        </div>
+        <div class="modal-body uas-fotos-body" data-uas-fotos-body></div>
       </div>
     </div>`;
 
@@ -510,14 +502,17 @@ function renderVuelos(sectionEl) {
     entry.marker.openPopup();
   });
 
-  // "Ver fotos" -> Drive folder grid embedded in a modal. Delegated with
-  // .onclick (not addEventListener) so re-renders replace instead of stack.
+  // "Ver fotos" -> in-app carousel (or the Drive folder grid fallback) in a
+  // modal. Delegated with .onclick (not addEventListener) so re-renders
+  // replace instead of stack.
   const fotosModal = sectionEl.querySelector('#uas-fotos-modal');
-  const fotosFrame = fotosModal.querySelector('[data-uas-fotos-frame]');
   const closeFotos = () => {
     fotosModal.classList.remove('is-open');
     fotosModal.setAttribute('aria-hidden', 'true');
-    fotosFrame.src = 'about:blank';
+    fotosGen++;
+    carouselHandle?.destroy();
+    carouselHandle = null;
+    fotosModal.querySelector('[data-uas-fotos-body]').innerHTML = '';
   };
   fotosModal.querySelector('[data-uas-fotos-close]').onclick = closeFotos;
   fotosModal.querySelector('.modal-backdrop').onclick = closeFotos;
@@ -530,14 +525,30 @@ function renderVuelos(sectionEl) {
   renderCharts(rows);
 }
 
+// Destroy handle for the currently-mounted carousel (its keydown listener
+// and click delegate) — torn down on close and before mounting the next one.
+// `fotosGen` guards the async mount against the same stale-response race
+// puntos_solicitados.js's runGuardedBuscar documents: bumped on every
+// open/close, a mount only takes effect if no newer open/close happened
+// while it was awaiting the Drive API (otherwise its handle is discarded
+// instead of clobbering whatever opened after it).
+let carouselHandle = null;
+let fotosGen = 0;
+
 function openFotos(folderId, lugar) {
   const modal = document.getElementById('uas-fotos-modal');
   if (!modal || !folderId) return;
   modal.querySelector('[data-uas-fotos-title]').textContent = lugar || 'Fotos del vuelo';
   modal.querySelector('[data-uas-fotos-drive]').href = `https://drive.google.com/drive/folders/${folderId}`;
-  modal.querySelector('[data-uas-fotos-frame]').src = `https://drive.google.com/embeddedfolderview?id=${folderId}#grid`;
   modal.classList.add('is-open');
   modal.setAttribute('aria-hidden', 'false');
+  carouselHandle?.destroy();
+  carouselHandle = null;
+  const gen = ++fotosGen;
+  mountDriveCarousel(modal.querySelector('[data-uas-fotos-body]'), folderId).then((handle) => {
+    if (gen === fotosGen) carouselHandle = handle;
+    else handle.destroy();
+  });
 }
 
 /* ------------------------------------------------------------------ */
