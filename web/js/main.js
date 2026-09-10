@@ -10,6 +10,7 @@ import {
 } from './mapview.js';
 import { initTable, renderTable, setTotalRecords, openDetailModal, configurarRepresentante } from './table.js';
 import { initAccionesTab } from './acciones-capa.js';
+import { initVuelosUasTab } from './vuelos-uas.js';
 import { initStickers } from './stickers.js';
 import { initReportesCiudadanos } from './reportes-ciudadanos.js';
 import { initSeguimiento, updateSeguimientoRecords } from './seguimiento.js';
@@ -286,6 +287,11 @@ function switchView(view) {
   // the next store notify).
   if (view === 'acciones' && isAdmin()) {
     initAccionesTab(document.getElementById('view-acciones'), { records: store.records });
+  }
+  // Vuelos UAS reads its ArcGIS layer directly (independent of the Panel
+  // store) — cached in-module, refetched only via its own Actualizar button.
+  if (view === 'vuelos-uas' && isAdmin()) {
+    initVuelosUasTab(document.getElementById('view-vuelos-uas'));
   }
 }
 
