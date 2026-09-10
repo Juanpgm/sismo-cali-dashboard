@@ -1342,31 +1342,24 @@ def _es_si(value) -> bool:
 def _recencia(row) -> tuple:
     """Ranking used to pick a group's representative — highest wins.
 
-    The user's rule (2026-08-26, superseding an earlier "most critical"):
-    **the most recent inspection is the current truth about a building.** A
-    re-visit that downgrades a building now wins over the older, more
-    alarming record — which is the whole point: the building was re-checked.
-
-    Ordering, in priority order:
-      1. `fecha_inspeccion` — the field truth, but DATE-ONLY, so it cannot
-         separate the 61 of 77 real duplicate groups inspected the same day.
-      2. `CreationDate` — the system's own submission timestamp, which is
-         what actually distinguishes a re-submit from its original.
-      3. Severity — a last-resort tiebreak ONLY for rows identical in both
-         timestamps, so the pick stays deterministic across runs instead of
-         depending on row order. It never overrides recency.
+    Reverted 2026-09-07 back to the user's original rule: **the most
+    critical assessment wins**, never averaged away by a later re-visit that
+    downgrades the building. Recency (`fecha_inspeccion`, then
+    `CreationDate`) is kept only as a last-resort tiebreak for rows tied on
+    every severity field, so the pick stays deterministic across runs
+    instead of depending on row order.
     """
     # format="mixed": the field arrives ISO ("2026-08-13") from the layer but
     # dd/mm from older exports; inferring per value beats guessing one.
     fecha = pd.to_datetime(row.get("fecha_inspeccion"), errors="coerce", format="mixed", dayfirst=True)
     creado = pd.to_datetime(row.get("CreationDate"), errors="coerce")
     return (
-        fecha.value if pd.notna(fecha) else -1,
-        creado.value if pd.notna(creado) else -1,
         1 if _es_si(row.get("colapso_total")) else 0,
         1 if _es_si(row.get("colapso_parcial")) else 0,
         _HAB_SEVERIDAD.get(str(row.get("criterio_habitabilidad")).strip().lower(), 0),
         _DANO_SEVERIDAD.get(str(row.get("nivel_dano")).strip().lower(), 0),
+        fecha.value if pd.notna(fecha) else -1,
+        creado.value if pd.notna(creado) else -1,
     )
 
 

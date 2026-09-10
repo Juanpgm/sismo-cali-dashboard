@@ -44,33 +44,33 @@ def test_exactly_one_representative_per_group():
     assert df["es_representante"].sum() == 1
 
 
-def test_representative_is_the_most_recent_inspection():
-    """User's rule (2026-08-26, superseding "most critical"): the LATEST
-    re-inspection is the current truth about a building."""
+def test_representative_is_the_most_critical_assessment():
+    """User's rule (reverted 2026-09-07): the MOST CRITICAL record wins,
+    never a later re-visit that happens to downgrade the building."""
     df = rd.add_dup_group(_df([
-        {"GlobalID": "vieja", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-14"},
-        {"GlobalID": "nueva", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-20"},
+        {"GlobalID": "leve", "direccion_norm": "CL 5", "colapso_total": "no"},
+        {"GlobalID": "grave", "direccion_norm": "CL 5", "colapso_total": "si"},
     ]))
-    assert df[df["es_representante"]].iloc[0]["GlobalID"] == "nueva"
+    assert df[df["es_representante"]].iloc[0]["GlobalID"] == "grave"
 
 
-def test_most_recent_wins_even_when_it_is_the_less_severe_one():
+def test_most_critical_wins_even_when_it_is_the_older_one():
     """The case that makes this rule a real choice: a re-inspection that
-    DOWNGRADES a building. Under the old "most critical" rule the older,
-    more alarming record won; now the newer assessment does."""
+    DOWNGRADES a building must NOT erase the earlier, more alarming record --
+    the older, worse assessment still wins."""
     df = rd.add_dup_group(_df([
         {"GlobalID": "vieja_grave", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-14",
          "colapso_total": "si", "criterio_habitabilidad": "i2", "nivel_dano": "alto"},
         {"GlobalID": "nueva_leve", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-20",
          "colapso_total": "no", "criterio_habitabilidad": "h", "nivel_dano": "bajo"},
     ]))
-    assert df[df["es_representante"]].iloc[0]["GlobalID"] == "nueva_leve"
+    assert df[df["es_representante"]].iloc[0]["GlobalID"] == "vieja_grave"
 
 
-def test_same_day_ties_break_on_submission_time():
-    """61 of 77 real duplicate groups share an inspection DATE, so the date
-    alone cannot order them -- CreationDate (the system's own submission
-    timestamp) is what actually separates a re-submit from its original."""
+def test_severity_ties_break_on_recency_then_submission_time():
+    """When every severity field ties, recency (date, then CreationDate --
+    the system's own submission timestamp) decides, so the pick stays
+    deterministic instead of depending on row order."""
     df = rd.add_dup_group(_df([
         {"GlobalID": "temprano", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-14",
          "CreationDate": "2026-08-14T08:00:00"},
@@ -366,11 +366,11 @@ def test_audit_flags_every_puente_geo_group_for_review():
 # This diff changes the geo-key format (3 decimals, was 5) and adds the
 # bridge, either of which can remap a group's key -- an operator's pin
 # (Firestore `panel_representante`, consumed live by panel_representante.py)
-# then silently stops applying with the recency rule quietly deciding
+# then silently stops applying with the automatic rule quietly deciding
 # instead. Orphaned pins must be visible, not silent.
 
 
-def test_orphaned_override_warns_and_still_resolves_via_the_recency_rule(caplog):
+def test_orphaned_override_warns_and_still_resolves_via_the_automatic_rule(caplog):
     with caplog.at_level("WARNING", logger="refresh_data"):
         df = rd.add_dup_group(_df([
             {"GlobalID": "a", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-20"},
