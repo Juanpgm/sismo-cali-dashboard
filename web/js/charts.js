@@ -383,7 +383,10 @@ function clearChartEmpty(canvasId) {
 
 // Plugin inline: dibuja el valor total (ds._totalLabel) como etiqueta de dato
 // sobre el último punto de la serie, en vez de meterlo en la leyenda.
-const totalDataLabelPlugin = {
+// Exported (like baseOptions above) so seguimiento.js's own timeline chart —
+// which also plots cumulative lines — can label them the same way instead of
+// duplicating this plugin.
+export const totalDataLabelPlugin = {
   id: 'totalDataLabel',
   afterDatasetsDraw(chart) {
     const { ctx } = chart;

@@ -282,7 +282,9 @@ console.log('sortRows: null-value numeric column (negative pin, both directions)
 {
   // Empty inputs -> empty timeline, never throws.
   const result = buildTimeline({ stickers: [], surveys: [] });
-  assert.deepEqual(result, { labels: [], stickers: [], surveys: [] });
+  assert.deepEqual(result, {
+    labels: [], stickers: [], surveys: [], stickersCumulative: [], surveysCumulative: [],
+  });
 }
 console.log('buildTimeline: empty inputs OK');
 
@@ -293,6 +295,8 @@ console.log('buildTimeline: empty inputs OK');
   assert.deepEqual(result.labels, ['2026-01-05']);
   assert.deepEqual(result.stickers, [1]);
   assert.deepEqual(result.surveys, [0]);
+  assert.deepEqual(result.stickersCumulative, [1]);
+  assert.deepEqual(result.surveysCumulative, [0]);
 }
 console.log('buildTimeline: single day OK');
 
@@ -305,8 +309,31 @@ console.log('buildTimeline: single day OK');
   const result = buildTimeline({ stickers, surveys: [] });
   assert.deepEqual(result.labels, ['2026-01-01', '2026-01-02', '2026-01-03', '2026-01-04']);
   assert.deepEqual(result.stickers, [1, 0, 0, 1]);
+  // Running total never resets on a zero-count day, and never double-counts.
+  assert.deepEqual(result.stickersCumulative, [1, 1, 1, 2]);
+  assert.deepEqual(result.surveysCumulative, [0, 0, 0, 0]);
 }
 console.log('buildTimeline: gap filling OK');
+
+{
+  // Cumulative totals combine BOTH sources independently and monotonically,
+  // even when one source is quiet on a day the other is active.
+  const stickers = [
+    { inspector: { nombre_completo: 'Gil Soto' }, fecha: '2026-01-01', fase: 1 },
+    { inspector: { nombre_completo: 'Gil Soto' }, fecha: '2026-01-01', fase: 2 },
+    { inspector: { nombre_completo: 'Gil Soto' }, fecha: '2026-01-03', fase: 1 },
+  ];
+  const surveys = [
+    { nombre_evaluador: 'Gil Soto', fecha_inspeccion: '2026-01-02' },
+  ];
+  const result = buildTimeline({ stickers, surveys });
+  assert.deepEqual(result.labels, ['2026-01-01', '2026-01-02', '2026-01-03']);
+  assert.deepEqual(result.stickers, [2, 0, 1]);
+  assert.deepEqual(result.surveys, [0, 1, 0]);
+  assert.deepEqual(result.stickersCumulative, [2, 2, 3]);
+  assert.deepEqual(result.surveysCumulative, [0, 1, 1]);
+}
+console.log('buildTimeline: cumulative totals per source OK');
 
 {
   // Sticker with null fecha never enters the timeline (only totals/KPIs count it).

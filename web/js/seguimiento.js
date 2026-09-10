@@ -13,7 +13,7 @@
 // the Firebase SDK via a bare https:// specifier, which breaks Node's ESM
 // loader on plain import).
 import { COLORS, escapeHtml, normalize, loadXlsx, downloadStamp, showToast, faseKeyDe } from './utils.js';
-import { upsertChart, baseOptions } from './charts.js';
+import { upsertChart, baseOptions, totalDataLabelPlugin } from './charts.js';
 import { fetchEvaluacionesOnce } from './stickers.js';
 
 const STICKERS_ENDPOINT = 'stickersAtencionsismo';
@@ -260,7 +260,9 @@ export function buildTimeline({ stickers, surveys, from = null, to = null, profe
   }
 
   const allDates = [...new Set([...stickerCounts.keys(), ...surveyCounts.keys()])].sort();
-  if (!allDates.length) return { labels: [], stickers: [], surveys: [] };
+  if (!allDates.length) {
+    return { labels: [], stickers: [], surveys: [], stickersCumulative: [], surveysCumulative: [] };
+  }
 
   const labels = [];
   const cursor = new Date(`${allDates[0]}T00:00:00Z`);
@@ -270,11 +272,16 @@ export function buildTimeline({ stickers, surveys, from = null, to = null, profe
     cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
 
-  return {
-    labels,
-    stickers: labels.map((d) => stickerCounts.get(d) || 0),
-    surveys: labels.map((d) => surveyCounts.get(d) || 0),
-  };
+  const stickersDaily = labels.map((d) => stickerCounts.get(d) || 0);
+  const surveysDaily = labels.map((d) => surveyCounts.get(d) || 0);
+  // Running totals, one per source — each accumulates independently across
+  // every label (including zero-count days, which never reset it).
+  let stickersRunning = 0;
+  let surveysRunning = 0;
+  const stickersCumulative = stickersDaily.map((n) => (stickersRunning += n));
+  const surveysCumulative = surveysDaily.map((n) => (surveysRunning += n));
+
+  return { labels, stickers: stickersDaily, surveys: surveysDaily, stickersCumulative, surveysCumulative };
 }
 
 /** Sorts a copy of `rows` by `column`, ascending or descending. String
@@ -379,6 +386,7 @@ function sectionHtml() {
         <div class="chart-tile" style="height:320px">
           <canvas id="seguimiento-timeline"></canvas>
         </div>
+        <p class="chart-note">Eje Y en <strong>escala logarítmica</strong>: permite comparar en el mismo gráfico el ritmo diario (unidades/decenas) con el acumulado corrido (cientos), como en el gráfico "Inspecciones por día" del Panel. Las líneas punteadas son el acumulado de cada fuente, con el total rotulado sobre el último punto.</p>
       </div>
 
       <div class="card eval-workspace-card">
@@ -477,22 +485,57 @@ function clearChartUnavailable() {
   if (note) note.remove();
 }
 
+const fmtCount = (n) => Math.round(n || 0).toLocaleString('es-CO');
+
 /** Built on charts.js's own baseOptions() so this chart's ticks/grid/legend/
  *  tooltip colors follow the same theme tokens as every other chart in the
- *  dashboard instead of a second, hand-rolled (and un-themed) copy. */
+ *  dashboard instead of a second, hand-rolled (and un-themed) copy.
+ *
+ *  Mirrors the Panel's "Inspecciones por día" chart (charts.js renderTimeSeries):
+ *  daily counts + cumulative running totals on ONE logarithmic Y axis, so
+ *  a handful of stickers on a given day and a running total in the hundreds
+ *  can share the same chart without the daily line flattening to zero.
+ *  Cumulative lines reuse the daily line's own color (dashed, no points) so
+ *  a source stays visually one color across both its daily and cumulative
+ *  series; the running total is labeled on the last point via the same
+ *  totalDataLabelPlugin the Panel chart uses. */
 function timelineChartConfig(timeline) {
   return {
     type: 'line',
     data: {
       labels: timeline.labels,
       datasets: [
-        { label: 'Stickers', data: timeline.stickers, borderColor: COLORS.accent, backgroundColor: 'transparent', tension: 0.15, pointRadius: 3 },
-        { label: 'Survey', data: timeline.surveys, borderColor: COLORS.categorical[0], backgroundColor: 'transparent', tension: 0.15, pointRadius: 3 },
+        {
+          label: 'Stickers', data: timeline.stickers, borderColor: COLORS.accent,
+          backgroundColor: 'transparent', tension: 0.15, pointRadius: 3, borderWidth: 2,
+        },
+        {
+          label: 'Survey', data: timeline.surveys, borderColor: COLORS.categorical[0],
+          backgroundColor: 'transparent', tension: 0.15, pointRadius: 3, borderWidth: 2,
+        },
+        {
+          label: 'Stickers (acumulado)', data: timeline.stickersCumulative, borderColor: COLORS.accent,
+          backgroundColor: 'transparent', tension: 0.15, pointRadius: 0, borderWidth: 2, borderDash: [6, 4],
+          _totalLabel: fmtCount(timeline.stickersCumulative[timeline.stickersCumulative.length - 1]),
+        },
+        {
+          label: 'Survey (acumulado)', data: timeline.surveysCumulative, borderColor: COLORS.categorical[0],
+          backgroundColor: 'transparent', tension: 0.15, pointRadius: 0, borderWidth: 2, borderDash: [6, 4],
+          _totalLabel: fmtCount(timeline.surveysCumulative[timeline.surveysCumulative.length - 1]),
+        },
       ],
     },
+    plugins: [totalDataLabelPlugin],
     options: baseOptions({
-      scales: { y: { beginAtZero: true } },
-      plugins: { legend: { display: true } },
+      interaction: { mode: 'index', intersect: false },
+      // Logarithmic axis, same reasoning as the Panel chart: lets a daily
+      // count of a handful and a cumulative total in the hundreds share one
+      // Y axis legibly. Chart.js's log scale can't plot a literal 0 (log(0)
+      // is undefined), so a day with zero stickers/survey records simply
+      // has no point for that series on that day — the line resumes on the
+      // next non-zero day, same behavior the Panel chart already has.
+      scales: { y: { type: 'logarithmic' } },
+      plugins: { legend: { display: true }, tooltip: { mode: 'index', intersect: false } },
     }),
   };
 }
