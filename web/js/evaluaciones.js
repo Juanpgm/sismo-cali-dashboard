@@ -1280,8 +1280,16 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
       if (silent && fingerprint === lastFingerprint) return;
       lastFingerprint = fingerprint;
 
+      // Records with no resolvable Fase (faseKeyDe -> 'SIN_DATO') are dropped
+      // here, before they ever enter allEvaluaciones/byId: they must not
+      // appear on the map/list, nor count toward any KPI or export — not
+      // just be filterable away via the Fase chip. Filtered pre-geo-resolve
+      // on purpose, so a discarded record never pays for a point-in-polygon
+      // lookup that would only be thrown away.
       allEvaluaciones = await Promise.all(
-        evaluaciones.map(async (e) => ({ ...e, ...(await resolveGeoFor(e.coords?.lat, e.coords?.lng)) })),
+        evaluaciones
+          .filter((e) => faseKeyDe(e) !== 'SIN_DATO')
+          .map(async (e) => ({ ...e, ...(await resolveGeoFor(e.coords?.lat, e.coords?.lng)) })),
       );
       // Same stale-response guard, re-checked after the async geo resolution
       // above (its own await gives an even newer load() more time to win).
