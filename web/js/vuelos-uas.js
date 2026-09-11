@@ -6,8 +6,13 @@
 // The layer is the Survey123 capture view (`service_..._form`): it is queried
 // READ-ONLY here — never open anonymous editing on it (Create/Update are
 // exposed publicly, an edit UI would let anyone alter field records).
-import { COLORS, escapeHtml, basemapTileUrl, themeColor, showToast } from './utils.js';
+import {
+  COLORS, escapeHtml, basemapTileUrl, themeColor, showToast, createBasemapToggle,
+  normalize, normalizeAddressText, debounce,
+} from './utils.js';
 import { mountDriveCarousel } from './drive-viewer.js';
+import { resolveBarrioComuna } from './mapview.js';
+import { renderMultiSelect } from './multiselect.js';
 
 /* global L, Chart */
 
@@ -17,6 +22,15 @@ const DASHBOARD_URL = 'https://www.arcgis.com/apps/dashboards/fef40bd53d964e2496
 const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
 const CALI_CENTER = [3.42, -76.53];
 const CALI_ZOOM = 12;
+// Sanity box for the fitBounds computation (F6), mirroring evaluaciones.js's
+// own CALI_BBOX (~766-772): one bad/corrupt coordinate must not blow the
+// zoom out to show the whole world. Markers still render on the map
+// regardless of this box — only the fitBounds computation excludes
+// out-of-bbox points from what it fits to.
+const CALI_BBOX = { latMin: 3.30, latMax: 3.55, lngMin: -76.60, lngMax: -76.40 };
+const inCaliBbox = (lat, lng) => (
+  lat >= CALI_BBOX.latMin && lat <= CALI_BBOX.latMax && lng >= CALI_BBOX.lngMin && lng <= CALI_BBOX.lngMax
+);
 
 // Layer-specific codes -> Spanish labels (domain aliases of the Survey123
 // form; utils.js's labelForCode doesn't know these and would drop accents).
@@ -150,14 +164,17 @@ function worstEstado(members) {
   return members.find((r) => code(r.estado_edificacion))?.estado_edificacion ?? '';
 }
 
-/** Arrays of `rows` indices, one per edificación, in `rows` order (rows come
- *  sorted date-desc, so each group sits where its most recent flight does). */
+/** Arrays of ROW OBJECTS (not indices), one array per edificación, in `rows`
+ *  order (rows come sorted date-desc, so each group sits where its most
+ *  recent flight does). Each row carries its own `_idx` (stable position in
+ *  the full, unfiltered `allRows` — see renderVuelos) so a filtered subset
+ *  can still be grouped without losing the marker/list-row identity. */
 function buildGrupos(rows) {
   const map = new Map();
-  rows.forEach((row, i) => {
+  rows.forEach((row) => {
     const key = grupoKey(row);
     if (!map.has(key)) map.set(key, []);
-    map.get(key).push(i);
+    map.get(key).push(row);
   });
   return [...map.values()];
 }
@@ -195,18 +212,320 @@ async function fetchCapa() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Comuna/barrio resolution — same recipe as evaluaciones.js's own        */
+/* geoCache/resolveGeoFor (this layer has no native comuna/barrio field,  */
+/* so it is resolved client-side per point against the same cached       */
+/* comunas/barrios boundaries mapview.js already lazily fetches once).   */
+/* ------------------------------------------------------------------ */
+
+// Memoized by rounded-coordinate key: the cache holds the in-flight PROMISE
+// (not just its eventual result), so two overlapping lookups for the exact
+// same point share one resolution instead of racing separate ones. A failed
+// lookup (rejecting resolver, e.g. the comunas/barrios geojson fetch itself
+// failing) degrades to { _comuna: null, _barrio: null } for that coordinate
+// rather than throwing — same "degrade toward keeping data usable"
+// philosophy utils.js's isInsideCali/resolveZonaInteres already document,
+// applied here to a resolution that runs over the network instead of a
+// pure point-in-polygon check.
+const geoCache = new Map();
+
+// F3: one geojson/resolution failure used to leave a permanently-cached
+// REJECTED-then-degraded promise for that coordinate — every later render
+// (or a retry once the network/geojson fetch recovers) would keep reading
+// the stale null/null forever instead of ever trying again. Also drives the
+// one-shot error toast below: a load with many failing rows must toast once,
+// not once per row — reset at the START of every resolveRowsGeo (one load
+// call), never per-row.
+let geoErrorToastShown = false;
+
+/** Comuna/barrio for one (lat, lng), memoized — but ONLY a SUCCESSFUL
+ *  resolution is memoized (F3): on rejection the cache entry is evicted
+ *  before returning the null/null fallback, so a later call for the exact
+ *  same coordinate re-invokes `resolveFn` instead of being served a stale
+ *  failure forever. `resolveFn` defaults to mapview.resolveBarrioComuna and
+ *  is only ever overridden by tests (a real caller never passes it) — kept
+ *  as a plain parameter rather than a separate seam so the function stays a
+ *  single, directly testable unit. Rows without finite coordinates never
+ *  call the resolver at all: there is nothing to look up. Exported so a
+ *  self-check can assert the memoization/invalid-coordinate/failure-
+ *  degradation/recovery-on-retry contracts without the DOM. */
+export function resolveGeoFor(lat, lng, resolveFn = resolveBarrioComuna) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return Promise.resolve({ _comuna: null, _barrio: null });
+  }
+  const key = `${Number(lat).toFixed(5)},${Number(lng).toFixed(5)}`;
+  if (!geoCache.has(key)) {
+    geoCache.set(key, resolveFn(lat, lng)
+      .then(({ comuna, barrio }) => ({ _comuna: comuna, _barrio: barrio }))
+      .catch(() => {
+        geoCache.delete(key); // never memoize a failure — a later call must retry, not stay degraded forever
+        if (!geoErrorToastShown) {
+          geoErrorToastShown = true;
+          // Guarded: this module's pure functions run under plain Node in
+          // the self-check (no `document`), same convention the rest of the
+          // file already uses for DOM-touching side effects.
+          if (typeof document !== 'undefined') {
+            showToast('No se pudo resolver comuna/barrio de los vuelos; se muestran como "Sin dato".', 'error');
+          }
+        }
+        return { _comuna: null, _barrio: null };
+      }));
+  }
+  return geoCache.get(key);
+}
+
+/** Resolves _comuna/_barrio for every row in one batch. Each row's lookup is
+ *  independent (resolveGeoFor already isolates a failure to null/null for
+ *  that coordinate), so one bad/failing lookup never blanks the rest of the
+ *  batch. Resets the one-shot error-toast flag at the START of the batch (F3)
+ *  so many failing rows within this one load only toast once, while a LATER
+ *  load call (Actualizar) can toast again if it also hits failures. Exported
+ *  so a self-check can assert the batch/isolation contract without the DOM. */
+export async function resolveRowsGeo(rows, resolveFn = resolveBarrioComuna) {
+  geoErrorToastShown = false;
+  return Promise.all(rows.map(async (row) => ({
+    ...row,
+    ...(await resolveGeoFor(row._lat, row._lng, resolveFn)),
+  })));
+}
+
+/* ------------------------------------------------------------------ */
+/* Free-text search + comuna/barrio multiselect filters — same shape      */
+/* evaluaciones.js's applyFilters/comuna/barrio helpers use, ported and   */
+/* adapted to this file's flat row shape (row._comuna/row._barrio instead */
+/* of a nested `descripcion`).                                             */
+/* ------------------------------------------------------------------ */
+
+/** Whether `row` matches a free-text `query`, across every variable shown in
+ *  the row card/popup: lugar, formatted dia_captura, the estado/confirmacion/
+ *  definicion labels, origen tokens + origen_otro, productos tokens,
+ *  observacion, objectid_survey, and the resolved _comuna/_barrio. Case/
+ *  accent-insensitive (normalize()), same recipe as evaluaciones.js's
+ *  applyFilters search branch. Empty or whitespace-only query matches
+ *  everything (no filtering). `lugar` is ALSO matched through
+ *  normalizeAddressText() on both the haystack and the query (in addition
+ *  to the plain-normalize() haystack above), so "Cra 44a #10-25" and
+ *  "carrera 44 10-25" land on the same row — normalizeAddressText's own
+ *  contract (utils.js) is to build BOTH the index and the query this way.
+ *  This never changes what is DISPLAYED (row.lugar stays as-is), only what
+ *  matches. Exported: pure, so a self-check can exercise it without the
+ *  DOM. */
+export function matchesSearch(row, query) {
+  if (!query || !String(query).trim()) return true;
+  const q = normalize(query);
+  const haystack = normalize([
+    row.lugar,
+    formatDia(row.dia_captura),
+    label(row.estado_edificacion),
+    label(row.confirmacion),
+    label(row.definicion),
+    tokens(row.origen).map(label).join(' '),
+    row.origen_otro,
+    tokens(row.productos).map(label).join(' '),
+    row.observacion,
+    row.objectid_survey,
+    row._comuna,
+    row._barrio,
+  ].filter((v) => v !== null && v !== undefined && v !== '').join(' '));
+  if (haystack.includes(q)) return true;
+  const qAddr = normalizeAddressText(query);
+  if (!qAddr) return false;
+  return normalizeAddressText(row.lugar).includes(qAddr);
+}
+
+/** Filtered view of `rows`: comuna/barrio (resolved client-side, see
+ *  resolveGeoFor above) and the free-text search. comuna/barrio are Sets
+ *  (multiselect) — an empty or missing Set means "todas". Exported so a
+ *  self-check can exercise it without the DOM. */
+export function applyUasFilters(rows, filters) {
+  return rows.filter((row) => {
+    if (filters.comuna && filters.comuna.size && !filters.comuna.has(row._comuna)) return false;
+    if (filters.barrio && filters.barrio.size && !filters.barrio.has(row._barrio)) return false;
+    if (filters.search && !matchesSearch(row, filters.search)) return false;
+    return true;
+  });
+}
+
+/** comuna -> Set(barrio) across rows with a resolved comuna. Rows without
+ *  coords (or that fell outside every polygon) don't offer a comuna/barrio
+ *  to filter by. Exported: pure, so a self-check can exercise it without the
+ *  DOM. */
+export function comunaBarrioMap(rows) {
+  const map = new Map();
+  for (const row of rows) {
+    if (!row._comuna) continue;
+    if (!map.has(row._comuna)) map.set(row._comuna, new Set());
+    if (row._barrio) map.get(row._comuna).add(row._barrio);
+  }
+  return map;
+}
+
+/** Sorted {value,label} options for the comuna multiselect. Exported: pure,
+ *  so a self-check can assert the sort/empty-map cases without the DOM. */
+export function comunaOptionsFrom(comunaMap) {
+  return [...comunaMap.keys()].sort().map((c) => ({ value: c, label: c }));
+}
+
+/** Barrio options = union of barrios across EVERY currently selected comuna.
+ *  Zero selected comunas -> zero options, read by the caller as "disable the
+ *  barrio control" (see barrioDisabledFor). Exported: pure, so a self-check
+ *  can assert the union/empty rules without the DOM. */
+export function barrioOptionsFrom(comunaMap, comunaSet) {
+  if (!comunaSet || !comunaSet.size) return [];
+  const barrios = new Set();
+  for (const comuna of comunaSet) {
+    for (const b of comunaMap.get(comuna) || []) barrios.add(b);
+  }
+  return [...barrios].sort().map((b) => ({ value: b, label: b }));
+}
+
+/** New Set holding only the members of `set` still present in `validValues`
+ *  (an array or Set). Exported: pure, so a self-check can assert what
+ *  survives/what's dropped without the DOM. */
+export function pruneToValid(set, validValues) {
+  const valid = validValues instanceof Set ? validValues : new Set(validValues);
+  return new Set([...set].filter((v) => valid.has(v)));
+}
+
+/** Drops any member of `barrioSet` that no longer belongs to ANY comuna in
+ *  `comunaSet`, per `comunaMap`. Composes barrioOptionsFrom + pruneToValid —
+ *  the one rule behind both a comuna toggle narrowing the selection and a
+ *  reload() rebuilding comunaMap from fresh data. Exported: pure, so a
+ *  self-check can assert every case without the DOM. */
+export function pruneInvalidBarrios(barrioSet, comunaSet, comunaMap) {
+  return pruneToValid(barrioSet, barrioOptionsFrom(comunaMap, comunaSet).map((o) => o.value));
+}
+
+/** has/delete/add dance for a multiselect's onToggle callback. Mutates `set`
+ *  in place and returns nothing — callers read the same Set reference back.
+ *  Exported: pure/DOM-free, so a self-check can assert the mutate-in-place
+ *  contract directly. */
+export function toggleSetValue(set, value) {
+  if (set.has(value)) set.delete(value); else set.add(value);
+}
+
+/** Guarded toggle for the barrio Set specifically: `validOptions` is the
+ *  barrio option list CURRENTLY on offer (barrioOptionsFrom's own output,
+ *  reshaped to bare values, or an equivalent Set). Toggling a value that is
+ *  not among those valid options is never silently accepted — it is pruned
+ *  from `barrioSet` (a no-op if it was never there) instead of being toggled
+ *  on. This guards against an invalid state transition (a stale/unknown
+ *  barrio value reaching the filter) even though renderMultiSelect's own
+ *  rendered checkboxes never offer one in practice. Exported: pure, so a
+ *  self-check can assert the no-op/prune behaviour without the DOM. */
+export function toggleBarrioValue(barrioSet, value, validOptions) {
+  const valid = validOptions instanceof Set ? validOptions : new Set(validOptions);
+  if (!valid.has(value)) {
+    barrioSet.delete(value);
+    return;
+  }
+  toggleSetValue(barrioSet, value);
+}
+
+/** Whether the Barrio toggle button should be disabled: true only when no
+ *  comuna is selected. Exported: pure, so a self-check can assert both
+ *  states without the DOM. */
+export function barrioDisabledFor(comunaSet) {
+  return !comunaSet || comunaSet.size === 0;
+}
+
+/** Default (empty) filters shape — a fresh Set instance for comuna/barrio on
+ *  every call, never a shared reference, so a reset/reload can't hand back a
+ *  Set some other closure still holds and mutates later. Exported so
+ *  data-uas-reload and the initial `filters` declaration share exactly one
+ *  definition, and so a self-check can assert the fresh-Set contract without
+ *  the DOM. */
+export function defaultUasFilters() {
+  return { search: '', comuna: new Set(), barrio: new Set() };
+}
+
+/** Whether any filter is currently narrowing the view — drives "Reiniciar
+ *  filtros"' enabled/disabled + soft-orange state, same contract as
+ *  evaluaciones.js's hasActiveEvalFilters. Tolerant of a partial/malformed
+ *  filters object so it can never throw mid-render. Exported so a self-check
+ *  can cover the no-filters/one-filter/cleared-back-to-none transitions
+ *  without the DOM. */
+export function hasActiveUasFilters(filters) {
+  if (!filters) return false;
+  // F9: a whitespace-only search string must not read as active — it never
+  // actually narrows anything (matchesSearch treats it as "no filtering"
+  // too), so the reset button must agree or it sits enabled with nothing
+  // real for it to reset.
+  return Boolean(
+    (filters.search && filters.search.trim())
+    || (filters.comuna && filters.comuna.size)
+    || (filters.barrio && filters.barrio.size),
+  );
+}
+
+/** Counts of the CURRENTLY FILTERED rows grouped by resolved _comuna,
+ *  alphabetical with "Sin dato" last — backs the "Vuelos por comuna" chart.
+ *  Exported: pure, so a self-check can assert the sort/Sin dato-last/empty
+ *  cases without the DOM. */
+export function vuelosPorComunaData(rows) {
+  const counts = new Map();
+  for (const row of rows) {
+    const key = row._comuna || '__sin_dato__';
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  const known = [...counts.keys()].filter((k) => k !== '__sin_dato__').sort();
+  const keys = counts.has('__sin_dato__') ? [...known, '__sin_dato__'] : known;
+  return {
+    labels: keys.map((k) => (k === '__sin_dato__' ? 'Sin dato' : k)),
+    data: keys.map((k) => counts.get(k)),
+  };
+}
+
+/** Stable key for a SET of `_idx` values: deduped, sorted numerically, then
+ *  joined — so two idx collections with the same MEMBERS produce the exact
+ *  same key regardless of iteration order or duplicate entries. Tolerant of
+ *  a null/undefined iterable (reads as the empty set). Exported: pure, so a
+ *  self-check can assert it directly. */
+export function visibleSetKey(idxIterable) {
+  return [...new Set(idxIterable || [])].sort((a, b) => a - b).join(',');
+}
+
+/** Whether the SET of visible `_idx` values actually changed between two
+ *  renders (F6) — compares by visibleSetKey, so order and duplicate
+ *  membership never count as a change, only real membership does. Backs
+ *  updateMapVisibility's fitBounds dedupe: a filter change that doesn't
+ *  actually change WHICH markers are visible (or a re-render with the exact
+ *  same visible set, e.g. the initial-load double-fit) skips the redundant
+ *  recompute entirely. Exported: pure, so a self-check can assert every
+ *  transition without Leaflet or the DOM. */
+export function visibleSetChanged(prevIdx, nextIdx) {
+  return visibleSetKey(prevIdx) !== visibleSetKey(nextIdx);
+}
+
+/* ------------------------------------------------------------------ */
 /* Shell                                                               */
 /* ------------------------------------------------------------------ */
 
 let colorVar = 'estado_edificacion';
 let map = null;
 let baseTile = null;
+let basemapToggle = null;
 const charts = new Map();
 let rootRef = null;
 // Set when a themechange re-render was skipped because the tab was hidden —
 // Leaflet mis-fits a display:none 0×0 container. Consumed on the next
 // initVuelosUasTab call with the tab visible.
 let vuelosDirty = false;
+
+// Full, geo-resolved, unfiltered row set from the last renderVuelos() —
+// each row carries its own `_idx` (stable position here) so a FILTERED
+// subset can still address its marker/list-row identity. comunaMap is
+// rebuilt alongside it. `filters` persists across a plain re-render (theme
+// change, tab reopen) and is only reset back to defaultUasFilters() by the
+// "Actualizar" reload handler — see requirement 8 in the task/spec.
+let allRows = [];
+let comunaMap = new Map();
+let filters = defaultUasFilters();
+// Multiselect handles, so a comuna toggle can refresh its own control and
+// re-mount the barrio one (whose OPTIONS list itself changes) — same recipe
+// as evaluaciones.js's comunaHandle/barrioHandle.
+let comunaHandle = null;
+let barrioHandle = null;
 
 function shellHtml() {
   return `
@@ -225,6 +544,7 @@ function destroyCharts() {
 function teardownMap() {
   if (map) { map.remove(); map = null; }
   baseTile = null;
+  basemapToggle = null;
 }
 
 // Basemap + chart colors are baked at construction; rebuild on theme change,
@@ -235,6 +555,7 @@ if (typeof document !== 'undefined') {
       map.removeLayer(baseTile);
       baseTile = L.tileLayer(basemapTileUrl(), { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20 }).addTo(map);
       baseTile.bringToBack();
+      if (basemapToggle) basemapToggle.notifyStreetLayerRecreated();
     }
     if (!rootRef || !featuresCache) return;
     const sec = rootRef.querySelector('[data-uas-section]');
@@ -272,7 +593,11 @@ export function initVuelosUasTab(root) {
 async function loadVuelos(sectionEl) {
   sectionEl.innerHTML = '<p class="sticker-loading">Cargando vuelos UAS…</p>';
   try {
-    fetchPromise = fetchPromise || fetchCapa();
+    // Comuna/barrio resolved once per fetch, before caching — every render
+    // after this reads row._comuna/row._barrio straight off featuresCache,
+    // never re-resolving. A failed geojson fetch degrades to null/null per
+    // row (resolveRowsGeo/resolveGeoFor above) rather than failing the load.
+    fetchPromise = fetchPromise || fetchCapa().then((rows) => resolveRowsGeo(rows));
     featuresCache = await fetchPromise;
     loadErrored = false;
     renderVuelos(sectionEl);
@@ -301,7 +626,9 @@ function kpisHtml(rows, grupos) {
   const pct = (n) => (total ? Math.round((n / total) * 100) : 0);
   // Colapsos count edificaciones (grouped by dirección), not flights — the
   // same building flown 3 times is one collapse, at its worst observed state.
-  const porEstado = (estado) => grupos.filter((idxs) => worstEstado(idxs.map((i) => rows[i])) === estado).length;
+  // `grupos` is already an array of ROW arrays (buildGrupos), so worstEstado
+  // takes each group directly — no index->row mapping needed.
+  const porEstado = (estado) => grupos.filter((members) => worstEstado(members) === estado).length;
   const colTotal = porEstado('colapso_total');
   const colParcial = porEstado('colapso_parcial');
   const riesgo = rows.filter((r) => code(r.estado_edificacion) === 'riesgo_caida').length;
@@ -341,19 +668,23 @@ const FOTOS_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" 
 
 /** Row card, same recipe as Acciones' accionRowHtml: dot + place first line,
  *  meta lines below, and the Drive link as a SIBLING of .eval-row inside
- *  .ps-row-wrap (link-in-button is invalid HTML). */
-function vueloRowHtml(row, i) {
+ *  .ps-row-wrap (link-in-button is invalid HTML). `row._idx` (assigned once
+ *  in renderVuelos, over the FULL unfiltered row set) addresses this row's
+ *  marker directly, so a filtered/regrouped render still points at the
+ *  right marker without renumbering. */
+function vueloRowHtml(row) {
   const color = colorFor('estado_edificacion', row.estado_edificacion);
   const drive = driveLink(row.enlace_drive);
   const folder = driveFolderId(drive);
   return `
     <li>
       <div class="ps-row-wrap">
-        <button type="button" class="eval-row" data-uas-row="${i}">
+        <button type="button" class="eval-row" data-uas-row="${row._idx}">
           <span class="eval-dot" style="background:${color}" aria-hidden="true" title="${escapeHtml(label(row.estado_edificacion))}"></span>
           <span class="eval-name">${escapeHtml(row.lugar || `Vuelo ${row.objectid}`)}</span>
           <span class="eval-meta">${escapeHtml(formatDia(row.dia_captura))} · ${escapeHtml(label(row.estado_edificacion))}</span>
           <span class="eval-meta">${escapeHtml(tokens(row.origen).map(label).join(' · ') || 'Sin origen')}</span>
+          <span class="eval-meta">Comuna: ${escapeHtml(row._comuna || 'Sin dato')} · Barrio: ${escapeHtml(row._barrio || 'Sin dato')}</span>
         </button>
         ${folder ? `<button type="button" class="btn-icon" data-uas-fotos="${folder}" data-uas-lugar="${escapeHtml(row.lugar || `Vuelo ${row.objectid}`)}" title="Ver fotos del vuelo" aria-label="Ver fotos del vuelo">${FOTOS_ICON}</button>` : ''}
         ${drive ? `<a class="btn-icon" href="${escapeHtml(drive)}" target="_blank" rel="noopener" title="Abrir carpeta de Google Drive" aria-label="Abrir carpeta de Google Drive">${DRIVE_ICON}</a>` : ''}
@@ -363,10 +694,11 @@ function vueloRowHtml(row, i) {
 
 /** One <li> per edificación: a single flight reuses vueloRowHtml as-is; a
  *  multi-flight building renders a stacked <details> card whose summary
- *  carries the worst estado and expands to the individual flight rows. */
-function grupoHtml(indices, rows) {
-  if (indices.length === 1) return vueloRowHtml(rows[indices[0]], indices[0]);
-  const members = indices.map((i) => rows[i]);
+ *  carries the worst estado and expands to the individual flight rows.
+ *  `members` is an array of ROW OBJECTS (buildGrupos' own output), each
+ *  already carrying its `_idx`. */
+function grupoHtml(members) {
+  if (members.length === 1) return vueloRowHtml(members[0]);
   const estado = worstEstado(members);
   const color = colorFor('estado_edificacion', estado);
   const diasGrupo = [...new Set(members.map((r) => diaKey(r.dia_captura)).filter(Boolean))].sort();
@@ -383,7 +715,7 @@ function grupoHtml(indices, rows) {
           <span class="eval-meta">${escapeHtml(rango)} · ${escapeHtml(label(estado))}</span>
           <span class="eval-meta">${members.length} vuelos — clic para explorar</span>
         </summary>
-        <ul class="eval-list uas-grupo-list">${indices.map((i) => vueloRowHtml(rows[i], i)).join('')}</ul>
+        <ul class="eval-list uas-grupo-list">${members.map((row) => vueloRowHtml(row)).join('')}</ul>
       </details>
     </li>`;
 }
@@ -399,6 +731,8 @@ function popupHtml(row) {
       <div class="uas-popup-title">${escapeHtml(row.lugar || `Vuelo ${row.objectid}`)}</div>
       <div class="uas-popup-line">${escapeHtml(formatDia(row.dia_captura))}</div>
       ${line('Estado', chip('estado_edificacion', row.estado_edificacion))}
+      ${line('Comuna', escapeHtml(row._comuna || 'Sin dato'))}
+      ${line('Barrio', escapeHtml(row._barrio || 'Sin dato'))}
       ${row.confirmacion ? line('Confirmación', chip('confirmacion', row.confirmacion)) : ''}
       ${row.definicion ? line('Definición', chip('definicion', row.definicion)) : ''}
       ${line('Origen', escapeHtml([origen, row.origen_otro].filter(Boolean).join(' — ')) || '')}
@@ -410,20 +744,31 @@ function popupHtml(row) {
     </div>`;
 }
 
-function renderVuelos(sectionEl) {
-  destroyCharts();
-  teardownMap();
-
-  const rows = [...featuresCache].sort((a, b) => String(diaKey(b.dia_captura) || '').localeCompare(String(diaKey(a.dia_captura) || '')));
-  const conDrive = rows.filter((r) => driveLink(r.enlace_drive)).length;
-  const grupos = buildGrupos(rows);
-
-  sectionEl.innerHTML = `
+/** The section's static shell: search bar, comuna/barrio filter containers,
+ *  chart tiles, map + list workspace, ArcGIS embed, fotos modal. Built once
+ *  per renderVuelos() call (load/reload/themechange) — a filter change never
+ *  touches this again (see renderFilteredVuelos), so an open comuna/barrio
+ *  dropdown or a mid-typed search value is never yanked out from under the
+ *  user. KPI row and list start empty; renderFilteredVuelos fills them. */
+function sectionShellHtml() {
+  return `
     <div class="section-bar">
       <h3 class="section-bar-title">Capa «relacion_vuelos_uas_sismo_cali»</h3>
       <button type="button" class="sticker-action" data-uas-reload>Actualizar</button>
+      <button type="button" class="btn-clear" data-uas-reset-filters disabled>Reiniciar filtros</button>
     </div>
-    <div class="kpi-row">${kpisHtml(rows, grupos)}</div>
+    <div class="kpi-row" data-uas-kpis></div>
+
+    <div class="eval-filters">
+      <div class="asignacion-search">
+        <input type="search" data-uas-search class="sticker-search-input"
+          placeholder="Buscar…" aria-label="Buscar vuelos">
+      </div>
+      <div class="card-toolbar asignacion-filters">
+        <div class="filter-block" data-uas-comuna-filter></div>
+        <div class="filter-block" data-uas-barrio-filter></div>
+      </div>
+    </div>
 
     <div class="stats-grid">
       <div class="chart-tile"><h3 class="chart-tile-title">Estado de la edificación</h3><canvas id="uas-chart-estado"></canvas></div>
@@ -431,6 +776,7 @@ function renderVuelos(sectionEl) {
       <div class="chart-tile"><h3 class="chart-tile-title">Productos capturados</h3><canvas id="uas-chart-productos"></canvas></div>
       <div class="chart-tile chart-tile-wide"><h3 class="chart-tile-title">Confirmación en campo</h3><canvas id="uas-chart-confirmacion"></canvas></div>
       <div class="chart-tile chart-tile-wide"><h3 class="chart-tile-title">Origen del vuelo</h3><canvas id="uas-chart-origen"></canvas></div>
+      <div class="chart-tile chart-tile-wide"><h3 class="chart-tile-title">Vuelos por comuna</h3><canvas id="uas-chart-comuna"></canvas></div>
       <div class="chart-tile chart-tile-wide"><h3 class="chart-tile-title">Vuelos por día de captura (acumulado)</h3><canvas id="uas-chart-dia"></canvas></div>
     </div>
 
@@ -444,9 +790,9 @@ function renderVuelos(sectionEl) {
         <div class="eval-aside">
           <div class="eval-aside-head">
             <h4>Relación de vuelos</h4>
-            <span class="eval-toolbar-meta">${rows.length} vuelos · ${grupos.length} edificaciones · ${conDrive} con Drive</span>
+            <span class="eval-toolbar-meta" data-uas-list-meta></span>
           </div>
-          <ul class="eval-list" data-uas-list>${grupos.map((idxs) => grupoHtml(idxs, rows)).join('')}</ul>
+          <ul class="eval-list" data-uas-list></ul>
         </div>
       </div>
     </section>
@@ -472,11 +818,121 @@ function renderVuelos(sectionEl) {
         <div class="modal-body uas-fotos-body" data-uas-fotos-body></div>
       </div>
     </div>`;
+}
+
+/** Re-mounted (not just re-populated) whenever comunaMap itself is rebuilt
+ *  (a load/reload) — so this is only called from renderVuelos. Toggling a
+ *  comuna just mutates the Set and refreshes in place; barrio depends on
+ *  WHICH comunas are selected, so every toggle here re-mounts IT (mountBarrio
+ *  below), same split evaluaciones.js's mountComuna/mountBarrio use. */
+function mountComuna(sectionEl) {
+  const root = sectionEl.querySelector('[data-uas-comuna-filter]');
+  comunaHandle = renderMultiSelect(root, {
+    field: 'comuna',
+    label: 'Comuna',
+    options: comunaOptionsFrom(comunaMap),
+    selectedSet: filters.comuna,
+    onToggle: (value) => {
+      toggleSetValue(filters.comuna, value);
+      filters.barrio = pruneInvalidBarrios(filters.barrio, filters.comuna, comunaMap);
+      comunaHandle.refresh();
+      mountBarrio(sectionEl);
+      renderFilteredVuelos(sectionEl);
+    },
+  });
+}
+
+/** Barrio's own OPTIONS list changes on every comuna toggle (union across
+ *  selected comunas), so this is re-mounted there too — never the whole
+ *  filter row/search box, only this one `.filter-block`. renderMultiSelect
+ *  has no disabled state of its own, so the toggle button's `.disabled` is
+ *  set directly, same idea evaluaciones.js's mountBarrio uses. Guarded
+ *  against toggling a value that fell out of the current options
+ *  (toggleBarrioValue), even though the rendered checkboxes never actually
+ *  offer one. */
+function mountBarrio(sectionEl) {
+  const root = sectionEl.querySelector('[data-uas-barrio-filter]');
+  const options = barrioOptionsFrom(comunaMap, filters.comuna);
+  barrioHandle = renderMultiSelect(root, {
+    field: 'barrio',
+    label: 'Barrio',
+    options,
+    selectedSet: filters.barrio,
+    onToggle: (value) => {
+      toggleBarrioValue(filters.barrio, value, options.map((o) => o.value));
+      barrioHandle.refresh();
+      renderFilteredVuelos(sectionEl);
+    },
+  });
+  const toggleBtn = root.querySelector('.filter-toggle');
+  if (toggleBtn) toggleBtn.disabled = barrioDisabledFor(filters.comuna);
+}
+
+/** Mounts the static shell ONCE per load/reload/theme-change: search input,
+ *  comuna/barrio dropdown containers, chart canvases, and the Leaflet map
+ *  (built from the FULL unfiltered `allRows`, every marker mounted once —
+ *  see renderCapaMap). A filter change afterwards only calls
+ *  renderFilteredVuelos(), never this function again. */
+function renderVuelos(sectionEl) {
+  destroyCharts();
+  teardownMap();
+
+  allRows = [...featuresCache]
+    .sort((a, b) => String(diaKey(b.dia_captura) || '').localeCompare(String(diaKey(a.dia_captura) || '')))
+    .map((row, i) => ({ ...row, _idx: i }));
+  comunaMap = comunaBarrioMap(allRows);
+  // Same "keep filters in sync with what's actually offered" rule
+  // evaluaciones.js's load() applies: a comuna/barrio no longer present in
+  // the freshly (re)loaded data is dropped, not silently kept as a stale
+  // filter that can never match anything again.
+  filters.comuna = pruneToValid(filters.comuna, comunaMap.keys());
+  filters.barrio = pruneInvalidBarrios(filters.barrio, filters.comuna, comunaMap);
+
+  sectionEl.innerHTML = sectionShellHtml();
+
+  // Search input — mounted once here, never rebuilt by a filter change.
+  // Declared up here (F10, pure reordering) so it's available to the reload/
+  // reset handlers below without relying on their callbacks running after
+  // this line has executed (they always do — this is just for readability).
+  const searchInput = sectionEl.querySelector('[data-uas-search]');
+  // F6: renderFilteredVuelos is the expensive part on 2046+ rows, not the
+  // filter-state update — filters.search is updated SYNCHRONOUSLY on every
+  // keystroke below (no perceived input lag, and any other control reading
+  // filters.search always sees the latest typed text), only the re-render
+  // itself is debounced by 180ms.
+  const debouncedRenderFilteredVuelos = debounce(() => renderFilteredVuelos(sectionEl), 180);
 
   sectionEl.querySelector('[data-uas-reload]').addEventListener('click', () => {
+    // A stale pending debounced render (from a search keystroke right
+    // before clicking Actualizar) must never stomp the freshly (re)loaded
+    // data once it lands — same rationale as F4's debouncedRenderFiltered
+    // cancellation in evaluaciones.js.
+    debouncedRenderFilteredVuelos.cancel();
     featuresCache = null;
     loadErrored = false;
+    filters = defaultUasFilters();
+    // F3: a reload must retry geo resolution from scratch, not keep serving
+    // whatever this session's cache (successes AND any not-yet-evicted
+    // failures) already holds.
+    geoCache.clear();
     loadVuelos(sectionEl);
+  });
+
+  // "Reiniciar filtros": back to defaultUasFilters() and re-render through
+  // the exact same paths every individual control already uses — mountComuna/
+  // mountBarrio (not a manual DOM sync) so any open dropdown panel is closed
+  // and rebuilt against the now-empty Sets, then renderFilteredVuelos() for
+  // KPIs/list/map/charts. Never touches colorVar (display mode, out of scope).
+  sectionEl.querySelector('[data-uas-reset-filters]').addEventListener('click', () => {
+    // Same stale-render guard as the reload handler above: a pending
+    // debounced search render must never re-apply old search text after the
+    // reset already cleared it.
+    debouncedRenderFilteredVuelos.cancel();
+    filters = defaultUasFilters();
+    searchInput.value = '';
+    mountComuna(sectionEl);
+    mountBarrio(sectionEl);
+    renderFilteredVuelos(sectionEl);
   });
 
   sectionEl.querySelector('[data-uas-color-group]').addEventListener('click', (e) => {
@@ -493,6 +949,8 @@ function renderVuelos(sectionEl) {
 
   // Row click -> fly to the marker and open its popup. The Drive link is a
   // sibling <a>, so it navigates on its own without touching the map.
+  // `[data-uas-list]` itself is only ever innerHTML-replaced (renderFiltered
+  // Vuelos), never re-created, so this delegated listener keeps working.
   sectionEl.querySelector('[data-uas-list]').addEventListener('click', (e) => {
     const rowBtn = e.target.closest('[data-uas-row]');
     if (!rowBtn) return;
@@ -500,6 +958,12 @@ function renderVuelos(sectionEl) {
     if (!entry) { showToast('Este vuelo no tiene coordenadas.', 'error'); return; }
     map.flyTo(entry.marker.getLatLng(), Math.max(map.getZoom(), 16));
     entry.marker.openPopup();
+  });
+
+  searchInput.value = filters.search;
+  searchInput.addEventListener('input', () => {
+    filters = { ...filters, search: searchInput.value };
+    debouncedRenderFilteredVuelos();
   });
 
   // "Ver fotos" -> in-app carousel (or the Drive folder grid fallback) in a
@@ -521,8 +985,113 @@ function renderVuelos(sectionEl) {
     if (btn) openFotos(btn.dataset.uasFotos, btn.dataset.uasLugar);
   };
 
-  renderCapaMap(rows);
-  renderCharts(rows);
+  // Comuna/barrio dropdowns: mounted once here (load/reload/theme-change).
+  // A comuna toggle re-mounts ONLY these two `.filter-block`s (see
+  // mountComuna/mountBarrio above), never the search input or anything else
+  // in the shell — so an open panel is never yanked shut mid-interaction.
+  mountComuna(sectionEl);
+  mountBarrio(sectionEl);
+
+  // Map built ONCE from the FULL, unfiltered, geo-resolved row set — every
+  // marker mounted once. A filter change never calls renderCapaMap again
+  // (no teardownMap/re-init of Leaflet, no re-fetch of tiles); it only
+  // shows/hides the already-built markers — see updateMapVisibility.
+  renderCapaMap(allRows);
+
+  renderFilteredVuelos(sectionEl);
+}
+
+/** Recomputed from applyUasFilters(allRows, filters) on every filter change
+ *  (search input, comuna/barrio toggle) — the ONLY thing a filter change
+ *  calls. Never touches the map instance, the search input, or the
+ *  comuna/barrio dropdown containers themselves: only this function's own
+ *  targets (KPI row innerHTML, list innerHTML, chart canvases via upsert(),
+ *  and marker visibility) are replaced. */
+function renderFilteredVuelos(sectionEl) {
+  const filtered = applyUasFilters(allRows, filters);
+  const grupos = buildGrupos(filtered);
+  const conDrive = filtered.filter((r) => driveLink(r.enlace_drive)).length;
+
+  // Every filter control (search, comuna/barrio toggles, and the reset
+  // button itself) funnels through this one function — updating the reset
+  // button's enabled/disabled + soft-orange state here (rather than
+  // duplicating the check in each handler) means it can never drift out of
+  // sync, e.g. after deselecting the last comuna chip by hand.
+  const resetBtn = sectionEl.querySelector('[data-uas-reset-filters]');
+  if (resetBtn) {
+    const active = hasActiveUasFilters(filters);
+    resetBtn.disabled = !active;
+    resetBtn.classList.toggle('is-filter-active', active);
+  }
+
+  const kpisEl = sectionEl.querySelector('[data-uas-kpis]');
+  if (kpisEl) kpisEl.innerHTML = kpisHtml(filtered, grupos);
+
+  const listMetaEl = sectionEl.querySelector('[data-uas-list-meta]');
+  if (listMetaEl) listMetaEl.textContent = `${filtered.length} vuelos · ${grupos.length} edificaciones · ${conDrive} con Drive`;
+
+  const listEl = sectionEl.querySelector('[data-uas-list]');
+  if (listEl) {
+    if (!filtered.length) {
+      listEl.innerHTML = allRows.length
+        ? '<li class="eval-empty">Ningún vuelo coincide con los filtros aplicados.</li>'
+        : '<li class="eval-empty">Todavía no hay vuelos registrados.</li>';
+    } else {
+      listEl.innerHTML = grupos.map((members) => grupoHtml(members)).join('');
+    }
+  }
+
+  updateMapVisibility(filtered);
+  renderCharts(filtered);
+}
+
+// Visible marker SET (by `_idx`) as of the last updateMapVisibility/
+// renderCapaMap call (F6) — lets a filter change that doesn't actually
+// change WHICH markers are visible (or the initial renderCapaMap fit
+// immediately followed by this same function, the old double-fit-on-load
+// bug) skip the redundant fitBounds recompute. Seeded by renderCapaMap.
+let lastVisibleKey = null;
+
+/** Shows/hides the already-built markers (see renderCapaMap) to match the
+ *  currently filtered rows, then re-fits bounds to whichever are visible —
+ *  never re-creates the map or re-adds tiles. `entry.row._idx` is the same
+ *  stable id vueloRowHtml/[data-uas-row] address, so this stays correct
+ *  across filter changes and regrouping.
+ *
+ *  F6: the fitBounds recompute is skipped entirely when the visible marker
+ *  SET (compared via visibleSetKey, order/duplicate-insensitive — see
+ *  visibleSetChanged's own doc comment) is the same as last time — a
+ *  comuna/barrio toggle that doesn't change which rows are visible, or two
+ *  renders back-to-back on the same data, no longer re-fit for zero visible
+ *  change. Also applies the CALI_BBOX sanity
+ *  filter to what fitBounds computes FROM: markers still show/hide exactly
+ *  as before regardless of the box, only the bounds computation excludes a
+ *  bad/corrupt out-of-bbox coordinate so it can't blow the zoom out to show
+ *  the whole world. */
+function updateMapVisibility(filtered) {
+  if (!map) return;
+  const visibleIdx = new Set(filtered.map((r) => r._idx));
+  const visibleMarkerIdx = [];
+  const inBboxMarkers = [];
+  for (const entry of markers) {
+    if (!entry) continue;
+    if (visibleIdx.has(entry.row._idx)) {
+      if (!map.hasLayer(entry.marker)) entry.marker.addTo(map);
+      visibleMarkerIdx.push(entry.row._idx);
+      if (inCaliBbox(entry.row._lat, entry.row._lng)) inBboxMarkers.push(entry.marker);
+    } else if (map.hasLayer(entry.marker)) {
+      map.removeLayer(entry.marker);
+    }
+  }
+  const nextKey = visibleSetKey(visibleMarkerIdx);
+  if (nextKey === lastVisibleKey) return; // same visible SET as last time -> skip the redundant fitBounds recompute
+  lastVisibleKey = nextKey;
+  // No in-bbox visible marker (every visible point corrupt/far away, or
+  // nothing visible at all) — leave the current pan/zoom rather than
+  // fitting to garbage coordinates or the whole world.
+  if (inBboxMarkers.length) {
+    map.fitBounds(L.latLngBounds(inBboxMarkers.map((m) => m.getLatLng())), { padding: [40, 40], maxZoom: 16 });
+  }
 }
 
 // Destroy handle for the currently-mounted carousel (its keydown listener
@@ -555,12 +1124,18 @@ function openFotos(folderId, lugar) {
 /* Map                                                                 */
 /* ------------------------------------------------------------------ */
 
-// Sparse array indexed like `rows` so list rows address their marker directly.
+// Sparse array indexed by row._idx (stable across filter changes) so list
+// rows address their marker directly.
 let markers = [];
 
+/** Builds the map and every marker ONCE, from the FULL unfiltered `rows`
+ *  (allRows) — called only from renderVuelos (load/reload/theme-change),
+ *  never on a filter change. updateMapVisibility() is what shows/hides
+ *  markers afterwards without touching the map instance or re-adding tiles. */
 function renderCapaMap(rows) {
   map = L.map('uas-capa-map', { zoomControl: true, minZoom: 10, maxZoom: 18 }).setView(CALI_CENTER, CALI_ZOOM);
   baseTile = L.tileLayer(basemapTileUrl(), { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20 }).addTo(map);
+  basemapToggle = createBasemapToggle(map, { getStreetLayer: () => baseTile });
 
   // Leaflet popups stop click propagation, so the section-level delegation
   // never sees popup buttons — bind directly each time a popup opens.
@@ -570,7 +1145,7 @@ function renderCapaMap(rows) {
   });
 
   markers = [];
-  rows.forEach((row, i) => {
+  rows.forEach((row) => {
     if (!Number.isFinite(row._lat) || !Number.isFinite(row._lng)) return;
     const marker = L.circleMarker([row._lat, row._lng], {
       radius: 8, color: '#0B1D33', weight: 1, fillOpacity: 0.9,
@@ -579,7 +1154,7 @@ function renderCapaMap(rows) {
     marker.bindTooltip(escapeHtml(row.lugar || `Vuelo ${row.objectid}`));
     marker.bindPopup(popupHtml(row), { maxWidth: 300 });
     marker.addTo(map);
-    markers[i] = { marker, row };
+    markers[row._idx] = { marker, row };
   });
 
   const legend = L.control({ position: 'bottomright' });
@@ -593,9 +1168,21 @@ function renderCapaMap(rows) {
   legend.addTo(map);
 
   const placed = markers.filter(Boolean);
-  if (placed.length) {
-    map.fitBounds(L.latLngBounds(placed.map(({ marker }) => marker.getLatLng())), { padding: [40, 40], maxZoom: 16 });
+  // CALI_BBOX sanity filter (F6), same as updateMapVisibility's own: a bad/
+  // corrupt coordinate must not blow this initial fit out to the whole
+  // world. Falls back to every placed marker only when NONE of them fall
+  // inside the box (nothing better to fit to); otherwise the hardcoded
+  // Cali view from setView() above stays as the last resort.
+  const inBbox = placed.filter(({ row }) => inCaliBbox(row._lat, row._lng));
+  const fitTo = inBbox.length ? inBbox : placed;
+  if (fitTo.length) {
+    map.fitBounds(L.latLngBounds(fitTo.map(({ marker }) => marker.getLatLng())), { padding: [40, 40], maxZoom: 16 });
   }
+  // Seed lastVisibleKey to this full placed set: renderVuelos always calls
+  // renderFilteredVuelos -> updateMapVisibility right after this with the
+  // SAME set (no filters active on a fresh load/reload), so that call's own
+  // fitBounds is skipped as redundant instead of double-fitting on load.
+  lastVisibleKey = visibleSetKey(placed.map(({ row }) => row._idx));
   // The tab may be hidden while this builds; re-measure once painted.
   setTimeout(() => { if (map) map.invalidateSize(); }, 80);
 }
@@ -714,6 +1301,25 @@ function renderCharts(rows) {
 
   tokenBar('uas-chart-productos', rows, 'productos', COLORS.categorical);
   tokenBar('uas-chart-origen', rows, 'origen', COLORS.categoricalWide);
+
+  // Vuelos por comuna: counts of the CURRENTLY FILTERED rows (`rows` here
+  // is always applyUasFilters(allRows, filters)'s own output — see
+  // renderFilteredVuelos), grouped by resolved _comuna. "Sin dato" gets the
+  // neutral unknown color, same convention categoryData/tokenBar already use.
+  const comunaChart = vuelosPorComunaData(rows);
+  upsert('uas-chart-comuna', {
+    type: 'bar',
+    data: {
+      labels: comunaChart.labels,
+      datasets: [{
+        data: comunaChart.data,
+        backgroundColor: comunaChart.labels.map((lbl, i) => (
+          lbl === 'Sin dato' ? COLORS.unknown : COLORS.categorical[i % COLORS.categorical.length]
+        )),
+      }],
+    },
+    options: chartOpts(),
+  });
 
   const dayCounts = new Map();
   for (const r of rows) {
