@@ -246,28 +246,115 @@ export function sectionHtml() {
     </section>`;
 }
 
-/** Which estados get a KPI tile: all six always, "sin dato" only when it
- *  actually happened (same rule as evaluaciones.js's clasesVisibles). */
-function estadosVisibles(counts) {
-  return counts[SIN_ESTADO.key] ? [...ESTADOS, SIN_ESTADO] : ESTADOS;
+// Official KPI order/labels — the ONLY source is the backend's own fetch of
+// GET /api/informe/json?kpis=1 (fetch_kpis in atencionsismo.py), published
+// into reportes_agg.json alongside the agg fields. Never counted client-side
+// from reportes[]: the platform's official numbers are computed server-side
+// over grouped buildings, and a client-side count would silently disagree
+// with them (dedup, pagination, or filtering differences upstream).
+const KPI_OFICIALES_DEF = [
+  { key: 'inmueblesReportados', label: 'inmuebles reportados' },
+  { key: 'reportes', label: 'reportes (según API)' },
+  { key: 'inmueblesVerificados', label: 'inmuebles verificados' },
+  { key: 'pendientes', label: 'pendientes' },
+  { key: 'asignaciones', label: 'asignaciones' },
+  { key: 'asignacionesEspecializadas', label: 'asignaciones especializadas' },
+  { key: 'inmueblesVisitadosNoCriticos', label: 'visitados no críticos' },
+  { key: 'avancePct', label: 'avance' },
+  { key: 'cuadrillasEnCampo', label: 'cuadrillas en campo' },
+  { key: 'cuadrillasEspecializadas', label: 'cuadrillas especializadas' },
+  { key: 'zonaRural', label: 'zona rural' },
+  { key: 'fueraDeCali', label: 'fuera de Cali' },
+];
+
+/** Pure projection of agg.kpis into renderable tiles. Returns null when
+ *  agg.kpis isn't a usable plain object (missing, null, or a non-object —
+ *  including arrays, strings, numbers: `typeof [] === 'object'` so the
+ *  Array.isArray check is required, not redundant) OR when it IS a usable
+ *  object but every single field turned out missing/non-finite (e.g. `{}`,
+ *  or all-string values) — an empty array is truthy, and both kpisCaption
+ *  and kpisHtml test this return value for truthiness, so returning `[]`
+ *  there would silently render a confident-looking caption with zero KPI
+ *  tiles instead of the "unavailable" placeholder (CRITICAL fix). A field
+ *  absent or non-numeric in agg.kpis is simply OMITTED from the result —
+ *  never substituted with 0, which would read as a real (if small) official
+ *  count instead of "the API didn't report this one". Number.isFinite (not
+ *  typeof+isNaN) also rejects Infinity/-Infinity, which is a valid
+ *  `typeof === 'number'` non-NaN value but not a real count either — the
+ *  backend already rejects non-finite via `_coerce_kpi_number`, this keeps
+ *  the frontend consistent with it. avancePct gets its own one-decimal
+ *  "NN,N %" formatting; every other field uses the file's existing es-CO
+ *  thousands-separator convention (see total.toLocaleString calls elsewhere
+ *  in this file). */
+export function kpisOficialesFrom(agg) {
+  const kpis = agg && agg.kpis;
+  if (!kpis || typeof kpis !== 'object' || Array.isArray(kpis)) return null;
+  const out = [];
+  for (const { key, label } of KPI_OFICIALES_DEF) {
+    const value = kpis[key];
+    if (!Number.isFinite(value)) continue;
+    const formatted = key === 'avancePct'
+      ? `${value.toLocaleString('es-CO', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} %`
+      : value.toLocaleString('es-CO');
+    out.push({ key, label, value, formatted });
+  }
+  if (!out.length) return null;
+  return out;
 }
 
-function kpisHtml(list) {
+/** Caption line shown once above/below the official KPI row (never per-tile).
+ *  Priority: nothing usable to show wins outright ("KPIs oficiales no
+ *  disponibles" — no point dating a caption for a row that's about to
+ *  render its own muted placeholder), regardless of whether kpis_error
+ *  happens to be set (WARNING fix: `agg === null`, or an agg with no `kpis`
+ *  key and no error field at all, used to fall through to a misleading
+ *  date-based caption instead); otherwise a stale snapshot gets a warning
+ *  prefix; otherwise a plain "según Atención Sismo · <fecha>". Reuses
+ *  formatFecha's own fallback param for BOTH "no timestamp" and "unparsable
+ *  timestamp" — same tolerant pattern already used for freshnessText below,
+ *  so a malformed kpis_generated_at can never throw. */
+export function kpisCaption(agg) {
+  const oficiales = kpisOficialesFrom(agg);
+  if (!oficiales) return 'KPIs oficiales no disponibles';
+  const fecha = formatFecha(agg && agg.kpis_generated_at, 'fecha desconocida');
+  // "universo completo, no filtrado" only makes sense alongside an actual
+  // (available or stale) official-KPIs reading (fix F9) — it must never be
+  // appended to the "no disponibles" branch above, which returns early and
+  // never reaches this suffix at all.
+  const suffix = ' · universo completo, no filtrado';
+  if (agg && agg.kpis_stale) return `⚠ dato del ${fecha} — la API no respondió en el último refresh${suffix}`;
+  return `según Atención Sismo · ${fecha}${suffix}`;
+}
+
+/** KPI row: the FIRST tile is a neutral, ALWAYS-filtered UI count (`list`,
+ *  i.e. visibles) — not an official KPI, just "what's on screen right now".
+ *  Every other tile comes from kpisOficialesFrom(agg), which is GLOBAL
+ *  (never filtered — the backend fetch has no notion of this tab's filters),
+ *  hence the "universo completo" note in the caption so the two rows are
+ *  never misread as the same kind of number. Accent is uniform/neutral on
+ *  purpose (COLORS.accent, not a per-estado colour): these are counts, not
+ *  verification states, so a semaphore palette here would falsely imply a
+ *  status meaning. Never falls back to counting reportes[] as a substitute
+ *  when agg.kpis is unavailable — the muted placeholder tile is the only
+ *  fallback. */
+function kpisHtml(list, agg) {
   const total = list.length;
-  const counts = contarPor(list, (r) => estadoDe(r).key);
-  const tiles = estadosVisibles(counts).map((e) => `
-    <div class="kpi-tile" style="--kpi-accent:${e.color}">
-      <span class="kpi-label kpi-label-lower">${escapeHtml(e.label)}</span>
-      <span class="kpi-value">${(counts[e.key] || 0).toLocaleString('es-CO')}</span>
-      <div class="kpi-sub-row"><span class="kpi-sub">${pct(counts[e.key] || 0, total)}% del total</span></div>
-    </div>`).join('');
+  const oficiales = kpisOficialesFrom(agg);
+  const oficialesHtml = oficiales
+    ? oficiales.map((k) => `
+      <div class="kpi-tile" style="--kpi-accent:${COLORS.accent}">
+        <span class="kpi-label kpi-label-lower">${escapeHtml(k.label)}</span>
+        <span class="kpi-value">${escapeHtml(k.formatted)}</span>
+      </div>`).join('')
+    : '<div class="kpi-tile is-neutral"><span class="kpi-label kpi-label-lower">KPIs oficiales no disponibles</span></div>';
   return `
     <div class="kpi-tile is-neutral">
       <span class="kpi-label kpi-label-lower">reportes</span>
       <span class="kpi-value">${total.toLocaleString('es-CO')}</span>
       <div class="kpi-sub-row"><span class="kpi-sub">con los filtros aplicados</span></div>
     </div>
-    ${tiles}`;
+    ${oficialesHtml}
+    <div class="eval-toolbar-meta kpi-tile-wide">${escapeHtml(kpisCaption(agg))}</div>`;
 }
 
 function barHtml(list) {
@@ -453,6 +540,11 @@ export function initReportesCiudadanos(root, { fetchReportes }) {
   let todos = [];
   let visibles = [];
   let shown = 0;
+  // The official KPIs snapshot (reportes_agg.json's `kpis`/`kpis_generated_at`/
+  // `kpis_stale`/`kpis_error`) — kept alongside todos/visibles so render() can
+  // re-read it on every filter change even though, unlike todos, it never
+  // itself changes with the filters (see kpisHtml's doc comment).
+  let agg = null;
   const byId = new Map();
 
   const closeModal = () => {
@@ -511,7 +603,7 @@ export function initReportesCiudadanos(root, { fetchReportes }) {
     resetFiltersBtn.classList.toggle('is-filter-active', active);
 
     visibles = applyFiltrosReportes(todos, filtros);
-    kpisEl.innerHTML = kpisHtml(visibles);
+    kpisEl.innerHTML = kpisHtml(visibles, agg);
     barEl.innerHTML = barHtml(visibles);
     renderList(true);
     renderMap('rep-map', visibles, openDetail, { fit: firstMapRender });
@@ -623,8 +715,14 @@ export function initReportesCiudadanos(root, { fetchReportes }) {
     listEl.innerHTML = '';
     countEl.textContent = '';
     try {
-      const { reportes, meta } = await fetchReportes();
+      const fetched = await fetchReportes();
+      const { reportes, meta } = fetched;
+      // Guard FIRST, THEN touch shared state (finding F4): agg is
+      // module-init-scoped like todos/byId/visibles below, so a stale,
+      // slower init's response must never overwrite it after a newer init
+      // already claimed loadSeq and rendered.
       if (seq !== loadSeq) return;
+      agg = fetched.agg || null;
       if (reportes === null) {
         // Distinguishes "the snapshot isn't published yet" (fetchReportes
         // resolves { reportes: null, ... } when neither the Blob copy nor

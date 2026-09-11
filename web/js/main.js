@@ -268,18 +268,24 @@ function switchView(view) {
   if (view === 'reportes-ciudadanos' && isAdmin()) {
     initReportesCiudadanos(document.getElementById('view-reportes-ciudadanos'), {
       fetchReportes: async () => {
-        const [datosRes, meta] = await Promise.all([
+        const [datosRes, meta, agg] = await Promise.all([
           fetchData('reportes_ciudadanos.json'),
           fetchData('reportes_meta.json').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+          // reportes_agg.json carries the OFFICIAL kpis object the backend
+          // fetches server-side (fetch_kpis in atencionsismo.py) — same
+          // tolerant Blob-first pattern as reportes_meta.json above, so a
+          // missing/unpublished agg snapshot degrades to null (rendered as
+          // "KPIs oficiales no disponibles") instead of throwing.
+          fetchData('reportes_agg.json').then((r) => (r.ok ? r.json() : null)).catch(() => null),
         ]);
         // `reportes: null` distinguishes "the snapshot isn't published yet"
         // (neither the Blob copy nor the deploy fallback answered ok, e.g.
         // the pipeline hasn't run yet on a fresh deploy) from a genuinely
         // empty snapshot ([], a normal — if unlikely — day with zero
         // reports). reportes-ciudadanos.js renders each state differently.
-        if (!datosRes.ok) return { reportes: null, meta };
+        if (!datosRes.ok) return { reportes: null, meta, agg };
         const datos = await datosRes.json();
-        return { reportes: Array.isArray(datos) ? datos : null, meta };
+        return { reportes: Array.isArray(datos) ? datos : null, meta, agg };
       },
     });
   }
