@@ -10,6 +10,7 @@ instead of creating a second fake."""
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from typing import Any
 
@@ -389,3 +390,263 @@ def test_slow_fetch_stickers_times_out_and_is_503_cold(client, monkeypatch):
     resp = client.get("/stickers-atencionsismo")
 
     assert resp.status_code == 503
+
+
+# ── Perf (2026-09-10): build_payload runs the upstream walk and the two
+# Firestore reads concurrently. These tests pin down (a) that they actually
+# overlap in wall-clock time and (b) that every failure combination still
+# raises/serves EXACTLY what the old sequential code did — captured against
+# today's behavior before the refactor, kept green after it. ─────────────
+
+
+class _SlowFakeEvalCache:
+    """Same shape as stickers.EvaluacionesCache's public surface
+    (get_or_fetch + degraded) but with a controllable artificial delay, so a
+    test can prove the Firestore read and the upstream walk overlap instead
+    of running back to back."""
+
+    def __init__(self, delay_s: float = 0.0, degraded: bool = False):
+        self._delay_s = delay_s
+        self.degraded = degraded
+        self.calls = 0
+
+    def get_or_fetch(self, fetch):
+        self.calls += 1
+        time.sleep(self._delay_s)
+        return fetch()
+
+
+def test_build_payload_runs_upstream_and_firestore_concurrently(monkeypatch):
+    # Deterministic proof of concurrency (F2, adversarial review
+    # 2026-09-10) -- NOT a wall-clock race. A `threading.Barrier(2)` that
+    # BOTH to_thread-wrapped stubs (roster + the evaluaciones-cache read)
+    # must reach only unblocks if they are actually running on separate
+    # threads AT THE SAME TIME: a sequential/blocking implementation would
+    # leave the second stub waiting alone and the barrier would time out
+    # and raise `BrokenBarrierError`, failing the test outright. The async
+    # `pull` leg additionally only returns once it has observed (via a
+    # plain `threading.Event`, checked through a bounded, non-blocking
+    # poll) that BOTH threads passed the barrier -- proving `pull` was
+    # scheduled concurrently with the thread tasks too, not run to
+    # completion before they even started. The `asyncio.Event` records that
+    # handshake on the coroutine side for the final assertion.
+    monkeypatch.setattr(atencionsismo, "credentials_from_env", lambda: ("u", "p"))
+
+    barrier = threading.Barrier(2, timeout=2.0)
+    threads_passed_barrier = threading.Event()
+    pull_scheduled = asyncio.Event()
+
+    def blocking_inspector_profiles(db):
+        barrier.wait()
+        threads_passed_barrier.set()
+        return ({}, {})
+
+    class _BarrierEvalCache:
+        degraded = False
+        calls = 0
+
+        def get_or_fetch(self, fetch):
+            self.calls += 1
+            barrier.wait()
+            threads_passed_barrier.set()
+            return fetch()
+
+    async def concurrent_fetch(client, user, password, **kw):
+        pull_scheduled.set()
+        # Bounded poll (a safety-net timeout, not a correctness assertion —
+        # the correctness proof is the Barrier above): if the thread tasks
+        # were never started concurrently with `pull`, they never reach the
+        # barrier and this loop exhausts and fails loudly instead of
+        # hanging.
+        for _ in range(400):
+            if threads_passed_barrier.is_set():
+                return []
+            await asyncio.sleep(0.005)
+        raise AssertionError("pull never observed the thread tasks reach the barrier concurrently")
+
+    monkeypatch.setattr(atencionsismo, "fetch_stickers", concurrent_fetch)
+    monkeypatch.setattr(stickers, "inspector_profiles", blocking_inspector_profiles)
+    monkeypatch.setattr(stickers, "list_evaluaciones", lambda db: [])
+
+    cache = _BarrierEvalCache()
+    payload = router_mod.build_payload(db=object(), evaluaciones_cache=cache)
+
+    assert payload == []
+    assert pull_scheduled.is_set()
+    assert cache.calls == 1
+
+
+def test_upstream_failure_takes_priority_over_independent_firestore_failure(monkeypatch):
+    # Old sequential code: the walk ran FIRST, so an upstream failure meant
+    # the Firestore reads were never even attempted — only the upstream
+    # error ever surfaced. New concurrent code must reproduce that exact
+    # priority even though the Firestore read is independently also
+    # failing: the caller (the route) should still see the upstream's
+    # ApiUnavailableError -> 503, never a Firestore-error-shaped 502.
+    monkeypatch.setattr(atencionsismo, "credentials_from_env", lambda: ("u", "p"))
+
+    async def boom_fetch(client, user, password, **kw):
+        raise atencionsismo.ApiUnavailableError("upstream down")
+
+    monkeypatch.setattr(atencionsismo, "fetch_stickers", boom_fetch)
+    monkeypatch.setattr(stickers, "inspector_profiles", lambda db: (_ for _ in ()).throw(RuntimeError("roster boom")))
+    monkeypatch.setattr(stickers, "list_evaluaciones", lambda db: [])
+
+    cache = _SlowFakeEvalCache()
+    with pytest.raises(atencionsismo.ApiUnavailableError):
+        router_mod.build_payload(db=object(), evaluaciones_cache=cache)
+
+
+def test_upstream_failure_never_waits_for_or_consumes_slow_firestore_reads(monkeypatch):
+    # F1 fail-fast (adversarial review, 2026-09-10): on a pull failure,
+    # build_payload must behave like the OLD sequential code, which never
+    # even reached the two Firestore reads. Both stubs block on a
+    # `threading.Event` that this test only releases in `finally`, AFTER
+    # the assertions below already ran -- so if build_payload incorrectly
+    # awaited either result, this test would hang (up to the generous
+    # per-wait timeout) instead of returning immediately, and the
+    # "never consumed" assertion would already have been proven false by
+    # the time control got here.
+    monkeypatch.setattr(atencionsismo, "credentials_from_env", lambda: ("u", "p"))
+
+    async def boom_fetch(client, user, password, **kw):
+        raise atencionsismo.ApiUnavailableError("upstream down", status=503)
+
+    monkeypatch.setattr(atencionsismo, "fetch_stickers", boom_fetch)
+
+    roster_event = threading.Event()
+    firestore_event = threading.Event()
+    firestore_fetch_called = {"value": False}
+
+    def blocking_inspector_profiles(db):
+        roster_event.wait(timeout=3)
+        return ({}, {})
+
+    class _BlockingEvalCache:
+        degraded = False
+
+        def get_or_fetch(self, fetch):
+            firestore_event.wait(timeout=3)
+            # Only reached once the event is released (in `finally`,
+            # after every assertion below already ran) -- proves
+            # build_payload's failure path never waited for, and never
+            # consumed, this result.
+            firestore_fetch_called["value"] = True
+            return fetch()
+
+    monkeypatch.setattr(stickers, "inspector_profiles", blocking_inspector_profiles)
+
+    try:
+        with pytest.raises(atencionsismo.ApiUnavailableError) as excinfo:
+            router_mod.build_payload(db=object(), evaluaciones_cache=_BlockingEvalCache())
+        # Same error/status as before the fix: a bare upstream failure
+        # still surfaces as the exact ApiUnavailableError pull raised.
+        assert str(excinfo.value) == "upstream down"
+        assert excinfo.value.status == 503
+        # Reaching this line proves get_or_fetch's blocking call was never
+        # awaited/consumed by build_payload -- it is still parked on
+        # firestore_event.wait() right now.
+        assert firestore_fetch_called["value"] is False
+    finally:
+        roster_event.set()
+        firestore_event.set()
+
+
+def test_upstream_failure_of_an_unexpected_exception_type_still_cancels_firestore_reads(monkeypatch):
+    # Edge case: the fail-fast cancellation must not be special-cased to
+    # the atencionsismo.Api*Error family -- ANY exception raised by the
+    # pull leg (including one none of the four known types) must still
+    # short-circuit before the Firestore reads are consumed.
+    monkeypatch.setattr(atencionsismo, "credentials_from_env", lambda: ("u", "p"))
+
+    async def boom_fetch(client, user, password, **kw):
+        raise ValueError("unexpected upstream shape")
+
+    monkeypatch.setattr(atencionsismo, "fetch_stickers", boom_fetch)
+
+    firestore_event = threading.Event()
+    firestore_fetch_called = {"value": False}
+
+    monkeypatch.setattr(stickers, "inspector_profiles", lambda db: ({}, {}))
+
+    class _BlockingEvalCache:
+        degraded = False
+
+        def get_or_fetch(self, fetch):
+            firestore_event.wait(timeout=3)
+            firestore_fetch_called["value"] = True
+            return fetch()
+
+    try:
+        with pytest.raises(ValueError, match="unexpected upstream shape"):
+            router_mod.build_payload(db=object(), evaluaciones_cache=_BlockingEvalCache())
+        assert firestore_fetch_called["value"] is False
+    finally:
+        firestore_event.set()
+
+
+def test_roster_read_failure_surfaces_uncaught_like_before(monkeypatch):
+    # Today: build_payload does not wrap `stickers.inspector_profiles` in
+    # any try/except, so a Firestore error there propagates straight to the
+    # route's generic `except Exception` -> 502 handler. Must still be true
+    # with the concurrent reads.
+    monkeypatch.setattr(atencionsismo, "credentials_from_env", lambda: ("u", "p"))
+
+    async def fake_fetch(client, user, password, **kw):
+        return []
+
+    monkeypatch.setattr(atencionsismo, "fetch_stickers", fake_fetch)
+    monkeypatch.setattr(stickers, "inspector_profiles", lambda db: (_ for _ in ()).throw(RuntimeError("roster boom")))
+    monkeypatch.setattr(stickers, "list_evaluaciones", lambda db: [])
+
+    cache = _SlowFakeEvalCache()
+    with pytest.raises(RuntimeError, match="roster boom"):
+        router_mod.build_payload(db=object(), evaluaciones_cache=cache)
+
+
+def test_firestore_evaluaciones_read_failure_surfaces_uncaught_like_before(monkeypatch):
+    # Same as above, for the OTHER independent Firestore read
+    # (evaluaciones_cache.get_or_fetch) — its own internal serve-stale
+    # handling only shields a bare "the underlying fetch failed" from
+    # raising when it already has a cached payload or a Blob backup; a
+    # cache with NEITHER still raises straight through, exactly like today.
+    monkeypatch.setattr(atencionsismo, "credentials_from_env", lambda: ("u", "p"))
+
+    async def fake_fetch(client, user, password, **kw):
+        return []
+
+    monkeypatch.setattr(atencionsismo, "fetch_stickers", fake_fetch)
+    monkeypatch.setattr(stickers, "inspector_profiles", lambda db: ({}, {}))
+
+    class _BoomEvalCache:
+        degraded = False
+
+        def get_or_fetch(self, fetch):
+            raise RuntimeError("firestore evaluaciones boom")
+
+    with pytest.raises(RuntimeError, match="firestore evaluaciones boom"):
+        router_mod.build_payload(db=object(), evaluaciones_cache=_BoomEvalCache())
+
+
+def test_both_upstream_and_firestore_succeed_builds_payload_as_before(monkeypatch):
+    # Full success path with the concurrent reads still composes the exact
+    # same payload build_evaluaciones would have produced sequentially.
+    monkeypatch.setattr(atencionsismo, "credentials_from_env", lambda: ("u", "p"))
+
+    async def fake_fetch(client, user, password, **kw):
+        return list(ROWS)
+
+    monkeypatch.setattr(atencionsismo, "fetch_stickers", fake_fetch)
+    monkeypatch.setattr(
+        stickers, "inspector_profiles",
+        lambda db: ({"004": {"uid": "u1", "codigo": "004", "np": "P4",
+                              "nombre_completo": "Ana Gomez", "identificacion": "123", "entidad": "Curaduria 1"}}, {}),
+    )
+    monkeypatch.setattr(stickers, "list_evaluaciones", lambda db: [])
+
+    cache = _SlowFakeEvalCache()
+    payload = router_mod.build_payload(db=object(), evaluaciones_cache=cache)
+
+    by_id = {e["id"]: e for e in payload}
+    assert by_id["ev-1"]["inspector"]["np"] == "P4"
+    assert cache.calls == 1
