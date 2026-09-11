@@ -50,3 +50,6 @@ node_modules/
 
 # Bundles locales (p.ej. transferencia de secretos) — nunca commitear
 *.zip
+
+# Local WhatsApp Web browser profile (session credentials) — never commit
+.whatsapp_session/
