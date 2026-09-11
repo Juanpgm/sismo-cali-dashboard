@@ -1,108 +1,26 @@
-// Vercel Serverless Function — live count of citizen reports for the
-// "Reportados" KPI, read straight from the atencionsismo API (informe/json),
-// NOT from the static reportes_agg.json committed by the Railway pipeline.
+// Vercel Serverless Function — RETIRED. This endpoint used to run the live
+// day-walk against the atencionsismo API for the "Reportados" KPI; that
+// logic now lives in the consolidated Railway backend's GET /reportados
+// route (backend/app/routers/reportados.py), which serves from the
+// Blob-persisted snapshot instead of re-walking the upstream API on every
+// request. web/js/api-config.js already points `reportados` at Railway, so
+// nothing in this app calls this relative Vercel path anymore.
 //
-// The API requires HTTP Basic auth, so the browser cannot call it directly;
-// this endpoint is the server hop. The CDN caches the response for 15 minutes
-// (s-maxage=900 + stale-while-revalidate), so the API is re-read at most every
-// 15 min with zero cron jobs, zero commits and zero redeploys.
+// The handler below only answers 410 Gone so any stray caller (an old
+// bookmark, a stale client build) gets a clear, explained signal instead of
+// a confusing 404 or a half-working legacy response.
 //
-// The API 504s on the full history in one request and 413s on the densest
-// days, so — same algorithm as scripts/fetch_reportes_api.py — we walk the
-// range in day windows and split any window that still 413/504s, down to the
-// minute. Only id + estadoVerificacion are kept: this endpoint counts, it
-// never republishes report contents.
-//
-// API v2 (2026-08-22, see api-informe-json.md): credentials must belong to a
-// `personal` account with api="read" (old operario/viewer accounts are
-// rejected with 401). Password is created at https://atencionsismo.cali.gov.co/ingresar.
-//
-// Required env in Vercel (Project Settings → Environment Variables):
-//   VISITADOS_API_PASS   password for the api="read" account (secret)
-// Optional:
-//   VISITADOS_API_USER   default juanp.gzmz@gmail.com
-//   REPORTES_DESDE       floor date YYYY-MM-DD (default 2026-08-01)
+// probeApi is the ONE thing this file still exports for real use:
+// api/source-status.js's live "is the atencionsismo API reachable right
+// now?" check reuses it (the same one-minute-window probe the old day-walk
+// ran before starting). Keep it — and its own API_URL/MIN_WINDOW_MS
+// constants — working exactly as before. Everything else the old day-walk
+// needed (countReportes/fetchWindow/coordKey/lastFailure/failedWindows/
+// sleep, plus the DEFAULT_USER/VISITADOS_API_* env reads only that handler
+// used) is gone now that nothing calls it anymore.
 
 const API_URL = 'https://atencionsismo.cali.gov.co/api/informe/json';
-const DEFAULT_USER = 'juanp.gzmz@gmail.com';
-const DAY_MS = 86_400_000;
-const MIN_WINDOW_MS = 60_000; // smallest split before giving up on a window
-const CONCURRENCY = 4; // parallel day windows; the API tolerates this fine
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// Last upstream failure seen by any window, surfaced in the 502 body so a
-// misconfigured credential (401) is distinguishable from an API outage.
-let lastFailure = null;
-
-// Leaf windows that exhausted their retries and returned nothing. countReportes
-// retries these once, sequentially, so a transient 504 on a dense day no longer
-// silently drops ~a day of reports (the undercount that made the live total read
-// ~14k instead of the true ~17k). Reset per request. See countReportes.
-let failedWindows = [];
-
-// Dedup key for "Inmuebles reportados" (agrupados por ubicación exacta): the
-// exact lat,lng pair. Null coords / (0,0) can't be grouped by location, so they
-// are excluded from the inmueble count (matching the source dashboard).
-function coordKey(lat, lng) {
-  const a = parseFloat(lat);
-  const b = parseFloat(lng);
-  if (!Number.isFinite(a) || !Number.isFinite(b) || (a === 0 && b === 0)) return null;
-  return `${a},${b}`;
-}
-
-async function fetchWindow(auth, d0, d1) {
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const res = await fetch(`${API_URL}?desde_utc=${d0}&hasta_utc=${d1}`, {
-        headers: {
-          Authorization: `Basic ${auth}`,
-          // Cloudflare answers 403 to requests without a User-Agent (same
-          // workaround as api/refresh.js); Node's fetch sends none by default.
-          'User-Agent': 'sismo-cali-dashboard/1.0',
-        },
-        signal: AbortSignal.timeout(90_000),
-      });
-      // A dense day answers 413 (payload too big), 504 (gateway timeout) OR
-      // 500/502 (the upstream chokes on the volume): all mean "too much for one
-      // window", so split instead of dropping the day. Diagnosis showed the live
-      // ~14.5k vs true ~17.3k gap was whole dense days (e.g. Aug 19, 24) that
-      // 500'd and were discarded — there is NO silent result cap, so splitting
-      // to a size the API can serve recovers every report.
-      const splittable = [413, 500, 502, 503, 504].includes(res.status);
-      if (splittable && d1 - d0 > MIN_WINDOW_MS) {
-        // Split SEQUENTIALLY, not with Promise.all: a concurrent split makes a
-        // dense window fan out into an exponential burst of simultaneous
-        // requests, worsening the rate-limiting. One half at a time (like
-        // scripts/fetch_reportes_api.py) caps peak concurrency at CONCURRENCY.
-        const mid = Math.floor((d0 + d1) / 2);
-        const a = await fetchWindow(auth, d0, mid);
-        const b = await fetchWindow(auth, mid + 1, d1);
-        return a.concat(b);
-      }
-      if (!res.ok) {
-        lastFailure = `HTTP ${res.status}`;
-        throw new Error(lastFailure);
-      }
-      const json = await res.json();
-      return (json.reportes || []).map((r) => ({
-        id: r.id,
-        estado: r.estadoVerificacion || '—',
-        lat: r.latitud,
-        lng: r.longitud,
-      }));
-    } catch (err) {
-      if (attempt === 2) {
-        console.error(`window ${new Date(d0).toISOString()} failed:`, err.message || err);
-        failedWindows.push([d0, d1]);
-        return [];
-      }
-      await sleep(2000);
-    }
-  }
-  failedWindows.push([d0, d1]);
-  return [];
-}
+const MIN_WINDOW_MS = 60_000; // smallest probe window; matches the old day-walk's split floor
 
 // One tiny probe (a 1-minute window) before the full day walk: while the API
 // is down for maintenance it answers 503 to everything, and without this the
@@ -124,83 +42,10 @@ async function probeApi(auth) {
   }
 }
 
-async function countReportes(auth, desde) {
-  const start = Date.parse(`${desde}T00:00:00Z`);
-  const end = Date.now() + DAY_MS;
-  const windows = [];
-  for (let d0 = start; d0 < end; d0 += DAY_MS) {
-    windows.push([d0, d0 + DAY_MS - 1]);
-  }
-
-  failedWindows = [];
-  const seen = new Map(); // id -> estado (dedup across windows)
-  const coords = new Set(); // exact lat,lng pairs → "Inmuebles reportados"
-  const absorb = (reps) => {
-    for (const rep of reps) {
-      if (!rep.id || seen.has(rep.id)) continue;
-      seen.set(rep.id, rep.estado);
-      const key = coordKey(rep.lat, rep.lng);
-      if (key) coords.add(key);
-    }
-  };
-
-  for (let i = 0; i < windows.length; i += CONCURRENCY) {
-    const batch = windows.slice(i, i + CONCURRENCY);
-    const results = await Promise.all(batch.map(([d0, d1]) => fetchWindow(auth, d0, d1)));
-    results.forEach(absorb);
-  }
-
-  // One sequential retry pass over windows that gave up above. Sequential (not
-  // batched) so a rate-limit 504 storm doesn't just reproduce. Anything that
-  // fails twice stays dropped and is logged.
-  const retry = failedWindows.splice(0);
-  for (const [d0, d1] of retry) {
-    failedWindows = [];
-    absorb(await fetchWindow(auth, d0, d1));
-  }
-
-  const porEstado = {};
-  for (const estado of seen.values()) porEstado[estado] = (porEstado[estado] || 0) + 1;
-  return { total: seen.size, inmuebles: coords.size, por_estadoVerificacion: porEstado };
-}
-
 module.exports = async (req, res) => {
-  if (req.method !== 'GET') {
-    res.setHeader('Allow', 'GET');
-    return res.status(405).json({ error: 'Method Not Allowed' });
-  }
-
-  const pass = (process.env.VISITADOS_API_PASS || '').trim();
-  if (!pass) {
-    return res.status(500).json({ error: 'VISITADOS_API_PASS no está configurado en Vercel.' });
-  }
-  const user = (process.env.VISITADOS_API_USER || '').trim() || DEFAULT_USER;
-  const auth = Buffer.from(`${user}:${pass}`).toString('base64');
-  const desde = process.env.REPORTES_DESDE || '2026-08-01';
-
-  try {
-    await probeApi(auth);
-    const counts = await countReportes(auth, desde);
-    if (counts.total === 0) {
-      // Never cache/serve an empty count over a transient API failure; the
-      // frontend falls back to the static aggregate.
-      return res.status(502).json({
-        error: `la API devolvió 0 reportes${lastFailure ? ` (último fallo upstream: ${lastFailure})` : ''}`,
-      });
-    }
-    // ponytail: the day walk grows with the date range (~150s today); if it
-    // ever nears the 300s function limit, persist a checkpoint or narrow desde.
-    res.setHeader('Cache-Control', 'public, s-maxage=900, stale-while-revalidate=86400');
-    return res.status(200).json({
-      ok: true,
-      generado: new Date().toISOString(),
-      fuente: 'api:informe/json',
-      ...counts,
-    });
-  } catch (err) {
-    const status = (err && err.status) || 502;
-    return res.status(status).json({ error: String((err && err.message) || err) });
-  }
+  return res.status(410).json({
+    error: 'Este endpoint fue retirado; el backend consolidado en Railway sirve /reportados.',
+  });
 };
 
 // Exposed for reuse (api/source-status.js's atencionsismo live probe); Vercel
