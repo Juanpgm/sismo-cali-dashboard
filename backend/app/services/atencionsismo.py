@@ -471,6 +471,116 @@ async def fetch_reportados(
     }
 
 
+# The 12 documented `kpis` fields (docs/api-informe-json
+# (docs-api-atencionsismo).md, "Objeto kpis" ~line 243). All numeric;
+# `avancePct` is a percentage. Order matches the doc's own listing.
+KPI_FIELDS = (
+    "inmueblesVerificados",
+    "cuadrillasEnCampo",
+    "asignaciones",
+    "cuadrillasEspecializadas",
+    "asignacionesEspecializadas",
+    "reportes",
+    "inmueblesReportados",
+    "pendientes",
+    "inmueblesVisitadosNoCriticos",
+    "avancePct",
+    "zonaRural",
+    "fueraDeCali",
+)
+
+
+def _coerce_kpi_number(value: object) -> int | float | None:
+    """A `kpis` field value as a real int/float, or None if it isn't one.
+    `bool` is deliberately rejected even though it's an `int` subclass in
+    Python (a `True`/`False` reads as 0/1, which would silently fabricate a
+    plausible-looking count). NaN/Infinity (both valid Python floats, and
+    both parseable from JSON by the stdlib decoder) are also rejected — a
+    non-finite "count" is not a real number the dashboard can show."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    return None
+
+
+async def fetch_kpis(client: httpx.AsyncClient, user: str, password: str) -> dict:
+    """One cheap, UNDATED call to `informe/json?kpis=1&offset=0&limit=1` —
+    `kpis` is affected only by comuna/barrio/afectacion/inmueble/q (never by
+    date range), so this single request returns the server-computed KPI
+    object for the whole operative universe in one shot (docs/api-informe-
+    json (docs-api-atencionsismo).md, "Objeto kpis"/"Parámetros").
+
+    Modeled on `probe_api`'s style: same auth headers, same SHORT
+    `PROBE_TIMEOUT_S` (NOT the long `REQUEST_TIMEOUT_S` the paginated
+    day-walk uses — this is one cheap single-page request, and it sits at
+    the very end of `dashboard_refresh.fetch_reportes()`'s day-walk budget
+    with no slack left, so an unnecessarily long timeout here risks the
+    outer `asyncio.wait_for` firing mid-request), same "non-2xx or
+    transport error -> ApiUnavailableError" shape. Never logs
+    `user`/`password` — the unauthorized-status branch is deliberately
+    status-only, no credential echo, matching `probe_api`.
+
+    A missing `kpis` key, or one that isn't a JSON object, is treated as a
+    malformed/unusable response and also raises `ApiUnavailableError` — the
+    caller (dashboard_refresh.fetch_reportes) is the one that decides
+    whether to fall back to a previous value; this function itself never
+    fabricates a kpis object.
+
+    Each of the `KPI_FIELDS` is individually validated: a field that is
+    missing from the response, or present but not a finite int/float
+    (string, null, bool, list, dict, NaN/Inf), is OMITTED from the returned
+    dict rather than defaulted to 0 — never invent a number the API didn't
+    actually send.
+
+    Any status outside 2xx (redirects included — this endpoint never
+    legitimately redirects) is a failure, and a 200 whose body isn't valid
+    JSON (an HTML maintenance page, say) is treated the same way rather than
+    letting `resp.json()`'s `ValueError` escape uncaught. On 413/504 — the
+    API is alive but this one cheap request still choked, the same
+    "overloaded, not down" signal `SPLITTABLE_STATUSES` treats leniently
+    elsewhere — this function retries ONCE after a short pause before
+    raising, since a single undated request has no window to halve the way
+    `fetch_window` does."""
+    headers = _headers(user, password)
+    resp: httpx.Response | None = None
+    for attempt in range(2):  # 1 initial try + 1 retry, 413/504 only (see docstring)
+        try:
+            resp = await client.get(
+                API_URL,
+                params={"kpis": 1, "offset": 0, "limit": 1},
+                headers=headers,
+                timeout=PROBE_TIMEOUT_S,
+            )
+        except httpx.HTTPError as exc:
+            raise ApiUnavailableError(f"API no disponible (sin respuesta: {exc})", status=503) from exc
+        if attempt == 0 and resp.status_code in (413, 504):
+            await asyncio.sleep(1)
+            continue
+        break
+    if resp.status_code < 200 or resp.status_code >= 300:
+        raise ApiUnavailableError(f"API no disponible (HTTP {resp.status_code})", status=503)
+
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        raise ApiUnavailableError("respuesta no es JSON") from exc
+    if not isinstance(body, dict) or "kpis" not in body:
+        raise ApiUnavailableError("kpis ausente en la respuesta")
+    kpis = body["kpis"]
+    if not isinstance(kpis, dict):
+        raise ApiUnavailableError("kpis con forma inválida (no es un objeto)")
+
+    result: dict[str, int | float] = {}
+    for field in KPI_FIELDS:
+        value = _coerce_kpi_number(kpis.get(field)) if field in kpis else None
+        if value is not None:
+            result[field] = value
+    return result
+
+
 async def _get_stickers_page(
     client: httpx.AsyncClient, headers: dict[str, str], params: dict[str, int]
 ) -> dict:

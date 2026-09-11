@@ -54,7 +54,7 @@ import httpx
 
 from app.credentials import clients as credentials
 from app.integracion import runlog
-from app.services import atencionsismo, reportes_historico, reportes_panel_state, survey_cali
+from app.services import atencionsismo, blob_lkg, reportes_historico, reportes_panel_state, survey_cali
 from app.services.reportes_ciudadanos import build_snapshot
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -81,6 +81,35 @@ SEED_GEOCODE_TIMEOUT_S = 30
 # of the budget. Same pattern/rationale as that guard: a slow/unbounded
 # panel-match batch must never risk the outer asyncio.wait_for timeout.
 PANEL_MATCH_MIN_REMAINING_BUDGET_S = 60
+# Bounds the ONE kpis HTTP call itself, wrapped as
+# `asyncio.wait_for(atencionsismo.fetch_kpis(...), timeout=KPIS_CALL_TIMEOUT_S)`
+# in fetch_reportes() (F2 fixpass) — same idea as the backfill chunk's own
+# `asyncio.wait_for(..., BACKFILL_CHUNK_TIMEOUT_S)` a few lines up. Without
+# this, a hung kpis call risks the OUTER asyncio.wait_for(fetch_reportes(),
+# timeout=FETCH_REPORTES_TIMEOUT_S) firing mid-request instead: on this
+# Python version asyncio.CancelledError is BaseException (not Exception), so
+# the broad `except Exception` already wrapped around the kpis call does NOT
+# protect against that outer timeout, and losing it loses
+# reportes.json/reportes_meta.json/reportes_agg.json for the whole run.
+KPIS_CALL_TIMEOUT_S = 20
+# Guards the fetch_kpis call, checked separately from (and — since the F5
+# fixpass — LATER than) the panel-match guard above: kpis now runs AFTER
+# panel-match in fetch_reportes() specifically so a slow/bounded kpis call
+# can never narrow panel-match's own remaining-budget check (F5: it used to
+# run BEFORE panel-match and could burn up to KPIS_CALL_TIMEOUT_S, pushing
+# panel-match's own guard below PANEL_MATCH_MIN_REMAINING_BUDGET_S in runs
+# where it previously fit).
+#
+# MUST exceed KPIS_CALL_TIMEOUT_S, not just be "some margin" — same
+# reasoning as reportes_historico.BACKFILL_MIN_REMAINING_BUDGET_S's own
+# comment: this guard only fires BEFORE the call starts, so a guard value
+# <= the call's own timeout can admit a call that then takes up to
+# KPIS_CALL_TIMEOUT_S itself, and it must ALSO clear the fallback read that
+# runs right after a failed/skipped kpis call (_load_previous_kpis(), whose
+# Blob-first read uses blob_lkg's own ~10s timeout). 45 = 20s call timeout +
+# 10s Blob fallback read + 15s safety margin for the write phase that
+# follows.
+KPIS_MIN_REMAINING_BUDGET_S = 45
 
 # Never publish these to a static, world-readable file — verbatim from
 # scripts/fetch_reportes_api.py's PII_FIELDS/HEAVY_FIELDS (task 7.2: the
@@ -289,6 +318,54 @@ def _dedupe_sorted(records: list[dict]) -> list[dict]:
     return [seen[k] for k in sorted(seen, key=str)]
 
 
+def _load_previous_kpis() -> tuple[dict | None, str | None]:
+    """Best-effort read of the last PUBLISHED `reportes_agg.json`'s `kpis`
+    block, so a failed/skipped `fetch_kpis()` call can carry forward the
+    last-good value instead of fabricating one. Returns
+    `(kpis, kpis_generated_at)`, or `(None, None)` on ANY failure.
+
+    Tries Vercel Blob FIRST via `blob_lkg.load_json` — in the cron
+    container, `WEB_DATA_DIR/reportes_agg.json` is the image-baked,
+    git-committed copy (no `kpis` key at all, from before this feature
+    existed), so a LOCAL-ONLY read can never carry forward a genuine
+    previous kpis value in production (F1 blocker). `blob_lkg.load_json`
+    already fails soft (None on 404/malformed/non-dict/unreachable/missing
+    token, its own ~10s timeout) but is wrapped in `try/except` here too —
+    this function's own contract is "never raise", and a defensive belt for
+    a future `blob_lkg` change is cheap.
+
+    Falls back to the local file (offline `--check`-style runs, or a
+    Blob response that IS a dict but has no usable `kpis` field) using the
+    same tolerant shape as before: missing file, malformed JSON, non-dict
+    body, or a missing/non-dict `kpis` field all degrade to `(None, None)`
+    for the local read specifically, same fail-open shape as
+    `_load_contacto_hashes()`.
+
+    Guard against resurrecting a frozen value: if the found snapshot has no
+    usable `kpis_generated_at` (missing, or present but not a string), the
+    `kpis` value is STILL carried forward (never invent a timestamp) —
+    the caller marks the carried-forward block stale regardless of whether
+    a timestamp came along with it."""
+    try:
+        blob_data = blob_lkg.load_json("data/reportes_agg.json", dict)
+    except Exception:  # noqa: BLE001 - defense in depth; blob_lkg already fails soft
+        blob_data = None
+    if isinstance(blob_data, dict) and isinstance(blob_data.get("kpis"), dict):
+        return blob_data["kpis"], blob_data.get("kpis_generated_at")
+
+    path = WEB_DATA_DIR / "reportes_agg.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+    prev_kpis = data.get("kpis")
+    if not isinstance(prev_kpis, dict):
+        return None, None
+    return prev_kpis, data.get("kpis_generated_at")
+
+
 def _monotonic() -> float:
     """Thin wrapper around `time.monotonic()` so `fetch_reportes()`'s
     elapsed-budget check can be monkeypatched in tests WITHOUT touching the
@@ -435,21 +512,16 @@ async def fetch_reportes() -> int:
             else None,
         },
     )
-    # Reuse atencionsismo.summarize() for the aggregation — same "single
-    # implementation" principle as the day-walk itself (design.md ADR-5;
-    # app/services/snapshot.py's Blob-seed path already established this
-    # precedent for reportes.json's own field shape).
-    _atomic_write_json(
-        WEB_DATA_DIR / "reportes_agg.json",
-        {"generated_at": generated_at, **atencionsismo.summarize(records)},
-    )
     # Lightweight PUBLIC projection for the "Reportes ciudadanos" tab
-    # (design D5); deliberately written LAST and fail-soft — a bug in the
-    # projection must never leave reportes.json/meta/agg (already written
-    # above, and already the source of truth for the rest of the refresh)
-    # inconsistent. Same never-publish-empty guard as reportes.json above
-    # (the `if not records: return 0` check earlier already skipped this
-    # whole block when the API returns 0 rows).
+    # (design D5); fail-soft — a bug in the projection must never leave
+    # reportes.json/meta (already written above, and already the source of
+    # truth for the rest of the refresh) inconsistent. Same never-publish-
+    # empty guard as reportes.json above (the `if not records: return 0`
+    # check earlier already skipped this whole block when the API returns 0
+    # rows). Deliberately runs BEFORE the kpis block below (F5 fixpass): kpis
+    # is now the LAST network step specifically so its own bounded call can
+    # never narrow panel-match's remaining-budget guard (it used to run
+    # first and could burn up to KPIS_CALL_TIMEOUT_S of the budget).
     try:
         ciudadanos = build_snapshot(records)
         # Panel cross-reference (proximity match against Survey123/EDE Panel
@@ -478,6 +550,102 @@ async def fetch_reportes() -> int:
         _atomic_write_json(WEB_DATA_DIR / "reportes_ciudadanos.json", ciudadanos, compact=True)
     except Exception:  # noqa: BLE001 - fail-soft, refresh continues (design.md ADR-2)
         logging.exception("reportes_ciudadanos projection falló, sigo sin bloquear el refresh")
+
+    # Official server-side KPIs (never counted client-side — see
+    # docs/api-informe-json's "Objeto kpis"). Runs LAST (F5 fixpass, see the
+    # comment above the ciudadanos/panel-match block) — the day-walk's own
+    # AsyncClient has already closed by this point, so a short-lived one is
+    # opened here just for this one cheap request. Wrapped fail-soft with a
+    # broad `except Exception` because a bug ANYWHERE in this block (the
+    # fetch itself) must NEVER block reportes.json/reportes_meta.json/
+    # reportes_agg.json from being written.
+    #
+    # Budget-guarded (KPIS_MIN_REMAINING_BUDGET_S, see its own comment
+    # above): when too little budget remains, fetch_kpis is never even
+    # attempted — this goes straight to the SAME "carry forward previous /
+    # null" fallback the except branch below uses, a graceful degradation
+    # rather than a new failure mode. The call itself is ALSO bounded by
+    # `asyncio.wait_for(..., KPIS_CALL_TIMEOUT_S)` (F2 fixpass) so a hung
+    # request can't threaten the outer FETCH_REPORTES_TIMEOUT_S budget the
+    # way an unbounded call could.
+    remaining_for_kpis = FETCH_REPORTES_TIMEOUT_S - (_monotonic() - started_at)
+    kpis_block: dict | None = None
+    kpis_error_reason: str | None = None
+    if remaining_for_kpis < KPIS_MIN_REMAINING_BUDGET_S:
+        logging.warning(
+            "fetch_kpis omitido: presupuesto restante (%.1fs) por debajo de "
+            "KPIS_MIN_REMAINING_BUDGET_S (%ss)", remaining_for_kpis, KPIS_MIN_REMAINING_BUDGET_S,
+        )
+        kpis_error_reason = "presupuesto de tiempo agotado antes de fetch_kpis"
+    else:
+        try:
+            async with httpx.AsyncClient() as kpis_client:
+                kpis = await asyncio.wait_for(
+                    atencionsismo.fetch_kpis(kpis_client, user, password), timeout=KPIS_CALL_TIMEOUT_S
+                )
+            kpis_block = {
+                "kpis": kpis,
+                "kpis_generated_at": atencionsismo.now_iso(),
+                "kpis_stale": False,
+                "kpis_error": None,
+            }
+        except atencionsismo.ApiUnavailableError as exc:
+            # Status-only text (already tested not to leak credentials,
+            # see test_atencionsismo.py) — safe to publish verbatim.
+            logging.exception("fetch_kpis falló, sigo sin bloquear el refresh")
+            kpis_error_reason = str(exc)
+        except Exception as exc:  # noqa: BLE001 - kpis is best-effort, never blocks the refresh
+            # reportes_agg.json is published to a PUBLIC Blob store — an
+            # unanticipated exception type's str() could carry internal
+            # detail (a file path, a key name) into that world-readable
+            # file, unlike ApiUnavailableError's own deliberately
+            # status-only message above. Only the class name is published
+            # here (never the raw exception text). This also covers
+            # asyncio.TimeoutError from the asyncio.wait_for wrapper above
+            # (an Exception on this Python version, unlike CancelledError).
+            logging.exception("fetch_kpis falló, sigo sin bloquear el refresh")
+            kpis_error_reason = type(exc).__name__
+
+    if kpis_block is None:
+        # F3: the fallback read itself is now INSIDE this fail-soft
+        # boundary (it used to sit right after the try/except above, but
+        # outside of it, despite this whole section's own comment claiming
+        # to cover it) — a bug in `_load_previous_kpis()` must degrade to
+        # the same "kpis null" branch below, never propagate out of
+        # fetch_reportes() and threaten reportes_agg.json's write.
+        try:
+            prev_kpis, prev_generated_at = _load_previous_kpis()
+        except Exception:  # noqa: BLE001 - the fallback read must never block publication either
+            logging.exception("_load_previous_kpis falló, publico kpis null")
+            prev_kpis, prev_generated_at = None, None
+        if prev_kpis is not None:
+            # Carry forward the last-good value (with its ORIGINAL
+            # timestamp) rather than fabricating a fresh one — never
+            # invent a kpis number under any circumstance.
+            kpis_block = {
+                "kpis": prev_kpis,
+                "kpis_generated_at": prev_generated_at,
+                "kpis_stale": True,
+                "kpis_error": kpis_error_reason,
+            }
+        else:
+            kpis_block = {
+                "kpis": None,
+                "kpis_generated_at": None,
+                "kpis_stale": False,
+                "kpis_error": kpis_error_reason,
+            }
+
+    # Reuse atencionsismo.summarize() for the aggregation — same "single
+    # implementation" principle as the day-walk itself (design.md ADR-5;
+    # app/services/snapshot.py's Blob-seed path already established this
+    # precedent for reportes.json's own field shape). Written LAST (F5
+    # fixpass) now that kpis_block is only known once the kpis block above
+    # has run.
+    _atomic_write_json(
+        WEB_DATA_DIR / "reportes_agg.json",
+        {"generated_at": generated_at, **atencionsismo.summarize(records), **kpis_block},
+    )
     print(f"  {len(records)} reportes -> web/data/reportes.json (+ meta, +agg).")
     return len(records)
 

@@ -619,6 +619,7 @@ def test_fetch_reportes_panel_hook_failure_still_fails_soft(tmp_path, monkeypatc
 def test_fetch_reportes_skips_panel_match_when_remaining_budget_too_low_but_backfill_still_ran(tmp_path, monkeypatch):
     monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
     _patch_credentials_and_fake_firestore(monkeypatch)
+    monkeypatch.setattr(job.blob_lkg, "load_json", lambda *a, **k: None)
 
     calls: list[dict] = []
     monkeypatch.setattr(job.atencionsismo, "day_walk", _make_day_walk_recorder(calls))
@@ -632,13 +633,18 @@ def test_fetch_reportes_skips_panel_match_when_remaining_budget_too_low_but_back
     monkeypatch.setattr(
         job.reportes_panel_state, "apply_panel_match", lambda reportes: panel_calls.append(reportes) or reportes
     )
+    kpis_calls: list[int] = []
+    monkeypatch.setattr(job.atencionsismo, "fetch_kpis", _make_fetch_kpis_recorder(kpis_calls))
 
     # started_at=1000.0; backfill's own elapsed read = 1050.0 -> remaining=190s,
     # comfortably >= BACKFILL_MIN_REMAINING_BUDGET_S (150s, Fix 2a) -> backfill
-    # runs normally. panel-match's own elapsed read (Fix 1b, checked LATER,
-    # separately) = 1190.0 -> remaining=50s < PANEL_MATCH_MIN_REMAINING_BUDGET_S
-    # (60s) -> panel-match is skipped even though backfill already ran.
-    times = iter([1000.0, 1050.0, 1190.0])
+    # runs normally. panel-match's own elapsed read (F5: now checked BEFORE
+    # kpis, so panel-match's own budget is never narrowed by a kpis call) =
+    # 1215.0 -> remaining=25s < PANEL_MATCH_MIN_REMAINING_BUDGET_S (60s) ->
+    # panel-match skipped. kpis' own elapsed read (checked LAST now, F5) =
+    # 1220.0 -> remaining=20s < KPIS_MIN_REMAINING_BUDGET_S (45s) -> kpis
+    # fetch is also skipped, even though backfill already ran.
+    times = iter([1000.0, 1050.0, 1215.0, 1220.0])
     monkeypatch.setattr(job, "_monotonic", lambda: next(times))
 
     import asyncio
@@ -648,9 +654,68 @@ def test_fetch_reportes_skips_panel_match_when_remaining_budget_too_low_but_back
     assert count == 2  # rolling + backfill record both merged in -> backfill DID run
     assert len(calls) == 2
     assert len(saved_state) == 1  # backfill progressed and persisted state
-    assert panel_calls == []  # panel-match skipped by its OWN, later budget check
+    assert kpis_calls == []  # kpis fetch skipped by its OWN, separately-checked budget guard
+    assert panel_calls == []  # panel-match skipped by its OWN, earlier (F5) budget check
     data = json.loads((tmp_path / "reportes_ciudadanos.json").read_text(encoding="utf-8"))
     assert "panel" not in data[0]
+
+
+def test_fetch_reportes_panel_match_runs_and_kpis_still_fetched_when_both_budgets_fit(tmp_path, monkeypatch):
+    """F5 regression: kpis moved AFTER panel-match in call order specifically
+    so a slow/bounded kpis call can never narrow panel-match's own budget
+    check. Asserts panel-match still runs (and kpis too) when remaining
+    budget comfortably clears BOTH PANEL_MATCH_MIN_REMAINING_BUDGET_S (60s)
+    and KPIS_MIN_REMAINING_BUDGET_S (45s) -- e.g. 70s."""
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    _patch_credentials_and_fake_firestore(monkeypatch)
+    monkeypatch.setattr(job.blob_lkg, "load_json", lambda *a, **k: None)
+
+    calls: list[dict] = []
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _make_day_walk_recorder(calls))
+    monkeypatch.setattr(
+        job.reportes_historico, "load_state",
+        lambda: {"backfill_complete": True, "backfill_frontier_ms": 1_600_000_000_000},
+    )
+    monkeypatch.setattr(job.reportes_historico, "load_pool", lambda: {})
+    monkeypatch.setattr(job.reportes_historico, "save_pool", lambda p: None)
+
+    panel_calls: list[list[dict]] = []
+
+    def _fake_apply_panel_match(reportes):
+        panel_calls.append(reportes)
+        return [{**r, "panel": {"visitado": True, "sticker": True}} for r in reportes]
+
+    monkeypatch.setattr(job.reportes_panel_state, "apply_panel_match", _fake_apply_panel_match)
+    kpis_calls: list[int] = []
+
+    async def _fake_fetch_kpis(client, user, password):
+        kpis_calls.append(1)
+        return {"reportes": 5}
+
+    monkeypatch.setattr(job.atencionsismo, "fetch_kpis", _fake_fetch_kpis)
+
+    # started_at=1000.0; backfill's own elapsed read=1000.0 (backfill already
+    # complete, so the block is skipped regardless, but the guard's own read
+    # still runs unconditionally) -> remaining=240s. panel-match's own
+    # elapsed read (checked FIRST now, F5) = 1170.0 -> remaining=70s >=
+    # PANEL_MATCH_MIN_REMAINING_BUDGET_S (60s) -> panel-match RUNS. kpis' own
+    # elapsed read (checked LAST, F5) = 1170.0 -> remaining=70s >=
+    # KPIS_MIN_REMAINING_BUDGET_S (45s) -> fetch_kpis ALSO runs, proving it
+    # never got a chance to narrow panel-match's own guard above.
+    times = iter([1000.0, 1000.0, 1170.0, 1170.0])
+    monkeypatch.setattr(job, "_monotonic", lambda: next(times))
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1  # only the rolling-window record (backfill already complete)
+    assert len(panel_calls) == 1  # panel-match ran
+    assert kpis_calls == [1]  # kpis fetch also ran
+    data = json.loads((tmp_path / "reportes_ciudadanos.json").read_text(encoding="utf-8"))
+    assert "panel" in data[0]
+    agg = json.loads((tmp_path / "reportes_agg.json").read_text(encoding="utf-8"))
+    assert agg["kpis"] == {"reportes": 5}
 
 
 # --- reportes_historico backfill wiring: rolling window (always re-walked, --
@@ -770,6 +835,7 @@ def test_fetch_reportes_skips_backfill_when_already_complete(tmp_path, monkeypat
 def test_fetch_reportes_skips_backfill_when_remaining_budget_too_low(tmp_path, monkeypatch):
     monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
     _patch_credentials_and_fake_firestore(monkeypatch)
+    monkeypatch.setattr(job.blob_lkg, "load_json", lambda *a, **k: None)
 
     calls: list[dict] = []
     monkeypatch.setattr(job.atencionsismo, "day_walk", _make_day_walk_recorder(calls))
@@ -781,20 +847,24 @@ def test_fetch_reportes_skips_backfill_when_remaining_budget_too_low(tmp_path, m
 
     # started_at reads 1000.0, the elapsed-time read later reads 1000.0+200 ->
     # elapsed=200s, remaining_budget = 240-200 = 40s < BACKFILL_MIN_REMAINING_BUDGET_S (150s).
-    # A third read (Fix 1b's panel-match budget check, later in the function)
-    # reads 1200.0 again -> still 40s remaining, well under
-    # PANEL_MATCH_MIN_REMAINING_BUDGET_S (60s) too, so panel-match is also
-    # skipped this run. Patches job._monotonic (a thin wrapper), NOT the real
-    # time.monotonic -- asyncio's own ProactorEventLoop teardown calls
-    # time.monotonic() internally on Windows, so patching the global directly
-    # starves it.
-    times = iter([1000.0, 1200.0, 1200.0])
+    # A third read (panel-match's own budget check, F5: now checked BEFORE
+    # kpis) reads 1215.0 -> elapsed=215s, remaining=25s <
+    # PANEL_MATCH_MIN_REMAINING_BUDGET_S (60s) -> panel-match skipped. A
+    # fourth read (kpis' own budget check, checked LAST now) reads 1215.0
+    # again -> still 25s remaining, well under KPIS_MIN_REMAINING_BUDGET_S
+    # (45s) too, so kpis fetch is also skipped this run. Patches
+    # job._monotonic (a thin wrapper), NOT the real time.monotonic --
+    # asyncio's own ProactorEventLoop teardown calls time.monotonic()
+    # internally on Windows, so patching the global directly starves it.
+    times = iter([1000.0, 1200.0, 1215.0, 1215.0])
     monkeypatch.setattr(job, "_monotonic", lambda: next(times))
 
     panel_calls: list[list[dict]] = []
     monkeypatch.setattr(
         job.reportes_panel_state, "apply_panel_match", lambda reportes: panel_calls.append(reportes) or reportes
     )
+    kpis_calls: list[int] = []
+    monkeypatch.setattr(job.atencionsismo, "fetch_kpis", _make_fetch_kpis_recorder(kpis_calls))
 
     import asyncio
 
@@ -803,6 +873,7 @@ def test_fetch_reportes_skips_backfill_when_remaining_budget_too_low(tmp_path, m
     assert count == 1  # only the rolling-window record
     assert len(calls) == 1  # backfill never attempted -> budget guard worked
     assert saved_state == []
+    assert kpis_calls == []  # kpis fetch never attempted either -> budget guard worked
     assert panel_calls == []  # panel-match never attempted either -> budget guard worked
     data = json.loads((tmp_path / "reportes_ciudadanos.json").read_text(encoding="utf-8"))
     assert "panel" not in data[0]  # skipped -> no panel key added this run
@@ -957,6 +1028,7 @@ def test_reportes_meta_cobertura_desde_is_null_when_backfill_never_started(tmp_p
     # persisted before -> cobertura_desde must be null, not raise/omit.
     monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
     _patch_credentials_and_fake_firestore(monkeypatch)
+    monkeypatch.setattr(job.blob_lkg, "load_json", lambda *a, **k: None)
 
     calls: list[dict] = []
     monkeypatch.setattr(job.atencionsismo, "day_walk", _make_day_walk_recorder(calls))
@@ -964,8 +1036,10 @@ def test_reportes_meta_cobertura_desde_is_null_when_backfill_never_started(tmp_p
     monkeypatch.setattr(job.reportes_historico, "load_pool", lambda: {})
     monkeypatch.setattr(job.reportes_historico, "save_state", lambda s: None)
     monkeypatch.setattr(job.reportes_historico, "save_pool", lambda p: None)
-    # 3rd read is Fix 1b's panel-match budget check, later in the function.
-    times = iter([1000.0, 1200.0, 1200.0])
+    monkeypatch.setattr(job.atencionsismo, "fetch_kpis", _make_fetch_kpis_recorder([]))
+    # 3rd read is panel-match's own budget check (F5: now checked BEFORE
+    # kpis), 4th is kpis' own budget check, both later in the function.
+    times = iter([1000.0, 1200.0, 1215.0, 1215.0])
     monkeypatch.setattr(job, "_monotonic", lambda: next(times))
 
     import asyncio
@@ -975,6 +1049,476 @@ def test_reportes_meta_cobertura_desde_is_null_when_backfill_never_started(tmp_p
     meta = json.loads((tmp_path / "reportes_meta.json").read_text(encoding="utf-8"))
     assert meta["backfill_completo"] is False
     assert meta["cobertura_desde"] is None
+
+
+# --- kpis: server-side kpis object (never counted client-side), attached --
+# --- to reportes_agg.json; fail-soft with "carry forward previous + mark --
+# --- stale" (never fabricate a value). ------------------------------------
+
+
+async def _fake_fetch_kpis_ok(client, user, password):
+    return {"reportes": 10, "avancePct": 55.5}
+
+
+async def _fake_fetch_kpis_fail(client, user, password):
+    raise job.atencionsismo.ApiUnavailableError("kpis API no disponible (HTTP 503)")
+
+
+async def _fake_fetch_kpis_unexpected_bug(client, user, password):
+    # Simulates a bug in the kpis path unrelated to ApiUnavailableError (e.g.
+    # a KeyError from a future refactor) -- must still never propagate out of
+    # fetch_reportes(), same fail-soft contract as every other broad except
+    # in this function (backfill, contactos, ciudadanos projection, panel).
+    raise KeyError("simulated bug in kpis processing")
+
+
+def test_fetch_reportes_kpis_success_writes_fresh_kpis_block(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setenv("VISITADOS_API_PASS", "secret")
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _fake_day_walk_one_record)
+    monkeypatch.setattr(job.atencionsismo, "fetch_kpis", _fake_fetch_kpis_ok)
+    fake_db = _FakeContactDb()
+    monkeypatch.setattr(job.credentials, "sismo", lambda: type("_C", (), {"firestore": fake_db})())
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1
+    agg = json.loads((tmp_path / "reportes_agg.json").read_text(encoding="utf-8"))
+    assert agg["kpis"] == {"reportes": 10, "avancePct": 55.5}
+    assert agg["kpis_stale"] is False
+    assert agg["kpis_error"] is None
+    assert isinstance(agg["kpis_generated_at"], str) and agg["kpis_generated_at"]
+
+
+def test_fetch_reportes_kpis_failure_with_previous_agg_preserves_kpis_and_marks_stale(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setenv("VISITADOS_API_PASS", "secret")
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _fake_day_walk_one_record)
+    monkeypatch.setattr(job.atencionsismo, "fetch_kpis", _fake_fetch_kpis_fail)
+    # F1: _load_previous_kpis() now tries Blob FIRST -- this test exercises
+    # the LOCAL fallback specifically, so Blob must report nothing published.
+    monkeypatch.setattr(job.blob_lkg, "load_json", lambda *a, **k: None)
+    fake_db = _FakeContactDb()
+    monkeypatch.setattr(job.credentials, "sismo", lambda: type("_C", (), {"firestore": fake_db})())
+
+    (tmp_path / "reportes_agg.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-09-01T00:00:00Z",
+                "kpis": {"reportes": 5},
+                "kpis_generated_at": "2026-09-01T00:00:00Z",
+                "kpis_stale": False,
+                "kpis_error": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1
+    # reportes.json/reportes_meta.json must still be written normally --
+    # the kpis failure never blocks the main publication.
+    assert (tmp_path / "reportes.json").exists()
+    assert (tmp_path / "reportes_meta.json").exists()
+    agg = json.loads((tmp_path / "reportes_agg.json").read_text(encoding="utf-8"))
+    assert agg["kpis"] == {"reportes": 5}  # previous value carried forward
+    assert agg["kpis_generated_at"] == "2026-09-01T00:00:00Z"  # ORIGINAL timestamp preserved
+    assert agg["kpis_stale"] is True
+    assert agg["kpis_error"]  # non-null reason
+
+
+def test_fetch_reportes_kpis_failure_with_no_previous_agg_writes_null_kpis(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setenv("VISITADOS_API_PASS", "secret")
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _fake_day_walk_one_record)
+    monkeypatch.setattr(job.atencionsismo, "fetch_kpis", _fake_fetch_kpis_fail)
+    monkeypatch.setattr(job.blob_lkg, "load_json", lambda *a, **k: None)  # F1: nothing published on Blob either
+    fake_db = _FakeContactDb()
+    monkeypatch.setattr(job.credentials, "sismo", lambda: type("_C", (), {"firestore": fake_db})())
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1
+    assert (tmp_path / "reportes.json").exists()
+    assert (tmp_path / "reportes_meta.json").exists()
+    agg = json.loads((tmp_path / "reportes_agg.json").read_text(encoding="utf-8"))
+    assert agg["kpis"] is None  # never fabricated
+    assert agg["kpis_generated_at"] is None
+    assert agg["kpis_stale"] is False  # nothing stale to carry forward -- just absent
+    assert agg["kpis_error"]
+
+
+def test_fetch_reportes_kpis_unexpected_exception_never_propagates(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setenv("VISITADOS_API_PASS", "secret")
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _fake_day_walk_one_record)
+    monkeypatch.setattr(job.atencionsismo, "fetch_kpis", _fake_fetch_kpis_unexpected_bug)
+    monkeypatch.setattr(job.blob_lkg, "load_json", lambda *a, **k: None)
+    fake_db = _FakeContactDb()
+    monkeypatch.setattr(job.credentials, "sismo", lambda: type("_C", (), {"firestore": fake_db})())
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())  # must not raise
+
+    assert count == 1
+    assert (tmp_path / "reportes.json").exists()
+    assert (tmp_path / "reportes_meta.json").exists()
+    agg = json.loads((tmp_path / "reportes_agg.json").read_text(encoding="utf-8"))
+    assert agg["kpis"] is None
+    assert agg["kpis_error"]
+
+
+# --- CRITICAL fix 3: fetch_kpis has its OWN, separately-checked remaining- --
+# --- budget guard (checked LATER than both backfill's and panel-match's), --
+# --- the same reasoning as PANEL_MATCH_MIN_REMAINING_BUDGET_S: on this ------
+# --- Python version asyncio.CancelledError is BaseException, not Exception, -
+# --- so a broad `except Exception` around the kpis call does NOT protect ---
+# --- against the outer asyncio.wait_for(fetch_reportes(), timeout=---------
+# --- FETCH_REPORTES_TIMEOUT_S) firing mid-request. When too little budget --
+# --- remains, fetch_kpis is never even attempted -- straight to the SAME --
+# --- "carry forward previous / null" fallback the except branch uses. ------
+
+
+def _make_fetch_kpis_recorder(calls):
+    """A fetch_kpis fake that RECORDS whether it was called instead of just
+    raising -- a raise would be silently absorbed by fetch_reportes()'s own
+    `except Exception` and repurposed into a truthy kpis_error, which would
+    make a naive "must not be called" test pass for the wrong reason (the
+    exception text alone satisfies `assert kpis_error`). Recording actual
+    invocations is the only way to prove the budget guard skipped the call
+    outright rather than merely failing it."""
+
+    async def _fake(client, user, password):
+        calls.append(1)
+        return {"reportes": 999}
+
+    return _fake
+
+
+def test_fetch_reportes_skips_kpis_fetch_when_remaining_budget_too_low_no_previous_agg(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    _patch_credentials_and_fake_firestore(monkeypatch)
+    monkeypatch.setattr(job.blob_lkg, "load_json", lambda *a, **k: None)
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _fake_day_walk_one_record)
+    kpis_calls: list[int] = []
+    monkeypatch.setattr(job.atencionsismo, "fetch_kpis", _make_fetch_kpis_recorder(kpis_calls))
+
+    # started_at=1000.0; backfill's own elapsed read=1005.0 -> remaining=235s
+    # (backfill_complete already True so the block is skipped regardless, but
+    # the guard's own elapsed read still runs unconditionally). panel-match's
+    # own elapsed read (F5: now checked BEFORE kpis) = 1215.0 -> remaining=25s
+    # < PANEL_MATCH_MIN_REMAINING_BUDGET_S (60s) -> panel-match skipped,
+    # irrelevant to this test's assertions. kpis' own elapsed read (checked
+    # LAST now) = 1215.0 -> remaining=25s < KPIS_MIN_REMAINING_BUDGET_S (45s)
+    # -> fetch_kpis skipped entirely.
+    monkeypatch.setattr(
+        job.reportes_historico, "load_state",
+        lambda: {"backfill_complete": True, "backfill_frontier_ms": 1_600_000_000_000},
+    )
+    monkeypatch.setattr(job.reportes_historico, "load_pool", lambda: {})
+    monkeypatch.setattr(job.reportes_historico, "save_pool", lambda p: None)
+    times = iter([1000.0, 1005.0, 1215.0, 1215.0])
+    monkeypatch.setattr(job, "_monotonic", lambda: next(times))
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1
+    # The main publication is never blocked by the skipped kpis fetch.
+    assert (tmp_path / "reportes.json").exists()
+    assert (tmp_path / "reportes_meta.json").exists()
+    assert kpis_calls == []  # fetch_kpis was never even attempted
+    agg = json.loads((tmp_path / "reportes_agg.json").read_text(encoding="utf-8"))
+    assert agg["kpis"] is None  # nothing to carry forward -- never fabricated
+    assert agg["kpis_generated_at"] is None
+    assert agg["kpis_stale"] is False
+    assert agg["kpis_error"]  # non-null reason, budget-related
+
+
+def test_fetch_reportes_skips_kpis_fetch_when_remaining_budget_too_low_with_previous_agg_preserves_and_marks_stale(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    _patch_credentials_and_fake_firestore(monkeypatch)
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _fake_day_walk_one_record)
+    kpis_calls: list[int] = []
+    monkeypatch.setattr(job.atencionsismo, "fetch_kpis", _make_fetch_kpis_recorder(kpis_calls))
+    monkeypatch.setattr(
+        job.reportes_historico, "load_state",
+        lambda: {"backfill_complete": True, "backfill_frontier_ms": 1_600_000_000_000},
+    )
+    monkeypatch.setattr(job.reportes_historico, "load_pool", lambda: {})
+    monkeypatch.setattr(job.reportes_historico, "save_pool", lambda p: None)
+    # F5: panel-match's own budget check now runs BEFORE kpis' -- values
+    # unchanged, order re-labelled below.
+    times = iter([1000.0, 1005.0, 1215.0, 1215.0])
+    monkeypatch.setattr(job, "_monotonic", lambda: next(times))
+    # F1: _load_previous_kpis() now tries Blob first -- this test exercises
+    # the LOCAL fallback specifically (the local file written just below).
+    monkeypatch.setattr(job.blob_lkg, "load_json", lambda *a, **k: None)
+
+    (tmp_path / "reportes_agg.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-09-01T00:00:00Z",
+                "kpis": {"reportes": 5},
+                "kpis_generated_at": "2026-09-01T00:00:00Z",
+                "kpis_stale": False,
+                "kpis_error": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1
+    assert (tmp_path / "reportes.json").exists()
+    assert (tmp_path / "reportes_meta.json").exists()
+    assert kpis_calls == []  # fetch_kpis was never even attempted
+    agg = json.loads((tmp_path / "reportes_agg.json").read_text(encoding="utf-8"))
+    assert agg["kpis"] == {"reportes": 5}  # previous value carried forward
+    assert agg["kpis_generated_at"] == "2026-09-01T00:00:00Z"  # ORIGINAL timestamp preserved
+    assert agg["kpis_stale"] is True
+    assert agg["kpis_error"]  # non-null reason, budget-related
+
+
+# --- WARNING fix 5: an UNEXPECTED exception's kpis_error must never carry ---
+# --- the raw str(exc) into the public reportes_agg.json Blob file -- only --
+# --- the exception's class name (or a static reason) is published for that -
+# --- generic fallback branch. ApiUnavailableError keeps its own status- ----
+# --- only message (already tested elsewhere not to leak credentials). ------
+
+
+def test_fetch_reportes_kpis_unexpected_exception_publishes_class_name_not_raw_message(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setenv("VISITADOS_API_PASS", "secret")
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _fake_day_walk_one_record)
+    monkeypatch.setattr(job.atencionsismo, "fetch_kpis", _fake_fetch_kpis_unexpected_bug)
+    monkeypatch.setattr(job.blob_lkg, "load_json", lambda *a, **k: None)
+    fake_db = _FakeContactDb()
+    monkeypatch.setattr(job.credentials, "sismo", lambda: type("_C", (), {"firestore": fake_db})())
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1
+    agg = json.loads((tmp_path / "reportes_agg.json").read_text(encoding="utf-8"))
+    assert agg["kpis"] is None
+    assert agg["kpis_error"] == "KeyError"  # class name only, never the raw exception text
+    assert "simulated bug in kpis processing" not in agg["kpis_error"]  # the raw message must never leak
+
+
+def test_load_previous_kpis_returns_none_when_agg_file_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setattr(job.blob_lkg, "load_json", lambda *a, **k: None)  # F1: nothing on Blob either
+
+    assert job._load_previous_kpis() == (None, None)
+
+
+def test_load_previous_kpis_returns_none_when_agg_file_is_malformed_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setattr(job.blob_lkg, "load_json", lambda *a, **k: None)
+    (tmp_path / "reportes_agg.json").write_text("not json{{{", encoding="utf-8")
+
+    assert job._load_previous_kpis() == (None, None)
+
+
+@pytest.mark.parametrize("bad_kpis", [[1, 2], "x", 42, None])
+def test_load_previous_kpis_returns_none_when_kpis_field_is_not_a_dict(tmp_path, monkeypatch, bad_kpis):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setattr(job.blob_lkg, "load_json", lambda *a, **k: None)
+    (tmp_path / "reportes_agg.json").write_text(
+        json.dumps({"kpis": bad_kpis, "kpis_generated_at": "2026-09-01T00:00:00Z"}), encoding="utf-8"
+    )
+
+    assert job._load_previous_kpis() == (None, None)
+
+
+def test_load_previous_kpis_returns_kpis_and_timestamp_when_present(tmp_path, monkeypatch):
+    # LOCAL fallback path specifically: Blob has nothing published.
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setattr(job.blob_lkg, "load_json", lambda *a, **k: None)
+    (tmp_path / "reportes_agg.json").write_text(
+        json.dumps({"kpis": {"reportes": 9}, "kpis_generated_at": "2026-09-01T00:00:00Z"}), encoding="utf-8"
+    )
+
+    assert job._load_previous_kpis() == ({"reportes": 9}, "2026-09-01T00:00:00Z")
+
+
+# --- F1: carry-forward now reads the last PUBLISHED reportes_agg.json from --
+# --- Blob FIRST, via blob_lkg.load_json -- in the cron container, the local -
+# --- WEB_DATA_DIR/reportes_agg.json is the image-baked, git-committed copy --
+# --- with no 'kpis' key at all, so a local-only read could never carry -----
+# --- forward a genuine previous kpis value in production. --------------------
+
+
+def test_load_previous_kpis_reads_from_blob_first_when_local_has_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)  # no local reportes_agg.json at all
+
+    def _fake_load_json(pathname, expected_type):
+        assert pathname == "data/reportes_agg.json"
+        assert expected_type is dict
+        return {"kpis": {"reportes": 42}, "kpis_generated_at": "2026-09-01T00:00:00Z", "generated_at": "x"}
+
+    monkeypatch.setattr(job.blob_lkg, "load_json", _fake_load_json)
+
+    assert job._load_previous_kpis() == ({"reportes": 42}, "2026-09-01T00:00:00Z")
+
+
+def test_load_previous_kpis_blob_none_and_local_none_returns_none_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setattr(job.blob_lkg, "load_json", lambda *a, **k: None)  # Blob unreachable/missing/no token
+
+    assert job._load_previous_kpis() == (None, None)
+
+
+def test_load_previous_kpis_blob_dict_without_kpis_key_falls_back_to_local(tmp_path, monkeypatch):
+    # Blob answers with a real dict (not None), just one without a usable
+    # 'kpis' field -- must fall back to the local file, not to (None, None).
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setattr(job.blob_lkg, "load_json", lambda *a, **k: {"generated_at": "2026-08-25T00:00:00Z"})
+    (tmp_path / "reportes_agg.json").write_text(
+        json.dumps({"kpis": {"reportes": 9}, "kpis_generated_at": "2026-09-01T00:00:00Z"}), encoding="utf-8"
+    )
+
+    assert job._load_previous_kpis() == ({"reportes": 9}, "2026-09-01T00:00:00Z")
+
+
+def test_load_previous_kpis_blob_helper_raising_does_not_propagate_falls_back_to_local(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+
+    def _boom(*a, **k):
+        raise RuntimeError("blob unreachable")
+
+    monkeypatch.setattr(job.blob_lkg, "load_json", _boom)
+    (tmp_path / "reportes_agg.json").write_text(
+        json.dumps({"kpis": {"reportes": 3}, "kpis_generated_at": "2026-08-01T00:00:00Z"}), encoding="utf-8"
+    )
+
+    assert job._load_previous_kpis() == ({"reportes": 3}, "2026-08-01T00:00:00Z")
+
+
+def test_load_previous_kpis_blob_kpis_present_but_generated_at_missing_still_carried_forward(tmp_path, monkeypatch):
+    # Guard against resurrecting a frozen value without inventing a
+    # timestamp: kpis_generated_at missing entirely from the Blob payload
+    # still carries the kpis value forward -- the caller (fetch_reportes)
+    # is what marks the block stale, this function never fabricates a date.
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setattr(job.blob_lkg, "load_json", lambda *a, **k: {"kpis": {"reportes": 7}})
+
+    assert job._load_previous_kpis() == ({"reportes": 7}, None)
+
+
+def test_fetch_reportes_kpis_failure_carries_forward_blob_published_kpis_when_local_has_none(tmp_path, monkeypatch):
+    """F1 regression, end-to-end: in the cron container WEB_DATA_DIR/
+    reportes_agg.json is the image-baked, git-committed copy from before
+    this feature existed (no 'kpis' key) -- carry-forward on a failed
+    fetch_kpis must come from the last-PUBLISHED Blob copy, not that local
+    file, or kpis_stale carry-forward could never fire in production."""
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setenv("VISITADOS_API_PASS", "secret")
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _fake_day_walk_one_record)
+    monkeypatch.setattr(job.atencionsismo, "fetch_kpis", _fake_fetch_kpis_fail)
+    fake_db = _FakeContactDb()
+    monkeypatch.setattr(job.credentials, "sismo", lambda: type("_C", (), {"firestore": fake_db})())
+
+    # Local file exists but has NO 'kpis' key at all (the pre-feature,
+    # image-baked shape) -- must NOT be mistaken for "nothing to carry".
+    (tmp_path / "reportes_agg.json").write_text(
+        json.dumps({"generated_at": "2026-08-25T00:00:00Z", "total": 100}), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        job.blob_lkg, "load_json",
+        lambda *a, **k: {"kpis": {"reportes": 77}, "kpis_generated_at": "2026-09-01T00:00:00Z"},
+    )
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1
+    agg = json.loads((tmp_path / "reportes_agg.json").read_text(encoding="utf-8"))
+    assert agg["kpis"] == {"reportes": 77}
+    assert agg["kpis_generated_at"] == "2026-09-01T00:00:00Z"
+    assert agg["kpis_stale"] is True
+
+
+# --- F3: the _load_previous_kpis() fallback read is now INSIDE its own -----
+# --- fail-soft boundary (it used to sit outside the try/except whose own ---
+# --- comment claimed to cover it) -- a bug in that helper must never --------
+# --- propagate out of fetch_reportes() and block reportes_agg.json. ---------
+
+
+def test_fetch_reportes_load_previous_kpis_raising_does_not_propagate_publishes_null_kpis(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setenv("VISITADOS_API_PASS", "secret")
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _fake_day_walk_one_record)
+    monkeypatch.setattr(job.atencionsismo, "fetch_kpis", _fake_fetch_kpis_fail)
+    fake_db = _FakeContactDb()
+    monkeypatch.setattr(job.credentials, "sismo", lambda: type("_C", (), {"firestore": fake_db})())
+
+    def _boom():
+        raise RuntimeError("_load_previous_kpis blew up")
+
+    monkeypatch.setattr(job, "_load_previous_kpis", _boom)
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())  # must not raise
+
+    assert count == 1
+    assert (tmp_path / "reportes.json").exists()
+    assert (tmp_path / "reportes_meta.json").exists()
+    agg = json.loads((tmp_path / "reportes_agg.json").read_text(encoding="utf-8"))
+    assert agg["kpis"] is None
+    assert agg["kpis_stale"] is False
+    assert agg["kpis_error"]  # non-null: the original fetch_kpis failure reason survives
+
+
+# --- F2: the kpis HTTP call itself is now bounded by ------------------------
+# --- asyncio.wait_for(..., KPIS_CALL_TIMEOUT_S) -- a hung request must ------
+# --- degrade to a TimeoutError kpis_error, never hang the whole run. --------
+
+
+async def _fake_fetch_kpis_hangs(client, user, password):
+    import asyncio  # module-level fn, not a test function -- needs its own import
+
+    await asyncio.Event().wait()  # never resolves; bounded only by wait_for's own timeout
+
+
+def test_fetch_reportes_kpis_call_is_bounded_by_timeout_and_publishes_timeout_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(job, "WEB_DATA_DIR", tmp_path)
+    monkeypatch.setenv("VISITADOS_API_PASS", "secret")
+    monkeypatch.setattr(job.atencionsismo, "day_walk", _fake_day_walk_one_record)
+    monkeypatch.setattr(job.atencionsismo, "fetch_kpis", _fake_fetch_kpis_hangs)
+    monkeypatch.setattr(job, "KPIS_CALL_TIMEOUT_S", 0.05)  # bound the test itself, not the real 20s
+    monkeypatch.setattr(job.blob_lkg, "load_json", lambda *a, **k: None)
+    fake_db = _FakeContactDb()
+    monkeypatch.setattr(job.credentials, "sismo", lambda: type("_C", (), {"firestore": fake_db})())
+
+    import asyncio
+
+    count = asyncio.run(job.fetch_reportes())
+
+    assert count == 1
+    assert (tmp_path / "reportes.json").exists()
+    assert (tmp_path / "reportes_meta.json").exists()
+    agg = json.loads((tmp_path / "reportes_agg.json").read_text(encoding="utf-8"))
+    assert agg["kpis"] is None
+    assert agg["kpis_error"] == "TimeoutError"
 
 
 def test_ingest_survey_cali_failure_does_not_propagate_out_of_run_refresh_step(tmp_path, monkeypatch):

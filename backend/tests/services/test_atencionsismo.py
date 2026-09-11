@@ -793,3 +793,231 @@ def test_fetch_stickers_400_raises_without_retry(monkeypatch):
     with pytest.raises(atencionsismo.ApiUnavailableError):
         _run(atencionsismo.fetch_stickers(_client(handler), FAKE_USER, FAKE_PASS))
     assert calls["n"] == 1
+
+
+# ── fetch_kpis: undated `GET informe/json?kpis=1&offset=0&limit=1` ─────────
+# (docs/api-informe-json (docs-api-atencionsismo).md, "Objeto kpis" ~line
+# 243): kpis is affected only by comuna/barrio/afectacion/inmueble/q, NOT by
+# date range, so this single undated call returns the whole operative
+# universe. Never fabricate a value: any missing/non-numeric field is
+# OMITTED from the result, never defaulted to 0.
+
+_FULL_KPIS = {
+    "inmueblesVerificados": 100,
+    "cuadrillasEnCampo": 5,
+    "asignaciones": 42,
+    "cuadrillasEspecializadas": 2,
+    "asignacionesEspecializadas": 7,
+    "reportes": 500,
+    "inmueblesReportados": 480,
+    "pendientes": 12,
+    "inmueblesVisitadosNoCriticos": 300,
+    "avancePct": 62.5,
+    "zonaRural": 3,
+    "fueraDeCali": 1,
+}
+
+
+def test_fetch_kpis_returns_all_valid_numeric_fields():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert dict(request.url.params) == {"kpis": "1", "offset": "0", "limit": "1"}
+        assert request.headers["Authorization"].startswith("Basic ")
+        return httpx.Response(200, json={"kpis": _FULL_KPIS})
+
+    async def go():
+        async with _client(handler) as client:
+            return await atencionsismo.fetch_kpis(client, FAKE_USER, FAKE_PASS)
+
+    result = _run(go())
+
+    assert result == _FULL_KPIS
+    assert isinstance(result["avancePct"], float)
+    assert isinstance(result["reportes"], int)
+
+
+def test_fetch_kpis_omits_invalid_or_missing_fields_never_defaults_to_zero():
+    mixed = {
+        "inmueblesVerificados": 100,        # valid int -> kept
+        "cuadrillasEnCampo": "5",           # string -> invalid, OMITTED
+        "asignaciones": None,               # null -> invalid, OMITTED
+        # "cuadrillasEspecializadas" missing entirely -> OMITTED
+        "asignacionesEspecializadas": 7.0,  # valid float -> kept
+        "reportes": True,                   # bool -> invalid, OMITTED (not a real count)
+        "pendientes": [1, 2],               # list -> invalid, OMITTED
+        "inmueblesVisitadosNoCriticos": {},  # dict -> invalid, OMITTED
+        "avancePct": 62.5,                  # valid float -> kept
+        "zonaRural": float("nan"),          # NaN -> invalid, OMITTED
+        "fueraDeCali": float("inf"),        # Inf -> invalid, OMITTED
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # httpx.Response(json=...) rejects NaN/Inf (allow_nan=False under the
+        # hood); build the body manually via stdlib json.dumps (allow_nan=True
+        # default) so the wire payload legitimately carries the non-finite
+        # values a real API response could send, and json.loads (also
+        # allow_nan=True by default) parses them back as float('nan')/inf on
+        # the way in — exactly what fetch_kpis must reject.
+        import json as _json
+
+        body = _json.dumps({"kpis": mixed})
+        return httpx.Response(200, content=body, headers={"content-type": "application/json"})
+
+    async def go():
+        async with _client(handler) as client:
+            return await atencionsismo.fetch_kpis(client, FAKE_USER, FAKE_PASS)
+
+    result = _run(go())
+
+    assert result == {"inmueblesVerificados": 100, "asignacionesEspecializadas": 7.0, "avancePct": 62.5}
+    for omitted in (
+        "cuadrillasEnCampo", "asignaciones", "cuadrillasEspecializadas", "reportes",
+        "pendientes", "inmueblesVisitadosNoCriticos", "zonaRural", "fueraDeCali",
+    ):
+        assert omitted not in result  # specifically NOT present, never a fabricated 0
+
+
+def test_fetch_kpis_raises_when_kpis_key_missing():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"reportes": []})
+
+    async def go():
+        async with _client(handler) as client:
+            await atencionsismo.fetch_kpis(client, FAKE_USER, FAKE_PASS)
+
+    with pytest.raises(atencionsismo.ApiUnavailableError):
+        _run(go())
+
+
+@pytest.mark.parametrize("bad_kpis", [[1, 2, 3], "not-an-object", 42, None])
+def test_fetch_kpis_raises_when_kpis_is_not_a_dict(bad_kpis):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"kpis": bad_kpis})
+
+    async def go():
+        async with _client(handler) as client:
+            await atencionsismo.fetch_kpis(client, FAKE_USER, FAKE_PASS)
+
+    with pytest.raises(atencionsismo.ApiUnavailableError):
+        _run(go())
+
+
+@pytest.mark.parametrize("status", [401, 503])
+def test_fetch_kpis_raises_on_non_2xx_status(status):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status)
+
+    async def go():
+        async with _client(handler) as client:
+            await atencionsismo.fetch_kpis(client, FAKE_USER, FAKE_PASS)
+
+    with pytest.raises(atencionsismo.ApiUnavailableError):
+        _run(go())
+
+
+def test_fetch_kpis_raises_on_network_failure():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom", request=request)
+
+    async def go():
+        async with _client(handler) as client:
+            await atencionsismo.fetch_kpis(client, FAKE_USER, FAKE_PASS)
+
+    with pytest.raises(atencionsismo.ApiUnavailableError):
+        _run(go())
+
+
+def test_fetch_kpis_never_includes_credentials_in_error_message():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    async def go():
+        async with _client(handler) as client:
+            await atencionsismo.fetch_kpis(client, "secret-user@example.com", "s3cr3t-pw")
+
+    with pytest.raises(atencionsismo.ApiUnavailableError) as exc:
+        _run(go())
+    assert "secret-user" not in str(exc.value)
+    assert "s3cr3t-pw" not in str(exc.value)
+
+
+# --- F6: any non-2xx status (redirects included) is a failure, and a 200 --
+# --- whose body isn't valid JSON must raise instead of letting resp.json() -
+# --- (ValueError) escape uncaught. ------------------------------------------
+
+
+def test_fetch_kpis_raises_on_3xx_redirect_status():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": "https://atencionsismo.cali.gov.co/ingresar"})
+
+    async def go():
+        async with _client(handler) as client:
+            await atencionsismo.fetch_kpis(client, FAKE_USER, FAKE_PASS)
+
+    with pytest.raises(atencionsismo.ApiUnavailableError):
+        _run(go())
+
+
+def test_fetch_kpis_raises_when_200_body_is_not_json():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html>en mantenimiento</html>")
+
+    async def go():
+        async with _client(handler) as client:
+            await atencionsismo.fetch_kpis(client, FAKE_USER, FAKE_PASS)
+
+    with pytest.raises(atencionsismo.ApiUnavailableError):
+        _run(go())
+
+
+# --- F7: 413/504 (API alive but overloaded, same signal SPLITTABLE_STATUSES
+# --- treats leniently elsewhere) gets exactly ONE retry after a short pause
+# --- before fetch_kpis gives up -- there is no window to halve here, unlike
+# --- fetch_window, since this is a single undated request. -----------------
+
+
+@pytest.mark.parametrize("status", [413, 504])
+def test_fetch_kpis_retries_once_on_overloaded_status_then_succeeds(monkeypatch, status):
+    sleeps: list[float] = []
+
+    async def _fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(atencionsismo.asyncio, "sleep", _fake_sleep)
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return httpx.Response(status)
+        return httpx.Response(200, json={"kpis": _FULL_KPIS})
+
+    async def go():
+        async with _client(handler) as client:
+            return await atencionsismo.fetch_kpis(client, FAKE_USER, FAKE_PASS)
+
+    result = _run(go())
+
+    assert result == _FULL_KPIS
+    assert attempts["n"] == 2
+    assert sleeps == [1]  # the retry pause was actually taken (and patched, so it cost nothing real)
+
+
+@pytest.mark.parametrize("status", [413, 504])
+def test_fetch_kpis_gives_up_after_one_retry_still_overloaded(monkeypatch, status):
+    async def _fake_sleep(seconds):
+        return None
+
+    monkeypatch.setattr(atencionsismo.asyncio, "sleep", _fake_sleep)
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        return httpx.Response(status)
+
+    async def go():
+        async with _client(handler) as client:
+            await atencionsismo.fetch_kpis(client, FAKE_USER, FAKE_PASS)
+
+    with pytest.raises(atencionsismo.ApiUnavailableError):
+        _run(go())
+    assert attempts["n"] == 2  # 1 initial try + exactly 1 retry, never more
