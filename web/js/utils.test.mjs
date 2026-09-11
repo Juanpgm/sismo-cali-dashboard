@@ -5,6 +5,7 @@ import {
   filterOptionsByLabel, mountCombobox, isTypedAddress, addressDisplay,
   danoGradoColor, DANO_GRADO_ORDER, formatValue, COLORS, sourceLabel, setSourceLabels,
   pointInPolygon, resolveZonaInteres, isInsideCali, faseInspector, faseKeyDe,
+  satelliteTileUrl, debounce, stableStringify,
 } from './utils.js';
 
 // Real variants seen in the dataset for the same building should normalize
@@ -689,4 +690,92 @@ assert.equal(faseKeyDe({}), 'FASE_I');
 assert.equal(faseKeyDe(null), 'FASE_I', 'null record must not throw -- same legacy default as faseDe(null)');
 assert.equal(faseKeyDe(undefined), 'FASE_I');
 
+// --- satelliteTileUrl -------------------------------------------------------
+// Unlike basemapTileUrl(), satellite imagery has no light/dark variant, so
+// this must be pure: no `document` access, callable straight under Node
+// (this whole file already runs there) and stable across calls.
+{
+  const url = satelliteTileUrl();
+  assert.equal(typeof url, 'string');
+  // Esri's tile scheme orders the path segments {z}/{y}/{x} -- NOT
+  // {z}/{x}/{y}, the order every other tile provider in this app uses (see
+  // basemapTileUrl()'s own {z}/{x}/{y} template) -- so this checks the
+  // literal ordering, not just presence of the three placeholders.
+  const zIdx = url.indexOf('{z}');
+  const yIdx = url.indexOf('{y}');
+  const xIdx = url.indexOf('{x}');
+  assert.ok(zIdx > -1 && yIdx > -1 && xIdx > -1, 'must contain all three placeholders');
+  assert.ok(zIdx < yIdx && yIdx < xIdx, 'Esri order must be {z}/{y}/{x}, not {z}/{x}/{y}');
+  assert.equal(satelliteTileUrl(), url, 'must be stable/pure across calls');
+}
+
 console.log('ok — faseKeyDe (single Fase rule shared by faseDe/evalFaseLabelDe)');
+
+// --- debounce: .cancel() (F4) ------------------------------------------------
+// A cancellable debounce lets a caller kill a pending call before it fires
+// (e.g. a stale session's pending render must never touch a fresh session's
+// DOM/state — see evaluaciones.js's load()/reset/initEvaluaciones wiring).
+{
+  let calls = 0;
+  const debounced = debounce(() => { calls += 1; }, 15);
+
+  // (1) cancel prevents a pending call from firing.
+  debounced();
+  debounced.cancel();
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(calls, 0, 'a cancelled call must never fire');
+
+  // (2) calling the debounced function again after cancel schedules a new
+  // call normally — cancel must not permanently disable the debounce.
+  debounced();
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(calls, 1, 'a call scheduled after cancel fires normally');
+
+  // (3) calling cancel when nothing is pending is a no-op: must not throw,
+  // and a later call must still fire normally afterwards.
+  assert.doesNotThrow(() => debounced.cancel(), 'cancel with nothing pending must not throw');
+  debounced();
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(calls, 2, 'a call after a no-op cancel still fires normally');
+}
+console.log('ok — debounce .cancel()');
+
+// --- stableStringify: key-order-immune JSON serialization (F5) --------------
+// Backs evaluaciones.js's silent-poll fingerprint: a record's fingerprint
+// must never change just because its keys were enumerated in a different
+// order, only because a VALUE actually changed.
+{
+  // Key order must not affect output — same data, different insertion order.
+  assert.equal(stableStringify({ b: 1, a: 2 }), stableStringify({ a: 2, b: 1 }));
+
+  // Nested objects/arrays: key order immunity applies at every depth.
+  assert.equal(
+    stableStringify({ z: [1, { y: 2, x: 3 }], a: 'text' }),
+    stableStringify({ a: 'text', z: [1, { x: 3, y: 2 }] }),
+  );
+
+  // An actual VALUE difference still produces different output.
+  assert.notEqual(stableStringify({ a: 1 }), stableStringify({ a: 2 }));
+  assert.notEqual(stableStringify([1, 2]), stableStringify([1, 3]));
+
+  // null.
+  assert.equal(stableStringify(null), 'null');
+  assert.equal(stableStringify({ a: null }), '{"a":null}');
+  assert.equal(stableStringify([null]), '[null]');
+
+  // undefined: matches JSON.stringify's own semantics exactly.
+  assert.equal(stableStringify(undefined), undefined, 'top-level undefined -> undefined, like JSON.stringify');
+  assert.equal(stableStringify({ a: 1, b: undefined }), '{"a":1}', 'an undefined object property is OMITTED, not emitted as null');
+  assert.equal(stableStringify([1, undefined, 3]), '[1,null,3]', 'undefined inside an array becomes null');
+
+  // Plain primitives.
+  assert.equal(stableStringify(42), '42');
+  assert.equal(stableStringify('hola'), '"hola"');
+  assert.equal(stableStringify(true), 'true');
+  assert.equal(stableStringify(false), 'false');
+
+  // Empty object/array — boundary.
+  assert.equal(stableStringify({}), '{}');
+  assert.equal(stableStringify([]), '[]');
+}
+console.log('ok — stableStringify (key-order immunity, nested, null/undefined, primitives)');

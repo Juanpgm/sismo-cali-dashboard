@@ -22,7 +22,7 @@
 //      once per init and caches it for the session — the SAME roster
 //      Stickers uses (binding constraint: no separate professionals
 //      collection), filtered by the same `habilitado` rule.
-import { COLORS, escapeHtml, basemapTileUrl } from './utils.js';
+import { COLORS, escapeHtml, basemapTileUrl, createBasemapToggle } from './utils.js';
 import { apiUrl } from './api-config.js';
 
 const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
@@ -182,6 +182,20 @@ export function sortRows(rows) {
 /** Filter chip logic (spec.md "Filtering narrows the working set"):
  *  `prioridad` narrows by the EFFECTIVE priority, `comuna`/`afectacion` by
  *  exact match. A falsy/missing filter key does not narrow that dimension. */
+/** Whether the Puntos table's own filters (prioridad, comuna, search, grupo)
+ *  are currently narrowing the working set — drives "Reiniciar filtros"'
+ *  enabled/disabled + soft-orange state. Deliberately the same four fields
+ *  filterRows() itself narrows by, no more: `grupo` genuinely narrows the
+ *  table (see filterRows's own r.grupo_id check below and its "Filtering
+ *  narrows the working set" doc comment) — it is NOT the separate "which
+ *  grupo is being edited" kind of state, so it belongs here. Tolerant of a
+ *  partial/malformed filters object so it can never throw mid-render.
+ *  Exported so a self-check can cover the transitions without the DOM. */
+export function hasActivePlaneacionFilters(filters) {
+  if (!filters) return false;
+  return Boolean(filters.prioridad || filters.comuna || filters.search || filters.grupo);
+}
+
 export function filterRows(rows, { prioridad, comuna, afectacion, grupo, search } = {}) {
   const needle = (search || '').trim().toLowerCase();
   return (rows || []).filter((r) => {
@@ -469,6 +483,7 @@ function shellHtml() {
     </header>
     <div class="section-bar">
       <h3 class="section-bar-title">Planeación</h3>
+      <button type="button" class="btn-clear" id="planeacion-reset-filters" disabled>Reiniciar filtros</button>
       <span class="eval-toolbar-meta" id="planeacion-map-meta"></span>
     </div>
     <p class="sticker-ok" id="planeacion-ok" role="status" hidden></p>
@@ -1286,12 +1301,14 @@ function popupHtml(row) {
 
 let map = null;
 let baseTile = null;
+let basemapToggle = null;
 let pointsLayer = null;
 let legendEl = null;
 
 function teardownMap() {
   if (map) { map.remove(); map = null; }
   baseTile = null;
+  basemapToggle = null;
   pointsLayer = null;
   legendEl = null;
 }
@@ -1303,6 +1320,7 @@ if (typeof document !== 'undefined') {
     map.removeLayer(baseTile);
     baseTile = L.tileLayer(basemapTileUrl(), { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20 }).addTo(map);
     baseTile.bringToBack();
+    if (basemapToggle) basemapToggle.notifyStreetLayerRecreated();
   });
 }
 
@@ -1323,6 +1341,7 @@ function renderMap(rows, inspectores, { fit = true } = {}) {
     // thousands of DOM nodes to lay out / repaint on pan/zoom).
     map = L.map('planeacion-map', { zoomControl: true, minZoom: 10, maxZoom: 18, preferCanvas: true }).setView(CALI_CENTER, CALI_ZOOM);
     baseTile = L.tileLayer(basemapTileUrl(), { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20 }).addTo(map);
+    basemapToggle = createBasemapToggle(map, { getStreetLayer: () => baseTile });
     pointsLayer = L.layerGroup().addTo(map);
 
     const legend = L.control({ position: 'bottomright' });
@@ -1405,6 +1424,7 @@ export function initPlaneacion(root, { getToken }) {
   const showOverlay = () => { overlayEl.hidden = false; };
   const hideOverlay = () => { overlayEl.hidden = true; };
   const mapMeta = root.querySelector('#planeacion-map-meta');
+  const resetFiltersBtn = root.querySelector('#planeacion-reset-filters');
   const okBox = root.querySelector('#planeacion-ok');
   const errBox = root.querySelector('#planeacion-error');
   const kpisEl = root.querySelector('#planeacion-kpis');
@@ -1532,6 +1552,13 @@ export function initPlaneacion(root, { getToken }) {
     filtersEl.innerHTML = filtersHtml({ ...filters, comunas: comunasFromRows() });
     tableWrap.innerHTML = tableHtml(currentRows(), selected);
     wireTable();
+    // Every filter mutation (prioridad/comuna chips, search, grupo chips) —
+    // and reload()/reloadPuntos(), which re-render through here too — calls
+    // renderTable(), so updating the reset button's state in this one shared
+    // spot keeps it in sync without a parallel check that could drift.
+    const active = hasActivePlaneacionFilters(filters);
+    resetFiltersBtn.disabled = !active;
+    resetFiltersBtn.classList.toggle('is-filter-active', active);
   }
 
   function wireTable() {
@@ -2370,6 +2397,28 @@ export function initPlaneacion(root, { getToken }) {
     }
     renderTable();
     renderMapSection();
+  });
+
+  // "Reiniciar filtros": clears all four (prioridad, comuna, search, grupo —
+  // see hasActivePlaneacionFilters's own doc comment on why grupo belongs
+  // here). Mirrors the SAME branching the prioridad chip handler above uses,
+  // rather than always taking the heavier path: prioridad is backend-scoped
+  // (`reload()`'s own `listPuntosBody.prioridad`), so clearing it must
+  // re-fetch the same way widening a prioridad chip back to "Todas" already
+  // does; comuna/search/grupo are client-side-only and only need a re-render.
+  // disabled (via renderTable's own hasActivePlaneacionFilters check) while
+  // nothing is active, so a click while it reads as inert is a real no-op.
+  resetFiltersBtn.addEventListener('click', () => {
+    const hadPrioridad = Boolean(filters.prioridad);
+    filters = { prioridad: '', comuna: '', search: '', grupo: '' };
+    searchInput.value = '';
+    if (hadPrioridad) {
+      reload();
+      return;
+    }
+    renderTable();
+    renderCuadrillasSection();
+    renderMapSection(true);
   });
 
   // ---- roster: fetched ONCE per init from Stickers' own endpoint, cached for

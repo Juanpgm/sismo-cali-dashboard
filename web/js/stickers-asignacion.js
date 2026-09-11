@@ -6,7 +6,7 @@
 //
 // Lazy-initialized by web/js/stickers.js the first time this segment opens
 // (spec.md "Mounted as a sub-section of the existing Stickers tab").
-import { COLORS, escapeHtml, basemapTileUrl } from './utils.js';
+import { COLORS, escapeHtml, basemapTileUrl, createBasemapToggle } from './utils.js';
 import { apiUrl } from './api-config.js';
 
 const ENDPOINT = '/api/sticker-asignaciones';
@@ -168,6 +168,13 @@ export function filterRows(rows, estado) {
   return rows.filter((r) => r.estado_asignacion === estado);
 }
 
+/** Whether the estado chip filter is currently narrowing the table — 'todos'
+ *  (or falsy, same tolerance as filterRows above) is the "no filter" baseline.
+ *  Drives "Reiniciar filtros"' enabled/disabled + soft-orange state. */
+export function estadoFilterActive(estado) {
+  return Boolean(estado) && estado !== 'todos';
+}
+
 /** Active-assigned count per inspector uid, computed from the already-fetched
  *  rows (no extra API call). "Active" = assigned to them AND not yet 'hecho'.
  *  Shown next to each inspector for balancing — there is no per-inspector cap. */
@@ -226,6 +233,7 @@ function shellHtml() {
   return `
     <div class="section-bar">
       <h3 class="section-bar-title">Asignación</h3>
+      <button type="button" class="btn-clear" id="asignacion-reset-filters" disabled>Reiniciar filtros</button>
       <span class="eval-toolbar-meta" id="asignacion-map-meta"></span>
     </div>
     <p class="sticker-ok" id="asignacion-ok" role="status" hidden></p>
@@ -490,12 +498,14 @@ function popupHtml(row) {
 // evaluaciones.js: the Stickers view re-renders its root on every open).
 let map = null;
 let baseTile = null;
+let basemapToggle = null;
 let pointsLayer = null;
 let legendEl = null;
 
 function teardownMap() {
   if (map) { map.remove(); map = null; }
   baseTile = null;
+  basemapToggle = null;
   pointsLayer = null;
   legendEl = null;
 }
@@ -507,6 +517,7 @@ if (typeof document !== 'undefined') {
     map.removeLayer(baseTile);
     baseTile = L.tileLayer(basemapTileUrl(), { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20 }).addTo(map);
     baseTile.bringToBack();
+    if (basemapToggle) basemapToggle.notifyStreetLayerRecreated();
   });
 }
 
@@ -516,6 +527,7 @@ function renderMap(rows, inspectores, onReasignar) {
 
   map = L.map('asignacion-map', { zoomControl: true, minZoom: 10, maxZoom: 18 }).setView(CALI_CENTER, CALI_ZOOM);
   baseTile = L.tileLayer(basemapTileUrl(), { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20 }).addTo(map);
+  basemapToggle = createBasemapToggle(map, { getStreetLayer: () => baseTile });
   pointsLayer = L.layerGroup().addTo(map);
 
   for (const r of conCoords) {
@@ -609,6 +621,7 @@ export function initStickersAsignacion(root, { getToken }) {
   const crearBtn = root.querySelector('#asignacion-crear');
   const reiniciarBtn = root.querySelector('#asignacion-reiniciar');
   const gaugeEl = root.querySelector('#asignacion-gauge');
+  const resetFiltersBtn = root.querySelector('#asignacion-reset-filters');
 
   const showOk = (msg) => { okBox.textContent = msg; okBox.hidden = !msg; };
 
@@ -620,6 +633,22 @@ export function initStickersAsignacion(root, { getToken }) {
     filtersEl.innerHTML = filtersHtml(estadoFilter);
     tableWrap.innerHTML = tableHtml(currentRows(), { key: sortKey, dir: sortDir }, selected);
     wireTable();
+    // Every estado-chip change re-renders through here, so updating the reset
+    // button's state in this one place keeps it in sync without a parallel
+    // check that could drift (e.g. if a future chip handler forgot to call it).
+    const active = estadoFilterActive(estadoFilter);
+    resetFiltersBtn.disabled = !active;
+    resetFiltersBtn.classList.toggle('is-filter-active', active);
+  }
+
+  /** Single place that changes estadoFilter and re-renders — the estado
+   *  chips (wireTable below) and the "Reiniciar filtros" button both call
+   *  this instead of duplicating the render+map-isolate sequence. */
+  function setEstadoFilter(value) {
+    estadoFilter = value;
+    renderTable();
+    // Isolate the filtered estado on the map too (the gauge keeps full totals).
+    renderMapSection();
   }
 
   function wireTable() {
@@ -639,14 +668,13 @@ export function initStickersAsignacion(root, { getToken }) {
       });
     });
     filtersEl.querySelectorAll('[data-estado-filter]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        estadoFilter = btn.dataset.estadoFilter;
-        renderTable();
-        // Isolate the filtered estado on the map too (the gauge keeps full totals).
-        renderMapSection();
-      });
+      btn.addEventListener('click', () => setEstadoFilter(btn.dataset.estadoFilter));
     });
   }
+
+  // disabled (via renderTable's own estadoFilterActive check) while already on
+  // 'todos', so a click while it reads as inert is a real no-op.
+  resetFiltersBtn.addEventListener('click', () => setEstadoFilter('todos'));
 
   // Re-render every panel from the in-memory `rows`/`cuadrillas` — the same four
   // renders reload() runs after fetching, minus the ~6s listPuntos+listCuadrillas

@@ -18,7 +18,7 @@
 // totals/con for sticker-status, identical `ok`/`status` shape for
 // source-status with an admin token). Every OTHER entry below stays on its
 // legacy relative path — `stickers.js`, `usuarios.js`, `auth.js`,
-// `evaluaciones.js`, `stickers-asignacion.js`, `coverage-gauge.js` are
+// `evaluaciones.js`, `stickers-asignacion.js` are
 // untouched; their own consolidation slices (6-8) flip their entries only
 // after each one's own parity check passes.
 const RAILWAY_BASE_URL = 'https://sismo-cali-dashboard-production.up.railway.app';

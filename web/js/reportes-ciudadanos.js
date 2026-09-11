@@ -3,7 +3,7 @@
 // (backend/app/services/reportes_ciudadanos.py, design D5/D6). Same shape
 // of module as evaluaciones.js: pure classification/filter helpers exported
 // for the Node self-check, then the DOM/Leaflet section below.
-import { COLORS, escapeHtml, basemapTileUrl, normalize, loadXlsx, downloadStamp, showToast } from './utils.js';
+import { COLORS, escapeHtml, basemapTileUrl, normalize, loadXlsx, downloadStamp, showToast, createBasemapToggle } from './utils.js';
 
 const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
 const CALI_CENTER = [3.42, -76.53];
@@ -85,6 +85,19 @@ export function opcionesDe(list, campo) {
   return [...set].sort((a, b) => a.localeCompare(b, 'es'));
 }
 
+/** Whether any of the seven filtros fields is currently narrowing the view —
+ *  drives "Reiniciar filtros"' enabled/disabled + soft-orange state. Tolerant
+ *  of a partial/malformed object so it can never throw mid-render. Exported
+ *  so a self-check can cover the no-filters/one-filter/cleared-back-to-none
+ *  transitions without the DOM. */
+export function hasActiveRepFilters(filtros) {
+  if (!filtros) return false;
+  return Boolean(
+    filtros.estado || filtros.afectacion || filtros.tipo
+    || filtros.comuna || filtros.barrio || filtros.sticker || filtros.search,
+  );
+}
+
 export function applyFiltrosReportes(list, filtros) {
   const f = filtros || {};
   const q = f.search ? normalize(f.search) : '';
@@ -118,6 +131,7 @@ export function applyFiltrosReportes(list, filtros) {
 
 let map = null;
 let baseTile = null;
+let basemapToggle = null;
 let pointsLayer = null;
 let lastFitBounds = null;
 let colorMode = 'estado';
@@ -134,6 +148,7 @@ let searchDebounceTimer = null;
 function teardownMap() {
   if (map) { map.remove(); map = null; }
   baseTile = null;
+  basemapToggle = null;
   pointsLayer = null;
 }
 
@@ -182,6 +197,7 @@ export function sectionHtml() {
     <section class="eval-section rep-section" aria-label="Reportes ciudadanos">
       <div class="section-bar">
         <h3 class="section-bar-title">Reportes ciudadanos</h3>
+        <button type="button" class="btn-clear" id="rep-reset-filters" disabled>Reiniciar filtros</button>
         <span class="eval-toolbar-meta" id="rep-freshness">Reportes de ingreso vía atencionsismo.cali.gov.co.</span>
       </div>
 
@@ -353,6 +369,7 @@ function ensureMap(containerId) {
   map = L.map(containerId, { zoomControl: true, minZoom: 10, maxZoom: 18, preferCanvas: true })
     .setView(CALI_CENTER, CALI_ZOOM);
   baseTile = L.tileLayer(basemapTileUrl(), { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20 }).addTo(map);
+  basemapToggle = createBasemapToggle(map, { getStreetLayer: () => baseTile });
   pointsLayer = L.layerGroup().addTo(map);
 }
 
@@ -406,6 +423,7 @@ if (typeof document !== 'undefined') {
     map.removeLayer(baseTile);
     baseTile = L.tileLayer(basemapTileUrl(), { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20 }).addTo(map);
     baseTile.bringToBack();
+    if (basemapToggle) basemapToggle.notifyStreetLayerRecreated();
   });
 }
 
@@ -429,6 +447,7 @@ export function initReportesCiudadanos(root, { fetchReportes }) {
   const modal = $('rep-modal');
   const modalBody = $('rep-modal-body');
   const downloadBtn = $('rep-download');
+  const resetFiltersBtn = $('rep-reset-filters');
   const colorGroupEl = root.querySelector('[data-rep-color-group]');
   const filtros = { estado: '', afectacion: '', tipo: '', comuna: '', barrio: '', sticker: '', search: '' };
   let todos = [];
@@ -483,6 +502,14 @@ export function initReportesCiudadanos(root, { fetchReportes }) {
   // every filter/search re-render fights the user's own pan/zoom.
   let firstMapRender = true;
   function render() {
+    // Every filter control (search debounce, each select's 'change') calls
+    // only render() — updating the reset button's state in this one shared
+    // spot means it can never drift out of sync, including when the user
+    // picks a select's own "Todos"/"Todas" option by hand.
+    const active = hasActiveRepFilters(filtros);
+    resetFiltersBtn.disabled = !active;
+    resetFiltersBtn.classList.toggle('is-filter-active', active);
+
     visibles = applyFiltrosReportes(todos, filtros);
     kpisEl.innerHTML = kpisHtml(visibles);
     barEl.innerHTML = barHtml(visibles);
@@ -529,6 +556,25 @@ export function initReportesCiudadanos(root, { fetchReportes }) {
       render();
     }));
   }
+
+  // "Reiniciar filtros": every select here is a plain <select> rebuilt ONCE
+  // by renderFilters() right after load (not on every filter change), so
+  // resetting must set each one's DOM .value directly rather than re-running
+  // renderFilters() — that would re-attach a SECOND 'input' listener onto the
+  // long-lived #rep-search element (only rep-filter-selects' children are
+  // torn down and rebuilt by renderFilters(), #rep-search lives in the
+  // static sectionHtml() markup and would survive untouched). disabled (via
+  // render()'s own hasActiveRepFilters check) while nothing is active, so a
+  // click while it reads as inert is a real no-op.
+  resetFiltersBtn.addEventListener('click', () => {
+    Object.assign(filtros, { estado: '', afectacion: '', tipo: '', comuna: '', barrio: '', sticker: '', search: '' });
+    ['rep-estado', 'rep-afectacion', 'rep-tipo', 'rep-comuna', 'rep-barrio', 'rep-sticker'].forEach((id) => {
+      const el = $(id);
+      if (el) el.value = '';
+    });
+    $('rep-search').value = '';
+    render();
+  });
 
   moreBtn.addEventListener('click', () => renderList(false));
 

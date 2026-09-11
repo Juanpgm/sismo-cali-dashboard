@@ -19,6 +19,19 @@ export function initFilters(root, store, chipsRoot) {
   }
 }
 
+/** "Reiniciar filtros", called from main.js's own toolbar button (next to
+ *  "Actualizar datos" — the Panel's reset control lives there now, not in
+ *  this sidebar). A full render(), not just the store.subscribe()-driven
+ *  syncUi(): syncUi deliberately never tears down an OPEN dropdown panel (so
+ *  toggling a checkbox in one panel doesn't close another the user has open
+ *  elsewhere), but a reset must close every open panel and rebuild every
+ *  control against the now-empty filters — the same guarantee the old
+ *  in-sidebar reset button had before it moved to main.js's toolbar. */
+export function clearFiltersAndRerender(root, store, chipsRoot) {
+  store.clearFilters();
+  render(root, store, chipsRoot);
+}
+
 function optionLabel(def, value) {
   return value === NONE ? (def.emptyLabel || 'Sin dato') : labelForCode(value);
 }
@@ -101,7 +114,6 @@ function render(root, store, chipsRoot) {
   root.innerHTML = `
     <div class="filters-header">
       <h2>Filtros</h2>
-      <button type="button" class="btn-clear" data-clear-filters>Limpiar filtros</button>
     </div>
     <div class="filter-block">
       <label class="filter-label" for="date-from">Desde</label>
@@ -123,13 +135,6 @@ function render(root, store, chipsRoot) {
   root.querySelector('[data-date-to]').addEventListener('change', (e) => {
     store.setFilter('dateTo', e.target.value || null);
   });
-  root.querySelector('[data-clear-filters]').addEventListener('click', () => {
-    store.clearFilters();
-    // Full re-render resets every dropdown panel, date/range inputs and chip row
-    // at once — avoids the desync the old manual-checkbox-reset approach was prone to.
-    render(root, store, chipsRoot);
-  });
-
   msHandles = {};
   FILTER_FIELDS.forEach((def) => {
     const fieldRoot = root.querySelector(`[data-filter-field="${def.field}"]`);

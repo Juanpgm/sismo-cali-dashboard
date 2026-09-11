@@ -1,6 +1,6 @@
 // Entry point: wires data store, filters, KPIs, map and table together.
 import { store, fetchData, soloRepresentantes } from './data.js';
-import { initFilters } from './filters.js';
+import { initFilters, clearFiltersAndRerender } from './filters.js';
 import { renderKpis } from './kpi.js';
 import { renderStatistics, resetCharts } from './charts.js';
 import {
@@ -30,6 +30,7 @@ const kpiRow = el('#kpi-row');
 const activeChipsEl = el('#active-chips');
 const searchInput = el('#search-input');
 const refreshBtn = el('#refresh-btn');
+const resetFiltersBtn = el('#reset-filters-btn');
 const refreshProgress = el('#refresh-progress');
 const refreshProgressFill = refreshProgress.querySelector('.progress-bar-fill');
 const refreshStatus = el('#refresh-status');
@@ -89,31 +90,43 @@ function applySourceLabelsToSelect() {
   });
 }
 
-// Sticker coverage from the cruce (api/sticker-status). Authenticated (any
-// logged-in role), so it runs only after startApp. Fire-and-forget: feeds the
-// map's 'sticker' colorBy mode, the coverage gauge, and the store's 'sticker'
-// filter/table/xlsx field (store.setStickerIds); on any failure all three
-// degrade to empty rather than showing stale data.
+// Sticker cruce (api/sticker-status). Authenticated (any logged-in role), so
+// it runs only after startApp. Fire-and-forget: feeds the map's 'sticker'
+// colorBy mode and the store's 'sticker' filter/table/xlsx field
+// (store.setStickerIds); on any failure both degrade to empty rather than
+// showing stale data.
 async function refreshStickerStatus() {
   try {
     const token = await getIdToken();
-    if (!token) { setStickerStatus([]); store.setStickerCoverage(null); store.setStickerIds([]); return; }
+    if (!token) { setStickerStatus([]); store.setStickerIds([]); return; }
     const res = await fetch(apiUrl('stickerStatus'), { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = await res.json();
     const conSticker = Array.isArray(body.con_sticker) ? body.con_sticker : [];
     setStickerStatus(conSticker);
-    store.setStickerCoverage({ total: body.total, con: body.con });
     store.setStickerIds(conSticker);
   } catch (err) {
     console.error('sticker-status falló (se reintenta en 15 min):', err);
     setStickerStatus([]);
-    store.setStickerCoverage(null);
     store.setStickerIds([]);
   }
 }
 
+/** "Reiniciar filtros" (next to "Actualizar datos"): disabled/neutral while
+ *  no Panel filter is active, enabled/soft-orange once one is — the same
+ *  store.activeFilterCount() the sidebar's own filter badge already reads.
+ *  Called from onStoreChange(), the one place every filter mutation
+ *  (search, chip, multiselect, date/range) already funnels through via
+ *  store.subscribe(), so this can never go stale relative to the real
+ *  filter state. */
+function updateResetFiltersBtn() {
+  const active = store.activeFilterCount() > 0;
+  resetFiltersBtn.disabled = !active;
+  resetFiltersBtn.classList.toggle('is-filter-active', active);
+}
+
 function onStoreChange() {
+  updateResetFiltersBtn();
   if (searchInput.value !== (store.filters.searchRaw || '')) {
     searchInput.value = store.filters.searchRaw || '';
   }
@@ -235,6 +248,15 @@ function switchView(view) {
   // The filters sidebar only applies to the Panel view; collapse it otherwise.
   document.querySelector('.app-shell').classList.toggle('asig-active', view !== 'panel');
   if (view !== 'panel') closeFiltersDrawer();
+  // This header button only ever reflects the global Panel `store` filters
+  // (see updateResetFiltersBtn) — on Vuelos UAS and Stickers it can never do
+  // anything (both tabs' filters live entirely in their own modules —
+  // vuelos-uas.js / evaluaciones.js — not `store`), so it would sit there
+  // permanently disabled next to the tab's OWN working "Reiniciar filtros"
+  // button (`#eval-reset-filters` on Stickers, its own on Vuelos UAS) — two
+  // same-label buttons, one of them dead weight. Hide it on both tabs; every
+  // other view keeps it as-is.
+  resetFiltersBtn.hidden = view === 'vuelos-uas' || view === 'stickers';
   // Stickers pulls live data from /api/stickers — (re)load it each time it opens.
   if (view === 'stickers') {
     initStickers(document.getElementById('view-stickers'), { getToken: getIdToken });
@@ -612,6 +634,11 @@ el('#datos-download').addEventListener('click', async () => {
 
 searchInput.addEventListener('input', debounce((e) => store.setSearch(e.target.value), 250));
 refreshBtn.addEventListener('click', () => triggerRefresh());
+// disabled while no Panel filter is active (see updateResetFiltersBtn), so a
+// click while the button reads as inert is a real no-op — no extra guard needed.
+resetFiltersBtn.addEventListener('click', () => {
+  clearFiltersAndRerender(document.getElementById('filters-root'), store, activeChipsEl);
+});
 retryBtn.addEventListener('click', () => loadAndRender({ isRefresh: true, bust: true }));
 filtersOpenBtn.addEventListener('click', openFiltersDrawer);
 drawerBackdrop.addEventListener('click', closeFiltersDrawer);

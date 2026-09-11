@@ -211,16 +211,13 @@ class Store {
     // oculta. `reportados` (estado "Reportado") lo sigue usando el chart de
     // series de tiempo (Momento 2), aunque ya no tenga tarjeta propia.
     this.inmuebles = null;
-    // Cobertura de stickers (cruce con evaluaciones, vía /api/sticker-status):
-    // { total, con } para el gauge de Panel/Evaluaciones. main.js hace el fetch
-    // (necesita token) y llama setStickerCoverage. null → gauge oculto.
-    this.stickerCoverage = null;
-    // GlobalIDs con sticker de campo, del mismo cruce (main.js llama setStickerIds
-    // con el mismo body.con_sticker que alimenta el gauge y el colorBy del mapa
-    // — mapview.js mantiene su propio Set en paralelo por las mismas razones que
-    // stickerCoverage: main.js reparte el mismo fetch a varios consumidores).
-    // Respalda el campo derivado `sticker` ('con'/'sin') de cada record, para el
-    // filtro, la tabla de atributos y el export xlsx.
+    // GlobalIDs con sticker de campo (cruce con evaluaciones, vía
+    // /api/sticker-status). main.js hace el fetch (necesita token) y llama
+    // setStickerIds con el mismo body.con_sticker que alimenta el colorBy del
+    // mapa — mapview.js mantiene su propio Set en paralelo porque main.js
+    // reparte el mismo fetch a varios consumidores. Respalda el campo derivado
+    // `sticker` ('con'/'sin') de cada record, para el filtro, la tabla de
+    // atributos y el export xlsx.
     this.stickerIds = new Set();
     this.filters = {
       dateFrom: null,
@@ -247,19 +244,11 @@ class Store {
     return () => this.listeners.delete(fn);
   }
 
-  // Coverage from /api/sticker-status (fetched by main.js, which owns the auth
-  // token). Store { total, con } for the gauge; notify so Panel/Evaluaciones
-  // re-render. Pass null to hide the gauge (endpoint failed / not logged in).
-  setStickerCoverage(cov) {
-    this.stickerCoverage = cov && typeof cov.total === 'number' ? cov : null;
-    this.notify();
-  }
-
-  // GlobalIDs con sticker, del mismo /api/sticker-status que alimenta el gauge
-  // (main.js llama esto junto con setStickerCoverage). Recalcula el campo
-  // derivado `sticker` de cada record y reaplica filtros/opciones: si el
-  // usuario ya tiene el filtro "Sticker" activo, debe reflejar el cruce fresco,
-  // no el estado con el que cargó la página.
+  // GlobalIDs con sticker, de /api/sticker-status (main.js hace el fetch, que
+  // necesita el token). Recalcula el campo derivado `sticker` de cada record y
+  // reaplica filtros/opciones: si el usuario ya tiene el filtro "Sticker"
+  // activo, debe reflejar el cruce fresco, no el estado con el que cargó la
+  // página. Pass [] on failure / not logged in so it degrades to "sin".
   setStickerIds(ids) {
     this.stickerIds = new Set((ids || []).map(String));
     this.applyStickerField();

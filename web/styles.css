@@ -28,6 +28,14 @@
   --accent-ink: #1a1400;
   --accent-dim: rgba(255, 196, 0, 0.16);
 
+  /* ---- filter-active (soft orange "a filter is narrowing this view" state,
+     e.g. the "Reiniciar filtros" button once enabled) — deliberately its own
+     hue, distinct from --accent (gold, used for selection/focus) and from
+     --status-i1/--status-i2 (red, used for actual error/danger states). ---- */
+  --filter-active: #fb923c;
+  --filter-active-ink: #341400;
+  --filter-active-dim: rgba(251, 146, 60, 0.16);
+
   /* ---- status (habitability / damage) ---- */
   --status-h: #22c55e;
   --status-r1: #eab308;
@@ -66,6 +74,10 @@
   --accent: #b57e00;            /* darker gold for AA contrast on light surfaces */
   --accent-ink: #ffffff;
   --accent-dim: rgba(181, 126, 0, 0.14);
+
+  --filter-active: #c2410c;     /* darker burnt orange for AA contrast on light surfaces */
+  --filter-active-ink: #ffffff;
+  --filter-active-dim: rgba(194, 65, 12, 0.14);
 
   --shadow-card: 0 1px 2px rgba(11, 29, 51, 0.10), 0 8px 24px rgba(11, 29, 51, 0.08);
   --shadow-modal: 0 20px 60px rgba(11, 29, 51, 0.25);
@@ -228,6 +240,13 @@ a { color: var(--accent); }
   border-top: 1px solid var(--border);
 }
 
+.app-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .last-update {
   font-size: 0.8rem;
   color: var(--text-muted);
@@ -343,6 +362,19 @@ a { color: var(--accent); }
   font-size: 0.78rem;
 }
 .btn-clear:hover { color: var(--accent); border-color: var(--accent); }
+/* Disabled while no filter is active in that section (nothing to reset) —
+   same treatment .filter-toggle:disabled already uses, reused verbatim so
+   every "disabled control" in the app reads the same way. */
+.btn-clear:disabled { opacity: .5; cursor: not-allowed; }
+.btn-clear:disabled:hover { color: var(--text-secondary); border-color: var(--border); }
+/* Enabled + at least one filter active: soft orange, not the neutral gray
+   above — "something is filtered", not an error (that's --status-i*). */
+.btn-clear.is-filter-active {
+  color: var(--filter-active);
+  border-color: var(--filter-active);
+  background: var(--filter-active-dim);
+}
+.btn-clear.is-filter-active:hover { background: var(--filter-active); color: var(--filter-active-ink); }
 
 .btn-icon {
   background: transparent;
@@ -644,7 +676,15 @@ a { color: var(--accent); }
   background: var(--surface-3);
 }
 
-.leaflet-container { background: var(--bg) !important; font-family: var(--font-ui); }
+/* Leaflet's own panes (markers/tooltips/popups, z-index 600-700) and its
+   zoom control (z-index 1000) sit on `position: relative` with no z-index
+   of their own, so they never form a stacking context here and leak out to
+   compete directly against unrelated positioned UI elsewhere on the page —
+   e.g. the Comuna/Barrio dropdown (.asignacion-filters .filter-options,
+   z-index: 40) rendering behind the map instead of above it. isolation:
+   isolate contains all of that internal stacking inside the map, the same
+   fix already applied to .asignacion-combo above. */
+.leaflet-container { background: var(--bg) !important; font-family: var(--font-ui); isolation: isolate; }
 
 .map-legend {
   background: color-mix(in srgb, var(--surface) 92%, transparent);
@@ -668,6 +708,22 @@ a { color: var(--accent); }
 .legend-swatch { width: 12px; height: 12px; flex-shrink: 0; display: inline-block; }
 .legend-circle { border-radius: 50%; }
 .legend-square { border-radius: 3px; }
+
+/* Street/satellite basemap toggle (utils.js:createBasemapToggle) — a
+   leaflet-bar control themed like .map-legend instead of Leaflet's default
+   hardcoded white button, so it reads native in both light and dark. */
+.basemap-toggle { border: 1px solid var(--border-strong); }
+.basemap-toggle a {
+  width: 30px;
+  height: 30px;
+  line-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  color: var(--text-primary);
+}
+.basemap-toggle a:hover { background: var(--surface-2); }
 
 /* Leaflet popup wrapper stays white in both themes, so popup ink is fixed dark. */
 .map-popup h4 { font-size: 0.9rem; margin-bottom: 6px; color: #0B1D33; }
@@ -1389,7 +1445,9 @@ td { padding: 10px 14px; vertical-align: top; color: var(--text-primary); max-wi
   .app-subtitle { font-size: 0.78rem; }
   .event-badge { display: none; }
   .app-header-bottom { flex-direction: column; align-items: stretch; }
+  .app-header-actions { flex-direction: column; align-items: stretch; }
   .btn-primary { width: 100%; justify-content: center; }
+  #reset-filters-btn { justify-content: center; }
   .kpi-row { grid-template-columns: repeat(2, 1fr); }
   .map-container { height: 84.5vh; min-height: 520px; }
   .chart-tile { height: 260px; }
@@ -2297,16 +2355,6 @@ details[open] > summary.card-title::before { transform: rotate(90deg); }
   display: inline-flex; align-items: center; gap: 6px;
   font-size: .78rem; color: var(--text-secondary); font-variant-numeric: tabular-nums;
 }
-
-/* Evaluaciones section coverage: a discreet Leaflet control (topright corner
-   of #eval-map, see evaluaciones.js:setStickerGauge), not a block in the flow.
-   Reuses .map-legend's translucent frame; the count legend is dropped — the
-   corner badge only needs the headline %, the breakdown lives on the full
-   gauge (Panel tile, Stickers→Asignación). */
-.map-sticker-gauge { padding: 8px 10px; max-width: 130px; }
-.map-sticker-gauge .asignacion-gauge { gap: 0; }
-.map-sticker-gauge .asignacion-gauge-svg { max-width: 110px; }
-.map-sticker-gauge .asignacion-gauge-legend { display: none; }
 
 /* ---- Login overlay ---- */
 .auth-overlay {

@@ -60,10 +60,13 @@
 
       <div class="app-header-bottom">
         <p class="last-update" data-last-update>Última actualización: —</p>
-        <button type="button" class="btn-primary" id="refresh-btn">
-          <svg class="refresh-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
-          <span>Actualizar datos</span>
-        </button>
+        <div class="app-header-actions">
+          <button type="button" class="btn-primary" id="refresh-btn">
+            <svg class="refresh-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
+            <span>Actualizar datos</span>
+          </button>
+          <button type="button" class="btn-clear" id="reset-filters-btn" disabled>Reiniciar filtros</button>
+        </div>
       </div>
     </header>
 

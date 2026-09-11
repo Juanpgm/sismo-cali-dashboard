@@ -9,7 +9,7 @@
 import {
   COLORS, escapeHtml, labelForCode, addressDisplay, barrioVeredaDisplay, basemapTileUrl,
   themeColor, SURVEY_LAYER_URL, isFirmaAttachment, attachmentUrl, showToast,
-  loadXlsx, downloadStamp,
+  loadXlsx, downloadStamp, createBasemapToggle,
 } from './utils.js';
 import { buildMiniMap } from './mapview.js';
 import { openLightbox } from './table.js';
@@ -119,6 +119,7 @@ export function joinCapa(features, records) {
 let colorVar = 'candidato_demolicion';
 let map = null;
 let baseTile = null;
+let basemapToggle = null;
 const charts = new Map();
 // Refs of the last formulario render, to skip rebuilding (and resetting the
 // map) when a store notify didn't actually change the inputs.
@@ -150,6 +151,7 @@ function destroyCharts() {
 function teardownMap() {
   if (map) { map.remove(); map = null; }
   baseTile = null;
+  basemapToggle = null;
 }
 
 // The Panel swaps basemap tiles on theme change; without this a light-mode
@@ -161,6 +163,7 @@ if (typeof document !== 'undefined') {
       map.removeLayer(baseTile);
       baseTile = L.tileLayer(basemapTileUrl(), { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20 }).addTo(map);
       baseTile.bringToBack();
+      if (basemapToggle) basemapToggle.notifyStreetLayerRecreated();
     }
     // Chart.js bakes CSS-var colors at construction — force a rebuild. Never
     // rebuild into a hidden container (Leaflet would mis-fit a 0×0 box, same
@@ -583,6 +586,7 @@ let markers = []; // [{ marker, row }] for repainting on color-var change
 function renderCapaMap(rows) {
   map = L.map('accion-capa-map', { zoomControl: true, minZoom: 10, maxZoom: 18 }).setView(CALI_CENTER, CALI_ZOOM);
   baseTile = L.tileLayer(basemapTileUrl(), { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20 }).addTo(map);
+  basemapToggle = createBasemapToggle(map, { getStreetLayer: () => baseTile });
   // teardownMap() nulls `map` (and drops its layers) on every rebuild — an
   // already-fetched reference layer just needs re-adding, no refetch.
   if (comunaRefOn && comunaRefLayer) { comunaRefLayer.addTo(map); comunaRefLayer.bringToBack(); }

@@ -769,12 +769,24 @@ export function barrioVeredaDisplay(record) {
   return 'Sin dato';
 }
 
+/** Returns a debounced wrapper around `fn`, plus a `.cancel()` method (F4)
+ *  that clears any pending call without scheduling a new one — a caller that
+ *  is about to build fresh state (a reload, a filter reset, a brand-new
+ *  session) must be able to kill a pending debounced call from the OLD state
+ *  before it fires, or it can stomp the fresh state with stale data/DOM.
+ *  Calling the debounced function again after cancel() schedules a new call
+ *  normally; calling cancel() with nothing pending is a no-op. */
 export function debounce(fn, wait = 250) {
   let t = null;
-  return (...args) => {
+  const debounced = (...args) => {
     clearTimeout(t);
-    t = setTimeout(() => fn(...args), wait);
+    t = setTimeout(() => { t = null; fn(...args); }, wait);
   };
+  debounced.cancel = () => {
+    clearTimeout(t);
+    t = null;
+  };
+  return debounced;
 }
 
 /** All string-ish fields of a record concatenated + normalized, for search. */
@@ -901,6 +913,33 @@ function hexToRgb(hex) {
     g: parseInt(clean.substring(2, 4), 16),
     b: parseInt(clean.substring(4, 6), 16),
   };
+}
+
+/** JSON.stringify equivalent with object keys sorted RECURSIVELY, so two
+ *  values holding the same data but built with keys in a different order
+ *  serialize to the IDENTICAL string — used to build a value fingerprint
+ *  (e.g. evaluaciones.js's silent-poll change detector, F5) where a source
+ *  field reordering must never look like a real change, only an actual
+ *  VALUE change may.
+ *
+ *  Otherwise matches JSON.stringify's own semantics exactly: `null`
+ *  serializes as the literal 'null'; `undefined` is OMITTED from an object
+ *  (never emitted as a key, same as JSON.stringify) but becomes 'null'
+ *  inside an array (same coercion JSON.stringify applies there); plain
+ *  primitives (numbers, strings, booleans) fall straight through to
+ *  JSON.stringify itself. */
+export function stableStringify(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => (v === undefined ? 'null' : stableStringify(v))).join(',')}]`;
+  }
+  const parts = [];
+  for (const key of Object.keys(value).sort()) {
+    const v = value[key];
+    if (v === undefined) continue; // JSON.stringify omits undefined object properties entirely
+    parts.push(`${JSON.stringify(key)}:${stableStringify(v)}`);
+  }
+  return `{${parts.join(',')}}`;
 }
 
 export function escapeHtml(str) {
@@ -1098,6 +1137,109 @@ export function themeColor(varName, fallback = '') {
   if (typeof document === 'undefined' || typeof getComputedStyle !== 'function') return fallback;
   const val = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
   return val || fallback;
+}
+
+/* ------------------------------------------------------------------ */
+/* Street/satellite basemap toggle — shared by every real Leaflet map   */
+/* ------------------------------------------------------------------ */
+
+/** Esri World Imagery tile template, the satellite alternative to
+ *  basemapTileUrl()'s CARTO street tiles. Esri's tile scheme orders the
+ *  path segments {z}/{y}/{x} — NOT {z}/{x}/{y}, the order basemapTileUrl()
+ *  and every other tile provider in this app uses — so this is its own
+ *  literal, not derived from that one. Unlike basemapTileUrl(), this does
+ *  not depend on the active theme or on `document` being available:
+ *  satellite imagery has no light/dark variant. */
+export function satelliteTileUrl() {
+  return 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+}
+
+const SATELLITE_ATTRIBUTION = 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community';
+
+// Feather/Lucide-style 16px glyphs (stroke=currentColor, no fill) — same
+// convention as the inline SVGs already used for icon buttons elsewhere
+// (see e.g. evaluaciones.js's PDF_ICON/SPINNER_ICON). Shown while in
+// 'street' mode (click => go satellite) / 'satellite' mode (click => go
+// back to street), respectively.
+const BASEMAP_ICON_SATELLITE = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10a7.31 7.31 0 0 0 10 10Z"/><path d="m9 15 3-3"/><path d="M17 13a6 6 0 0 0-6-6"/><path d="M21 13A10 10 0 0 0 11 3"/></svg>';
+const BASEMAP_ICON_STREET = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>';
+
+/**
+ * Attaches a street/satellite basemap toggle to `map`: an
+ * `L.control({ position: 'topleft' })` holding one leaflet-bar button (sits
+ * right under Leaflet's own zoom control, same corner). Click swaps the
+ * active basemap and swaps the icon to say what clicking again would do.
+ *
+ * `getStreetLayer` MUST be a getter, not a captured layer reference:
+ * several call sites recreate their CARTO street tile layer on every
+ * light/dark theme change, and the toggle needs the LIVE reference to
+ * remove the right layer when switching back to street mode.
+ *
+ * Returns `{ control, notifyStreetLayerRecreated }`. A caller that
+ * recreates its street tile layer on theme change (typically right after
+ * `L.tileLayer(basemapTileUrl(), ...).addTo(map)`) MUST call
+ * `notifyStreetLayerRecreated()` immediately after — otherwise, if
+ * satellite mode is active when the theme flips, the freshly-added street
+ * layer sits on top of the satellite layer and silently un-does the user's
+ * choice. `notifyStreetLayerRecreated()` removes that just-added street
+ * layer again when (and only when) satellite mode is currently active,
+ * keeping satellite on top while `getStreetLayer()` still returns the
+ * fresh layer for whenever the user switches back to street mode.
+ */
+export function createBasemapToggle(map, { getStreetLayer } = {}) {
+  let mode = 'street'; // 'street' | 'satellite'
+  let satLayer = null;
+  let btn = null;
+
+  function paintButton() {
+    if (!btn) return;
+    const title = mode === 'street' ? 'Ver satélite' : 'Ver mapa';
+    btn.innerHTML = mode === 'street' ? BASEMAP_ICON_SATELLITE : BASEMAP_ICON_STREET;
+    btn.title = title;
+    btn.setAttribute('aria-label', title);
+  }
+
+  function toggle() {
+    const streetLayer = typeof getStreetLayer === 'function' ? getStreetLayer() : null;
+    if (mode === 'street') {
+      if (streetLayer && map.hasLayer(streetLayer)) map.removeLayer(streetLayer);
+      if (!satLayer) {
+        satLayer = L.tileLayer(satelliteTileUrl(), { maxZoom: 19, attribution: SATELLITE_ATTRIBUTION });
+      }
+      satLayer.addTo(map);
+      mode = 'satellite';
+    } else {
+      if (satLayer && map.hasLayer(satLayer)) map.removeLayer(satLayer);
+      if (streetLayer) streetLayer.addTo(map);
+      mode = 'street';
+    }
+    paintButton();
+  }
+
+  const control = L.control({ position: 'topleft' });
+  control.onAdd = () => {
+    const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control basemap-toggle');
+    L.DomEvent.disableClickPropagation(container);
+    btn = L.DomUtil.create('a', '', container);
+    btn.href = '#';
+    btn.setAttribute('role', 'button');
+    paintButton();
+    L.DomEvent.on(btn, 'click', (ev) => {
+      L.DomEvent.preventDefault(ev);
+      toggle();
+    });
+    return container;
+  };
+  control.addTo(map);
+
+  function notifyStreetLayerRecreated() {
+    if (mode !== 'satellite') return;
+    const streetLayer = typeof getStreetLayer === 'function' ? getStreetLayer() : null;
+    if (streetLayer && map.hasLayer(streetLayer)) map.removeLayer(streetLayer);
+    if (satLayer) satLayer.bringToFront();
+  }
+
+  return { control, notifyStreetLayerRecreated };
 }
 
 /* ------------------------------------------------------------------ */

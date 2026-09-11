@@ -9,7 +9,7 @@ import {
   rowHtml, filterRosterInspectores, filterInspectores,
   diaPicoPlacaHoy, autoAgruparMensaje,
   stickersAsignadosSuffix, stickersDesasignadosSuffix,
-  cuadrillasHtml,
+  cuadrillasHtml, hasActivePlaneacionFilters,
 } from './planeacion.js';
 
 // ---- colorForPunto — design.md ADR-10 map legend, 5 states -----------------
@@ -380,5 +380,28 @@ assert.ok(!sinGrupoHtml.includes('selected'), 'no option pre-selected when no po
 
 // Missing 4th arg (call-site omission) fails open to "no grupo", never throws.
 assert.doesNotThrow(() => cuadrillasHtml(cuadrillaAsignada, new Map(), gruposActivosFixture));
+
+// ---- hasActivePlaneacionFilters: drives "Reiniciar filtros"' enabled/disabled
+// state. `grupo` IS included — it genuinely narrows the Puntos table (same
+// r.grupo_id check filterRows itself applies), unlike a "which grupo is being
+// edited" kind of state. ------------------------------------------------------
+const emptyPlaneacionFilters = { prioridad: '', comuna: '', search: '', grupo: '' };
+assert.equal(hasActivePlaneacionFilters(emptyPlaneacionFilters), false, 'the default all-empty shape has nothing active');
+assert.equal(hasActivePlaneacionFilters({}), false, 'must not throw on a filters object missing every field');
+assert.equal(hasActivePlaneacionFilters(null), false, 'must not throw on a null filters object');
+assert.equal(hasActivePlaneacionFilters(undefined), false, 'must not throw on an undefined filters object');
+assert.equal(hasActivePlaneacionFilters({ ...emptyPlaneacionFilters, prioridad: 'alta' }), true, 'a chosen prioridad chip is active');
+assert.equal(hasActivePlaneacionFilters({ ...emptyPlaneacionFilters, comuna: 'Comuna 5' }), true, 'a chosen comuna chip is active');
+assert.equal(hasActivePlaneacionFilters({ ...emptyPlaneacionFilters, search: 'calle' }), true, 'a non-empty search is active');
+assert.equal(hasActivePlaneacionFilters({ ...emptyPlaneacionFilters, grupo: 'g1' }), true, 'a chosen grupo chip is active');
+// Clearing the LAST active filter by hand (e.g. picking the grupo "Todos"
+// chip) must flip back to false — the real transition the reset button's
+// disabled state relies on.
+{
+  const f = { ...emptyPlaneacionFilters, grupo: 'g1' };
+  assert.equal(hasActivePlaneacionFilters(f), true);
+  f.grupo = '';
+  assert.equal(hasActivePlaneacionFilters(f), false, 'clearing the only active filter (grupo) flips back to inactive');
+}
 
 console.log('ok — planeacion.js pure table/map/filter logic');

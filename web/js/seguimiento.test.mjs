@@ -1,7 +1,10 @@
 // Self-check for the pure aggregation helpers behind the Seguimiento tab.
 // Run: node web/js/seguimiento.test.mjs
 import assert from 'node:assert/strict';
-import { normalizeName, buildProfessionalRows, buildTimeline, sortRows } from './seguimiento.js';
+import {
+  normalizeName, buildProfessionalRows, buildTimeline, sortRows,
+  professionalRecords, buildProfessionalReportDocDefinition, hasActiveSegFilters,
+} from './seguimiento.js';
 
 // ── normalizeName ──────────────────────────────────────────────────────────
 
@@ -406,5 +409,157 @@ console.log('buildTimeline: UTC-aware fecha buckets to the local calendar day OK
   assert.deepEqual(result.labels, ['2026-01-05']);
 }
 console.log('buildTimeline: offset-less date-only string stays unchanged OK');
+
+// ── professionalRecords: the raw points behind a professional's summary ────
+// Per-row PDF report needs the actual stickers/surveys attributed to that
+// professional ("los puntos recogidos"), not just the aggregate counts
+// buildProfessionalRows already computes.
+
+{
+  const row = { key: normalizeName('Gil Soto') };
+  const result = professionalRecords(row, { stickers: [], surveys: [] });
+  assert.deepEqual(result, { stickerPoints: [], surveyPoints: [] });
+}
+console.log('professionalRecords: empty inputs OK');
+
+{
+  // Only records matching the row's normalized name key are included —
+  // same join rule as buildProfessionalRows/buildTimeline, case/accent-
+  // insensitive.
+  const row = { key: normalizeName('Gil Soto') };
+  const stickers = [
+    { inspector: { nombre_completo: 'GIL   sotó' }, codigo_edificacion: '76001-1-0010001', fecha: '2026-01-02', fase: 1 },
+    { inspector: { nombre_completo: 'Ana Ruiz' }, codigo_edificacion: '76001-1-0010002', fecha: '2026-01-01', fase: 2 },
+  ];
+  const surveys = [
+    { nombre_evaluador: 'gil soto', direccion: 'Cl 5 # 1-2', fecha_inspeccion: '2026-01-03' },
+    { nombre_evaluador: 'Ana Ruiz', direccion: 'Cl 9 # 1-2', fecha_inspeccion: '2026-01-01' },
+  ];
+  const result = professionalRecords(row, { stickers, surveys });
+  assert.equal(result.stickerPoints.length, 1);
+  assert.equal(result.stickerPoints[0].codigo, '76001-1-0010001');
+  assert.equal(result.surveyPoints.length, 1);
+  assert.equal(result.surveyPoints[0].direccion, 'Cl 5 # 1-2');
+}
+console.log('professionalRecords: filters by normalized name (case/accent-insensitive) OK');
+
+{
+  // Chronological order, ascending; an undated sticker still appears (it IS
+  // a real collected point, same reasoning as the KPI totals) but sorts
+  // after every dated one.
+  const row = { key: normalizeName('Gil Soto') };
+  const stickers = [
+    { inspector: { nombre_completo: 'Gil Soto' }, codigo_edificacion: '76001-1-0010003', fecha: '2026-01-03', fase: 1 },
+    { inspector: { nombre_completo: 'Gil Soto' }, codigo_edificacion: '76001-1-0010001', fecha: null, fase: 2 },
+    { inspector: { nombre_completo: 'Gil Soto' }, codigo_edificacion: '76001-1-0010002', fecha: '2026-01-01', fase: 2 },
+  ];
+  const result = professionalRecords(row, { stickers, surveys: [] });
+  assert.deepEqual(result.stickerPoints.map((p) => p.codigo),
+    ['76001-1-0010002', '76001-1-0010003', '76001-1-0010001']);
+  assert.equal(result.stickerPoints[2].fecha, null);
+}
+console.log('professionalRecords: sticker points sorted chronologically, undated last OK');
+
+{
+  // Same chronological-ascending, undated-last rule for Survey points, keyed
+  // off fecha_inspeccion (an invalid/garbage value counts as undated too).
+  const row = { key: normalizeName('Gil Soto') };
+  const surveys = [
+    { nombre_evaluador: 'Gil Soto', direccion: 'C', fecha_inspeccion: '2026-01-05' },
+    { nombre_evaluador: 'Gil Soto', direccion: 'A', fecha_inspeccion: 'no-es-una-fecha' },
+    { nombre_evaluador: 'Gil Soto', direccion: 'B', fecha_inspeccion: '2026-01-01' },
+  ];
+  const result = professionalRecords(row, { stickers: [], surveys });
+  assert.deepEqual(result.surveyPoints.map((p) => p.direccion), ['B', 'C', 'A']);
+}
+console.log('professionalRecords: survey points sorted chronologically, invalid date last OK');
+
+{
+  // Fase label uses the SAME shared rule as buildProfessionalRows (faseKeyDe)
+  // -- an atencionsismo sticker with fase:null still resolves via
+  // inspector.np, never falls into a separate "sin fase" bucket here that
+  // would disagree with the aggregate table above it in the same tab.
+  const row = { key: normalizeName('Gil Soto') };
+  const stickers = [
+    { inspector: { nombre_completo: 'Gil Soto', np: 'P4' }, codigo_edificacion: '76001-1-0010001', fecha: '2026-01-01', fase: null, fuente: 'atencionsismo' },
+  ];
+  const result = professionalRecords(row, { stickers, surveys: [] });
+  assert.equal(result.stickerPoints[0].faseLabel, 'Fase II');
+}
+console.log('professionalRecords: fase label matches faseKeyDe (inspector.np fallback) OK');
+
+// ── buildProfessionalReportDocDefinition ────────────────────────────────────
+
+{
+  const row = {
+    name: 'Gil Soto', cedula: '123', codigo: '004', entidad: 'DAGMA',
+    stickersFase1: 2, stickersFase2: 1, stickersSinFase: 0, surveyTotal: 3, total: 6,
+    firstDate: '2026-01-01', lastDate: '2026-01-05', activeDays: 3, avgPerActiveDay: 2, rosterSourced: 0,
+  };
+  const points = {
+    stickerPoints: [
+      { codigo: '76001-1-0010001', direccion: 'Cl 5 # 1-2', municipio: 'Cali', fecha: '2026-01-01', faseLabel: 'Fase I' },
+    ],
+    surveyPoints: [
+      { direccion: 'Cl 9 # 1-2', nombreEdificacion: 'Casa', fecha: '2026-01-05' },
+    ],
+  };
+  const doc = buildProfessionalReportDocDefinition(row, points);
+  const flatText = JSON.stringify(doc.content);
+  assert.ok(flatText.includes('Gil Soto'), 'header should show the professional name');
+  assert.ok(flatText.includes('76001-1-0010001'), 'should list the sticker code');
+  assert.ok(flatText.includes('Cl 9 # 1-2'), 'should list the survey address');
+  assert.ok(/Fecha de generaci/i.test(flatText), 'should include a generation-date label');
+}
+console.log('buildProfessionalReportDocDefinition: includes header, stats and points OK');
+
+{
+  // A professional with zero points in one or both sources must not crash
+  // the builder -- it should say so in plain text, not render an empty table.
+  const row = {
+    name: 'Sin Puntos', cedula: '', codigo: '', entidad: '',
+    stickersFase1: 0, stickersFase2: 0, stickersSinFase: 0, surveyTotal: 0, total: 0,
+    firstDate: null, lastDate: null, activeDays: 0, avgPerActiveDay: 0, rosterSourced: 0,
+  };
+  const doc = buildProfessionalReportDocDefinition(row, { stickerPoints: [], surveyPoints: [] });
+  const flatText = JSON.stringify(doc.content);
+  assert.ok(/sin registros/i.test(flatText), 'should say there are no points for an empty source');
+}
+console.log('buildProfessionalReportDocDefinition: empty point lists render a plain message OK');
+
+{
+  // A roster-sourced identity (approximate, per the cross-source caveat) is
+  // flagged in the report the same way the table row flags it.
+  const row = {
+    name: 'Gil Soto', cedula: '', codigo: '', entidad: '',
+    stickersFase1: 1, stickersFase2: 0, stickersSinFase: 0, surveyTotal: 0, total: 1,
+    firstDate: '2026-01-01', lastDate: '2026-01-01', activeDays: 1, avgPerActiveDay: 1, rosterSourced: 1,
+  };
+  const doc = buildProfessionalReportDocDefinition(row, { stickerPoints: [], surveyPoints: [] });
+  const flatText = JSON.stringify(doc.content);
+  assert.ok(/roster/i.test(flatText), 'should carry the roster-sourced caveat');
+}
+console.log('buildProfessionalReportDocDefinition: roster-sourced caveat included OK');
+
+// ── hasActiveSegFilters: drives "Reiniciar filtros"' enabled/disabled state.
+// Only search + Desde/Hasta narrow the table — seg-chart-professional and
+// sort order are deliberately excluded (see the function's own doc comment). ─
+assert.equal(hasActiveSegFilters(), false, 'no args at all -> nothing active');
+assert.equal(hasActiveSegFilters({}), false, 'an empty object -> nothing active');
+assert.equal(hasActiveSegFilters({ search: '', from: null, to: null }), false, 'the default all-empty/null shape has nothing active');
+assert.equal(hasActiveSegFilters({ search: 'ana', from: null, to: null }), true, 'a non-empty search is active');
+assert.equal(hasActiveSegFilters({ search: '', from: '2026-01-01', to: null }), true, 'a Desde date alone is active');
+assert.equal(hasActiveSegFilters({ search: '', from: null, to: '2026-01-31' }), true, 'a Hasta date alone is active');
+assert.equal(hasActiveSegFilters({ search: '', from: '2026-01-01', to: '2026-01-31' }), true, 'both dates active');
+// Clearing the LAST active filter by hand must flip back to false — the real
+// transition the reset button's disabled state relies on.
+{
+  const f = { search: '', from: '2026-01-01', to: null };
+  assert.equal(hasActiveSegFilters(f), true);
+  f.from = null;
+  assert.equal(hasActiveSegFilters(f), false, 'clearing the only active filter (from) flips back to inactive');
+}
+
+console.log('seguimiento.test.mjs: hasActiveSegFilters OK');
 
 console.log('seguimiento.test.mjs: all assertions passed');

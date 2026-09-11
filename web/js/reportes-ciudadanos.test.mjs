@@ -3,6 +3,7 @@
 import assert from 'node:assert';
 import {
   ESTADOS, estadoDe, contarPor, opcionesDe, applyFiltrosReportes, colorSticker, COLOR_MODES_REPORTES, freshnessText,
+  hasActiveRepFilters,
 } from './reportes-ciudadanos.js';
 import { COLORS } from './utils.js';
 
@@ -115,3 +116,28 @@ assert.ok(full.includes('42'), 'freshnessText: full meta uses the passed-in coun
 assert.ok(!full.includes('999'), 'freshnessText: full meta ignores meta.row_count for the count (uses todos.length instead)');
 
 console.log('reportes-ciudadanos.test.mjs freshnessText OK');
+
+// ── hasActiveRepFilters: drives "Reiniciar filtros"' enabled/disabled state ──
+const emptyFiltros = { estado: '', afectacion: '', tipo: '', comuna: '', barrio: '', sticker: '', search: '' };
+assert.strictEqual(hasActiveRepFilters(emptyFiltros), false, 'the default all-empty shape has nothing active');
+assert.strictEqual(hasActiveRepFilters({}), false, 'must not throw on a filtros object missing every field');
+assert.strictEqual(hasActiveRepFilters(null), false, 'must not throw on a null filtros object');
+assert.strictEqual(hasActiveRepFilters(undefined), false, 'must not throw on an undefined filtros object');
+assert.strictEqual(hasActiveRepFilters({ ...emptyFiltros, estado: 'Reportado' }), true, 'a chosen estado select is active');
+assert.strictEqual(hasActiveRepFilters({ ...emptyFiltros, afectacion: 'COLAPSO TOTAL' }), true, 'a chosen afectacion select is active');
+assert.strictEqual(hasActiveRepFilters({ ...emptyFiltros, tipo: 'Casa' }), true, 'a chosen tipo select is active');
+assert.strictEqual(hasActiveRepFilters({ ...emptyFiltros, comuna: 'Comuna 3' }), true, 'a chosen comuna select is active');
+assert.strictEqual(hasActiveRepFilters({ ...emptyFiltros, barrio: 'San Antonio' }), true, 'a chosen barrio select is active');
+assert.strictEqual(hasActiveRepFilters({ ...emptyFiltros, sticker: 'verde' }), true, 'a chosen sticker select is active');
+assert.strictEqual(hasActiveRepFilters({ ...emptyFiltros, search: 'calle' }), true, 'a non-empty search is active');
+// Clearing the LAST active filter by hand (picking the select's own "Todos"/
+// "Todas" option) must flip back to false — the real transition the reset
+// button's disabled state relies on.
+{
+  const f = { ...emptyFiltros, comuna: 'Comuna 3' };
+  assert.strictEqual(hasActiveRepFilters(f), true);
+  f.comuna = '';
+  assert.strictEqual(hasActiveRepFilters(f), false, 'clearing the only active filter (comuna) flips back to inactive');
+}
+
+console.log('reportes-ciudadanos.test.mjs hasActiveRepFilters OK');

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import {
   colorForPunto, buildRows, sortRows, filterRows,
   activeCountsByInspector, filterInspectores, inspectorOptionLabel,
-  gaugeCounts, isHabilitado,
+  gaugeCounts, isHabilitado, estadoFilterActive,
 } from './stickers-asignacion.js';
 
 // ---- colorForPunto — spec.md "Map view" legend scenarios -------------------
@@ -130,5 +130,21 @@ const gaugeRows = [
 assert.deepEqual(gaugeCounts(gaugeRows), { barrido: 2, asignado: 2, pendiente: 2, total: 6 });
 assert.deepEqual(gaugeCounts([]), { barrido: 0, asignado: 0, pendiente: 0, total: 0 });
 assert.deepEqual(gaugeCounts(undefined), { barrido: 0, asignado: 0, pendiente: 0, total: 0 });
+
+// ---- estadoFilterActive — drives "Reiniciar filtros"' enabled/disabled -----
+assert.equal(estadoFilterActive('todos'), false, '"todos" is the no-filter baseline');
+assert.equal(estadoFilterActive(''), false, 'must not throw on an empty string, reads as inactive');
+assert.equal(estadoFilterActive(null), false, 'must not throw on null, reads as inactive');
+assert.equal(estadoFilterActive(undefined), false, 'must not throw on undefined, reads as inactive');
+assert.equal(estadoFilterActive('pendiente'), true, 'any specific estado is active');
+assert.equal(estadoFilterActive('asignado'), true);
+// Clearing back to 'todos' (what the "Reiniciar filtros"/"Todos" chip both
+// set) must flip back to inactive — the real transition the button relies on.
+{
+  let estado = 'pendiente';
+  assert.equal(estadoFilterActive(estado), true);
+  estado = 'todos';
+  assert.equal(estadoFilterActive(estado), false, 'resetting back to todos flips back to inactive');
+}
 
 console.log('ok — stickers-asignacion.js pure table/map logic');

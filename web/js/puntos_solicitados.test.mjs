@@ -5,7 +5,7 @@ import {
   ESTADOS, estadoDe, contarPorEstado, applyFilters, sortPuntos, removeFotoAt, nombreInspectorPorUid,
   prefillStepsFromResultado, prefillStepsFromQuery, apiBuscar, runGuardedBuscar,
   contarCargaPorInspector, inspectorLabelConCarga, remountAsignarNodes,
-  markerBaseStyle, datosCapturadosLabel,
+  markerBaseStyle, datosCapturadosLabel, hasActivePsFilters,
 } from './puntos_solicitados.js';
 import { mountCombobox } from './utils.js';
 
@@ -361,4 +361,23 @@ assert.strictEqual(
   'Datos capturados: Survey123 + Formulario ATC-20',
 );
 
-console.log('ok — puntos_solicitados.js estado classification, filters, sort, buscar prefill mapping, stale-search guard, inspector load-count tally, asignar-panel remount regression, datos_capturados marker style/badge');
+// ── hasActivePsFilters: drives "Reiniciar filtros"' enabled/disabled state ──
+assert.strictEqual(hasActivePsFilters({ search: '', estado: '', comuna: '', barrio: '' }), false, 'the default all-empty shape has nothing active');
+assert.strictEqual(hasActivePsFilters({}), false, 'must not throw on a filters object missing every field');
+assert.strictEqual(hasActivePsFilters(null), false, 'must not throw on a null filters object');
+assert.strictEqual(hasActivePsFilters(undefined), false, 'must not throw on an undefined filters object');
+assert.strictEqual(hasActivePsFilters({ search: 'torre', estado: '', comuna: '', barrio: '' }), true, 'a non-empty search is active');
+assert.strictEqual(hasActivePsFilters({ search: '', estado: 'pendiente', comuna: '', barrio: '' }), true, 'a chosen estado chip is active');
+assert.strictEqual(hasActivePsFilters({ search: '', estado: '', comuna: 'Comuna 5', barrio: '' }), true, 'a chosen comuna select value is active');
+assert.strictEqual(hasActivePsFilters({ search: '', estado: '', comuna: '', barrio: 'Barrio A' }), true, 'a chosen barrio select value is active');
+// Clearing the LAST active filter by hand (e.g. picking "— Todas las comunas —")
+// must flip back to false — the real transition the reset button's disabled
+// state relies on.
+{
+  const f = { search: '', estado: '', comuna: 'Comuna 5', barrio: '' };
+  assert.strictEqual(hasActivePsFilters(f), true);
+  f.comuna = '';
+  assert.strictEqual(hasActivePsFilters(f), false, 'clearing the only active filter (comuna) flips back to inactive');
+}
+
+console.log('ok — puntos_solicitados.js estado classification, filters, sort, buscar prefill mapping, stale-search guard, inspector load-count tally, asignar-panel remount regression, datos_capturados marker style/badge, hasActivePsFilters');

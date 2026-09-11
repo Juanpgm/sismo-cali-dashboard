@@ -21,7 +21,7 @@
 // not resolved from a basemap polygon.
 import {
   COLORS, escapeHtml, basemapTileUrl, normalize, showToast, mountCombobox, debounce,
-  loadXlsx, downloadStamp,
+  loadXlsx, downloadStamp, createBasemapToggle,
 } from './utils.js';
 import { buildMiniMap } from './mapview.js';
 import { openLightbox } from './table.js';
@@ -83,6 +83,16 @@ export function applyFilters(list, filters) {
     }
     return true;
   });
+}
+
+/** Whether any of search/estado/comuna/barrio is currently narrowing the
+ *  view — drives "Reiniciar filtros"' enabled/disabled + soft-orange state.
+ *  Tolerant of a partial/malformed filters object so it can never throw
+ *  mid-render. Exported so a self-check can cover the no-filters/one-filter/
+ *  cleared-back-to-none transitions without the DOM. */
+export function hasActivePsFilters(filters) {
+  if (!filters) return false;
+  return Boolean(filters.search || filters.estado || filters.comuna || filters.barrio);
 }
 
 /** Base circle-marker style for a punto solicitado on the workspace map:
@@ -290,6 +300,7 @@ export function sectionHtml() {
       <div class="section-bar">
         <h3 class="section-bar-title">Puntos Solicitados</h3>
         <button type="button" class="sticker-action" id="ps-reload">Actualizar</button>
+        <button type="button" class="btn-clear" id="ps-reset-filters" disabled>Reiniciar filtros</button>
         <button type="button" class="btn-secondary" id="ps-buscar">Buscar punto</button>
         <button type="button" class="btn-primary" id="ps-crear">Crear punto solicitado</button>
       </div>
@@ -479,6 +490,7 @@ export function sectionHtml() {
 
 let map = null;
 let baseTile = null;
+let basemapToggle = null;
 let pointsLayer = null;
 let legendEl = null;
 let lastFitBounds = null;
@@ -487,6 +499,7 @@ let markerById = new Map();
 function teardownMap() {
   if (map) { map.remove(); map = null; }
   baseTile = null;
+  basemapToggle = null;
   pointsLayer = null;
   legendEl = null;
   markerById = new Map();
@@ -498,6 +511,7 @@ if (typeof document !== 'undefined') {
     map.removeLayer(baseTile);
     baseTile = L.tileLayer(basemapTileUrl(), { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20 }).addTo(map);
     baseTile.bringToBack();
+    if (basemapToggle) basemapToggle.notifyStreetLayerRecreated();
   });
 }
 
@@ -522,6 +536,7 @@ function renderMap(puntos, onDetail) {
 
   map = L.map('ps-map', { zoomControl: true, minZoom: 10, maxZoom: 18 }).setView(CALI_CENTER, CALI_ZOOM);
   baseTile = L.tileLayer(basemapTileUrl(), { attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20 }).addTo(map);
+  basemapToggle = createBasemapToggle(map, { getStreetLayer: () => baseTile });
   pointsLayer = L.layerGroup().addTo(map);
 
   for (const p of conCoords) {
@@ -661,10 +676,12 @@ function detailHtml(p, inspectores) {
 
 let createMap = null;
 let createMarker = null;
+let createBaseTile = null;
 
 function teardownCreateMap() {
   if (createMap) { createMap.remove(); createMap = null; }
   createMarker = null;
+  createBaseTile = null;
 }
 
 /** Small draggable-marker map for the create modal (design.md: "after
@@ -677,7 +694,8 @@ function renderCreateMap(lat, lng, onMove) {
   const el = document.getElementById('ps-coords-map');
   if (!el) return;
   createMap = L.map(el, { zoomControl: true, minZoom: 10, maxZoom: 19 }).setView([lat, lng], 17);
-  L.tileLayer(basemapTileUrl(), { subdomains: 'abcd', maxZoom: 20 }).addTo(createMap);
+  createBaseTile = L.tileLayer(basemapTileUrl(), { subdomains: 'abcd', maxZoom: 20 }).addTo(createMap);
+  createBasemapToggle(createMap, { getStreetLayer: () => createBaseTile });
   createMarker = L.marker([lat, lng], { draggable: true }).addTo(createMap);
   createMarker.on('dragend', () => {
     const pos = createMarker.getLatLng();
@@ -845,6 +863,7 @@ export function initPuntosSolicitados(section, { getToken }) {
   const comunaSelect = section.querySelector('#ps-comuna-select');
   const barrioSelect = section.querySelector('#ps-barrio-select');
   const downloadBtn = section.querySelector('#ps-download');
+  const resetFiltersBtn = section.querySelector('#ps-reset-filters');
 
   const buscarBtn = section.querySelector('#ps-buscar');
   const buscarModal = section.querySelector('#ps-buscar-modal');
@@ -1017,6 +1036,14 @@ export function initPuntosSolicitados(section, { getToken }) {
   listEl.addEventListener('focusout', (ev) => { const row = ev.target.closest('[data-ps-detail]'); if (row) setHighlight(row.dataset.psDetail, false); });
 
   function renderFiltered() {
+    // Every filter control (search, estado chips, comuna/barrio selects)
+    // funnels through this one function — updating the reset button's
+    // enabled/disabled + soft-orange state here means it can never drift out
+    // of sync, including when the user picks "— Todas las comunas —" by hand.
+    const active = hasActivePsFilters(filters);
+    resetFiltersBtn.disabled = !active;
+    resetFiltersBtn.classList.toggle('is-filter-active', active);
+
     const filtered = sortPuntos(applyFilters(allPuntos, filters));
     chipsEl.innerHTML = estadoChipsHtml(filters.estado);
     kpis.innerHTML = kpisHtml(filtered);
@@ -1101,6 +1128,20 @@ export function initPuntosSolicitados(section, { getToken }) {
     renderFiltered();
   });
   barrioSelect.addEventListener('change', () => { filters = { ...filters, barrio: barrioSelect.value }; renderFiltered(); });
+
+  // "Reiniciar filtros": comuna/barrio are plain <select> elements here (not
+  // a multiselect), so resetting must also clear their DOM .value directly —
+  // renderFiltered() alone never touches these two selects itself (only the
+  // comuna/barrio 'change' handlers above do). disabled (via renderFiltered's
+  // own hasActivePsFilters check) while nothing is active, so a click while
+  // it reads as inert is a real no-op.
+  resetFiltersBtn.addEventListener('click', () => {
+    filters = { search: '', estado: '', comuna: '', barrio: '' };
+    searchEl.value = '';
+    comunaSelect.value = '';
+    renderBarrioSelect(barrioSelect, comunaMap, ''); // rebuilds options, clears value, re-disables
+    renderFiltered();
+  });
 
   // xlsx export (F3) — mirrors evaluaciones.js's #eval-download wiring
   // (loadXlsx()/downloadStamp() from utils.js, same header-block convention).
