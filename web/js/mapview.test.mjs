@@ -54,8 +54,33 @@ globalThis.L = {
 };
 
 const {
-  resolveBarrioComuna, initMap, render, setZonasInteresVisible, buildZonasInteresLayer,
+  resolveBarrioComuna, initMap, render, setZonasInteresVisible, buildZonasInteresLayer, prefetchGeo,
 } = await import('./mapview.js');
+
+// 0. prefetchGeo(): perf (2026-09-10) — evaluaciones.js's load() calls this
+//    fire-and-forget (`prefetchGeo().catch(() => {})`) to overlap the
+//    comunas/barrios download with an unrelated API round-trip. It must
+//    propagate a real fetch failure exactly like ensureGeo/resolveBarrioComuna
+//    themselves do (never swallow it internally — that is the CALLER's
+//    decision), and the `.catch(() => {})` pattern the real caller uses must
+//    leave no unhandled rejection behind. Run BEFORE section 1 below, on the
+//    still-cold cache, using only the FAILURE path — a successful resolution
+//    here would warm comunasGeo/barriosGeo and break section 1's own
+//    cold-cache assumption.
+failNext = true;
+await assert.rejects(() => prefetchGeo(), /No se pudo cargar/, 'prefetchGeo must propagate a real fetch failure, not swallow it');
+
+{
+  let unhandled = null;
+  const onUnhandled = (err) => { unhandled = err; };
+  process.on('unhandledRejection', onUnhandled);
+  prefetchGeo().catch(() => {}); // exact pattern evaluaciones.js's load() uses
+  await new Promise((resolve) => setImmediate(resolve));
+  process.off('unhandledRejection', onUnhandled);
+  assert.equal(unhandled, null, 'a prefetchGeo() rejection with a .catch() attached must never surface as an unhandled rejection');
+}
+
+console.log('ok — mapview.js prefetchGeo (failure propagates, no unhandled rejection when caught)');
 
 // 1. A failed load rejects every concurrent caller but does NOT poison the
 //    cache: the in-flight slot clears so a later call can retry.
@@ -78,6 +103,15 @@ await resolveBarrioComuna(3.42, -76.53);
 assert.equal(fetchCalls, 0);
 
 console.log('ok — mapview.js ensureGeo single-flight geo load');
+
+// prefetchGeo() reuses the SAME cache resolveBarrioComuna just warmed above
+// (comunasGeo/barriosGeo) — it must never open a second, independent fetch
+// path of its own.
+fetchCalls = 0;
+await prefetchGeo();
+assert.equal(fetchCalls, 0, 'prefetchGeo() after the cache is already warm must not re-fetch');
+
+console.log('ok — mapview.js prefetchGeo shares the ensureGeo cache (no duplicate fetch once warm)');
 
 // ---------------------------------------------------------------------
 // zonas_interes overlay: setZonasInteresVisible

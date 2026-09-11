@@ -3,7 +3,7 @@ import {
   COLORS, habitabilityColor, damageColor, severidadColor, buildCategoricalScale,
   interpolateRamp, labelForCode, labelForField, formatValue, escapeHtml, normalize,
   isNoHabitableBinary, basemapTileUrl, afectacionColor, afectacionLevel, AFECTACION_ORDER,
-  barrioVeredaDisplay, danoGradoColor, DANO_GRADO_ORDER,
+  barrioVeredaDisplay, danoGradoColor, DANO_GRADO_ORDER, createBasemapToggle,
 } from './utils.js';
 
 const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
@@ -34,6 +34,7 @@ function riskColor(value) {
 
 let map = null;
 let baseTile = null;
+let basemapToggle = null;
 let pointsLayer = null;
 let heatLayer = null;
 let choroplethLayer = null;
@@ -90,6 +91,7 @@ export function initMap(containerId, { onDetail } = {}) {
     subdomains: 'abcd',
     maxZoom: 20,
   }).addTo(map);
+  basemapToggle = createBasemapToggle(map, { getStreetLayer: () => baseTile });
 
   pointsLayer = L.layerGroup();
   choroplethLayer = L.layerGroup();
@@ -117,6 +119,10 @@ export function applyMapTheme() {
     attribution: TILE_ATTRIBUTION, subdomains: 'abcd', maxZoom: 20,
   }).addTo(map);
   baseTile.bringToBack();
+  // Recreating the street layer just re-added it on top of a satellite
+  // layer if the toggle was in satellite mode — undo that, see
+  // createBasemapToggle's own doc comment (utils.js).
+  if (basemapToggle) basemapToggle.notifyStreetLayerRecreated();
 }
 
 // Casa = 3 pisos o menos · Edificación = más de 3 · sin dato de pisos = sin_dato.
@@ -547,6 +553,26 @@ function nameAt(lat, lng, geo) {
 export async function resolveBarrioComuna(lat, lng) {
   await Promise.all([ensureGeo('comuna'), ensureGeo('barrio')]);
   return { comuna: nameAt(lat, lng, comunasGeo), barrio: nameAt(lat, lng, barriosGeo) };
+}
+
+/**
+ * Kicks off both boundary fetches (comuna + barrio) without resolving any
+ * point — same single-flight `ensureGeo` cache `resolveBarrioComuna` itself
+ * uses, exported so a caller with hundreds of points to resolve (Evaluaciones,
+ * see evaluaciones.js's `load()`) can start this download in parallel with an
+ * unrelated API round-trip instead of only discovering the need for it once
+ * that round-trip resolves (perf, 2026-09-10). A later `resolveBarrioComuna`/
+ * `ensureGeo` call for the same level just awaits the same in-flight promise
+ * — no duplicate fetch. Failure semantics are unchanged: this call can
+ * reject (network/parse error) exactly like `ensureGeo` does today: it is
+ * the CALLER's job to decide whether that rejection matters (a prefetch
+ * that is only racing an unrelated fetch should swallow it and let the
+ * later real `resolveBarrioComuna`/`ensureGeo` call — made at resolve time,
+ * same as before this function existed — surface the error as it always
+ * has); this function itself never swallows anything.
+ */
+export async function prefetchGeo() {
+  await Promise.all([ensureGeo('comuna'), ensureGeo('barrio')]);
 }
 
 function metricValue(records, metric) {

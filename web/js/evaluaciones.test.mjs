@@ -5,7 +5,8 @@ import {
   claseDe, contarPorClase, CLASES, faseDe, FASES, applyFilters, FASE_SIN_DATO,
   describeFilters, COLOR_MODES, tituloDe, quienDe, inspectorFuenteLabel, fuenteFaseNotaDe,
   comunaOptionsFrom, barrioOptionsFrom, pruneToValid, pruneInvalidBarrios, toggleSetValue,
-  barrioDisabledFor,
+  barrioDisabledFor, defaultEvalFilters, hasActiveEvalFilters,
+  diffMarkerIds, evaluacionRenderKey, fingerprintEvaluaciones, resolveGeoFor,
 } from './evaluaciones.js';
 
 // The three ATC-20 placard states, in escalating severity.
@@ -539,3 +540,340 @@ assert.strictEqual(barrioDisabledFor(null), true, 'must not throw on a null comu
 assert.strictEqual(barrioDisabledFor(undefined), true, 'must not throw on an undefined comunaSet — reads as disabled');
 
 console.log('evaluaciones.test.mjs: barrioDisabledFor OK');
+
+// ── defaultEvalFilters: the "Reiniciar filtros" reset shape ─────────────────
+{
+  const d = defaultEvalFilters();
+  assert.deepStrictEqual(d, { search: '', clase: '', fase: '', comuna: new Set(), barrio: new Set() });
+
+  // Resetting when already at defaults is a no-op shape, never throws.
+  assert.doesNotThrow(() => defaultEvalFilters());
+
+  // Every call returns FRESH Set instances, never a shared reference — the
+  // render loop reads filters.comuna/filters.barrio by reference, so reusing
+  // one Set across calls would let a later mutation bleed into an earlier
+  // "reset" snapshot.
+  const d1 = defaultEvalFilters();
+  const d2 = defaultEvalFilters();
+  assert.notStrictEqual(d1.comuna, d2.comuna, 'comuna Set must be a new instance each call');
+  assert.notStrictEqual(d1.barrio, d2.barrio, 'barrio Set must be a new instance each call');
+  d1.comuna.add('Comuna 9');
+  assert.strictEqual(d2.comuna.size, 0, 'mutating one call\'s Set must not affect another call\'s Set');
+}
+
+console.log('evaluaciones.test.mjs: defaultEvalFilters OK');
+
+// ── hasActiveEvalFilters: drives the "Reiniciar filtros" enabled/disabled +
+// soft-orange state — must track defaultEvalFilters()'s own shape exactly. ──
+{
+  // No filters active -> disabled.
+  assert.strictEqual(hasActiveEvalFilters(defaultEvalFilters()), false, 'a fresh default filters object has nothing active');
+  assert.strictEqual(hasActiveEvalFilters({}), false, 'must not throw on a filters object missing every field');
+  assert.strictEqual(hasActiveEvalFilters(null), false, 'must not throw on a null filters object');
+  assert.strictEqual(hasActiveEvalFilters(undefined), false, 'must not throw on an undefined filters object');
+
+  // One filter active at a time -> enabled.
+  assert.strictEqual(hasActiveEvalFilters({ ...defaultEvalFilters(), search: 'torre' }), true, 'a non-empty search is active');
+  assert.strictEqual(hasActiveEvalFilters({ ...defaultEvalFilters(), clase: 'INSEGURO' }), true, 'a chosen clase chip is active');
+  assert.strictEqual(hasActiveEvalFilters({ ...defaultEvalFilters(), fase: 'FASE_II' }), true, 'a chosen fase chip is active');
+  assert.strictEqual(hasActiveEvalFilters({ ...defaultEvalFilters(), comuna: new Set(['Comuna 5']) }), true, 'a non-empty comuna Set is active');
+  assert.strictEqual(hasActiveEvalFilters({ ...defaultEvalFilters(), barrio: new Set(['Barrio A']) }), true, 'a non-empty barrio Set is active');
+
+  // Clearing the LAST active filter by hand must flip back to false, not stay
+  // stuck true — the real bug class this predicate exists to prevent.
+  const f = { ...defaultEvalFilters(), clase: 'INSEGURO' };
+  assert.strictEqual(hasActiveEvalFilters(f), true);
+  f.clase = '';
+  assert.strictEqual(hasActiveEvalFilters(f), false, 'clearing the only active filter (clase) flips back to inactive');
+
+  const withComuna = defaultEvalFilters();
+  withComuna.comuna.add('Comuna 5');
+  assert.strictEqual(hasActiveEvalFilters(withComuna), true);
+  withComuna.comuna.delete('Comuna 5');
+  assert.strictEqual(hasActiveEvalFilters(withComuna), false, 'emptying the comuna Set by hand flips back to inactive');
+
+  // Boundary (F9): a whitespace-only search must NOT read as active — same
+  // rule as vuelos-uas.js's hasActiveUasFilters, so "Reiniciar filtros"
+  // never sits enabled with nothing real for it to reset.
+  assert.strictEqual(
+    hasActiveEvalFilters({ ...defaultEvalFilters(), search: '   ' }),
+    false,
+    'whitespace-only search must NOT count as active',
+  );
+}
+
+console.log('evaluaciones.test.mjs: hasActiveEvalFilters OK');
+
+// ── diffMarkerIds: the pure add/restyle/remove decision behind renderMap's
+// persistent-map marker sync (perf, 2026-09-10 — replaces a full Leaflet
+// teardown+rebuild on every render). ─────────────────────────────────────
+{
+  const withCoords = (id, lat = 1, lng = 2) => ({ id, coords: { lat, lng } });
+
+  // Boundary: empty -> N. Every incoming id is new; nothing to remove or restyle.
+  {
+    const { toAdd, toRestyle, toRemove } = diffMarkerIds(new Set(), [withCoords('a'), withCoords('b')]);
+    assert.deepStrictEqual(toAdd.map((e) => e.id), ['a', 'b']);
+    assert.deepStrictEqual(toRestyle, []);
+    assert.deepStrictEqual(toRemove, []);
+  }
+
+  // Boundary: N -> empty. Every previous id must be removed; nothing added/restyled.
+  {
+    const { toAdd, toRestyle, toRemove } = diffMarkerIds(new Set(['a', 'b']), []);
+    assert.deepStrictEqual(toAdd, []);
+    assert.deepStrictEqual(toRestyle, []);
+    assert.deepStrictEqual(toRemove.sort(), ['a', 'b']);
+  }
+
+  // Same set: zero DOM churn (nothing to add/remove), but every kept id
+  // still lands in toRestyle — see diffMarkerIds's own doc comment for why
+  // (a same-id record can still carry changed fields after a silent poll,
+  // or colorMode itself can change with the same id set on screen).
+  {
+    const { toAdd, toRestyle, toRemove } = diffMarkerIds(new Set(['a', 'b']), [withCoords('a'), withCoords('b')]);
+    assert.deepStrictEqual(toAdd, []);
+    assert.deepStrictEqual(toRestyle.map((e) => e.id).sort(), ['a', 'b']);
+    assert.deepStrictEqual(toRemove, []);
+  }
+
+  // Overlapping sets: 'a' kept (restyle), 'b' dropped (remove), 'c' new (add).
+  {
+    const { toAdd, toRestyle, toRemove } = diffMarkerIds(new Set(['a', 'b']), [withCoords('a'), withCoords('c')]);
+    assert.deepStrictEqual(toAdd.map((e) => e.id), ['c']);
+    assert.deepStrictEqual(toRestyle.map((e) => e.id), ['a']);
+    assert.deepStrictEqual(toRemove, ['b']);
+  }
+
+  // Duplicate id in the incoming list: only the FIRST occurrence is kept —
+  // markerById (a Map) has room for exactly one marker per id anyway.
+  {
+    const { toAdd, toRestyle, toRemove } = diffMarkerIds(new Set(), [withCoords('a', 1, 1), withCoords('a', 9, 9)]);
+    assert.strictEqual(toAdd.length, 1, 'a duplicate id must only be added once');
+    assert.deepStrictEqual(toAdd[0].coords, { lat: 1, lng: 1 }, 'first occurrence wins');
+    assert.deepStrictEqual(toRestyle, []);
+    assert.deepStrictEqual(toRemove, []);
+  }
+
+  // Rows without coords: never produce a marker, same as renderMap's old
+  // conCoords filter — an id that HAD a marker but lost its coords this
+  // render must be removed, not silently kept stale on the map.
+  {
+    const { toAdd, toRestyle, toRemove } = diffMarkerIds(
+      new Set(['a']),
+      [{ id: 'a', coords: null }, { id: 'b', coords: undefined }, withCoords('c')],
+    );
+    assert.deepStrictEqual(toAdd.map((e) => e.id), ['c']);
+    assert.deepStrictEqual(toRestyle, []);
+    assert.deepStrictEqual(toRemove, ['a']);
+  }
+
+  // Malformed input must not throw: null/undefined entries in the list, and
+  // prevIds passed as a plain array instead of a Set.
+  assert.doesNotThrow(() => diffMarkerIds(['a'], [null, undefined, withCoords('a')]));
+  assert.doesNotThrow(() => diffMarkerIds(new Set(), null));
+  assert.doesNotThrow(() => diffMarkerIds(new Set(), undefined));
+}
+
+console.log('evaluaciones.test.mjs: diffMarkerIds OK');
+
+// ── evaluacionRenderKey / fingerprintEvaluaciones: the silent-poll change
+// detector must cover every field the list/map/KPIs actually render — bug
+// fixed 2026-09-10 (the old fingerprint covered only id/clasificacion/fotos
+// length). ─────────────────────────────────────────────────────────────────
+{
+  const base = {
+    id: '1', clasificacion: 'INSEGURO', fase: 1,
+    inspector: { np: 'P4', nombre_completo: 'Ana Gomez', codigo: '004' },
+    inspector_fuente: 'evaluacion', fuente: 'atencionsismo',
+    descripcion: { nombre: 'Torre A', direccion: 'Calle 1' },
+    codigo_edificacion: '76001-1-0040001',
+    coords: { lat: 3.4, lng: -76.5 },
+    fecha: '2026-09-01T00:00:00Z',
+    fotos: ['a.jpg', 'b.jpg'],
+    comentarios: 'todo bien',
+  };
+
+  // Identical records -> identical fingerprint.
+  assert.strictEqual(fingerprintEvaluaciones([base]), fingerprintEvaluaciones([{ ...base }]));
+
+  // Differing ONLY in fase -> different fingerprint (the exact bug this fix
+  // closes: fase changes used to be silently invisible to the poll).
+  assert.notStrictEqual(
+    fingerprintEvaluaciones([base]),
+    fingerprintEvaluaciones([{ ...base, fase: 2 }]),
+    'a fase-only change must change the fingerprint',
+  );
+
+  // Every other rendered field, one at a time, must also change it.
+  const variants = [
+    { inspector: { ...base.inspector, nombre_completo: 'Otro Nombre' } },
+    { inspector: { ...base.inspector, codigo: '005' } },
+    { inspector_fuente: 'roster' },
+    { coords: { lat: 3.41, lng: -76.5 } },
+    { coords: null },
+    { clasificacion: 'INSPECCIONADA' },
+    { fotos: ['a.jpg'] },
+    { comentarios: 'cambio' },
+    { descripcion: { ...base.descripcion, direccion: 'Calle 2' } },
+  ];
+  for (const patch of variants) {
+    assert.notStrictEqual(
+      fingerprintEvaluaciones([base]),
+      fingerprintEvaluaciones([{ ...base, ...patch }]),
+      `expected a different fingerprint for patch ${JSON.stringify(patch)}`,
+    );
+  }
+
+  // Identical SETS (same records, same order) -> identical fingerprint.
+  const setA = [base, { ...base, id: '2', clasificacion: 'INSPECCIONADA' }];
+  const setB = [{ ...base }, { ...base, id: '2', clasificacion: 'INSPECCIONADA' }];
+  assert.strictEqual(fingerprintEvaluaciones(setA), fingerprintEvaluaciones(setB));
+
+  // Field ORDER differences on the source object must never change the
+  // fingerprint — evaluacionRenderKey reads named properties (never
+  // enumerates/serializes the object itself), so insertion order is
+  // irrelevant by construction. Verified here anyway as a regression guard.
+  const reordered = {
+    comentarios: base.comentarios, fecha: base.fecha, fotos: base.fotos,
+    coords: base.coords, codigo_edificacion: base.codigo_edificacion,
+    descripcion: { direccion: base.descripcion.direccion, nombre: base.descripcion.nombre },
+    fuente: base.fuente, inspector_fuente: base.inspector_fuente,
+    inspector: { codigo: base.inspector.codigo, nombre_completo: base.inspector.nombre_completo, np: base.inspector.np },
+    fase: base.fase, clasificacion: base.clasificacion, id: base.id,
+  };
+  assert.deepStrictEqual(evaluacionRenderKey(base), evaluacionRenderKey(reordered));
+
+  // Malformed/missing input must not throw.
+  assert.doesNotThrow(() => evaluacionRenderKey(null));
+  assert.doesNotThrow(() => evaluacionRenderKey(undefined));
+  assert.doesNotThrow(() => evaluacionRenderKey({}));
+  assert.strictEqual(fingerprintEvaluaciones([]), fingerprintEvaluaciones([]), 'empty lists are stably identical');
+  assert.strictEqual(fingerprintEvaluaciones(null), fingerprintEvaluaciones(undefined), 'null/undefined lists must not throw and both read as empty');
+}
+
+console.log('evaluaciones.test.mjs: evaluacionRenderKey / fingerprintEvaluaciones OK');
+
+// ── F5: fingerprint must cover fields the detail modal/PDF/xlsx exports
+// read but the OLD hand-picked fingerprint missed entirely — restricciones
+// and a fotos URL-only change (same length, different content) are exactly
+// the two cases called out by the fix. ─────────────────────────────────────
+{
+  const baseF5 = {
+    id: '1',
+    clasificacion: 'INSEGURO',
+    restricciones: 'Ninguna registrada',
+    alcance: 'Zona 1',
+    area: 'A1',
+    area_nombre: 'Área 1',
+    municipio: '76001',
+    origen: 'sistema',
+    color_etiqueta: 'rojo',
+    consecutivo: 42,
+    acciones_posteriores: { barricadas: false, evaluacion_detallada: true },
+    inspector: { identificacion: '123', entidad: 'Cruz Roja', nombre_completo: 'Ana', codigo: '004', np: 'P3' },
+    coords: { lat: 3.4, lng: -76.5, accuracy: 5 },
+    fotos: ['https://example.com/a.jpg', 'https://example.com/b.jpg'],
+  };
+
+  assert.notStrictEqual(
+    fingerprintEvaluaciones([baseF5]),
+    fingerprintEvaluaciones([{ ...baseF5, restricciones: 'Evacuar inmediatamente' }]),
+    'a restricciones-only change must change the fingerprint — missed entirely by the old hand-picked key',
+  );
+  assert.notStrictEqual(
+    fingerprintEvaluaciones([baseF5]),
+    fingerprintEvaluaciones([{ ...baseF5, fotos: ['https://example.com/a.jpg', 'https://example.com/CHANGED.jpg'] }]),
+    'a fotos URL-only change (same length) must change the fingerprint — missed by the old length-only check',
+  );
+  // A few more of the fields the fix's doc comment lists, for good measure —
+  // each alone must also move the fingerprint.
+  const otherFields = [
+    { alcance: 'Zona 2' },
+    { area: 'A2' },
+    { area_nombre: 'Área 2' },
+    { municipio: '76109' },
+    { origen: 'firebase' },
+    { color_etiqueta: 'amarillo' },
+    { consecutivo: 43 },
+    { acciones_posteriores: { ...baseF5.acciones_posteriores, barricadas: true } },
+    { inspector: { ...baseF5.inspector, identificacion: '999' } },
+    { inspector: { ...baseF5.inspector, entidad: 'Bomberos' } },
+    { coords: { ...baseF5.coords, accuracy: 50 } },
+  ];
+  for (const patch of otherFields) {
+    assert.notStrictEqual(
+      fingerprintEvaluaciones([baseF5]),
+      fingerprintEvaluaciones([{ ...baseF5, ...patch }]),
+      `expected a different fingerprint for patch ${JSON.stringify(patch)}`,
+    );
+  }
+
+  // Same record, key order irrelevant (stableStringify's own contract) —
+  // the full-record approach must still be immune to field reordering.
+  assert.strictEqual(fingerprintEvaluaciones([baseF5]), fingerprintEvaluaciones([{ ...baseF5 }]));
+}
+console.log('evaluaciones.test.mjs: fingerprint covers restricciones + fotos URL + full record (F5) OK');
+
+// ── F3: resolveGeoFor's geoCache must not memoize a failed lookup ──────────
+// (mirrors vuelos-uas.js's own resolveGeoFor(lat, lng, resolveFn) contract).
+{
+  // Boundary/empty/malformed: non-finite lat/lng resolves to null/null
+  // WITHOUT ever calling the resolver.
+  let calls = 0;
+  const spy = async () => { calls += 1; return { comuna: 'X', barrio: 'Y' }; };
+  assert.deepStrictEqual(await resolveGeoFor(NaN, -76.5, spy), { _comuna: null, _barrio: null });
+  assert.deepStrictEqual(await resolveGeoFor(3.4, undefined, spy), { _comuna: null, _barrio: null });
+  assert.deepStrictEqual(await resolveGeoFor(null, null, spy), { _comuna: null, _barrio: null });
+  assert.strictEqual(calls, 0, 'the resolver is never invoked for non-finite coordinates');
+}
+
+{
+  // Concurrent/race: two overlapping lookups for the EXACT SAME rounded
+  // coordinate share one in-flight promise.
+  let calls = 0;
+  let resolveDeferred;
+  const deferred = new Promise((res) => { resolveDeferred = res; });
+  const spy = async () => { calls += 1; await deferred; return { comuna: 'Comuna Race', barrio: 'Barrio Race' }; };
+  const lat = 3.512345;
+  const lng = -76.412345;
+  const p1 = resolveGeoFor(lat, lng, spy);
+  const p2 = resolveGeoFor(lat, lng, spy);
+  assert.strictEqual(calls, 1, 'a second overlapping lookup for the same key does not issue a second resolver call');
+  resolveDeferred();
+  const [res1, res2] = await Promise.all([p1, p2]);
+  assert.deepStrictEqual(res1, { _comuna: 'Comuna Race', _barrio: 'Barrio Race' });
+  assert.deepStrictEqual(res2, { _comuna: 'Comuna Race', _barrio: 'Barrio Race' });
+}
+
+{
+  // Network/server failure + recovery-after-transient-failure: a rejecting
+  // resolveFn must propagate the rejection to the caller (load()'s existing
+  // catch keeps handling it exactly as before this fix), AND must not
+  // memoize the failure — a later call for the SAME key with a resolver
+  // that now succeeds must actually re-invoke it, not read a stale cached
+  // rejection forever.
+  const lat = 3.399999;
+  const lng = -76.399999;
+  const failingSpy = async () => { throw new Error('geojson fetch failed'); };
+  await assert.rejects(
+    () => resolveGeoFor(lat, lng, failingSpy),
+    /geojson fetch failed/,
+    'a rejecting resolveFn must propagate the rejection to the caller',
+  );
+
+  const recoverySpy = async () => ({ comuna: 'Comuna Recuperada', barrio: 'Barrio Recuperado' });
+  const recovered = await resolveGeoFor(lat, lng, recoverySpy);
+  assert.deepStrictEqual(
+    recovered,
+    { _comuna: 'Comuna Recuperada', _barrio: 'Barrio Recuperado' },
+    'a retry after a transient failure resolves the real comuna/barrio — the failed promise must not have been memoized',
+  );
+
+  // A DIFFERENT coordinate resolved successfully in the same batch is
+  // unaffected by the failure above.
+  const okSpy = async () => ({ comuna: 'Comuna OK', barrio: 'Barrio OK' });
+  const ok = await resolveGeoFor(3.388888, -76.388888, okSpy);
+  assert.deepStrictEqual(ok, { _comuna: 'Comuna OK', _barrio: 'Barrio OK' });
+}
+console.log('evaluaciones.test.mjs: resolveGeoFor geoCache does-not-memoize-failure (F3) OK');
