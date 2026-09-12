@@ -137,7 +137,7 @@ export function buildProfessionalRows({ stickers, surveys, from = null, to = nul
         key,
         nameCounts: new Map(),
         cedula: '', codigo: '', entidad: '',
-        stickersFase1: 0, stickersFase2: 0, stickersSinFase: 0, stickersTotal: 0,
+        stickersFase1: 0, stickersFase2: 0, stickersTotal: 0,
         surveyTotal: 0, rosterSourced: 0,
         dates: [],
       };
@@ -149,6 +149,15 @@ export function buildProfessionalRows({ stickers, surveys, from = null, to = nul
 
   for (const s of stickerList) {
     if (!s) continue;
+    // Same rule as evaluaciones.js's Stickers tab (#29): a record whose Fase
+    // never resolves (faseKeyDe -> 'SIN_DATO') is dropped before it can enter
+    // any KPI, the "sin profesional identificado"/"sin fecha" buckets, the
+    // timeline, or a per-professional report — not kept in its own "sin
+    // fase" bucket the way it used to be, which let it silently inflate
+    // stickersTotal even though it can't be attributed to a real Fase I/II
+    // inspection. Checked first, before the date/name filters below, so it
+    // never counts toward those either.
+    if (faseKeyDe(s) === 'SIN_DATO') continue;
     if (!stickerIncluded(s, from, to)) continue;
     const rawName = (s.inspector && s.inspector.nombre_completo) || '';
     const key = normalizeName(rawName);
@@ -163,11 +172,11 @@ export function buildProfessionalRows({ stickers, surveys, from = null, to = nul
     // independent `fase === 1/2` switch: for an atencionsismo sticker whose
     // `fase` isn't 1 or 2, this falls back to the inspector's NP category
     // (P3+ = Fase II) exactly like evaluaciones.js does — a second inline
-    // rule here would silently drift from that one over time.
+    // rule here would silently drift from that one over time. SIN_DATO is
+    // filtered above, so this only ever resolves FASE_I/FASE_II here.
     const faseKey = faseKeyDe(s);
     if (faseKey === 'FASE_I') row.stickersFase1 += 1;
-    else if (faseKey === 'FASE_II') row.stickersFase2 += 1;
-    else row.stickersSinFase += 1;
+    else row.stickersFase2 += 1;
     row.stickersTotal += 1;
     if (s.inspector_fuente === 'roster') row.rosterSourced += 1;
     if (dateVal) row.dates.push(dateVal);
@@ -203,7 +212,6 @@ export function buildProfessionalRows({ stickers, surveys, from = null, to = nul
       entidad: row.entidad,
       stickersFase1: row.stickersFase1,
       stickersFase2: row.stickersFase2,
-      stickersSinFase: row.stickersSinFase,
       stickersTotal: row.stickersTotal,
       surveyTotal: row.surveyTotal,
       total: row.stickersTotal + row.surveyTotal,
@@ -249,6 +257,9 @@ export function buildTimeline({ stickers, surveys, from = null, to = null, profe
 
   for (const s of stickerList) {
     if (!s) continue;
+    // Same SIN_DATO exclusion as buildProfessionalRows (#29) — a record whose
+    // Fase never resolves never contributes a point to the timeline either.
+    if (faseKeyDe(s) === 'SIN_DATO') continue;
     if (!stickerIncluded(s, from, to)) continue;
     if (professionalKey && normalizeName((s.inspector && s.inspector.nombre_completo) || '') !== professionalKey) continue;
     const d = dateOnly(s.fecha);
@@ -301,7 +312,10 @@ export function buildTimeline({ stickers, surveys, from = null, to = null, profe
 export function professionalRecords(row, { stickers, surveys }) {
   const key = row && row.key;
   const stickerList = (Array.isArray(stickers) ? stickers : [])
-    .filter((s) => s && normalizeName((s.inspector && s.inspector.nombre_completo) || '') === key)
+    // Same SIN_DATO exclusion as buildProfessionalRows/buildTimeline (#29) —
+    // a record whose Fase never resolves never shows up as one of this
+    // professional's "puntos recogidos" either.
+    .filter((s) => s && faseKeyDe(s) !== 'SIN_DATO' && normalizeName((s.inspector && s.inspector.nombre_completo) || '') === key)
     .map((s) => ({
       codigo: s.codigo_edificacion || '',
       direccion: (s.descripcion && s.descripcion.direccion) || '',
@@ -399,7 +413,6 @@ export function buildProfessionalReportDocDefinition(row, { stickerPoints, surve
       ...kvTable([
         ['Stickers Fase I', row.stickersFase1],
         ['Stickers Fase II', row.stickersFase2],
-        ['Stickers sin fase', row.stickersSinFase],
         ['Evaluaciones Survey', row.surveyTotal],
         ['Total', row.total],
         ['Primer registro', row.firstDate || 'Sin dato'],
@@ -488,7 +501,6 @@ const COLUMNS = [
   { key: 'codigo', label: 'Código' },
   { key: 'stickersFase1', label: 'Stickers F-I' },
   { key: 'stickersFase2', label: 'Stickers F-II' },
-  { key: 'stickersSinFase', label: 'Stickers sin fase' },
   { key: 'surveyTotal', label: 'Evaluaciones Survey' },
   { key: 'total', label: 'Total' },
   { key: 'firstDate', label: 'Primer registro' },
@@ -618,7 +630,6 @@ function rowHtml(r, stickersLoaded, isDegraded) {
     <td>${escapeHtml(r.codigo || 'Sin dato')}</td>
     <td>${stk(r.stickersFase1)}</td>
     <td>${stk(r.stickersFase2)}</td>
-    <td>${stk(r.stickersSinFase)}</td>
     <td>${r.surveyTotal}</td>
     <td>${stk(r.total)}</td>
     <td>${escapeHtml(formatDateCell(r.firstDate))}</td>
@@ -1030,7 +1041,7 @@ export function initSeguimiento(root, { getToken, records }) {
       try { XLSX = await loadXlsx(); } catch { showToast('No se pudo cargar el generador de Excel.', 'error'); return; }
       const rows = sortRows(visibleRows, sortState.column, sortState.dir).map((r) => ({
         profesional: r.name, cedula: r.cedula, codigo: r.codigo, entidad: r.entidad,
-        stickers_fase1: r.stickersFase1, stickers_fase2: r.stickersFase2, stickers_sin_fase: r.stickersSinFase,
+        stickers_fase1: r.stickersFase1, stickers_fase2: r.stickersFase2,
         stickers_total: r.stickersTotal, evaluaciones_survey: r.surveyTotal, total: r.total,
         primer_registro: r.firstDate || '', ultimo_registro: r.lastDate || '',
         dias_activos: r.activeDays, promedio_por_dia: r.avgPerActiveDay,

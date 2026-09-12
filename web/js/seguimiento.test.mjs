@@ -136,10 +136,14 @@ console.log('buildProfessionalRows: null-fecha sticker counted OK');
 }
 console.log('buildProfessionalRows: date filter OK (incl. inclusive `to` and `to`-only) ');
 
-// ── buildProfessionalRows: fase null bucket ────────────────────────────────
+// ── buildProfessionalRows: SIN_DATO stickers excluded entirely (#29, same
+// rule as evaluaciones.js's Stickers tab) ──────────────────────────────────
 
 {
   const stickers = [
+    // SIN_DATO (atencionsismo, fase null, no inspector.np) -- must not count
+    // anywhere: not in stickersFase1/2, not in stickersTotal, not in
+    // stickersWithoutDate (it HAS a valid fecha) and not in unassigned.
     { inspector: { nombre_completo: 'Luis Gil' }, fecha: '2026-01-01', fase: null, fuente: 'atencionsismo' },
     { inspector: { nombre_completo: 'Luis Gil' }, fecha: '2026-01-02', fase: 1, fuente: 'atencionsismo' },
     { inspector: { nombre_completo: 'Luis Gil' }, fecha: '2026-01-03', fase: 2, fuente: 'atencionsismo' },
@@ -148,10 +152,24 @@ console.log('buildProfessionalRows: date filter OK (incl. inclusive `to` and `to
   const row = result.rows[0];
   assert.equal(row.stickersFase1, 1);
   assert.equal(row.stickersFase2, 1);
-  assert.equal(row.stickersSinFase, 1);
-  assert.equal(row.stickersTotal, 3);
+  assert.equal(row.stickersTotal, 2, 'the SIN_DATO record must never count toward the total');
+  assert.equal(result.stickersWithoutDate, 0, 'a SIN_DATO record with a real fecha still must not count here');
+  assert.equal(result.totals.stickers, 2);
 }
-console.log('buildProfessionalRows: fase null bucket OK');
+console.log('buildProfessionalRows: SIN_DATO stickers excluded from Fase buckets/totals OK');
+
+{
+  // A SIN_DATO sticker with no resolvable name must not even fall into the
+  // "sin profesional identificado" bucket -- it's dropped before that check.
+  const stickers = [
+    { inspector: {}, fecha: '2026-01-01', fase: null, fuente: 'atencionsismo' },
+  ];
+  const result = buildProfessionalRows({ stickers, surveys: [] });
+  assert.deepEqual(result.rows, []);
+  assert.equal(result.unassigned.stickers, 0);
+  assert.equal(result.totals.stickers, 0);
+}
+console.log('buildProfessionalRows: unnamed SIN_DATO sticker never counted as unassigned OK');
 
 // ── buildProfessionalRows: fase rule shared with utils.js's faseKeyDe ──────
 // (contrato v3: fase null/unrecognized on an atencionsismo sticker falls
@@ -166,7 +184,6 @@ console.log('buildProfessionalRows: fase null bucket OK');
   const row = result.rows[0];
   assert.equal(row.stickersFase2, 1);
   assert.equal(row.stickersFase1, 0);
-  assert.equal(row.stickersSinFase, 0);
 }
 console.log('buildProfessionalRows: fase fallback via inspector.np (faseKeyDe) OK');
 
@@ -351,6 +368,18 @@ console.log('buildTimeline: cumulative totals per source OK');
 console.log('buildTimeline: null-fecha sticker excluded from timeline OK');
 
 {
+  // SIN_DATO stickers (Fase never resolved) never enter the timeline either
+  // -- same exclusion rule as buildProfessionalRows (#29).
+  const stickers = [
+    { inspector: { nombre_completo: 'Gil Soto' }, fecha: '2026-01-01', fase: null, fuente: 'atencionsismo' },
+    { inspector: { nombre_completo: 'Gil Soto' }, fecha: '2026-01-01', fase: 1, fuente: 'atencionsismo' },
+  ];
+  const result = buildTimeline({ stickers, surveys: [] });
+  assert.deepEqual(result.stickers, [1]);
+}
+console.log('buildTimeline: SIN_DATO sticker excluded OK');
+
+{
   // professionalKey filter: only that professional's dated records count.
   const stickers = [
     { inspector: { nombre_completo: 'Gil Soto' }, fecha: '2026-01-01', fase: 1 },
@@ -488,12 +517,25 @@ console.log('professionalRecords: survey points sorted chronologically, invalid 
 }
 console.log('professionalRecords: fase label matches faseKeyDe (inspector.np fallback) OK');
 
+{
+  // SIN_DATO stickers never show up as one of this professional's "puntos
+  // recogidos" either -- same exclusion rule as buildProfessionalRows/
+  // buildTimeline (#29).
+  const row = { key: normalizeName('Gil Soto') };
+  const stickers = [
+    { inspector: { nombre_completo: 'Gil Soto' }, codigo_edificacion: '76001-1-0010001', fecha: '2026-01-01', fase: null, fuente: 'atencionsismo' },
+  ];
+  const result = professionalRecords(row, { stickers, surveys: [] });
+  assert.deepEqual(result.stickerPoints, []);
+}
+console.log('professionalRecords: SIN_DATO sticker excluded entirely OK');
+
 // ── buildProfessionalReportDocDefinition ────────────────────────────────────
 
 {
   const row = {
     name: 'Gil Soto', cedula: '123', codigo: '004', entidad: 'DAGMA',
-    stickersFase1: 2, stickersFase2: 1, stickersSinFase: 0, surveyTotal: 3, total: 6,
+    stickersFase1: 2, stickersFase2: 1, surveyTotal: 3, total: 6,
     firstDate: '2026-01-01', lastDate: '2026-01-05', activeDays: 3, avgPerActiveDay: 2, rosterSourced: 0,
   };
   const points = {
@@ -518,7 +560,7 @@ console.log('buildProfessionalReportDocDefinition: includes header, stats and po
   // the builder -- it should say so in plain text, not render an empty table.
   const row = {
     name: 'Sin Puntos', cedula: '', codigo: '', entidad: '',
-    stickersFase1: 0, stickersFase2: 0, stickersSinFase: 0, surveyTotal: 0, total: 0,
+    stickersFase1: 0, stickersFase2: 0, surveyTotal: 0, total: 0,
     firstDate: null, lastDate: null, activeDays: 0, avgPerActiveDay: 0, rosterSourced: 0,
   };
   const doc = buildProfessionalReportDocDefinition(row, { stickerPoints: [], surveyPoints: [] });
@@ -532,7 +574,7 @@ console.log('buildProfessionalReportDocDefinition: empty point lists render a pl
   // flagged in the report the same way the table row flags it.
   const row = {
     name: 'Gil Soto', cedula: '', codigo: '', entidad: '',
-    stickersFase1: 1, stickersFase2: 0, stickersSinFase: 0, surveyTotal: 0, total: 1,
+    stickersFase1: 1, stickersFase2: 0, surveyTotal: 0, total: 1,
     firstDate: '2026-01-01', lastDate: '2026-01-01', activeDays: 1, avgPerActiveDay: 1, rosterSourced: 1,
   };
   const doc = buildProfessionalReportDocDefinition(row, { stickerPoints: [], surveyPoints: [] });
