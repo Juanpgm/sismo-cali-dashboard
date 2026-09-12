@@ -1125,11 +1125,25 @@ export function attachmentUrl(objectId, attachmentId) {
   return `${SURVEY_LAYER_URL}/${objectId}/attachments/${attachmentId}`;
 }
 
+// CARTO retired anonymous access to these raster tiles (Aug 2026): without a
+// key every tile now renders with an "API KEY REQUIRED" watermark, though the
+// map still works. The key is NOT a secret (same model as firebase-config.js's
+// apiKey) -- it only lets CARTO meter usage against the free 5M-tiles/month
+// fair-use limit, so it's fine to ship in client code.
+//
+// HOW TO FILL THIS IN:
+//   Request a free key at https://carto.com/basemaps/apikey/ (email only, no
+//   CARTO account, key arrives immediately) and paste it below.
+const CARTO_API_KEY = 'cb1_3hxm_1_7ab7e2b2970ef5e05da14e74';
+
+const isCartoKeyConfigured = () => !CARTO_API_KEY.startsWith('PEGA_');
+
 /** CARTO basemap tiles matching the active theme: Positron (light_all) when the
  *  page is in light mode, Dark Matter (dark_all) otherwise. */
 export function basemapTileUrl() {
   const style = document.documentElement.dataset.theme === 'light' ? 'light_all' : 'dark_all';
-  return `https://{s}.basemaps.cartocdn.com/${style}/{z}/{x}/{y}{r}.png`;
+  const base = `https://{s}.basemaps.cartocdn.com/${style}/{z}/{x}/{y}{r}.png`;
+  return isCartoKeyConfigured() ? `${base}?key=${CARTO_API_KEY}` : base;
 }
 
 /** Read a CSS custom property off :root, with a fallback for non-DOM contexts. */
