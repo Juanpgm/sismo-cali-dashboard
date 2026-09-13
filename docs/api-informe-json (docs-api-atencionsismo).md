@@ -273,7 +273,10 @@ Siempre presente en cada fila de `reportes[]`. Resume la evaluación con sticker
 
 | Campo | Descripción | Sin sticker |
 |-------|-------------|-------------|
-| `numero` | Código de evaluación (`codigoEvaluacion`) | `""` |
+| `numero` | Código de evaluación (`codigoEvaluacion` en paso 1; `codigoEvaluacionEsp` en paso 2 / Firebase) | `""` |
+| `fase` | `1` si el número sale de `codigoEvaluacion`; `2` si sale de `codigoEvaluacionEsp` | `null` |
+| `profesional` | Técnico vinculado a la evaluación (`cedula`, `nombre`, `rango` P1–P5 desde `addlInfo.rango`) | `{ "cedula": "", "nombre": "", "rango": "" }` |
+| `fotografias` | Fotos de **esa** evaluación con sticker (`evaluacion.imagenes`) | `[]` |
 | `color` | Cartel derivado: `verde`, `amarillo`, `rojo` | `""` |
 | `colorEtiqueta` | Etiqueta legible: Habitable, Acceso restringido, No habitable | `"Sin clasificación"` |
 | `origen` | `sistema` (generado en la app) o `firebase` (importado con backfill) | `""` |
@@ -335,7 +338,9 @@ El color se calcula con la misma lógica del dashboard: ATC-20, luego EDE, luego
 GET https://atencionsismo.cali.gov.co/api/informe/stickers
 ```
 
-Lista **solo** evaluaciones con sticker en InstantDB (`evaluacion.tieneSticker === true`). Una fila en `stickers[]` = una evaluación con sticker (no un reporte de ingreso). Mismas credenciales y paginación que el informe JSON.
+Lista **solo** evaluaciones con sticker en InstantDB (`evaluacion.tieneSticker === true`) que tengan código de evaluación (`codigoEvaluacion` en paso 1 o `codigoEvaluacionEsp` en paso 2 / Firebase). Una fila en `stickers[]` = una evaluación con sticker (no un reporte de ingreso). Mismas credenciales y paginación que el informe JSON.
+
+Evaluaciones con sticker pero sin código resoluble (sin fase 1 ni 2) **no** aparecen en `stickers[]`. Un lote puede devolver `cantidad` menor que `limit`.
 
 ### Consumo recomendado
 
@@ -375,17 +380,24 @@ Reglas de fechas: iguales al informe JSON (`desde_utc` ≤ `hasta_utc`, enteros 
   "stickers": [
     {
       "id": "uuid-evaluacion",
+      "fechaCreacion": "jueves, 20 de agosto de 2026, 14:30",
       "direccion": "Calle 1 # 2-3",
       "latitud": "3.4516",
       "longitud": "-76.5320",
-      "numero": "76001001-123-0001",
+      "numero": "76001-1-0700001",
+      "fase": 2,
+      "profesional": {
+        "cedula": "1144098765",
+        "nombre": "Ana López",
+        "rango": "P3"
+      },
+      "fotografias": [
+        { "id": "file-id", "url": "https://…" }
+      ],
       "personaAfectada": "Juan Pérez",
       "origen": "sistema",
       "color": "verde",
-      "colorEtiqueta": "Habitable",
-      "fase": 1,
-      "profesional": { "cedula": "123", "nombre": "Ana Gómez", "rango": "P2" },
-      "fotografias": [{ "id": "img-1", "url": "https://atencionsismo.cali.gov.co/media/img-1.jpg" }]
+      "colorEtiqueta": "Habitable"
     }
   ]
 }
@@ -396,16 +408,17 @@ Reglas de fechas: iguales al informe JSON (`desde_utc` ≤ `hasta_utc`, enteros 
 | Campo | Fuente InstantDB | Si falta |
 |-------|------------------|----------|
 | `id` | `evaluacion.id` | (se omite la fila) |
+| `fechaCreacion` | `evaluacion.creadoEn` (formato `es-CO`, weekday y mes completos + hora) | `""` |
 | `direccion` | `evaluacion.direccion` → label del subcluster → dirección del primer reporte | `"Sin dirección"` |
 | `latitud` / `longitud` | coords de la evaluación → coords del subcluster | `""` |
-| `numero` | `codigoEvaluacion` | `"Sin código"` |
+| `numero` | `codigoEvaluacion` (paso 1) o `codigoEvaluacionEsp` (paso 2 / Firebase) | `"Sin código"` (solo si hay fase; sin código → se omite la fila) |
+| `fase` | `1` si el número sale de `codigoEvaluacion`; `2` si sale de `codigoEvaluacionEsp` | (se omite la fila) |
+| `profesional` | `evaluacion.tecnico` (`cedula`, `nombre`, `addlInfo.rango`) | `{ "cedula": "", "nombre": "", "rango": "" }` |
+| `fotografias` | `evaluacion.imagenes` de la evaluación con sticker | `[]` |
 | `personaAfectada` | nombre del creador o ciudadano del subcluster | `"Sin identificar"` |
 | `origen` | `gpsOrigen === "firebase-sticker"` → `"firebase"`, resto → `"sistema"` | `"sistema"` |
 | `color` | derivado (ATC-20 / EDE / habitabilidad) | `""` |
 | `colorEtiqueta` | Habitable, Acceso restringido, No habitable | `"Sin clasificación"` |
-| `fase` | `1` si el número viene de `codigoEvaluacion`, `2` si viene de `codigoEvaluacionEsp` | `null` |
-| `profesional` | `evaluacion.tecnico` (`cedula`, `nombre`, `addlInfo.rango`) | `{ "cedula": "", "nombre": "", "rango": "" }` |
-| `fotografias` | `evaluacion.imagenes` | `[]` |
 
 Evaluaciones invalidadas (`invalida === true`) no aparecen en `stickers[]`.
 
@@ -414,6 +427,16 @@ Evaluaciones invalidadas (`invalida === true`) no aparecen en `stickers[]`.
 El equipo desarrollador de la API de atencionsismo confirmó (2026-09-08) que `fase` es su propia variable de Fase de negocio — `1` = Fase I, `2` = Fase II — según el proceso propio de atencionsismo (paso 1 vs paso 2 / evaluación especializada). El dashboard consumidor (pestaña Stickers) usa `fase` directamente como su Fase I/II, cayendo a `inspector.np` (roster/Firestore) solo cuando `fase` no llega en `1` ni `2`.
 
 Nota factual, verificada contra datos en vivo: para toda fila con `origen: "firebase"` (importada desde NUESTRO Firebase), `fase` llega en `2` de forma sistemática — incluidas filas cuyo inspector real (por Firestore) es P1/P2. La pestaña Evaluaciones del mismo dashboard (fuente Firestore) sigue clasificando esas mismas evaluaciones por la categoría NP del inspector, sin cambios — por lo tanto ambas pestañas pueden mostrar una Fase distinta para el mismo registro, por diseño: son dos señales de Fase independientes.
+
+#### Nota de integración (2026-09-12)
+
+Verificado en vivo (ventanas `desde_utc`/`hasta_utc`): `fechaCreacion` se renderiza en **UTC**, no en hora de Bogotá — ejemplo de control: `'sábado, 12 de septiembre de 2026, 10:32 p. m.'` corresponde a `2026-09-12T22:32:00+00:00` (17:32 hora Cali). El formato observado en producción es de 12 horas (`hh:mm a. m./p. m.`).
+
+`fechaCreacion` solo es una fecha REAL de creación para `origen: "sistema"` (1.567 de 3.037 filas verificadas en vivo). Para `origen: "firebase"` (1.470 filas), el valor es un único timestamp de importación masiva (2026-09-07 20:07Z) idéntico en todas esas filas — no representa la fecha de la evaluación y no debe usarse como tal.
+
+783 filas llegan con `numero: "Sin código"` (sin `fase` resuelta a 1 ni 2) pese a que la tabla de arriba documenta que una fila sin código resoluble se omite; el dashboard consumidor las descarta en el cliente, no el servidor.
+
+Campos observados en la respuesta real que esta página no documenta: `barrio` (string, presente en 1.829/3.037 filas), `comuna` (string o entero según la fila) y `profesional.tarjetaProfesional` (string, además de `cedula`/`nombre`/`rango`).
 
 ### Errores
 
