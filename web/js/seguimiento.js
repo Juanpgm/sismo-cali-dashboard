@@ -23,7 +23,7 @@ const STICKERS_ENDPOINT = 'stickersAtencionsismo';
 
 // Spanish display labels for faseKeyDe()'s three return values — used by
 // professionalRecords/buildProfessionalReportDocDefinition below, kept in
-// sync with the table's own COLUMNS labels ("Stickers F-I"/"F-II"/"sin fase").
+// sync with the table's own COLUMNS_TOTALES labels ("Sticker F1"/"F2"/"sin dato").
 const FASE_LABELS = { FASE_I: 'Fase I', FASE_II: 'Fase II', SIN_DATO: 'Sin dato' };
 
 // ── Pure aggregation helpers ────────────────────────────────────────────────
@@ -487,6 +487,13 @@ export function buildProfessionalRows({
   // PER ROW below (110 rows x ~3,037 stickers each rescanned -- measured
   // 168 ms vs 8.8 ms before this change).
   const barriosByKey = buildBarriosActivosByKey({ stickers: stickerList, today: todayStr, identity: idx });
+  // W9: same batch-instead-of-per-row pattern (B1/M5) for the "Análisis
+  // temporales" sub-tab's hour-of-day columns -- computed ONCE here (reused
+  // by the table, the XLSX temporales sheet and the PDF report), never
+  // recomputed per sub-tab switch/export.
+  const temporalByKey = buildTemporalMetricsByKey({
+    stickers: stickerList, surveys: surveyList, identity: idx, today: todayStr,
+  });
 
   const rows = [...rowsByKey.values()].map((row) => {
     const profile = idx.profiles.get(row.key) || {};
@@ -524,6 +531,25 @@ export function buildProfessionalRows({
     // most recent real-world week, not the selected range. B1: read from the
     // single batch pass above instead of rescanning per row.
     builtRow.barriosActivos = barriosByKey.get(row.key) || [];
+    // W9 ("Análisis temporales" sub-tab + XLSX): daysSinceFirst mirrors
+    // buildTemporalMetrics' own per-row wrapper (today minus firstDate, null
+    // when there is no firstDate at all); the rest comes straight from the
+    // batch pass above (null defaults match buildTemporalMetricsByKey's own
+    // "key never appears" case -- a professional with zero TIMED records).
+    const temporal = temporalByKey.get(row.key);
+    builtRow.daysSinceFirst = builtRow.firstDate ? daysBetween(builtRow.firstDate, todayStr) : null;
+    builtRow.prevDay = temporal ? temporal.prevDay : null;
+    builtRow.prevDayFirstMinutes = temporal ? temporal.prevDayFirstMinutes : null;
+    builtRow.prevDayLastMinutes = temporal ? temporal.prevDayLastMinutes : null;
+    builtRow.avgFirstMinutes = temporal ? temporal.avgFirstMinutes : null;
+    builtRow.avgLastMinutes = temporal ? temporal.avgLastMinutes : null;
+    // "Stickers prom. diario" (W9): stickers-only pace, distinct from the
+    // existing avgPerActiveDay (which pools stickers+surveys) -- see the
+    // module note above buildProfessionalRows. null (never 0/NaN) when there
+    // are no active days at all: a genuine "no data" case, not a confirmed
+    // zero pace. DASH-masked for display at the table/XLSX layer, same
+    // convention as every other sticker-derived figure in this file.
+    builtRow.avgStickersPerDay = activeDays ? Math.round((row.stickersTotal / activeDays) * 100) / 100 : null;
     return builtRow;
   });
 
@@ -1040,6 +1066,124 @@ export function sortRows(rows, column, dir = 'asc') {
 // can reference/assert it directly instead of duplicating the literal '—'.
 export const DASH = '—';
 
+// ── W9: two-sub-tab table (Totales / Análisis temporales) + XLSX ───────────
+// "Acciones" is deliberately NOT part of either array (same convention as the
+// pre-W9 COLUMNS): it is a row action, never sortable/exportable data — the
+// DOM section appends its own "Acciones" header/cell after whichever of
+// these two columnsFor() returns.
+export const COLUMNS_TOTALES = [
+  { key: 'name', label: 'Nombre' },
+  { key: 'cedula', label: 'Cédula' },
+  { key: 'np', label: 'Clase (P)' },
+  { key: 'codigo', label: 'Código vigente' },
+  { key: 'stickersFase1', label: 'Sticker F1' },
+  { key: 'stickersFase2', label: 'Sticker F2' },
+  { key: 'surveyTotal', label: 'Ev. Survey' },
+  { key: 'activeDays', label: 'Días activos' },
+  { key: 'avgStickersPerDay', label: 'Stickers prom. diario' },
+  { key: 'barriosActivos', label: 'Barrios activos (7 d)' },
+];
+
+export const COLUMNS_TEMPORALES = [
+  { key: 'name', label: 'Nombre' },
+  { key: 'cedula', label: 'Cédula' },
+  { key: 'np', label: 'Clase (P)' },
+  { key: 'codigo', label: 'Código' },
+  { key: 'firstDate', label: 'Fecha primer registro' },
+  { key: 'lastDate', label: 'Fecha último registro' },
+  { key: 'activeDays', label: 'Días activo' },
+  { key: 'daysSinceFirst', label: 'Días desde 1ª actividad' },
+  { key: 'prevDayFirstMinutes', label: 'Hora 1er registro (día ant.)' },
+  { key: 'prevDayLastMinutes', label: 'Hora últ. registro (día ant.)' },
+  { key: 'avgFirstMinutes', label: 'Hora prom. 1er registro' },
+  { key: 'avgLastMinutes', label: 'Hora prom. últ. registro' },
+];
+
+/** Which column set a sub-tab shows — an unrecognized/missing `subTab` falls
+ *  back to 'totales' (never throws, never renders a headerless table). */
+export function columnsFor(subTab) {
+  return subTab === 'temporales' ? COLUMNS_TEMPORALES : COLUMNS_TOTALES;
+}
+
+/** The sort state a sub-tab opens with (D4: header-click sorting is
+ *  preserved when the CURRENT sort column still exists in the new sub-tab's
+ *  columnsFor() — this is only the FALLBACK the DOM layer uses otherwise, or
+ *  on first render). 'total' desc (most active professionals first) for
+ *  totales — a field still present on every row even though it isn't one of
+ *  COLUMNS_TOTALES' own headers; 'firstDate' desc (most recently STARTED
+ *  professionals first) for temporales. An unrecognized subTab defaults like
+ *  'totales', same fallback as columnsFor. */
+export function defaultSortFor(subTab) {
+  return subTab === 'temporales'
+    ? { column: 'firstDate', dir: 'desc' }
+    : { column: 'total', dir: 'desc' };
+}
+
+/** A minute-of-day value (0-1439) as 'HH:MM', or DASH for anything that isn't
+ *  a genuine minute of a day (null/undefined/NaN, or out of the [0, 1439]
+ *  range) — never a bogus/negative time silently rendered. Shared by the
+ *  table's temporal-column cells AND the temporales XLSX sheet, so both
+ *  present hour-of-day figures identically. */
+export function formatMinutes(min) {
+  if (!Number.isFinite(min) || min < 0 || min > 1439) return DASH;
+  const h = Math.floor(min / 60);
+  const m = Math.round(min % 60);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+/** Pure mapper: professional rows (buildProfessionalRows output, already
+ *  carrying the W9 avgStickersPerDay/temporal-metrics fields) -> plain
+ *  objects ready for XLSX.utils.sheet_add_json, one shape per sub-tab sheet.
+ *  EVERY returned row carries the EXACT SAME key set regardless of how much
+ *  data that particular professional has (`?? ''` on every optional field) —
+ *  a sparse professional (no contact info, no timed record at all) must
+ *  never produce a row with fewer/different columns than a fully-populated
+ *  one, which would silently shift every OTHER column in a spreadsheet
+ *  viewer. The 'totales' sheet keeps today's existing field names (see the
+ *  XLSX download handler below) and only ADDS the new W5/W9 fields —
+ *  nothing existing silently renames/disappears. */
+export function xlsxRowsFor(rows, { subTab = 'totales' } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (subTab === 'temporales') {
+    return list.map((r) => ({
+      profesional: r.name ?? '',
+      cedula: r.cedula ?? '',
+      clase_p: r.np ?? '',
+      codigo: r.codigo ?? '',
+      fecha_primer_registro: r.firstDate ?? '',
+      fecha_ultimo_registro: r.lastDate ?? '',
+      dias_activo: r.activeDays ?? 0,
+      dias_desde_primera_actividad: r.daysSinceFirst ?? '',
+      hora_1er_registro_dia_ant: formatMinutes(r.prevDayFirstMinutes),
+      hora_ult_registro_dia_ant: formatMinutes(r.prevDayLastMinutes),
+      hora_prom_1er_registro: formatMinutes(r.avgFirstMinutes),
+      hora_prom_ult_registro: formatMinutes(r.avgLastMinutes),
+    }));
+  }
+  return list.map((r) => ({
+    profesional: r.name ?? '',
+    cedula: r.cedula ?? '',
+    clase_p: r.np ?? '',
+    codigo_vigente: r.codigo ?? '',
+    entidad: r.entidad ?? '',
+    tarjeta_profesional: r.tarjetaProfesional ?? '',
+    celular: r.celular ?? '',
+    correo: r.correo ?? '',
+    stickers_fase1: r.stickersFase1 ?? 0,
+    stickers_fase2: r.stickersFase2 ?? 0,
+    stickers_total: r.stickersTotal ?? 0,
+    evaluaciones_survey: r.surveyTotal ?? 0,
+    total: r.total ?? 0,
+    primer_registro: r.firstDate ?? '',
+    ultimo_registro: r.lastDate ?? '',
+    dias_activos: r.activeDays ?? 0,
+    promedio_por_dia: r.avgPerActiveDay ?? 0,
+    stickers_promedio_diario: r.avgStickersPerDay ?? '',
+    barrios_activos_7d: Array.isArray(r.barriosActivos) && r.barriosActivos.length ? r.barriosActivos.join('; ') : '',
+    stickers_por_roster: r.rosterSourced ?? 0,
+  }));
+}
+
 /** Shown while `isDegraded` (the sticker fetch fell back to the redacted LKG
  *  Blob copy). CONTRATO CAMBIADO (W7): the old text promised a "sin
  *  profesional identificado" KPI bucket that W7 removes as its own tile —
@@ -1285,20 +1429,6 @@ export function makeSearchController(callback, wait = 250) {
 // string, not a KPI/note value) stays local to the DOM section.
 const DEGRADED_TITLE = 'No disponible: mostrando una copia de respaldo con datos incompletos.';
 
-const COLUMNS = [
-  { key: 'name', label: 'Profesional' },
-  { key: 'cedula', label: 'Cédula' },
-  { key: 'codigo', label: 'Código' },
-  { key: 'stickersFase1', label: 'Stickers F-I' },
-  { key: 'stickersFase2', label: 'Stickers F-II' },
-  { key: 'surveyTotal', label: 'Evaluaciones Survey' },
-  { key: 'total', label: 'Total' },
-  { key: 'firstDate', label: 'Primer registro' },
-  { key: 'lastDate', label: 'Último registro' },
-  { key: 'activeDays', label: 'Días activos' },
-  { key: 'avgPerActiveDay', label: 'Prom./día' },
-];
-
 let loadSeq = 0;
 // W6: the hand-rolled clearTimeout/setTimeout pair this used to be is now
 // utils.js's shared debounce() via makeSearchController() — reassigned on
@@ -1374,6 +1504,10 @@ function sectionHtml() {
         <div class="card-toolbar">
           <span class="eval-toolbar-title">Profesionales</span>
         </div>
+        <div class="asignacion-segmented" id="seg-subtabs" role="tablist" aria-label="Vista de la tabla de profesionales">
+          <button type="button" class="asignacion-segment is-active" data-seg-subtab="totales" role="tab" aria-selected="true">Totales</button>
+          <button type="button" class="asignacion-segment" data-seg-subtab="temporales" role="tab" aria-selected="false">Análisis temporales</button>
+        </div>
         <div class="table-scroll">
           <table class="tipologia-table" id="seg-table">
             <thead><tr></tr></thead>
@@ -1407,46 +1541,72 @@ export function kpisHtml(rowsResult, stickersLoaded) {
   ].join('');
 }
 
-function headerRowHtml(sortState) {
-  const sortable = COLUMNS.map((c) => {
+/** W9: header row for WHICHEVER sub-tab's columns (columnsFor) are passed in
+ *  — no more hardcoded module-level COLUMNS; "Acciones" stays appended here,
+ *  never part of either COLUMNS_TOTALES/COLUMNS_TEMPORALES array (see their
+ *  own doc comment). */
+function headerRowHtml(sortState, columns) {
+  const sortable = columns.map((c) => {
     const active = sortState.column === c.key;
     const arrow = active ? (sortState.dir === 'asc' ? ' ▲' : ' ▼') : '';
     return `<th scope="col"><button type="button" class="seg-sort-btn${active ? ' is-active' : ''}" data-seg-sort="${c.key}">${escapeHtml(c.label)}${arrow}</button></th>`;
   }).join('');
-  // Not part of COLUMNS/sortRows — it's a row action, not sortable data.
   return `${sortable}<th scope="col">Acciones</th>`;
 }
 
-/** `stickersLoaded` masks the sticker-derived columns (and Total, which
- *  mixes sticker + Survey counts) behind DASH for the same reason as
- *  kpisHtml above — these fields are literally 0 whenever `stickers` is
- *  still `[]` (in flight or failed), and showing that as a real zero would
- *  misreport "no stickers" as fact instead of "unknown". The same flag (plus
- *  `isDegraded`) disables the per-row PDF report button: its "puntos
- *  recogidos — Stickers" section would otherwise ship as an empty/false
- *  list while stickers haven't resolved, or a degraded/redacted one. */
-function rowHtml(r, stickersLoaded, isDegraded) {
+/** One row's cell text/HTML for a single column key — the DOM-layer
+ *  counterpart to xlsxRowsFor's per-sheet field mapping (same fields, same
+ *  DASH-when-unknown-vs-"Sin dato"-when-genuinely-blank distinction), kept as
+ *  its own small function so headerRowHtml/rowHtml never hardcode a column
+ *  list themselves. `stickersLoaded` masks every sticker/temporal-derived
+ *  cell behind DASH (same reasoning as kpisHtml above: these are literally
+ *  0/null whenever `stickers` is still `[]` — in flight or failed — and
+ *  showing that as a real value would misreport "unknown" as "confirmed"). */
+function cellHtml(r, key, stickersLoaded) {
+  const stk = (v) => (stickersLoaded ? v : DASH);
+  switch (key) {
+    case 'name': return escapeHtml(r.name || 'Sin dato');
+    case 'cedula': return escapeHtml(r.cedula || 'Sin dato');
+    case 'np': return escapeHtml(r.np || 'Sin dato');
+    case 'codigo': return escapeHtml(r.codigo || 'Sin dato');
+    case 'stickersFase1': return stk(r.stickersFase1);
+    case 'stickersFase2': return stk(r.stickersFase2);
+    case 'surveyTotal': return r.surveyTotal;
+    case 'activeDays': return r.activeDays;
+    case 'avgStickersPerDay':
+      return stickersLoaded ? (Number.isFinite(r.avgStickersPerDay) ? r.avgStickersPerDay : DASH) : DASH;
+    case 'barriosActivos':
+      return escapeHtml((r.barriosActivos && r.barriosActivos.length) ? r.barriosActivos.join(', ') : 'Sin dato');
+    case 'firstDate': return escapeHtml(formatDateCell(r.firstDate));
+    case 'lastDate': return escapeHtml(formatDateCell(r.lastDate));
+    case 'daysSinceFirst':
+      // Mixes stickers+Survey the same way "Total" already does -- masked
+      // behind the same flag for consistency rather than a third rule.
+      return stickersLoaded ? (Number.isFinite(r.daysSinceFirst) ? r.daysSinceFirst : DASH) : DASH;
+    case 'prevDayFirstMinutes': return stk(formatMinutes(r.prevDayFirstMinutes));
+    case 'prevDayLastMinutes': return stk(formatMinutes(r.prevDayLastMinutes));
+    case 'avgFirstMinutes': return stk(formatMinutes(r.avgFirstMinutes));
+    case 'avgLastMinutes': return stk(formatMinutes(r.avgLastMinutes));
+    default: return '';
+  }
+}
+
+/** `columns` (columnsFor(subTab)'s current result) drives which cells render
+ *  — see cellHtml's own doc comment for the per-column DASH-masking rule.
+ *  The roster-sourced caveat badge always rides on the FIRST visible column
+ *  (always "Nombre" in both sub-tabs) regardless of which sub-tab is active.
+ *  The same flags (isDegraded/stickersLoaded) disable the per-row PDF report
+ *  button: its "puntos recogidos" section would otherwise ship as an empty/
+ *  false list while stickers haven't resolved, or a degraded/redacted one. */
+function rowHtml(r, stickersLoaded, isDegraded, columns) {
   const caveat = r.rosterSourced > 0
     ? ` <span class="seg-caveat" title="Identidad por roster, aproximada — ${r.rosterSourced} sticker(s) sin verificar contra esta evaluación.">⚠</span>`
     : '';
-  const stk = (v) => (stickersLoaded ? v : DASH);
   const reportBlocked = isDegraded || !stickersLoaded;
   const reportTitle = isDegraded ? DEGRADED_TITLE
     : !stickersLoaded ? 'Esperando a que carguen los stickers…' : 'Descargar informe PDF de este profesional';
-  return `<tr>
-    <td>${escapeHtml(r.name || 'Sin dato')}${caveat}</td>
-    <td>${escapeHtml(r.cedula || 'Sin dato')}</td>
-    <td>${escapeHtml(r.codigo || 'Sin dato')}</td>
-    <td>${stk(r.stickersFase1)}</td>
-    <td>${stk(r.stickersFase2)}</td>
-    <td>${r.surveyTotal}</td>
-    <td>${stk(r.total)}</td>
-    <td>${escapeHtml(formatDateCell(r.firstDate))}</td>
-    <td>${escapeHtml(formatDateCell(r.lastDate))}</td>
-    <td>${r.activeDays}</td>
-    <td>${r.avgPerActiveDay}</td>
-    <td><button type="button" class="sticker-action seg-report-btn" data-seg-report="${escapeHtml(r.key)}"${reportBlocked ? ' disabled' : ''} title="${escapeHtml(reportTitle)}">📄 Reporte</button></td>
-  </tr>`;
+  const cells = columns.map((c, i) => `<td>${cellHtml(r, c.key, stickersLoaded)}${i === 0 ? caveat : ''}</td>`).join('');
+  return `<tr>${cells}<td><button type="button" class="sticker-action seg-report-btn" data-seg-report="${escapeHtml(r.key)}"${reportBlocked ? ' disabled' : ''} title="${escapeHtml(reportTitle)}">📄 Reporte</button></td></tr>`;
 }
 
 // The empty-chart-tile note (used when Chart.js failed to load, or the
@@ -1654,6 +1814,7 @@ export function initSeguimiento(root, { getToken, records }) {
   const downloadBtn = $('seg-download');
   const reportSelectedBtn = $('seg-report-selected');
   const reportMassBtn = $('seg-report-mass');
+  const subTabsEl = $('seg-subtabs');
   const tableEl = $('seg-table');
   const theadRow = tableEl.querySelector('thead tr');
   const tbody = tableEl.querySelector('tbody');
@@ -1664,7 +1825,12 @@ export function initSeguimiento(root, { getToken, records }) {
   // refresh instead of tearing down and re-initializing the whole tab — see
   // activeUpdateRecords below.
   let surveys = Array.isArray(records) ? records : [];
-  let sortState = { column: 'total', dir: 'desc' };
+  // W9: which of the two sub-tabs (Totales / Análisis temporales) is
+  // showing — reset to 'totales' on every fresh init (a plain closure
+  // variable, never persisted across opens); preserved across
+  // updateSeguimientoRecords/search/sort WITHIN the same open.
+  let subTab = 'totales';
+  let sortState = defaultSortFor(subTab);
   let currentRows = [];
   // Search-filtered rows, hoisted so the XLSX export and the empty-table
   // guard both read the SAME set the user is actually looking at — the
@@ -1745,10 +1911,11 @@ export function initSeguimiento(root, { getToken, records }) {
     // comment for why this is a genuine contract change from before.
     visibleRows = visibleRowsFor(rows, { query: searchEl.value, professionalKey: chartSelectEl.value || '' });
     const sorted = sortRows(visibleRows, sortState.column, sortState.dir);
-    theadRow.innerHTML = headerRowHtml(sortState);
+    const columns = columnsFor(subTab);
+    theadRow.innerHTML = headerRowHtml(sortState, columns);
     tbody.innerHTML = sorted.length
-      ? sorted.map((r) => rowHtml(r, stickersLoaded, isDegraded)).join('')
-      : `<tr><td colspan="${COLUMNS.length + 1}" class="eval-empty">Ningún profesional coincide con los filtros aplicados.</td></tr>`;
+      ? sorted.map((r) => rowHtml(r, stickersLoaded, isDegraded, columns)).join('')
+      : `<tr><td colspan="${columns.length + 1}" class="eval-empty">Ningún profesional coincide con los filtros aplicados.</td></tr>`;
 
     // Every filter control (search input, Desde/Hasta, seg-chart-professional)
     // re-renders through render() -> renderTable() (search's own debounce
@@ -1890,6 +2057,26 @@ export function initSeguimiento(root, { getToken, records }) {
     renderChart();
   }
 
+  // W9: sub-tab segmented control — preserves sortState across the switch
+  // ONLY when the current sort column still exists in the NEW sub-tab's
+  // columnsFor() (e.g. 'activeDays'/'name'/'cedula'/'np'/'codigo', shared by
+  // both); otherwise falls back to that sub-tab's own defaultSortFor. Search/
+  // Desde-Hasta/professional-select filters are untouched by a sub-tab
+  // switch (they narrow WHICH professionals show, not which columns do).
+  subTabsEl.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-seg-subtab]');
+    if (!btn || btn.classList.contains('is-active')) return;
+    subTab = btn.dataset.segSubtab;
+    for (const b of subTabsEl.querySelectorAll('[data-seg-subtab]')) {
+      const active = b === btn;
+      b.classList.toggle('is-active', active);
+      b.setAttribute('aria-selected', String(active));
+    }
+    const stillSortable = columnsFor(subTab).some((c) => c.key === sortState.column);
+    sortState = stillSortable ? sortState : defaultSortFor(subTab);
+    renderTable(currentRows);
+  });
+
   theadRow.addEventListener('click', (ev) => {
     const btn = ev.target.closest('[data-seg-sort]');
     if (!btn) return;
@@ -1999,24 +2186,26 @@ export function initSeguimiento(root, { getToken, records }) {
     try {
       let XLSX;
       try { XLSX = await loadXlsx(); } catch { showToast('No se pudo cargar el generador de Excel.', 'error'); return; }
-      const rows = sortRows(visibleRows, sortState.column, sortState.dir).map((r) => ({
-        profesional: r.name, cedula: r.cedula, codigo: r.codigo, entidad: r.entidad,
-        stickers_fase1: r.stickersFase1, stickers_fase2: r.stickersFase2,
-        stickers_total: r.stickersTotal, evaluaciones_survey: r.surveyTotal, total: r.total,
-        primer_registro: r.firstDate || '', ultimo_registro: r.lastDate || '',
-        dias_activos: r.activeDays, promedio_por_dia: r.avgPerActiveDay,
-        stickers_por_roster: r.rosterSourced,
-      }));
+      // W9: two sheets (totales, temporales), each from the SAME visibleRows
+      // (what is on screen right now — search + Desde/Hasta + professional-
+      // select narrowing already applied), sorted by that sheet's OWN
+      // default order regardless of which sub-tab happens to be showing on
+      // screen at click time — an export always carries both views in full.
       const { legible, slug } = downloadStamp();
-      const ws = XLSX.utils.aoa_to_sheet([
-        ['Seguimiento — profesionales'],
-        ['Fecha de generación:', legible],
-        ['Registros:', rows.length],
-        [],
-      ]);
-      XLSX.utils.sheet_add_json(ws, rows, { origin: 'A5' });
       const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'seguimiento');
+      for (const sheetSubTab of ['totales', 'temporales']) {
+        const sortSpec = defaultSortFor(sheetSubTab);
+        const sorted = sortRows(visibleRows, sortSpec.column, sortSpec.dir);
+        const rows = xlsxRowsFor(sorted, { subTab: sheetSubTab });
+        const ws = XLSX.utils.aoa_to_sheet([
+          [`Seguimiento — profesionales (${sheetSubTab})`],
+          ['Fecha de generación:', legible],
+          ['Registros:', rows.length],
+          [],
+        ]);
+        XLSX.utils.sheet_add_json(ws, rows, { origin: 'A5' });
+        XLSX.utils.book_append_sheet(wb, ws, sheetSubTab);
+      }
       XLSX.writeFile(wb, `seguimiento_${slug}.xlsx`);
       showToast('Archivo generado.');
     } finally {

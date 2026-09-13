@@ -11,6 +11,7 @@ import {
   DASH, DEGRADED_STICKERS_NOTE,
   kpiTotals, matchesSearch, visibleRowsFor, degradedStickerNote, unassignedNote, kpisHtml,
   timelineChartConfig, timelineDataKey,
+  COLUMNS_TOTALES, COLUMNS_TEMPORALES, columnsFor, defaultSortFor, formatMinutes, xlsxRowsFor,
 } from './seguimiento.js';
 
 // Small test-local helper: the "no identity/no cédula at all" key shape a
@@ -1734,5 +1735,134 @@ console.log('timelineChartConfig: last-point label equals offset + Σ daily OK')
   assert.notEqual(timelineDataKey(t1, {}), timelineDataKey(t4, {}), 'labels changing must change the key');
 }
 console.log('timelineDataKey: identical inputs -> identical key, any relevant field changing -> different key OK');
+
+// ── W9: formatMinutes ───────────────────────────────────────────────────────
+assert.equal(formatMinutes(5), '00:05');
+assert.equal(formatMinutes(725), '12:05');
+assert.equal(formatMinutes(0), '00:00');
+assert.equal(formatMinutes(1439), '23:59');
+assert.equal(formatMinutes(null), DASH);
+assert.equal(formatMinutes(undefined), DASH);
+assert.equal(formatMinutes(NaN), DASH);
+assert.equal(formatMinutes(-5), DASH, 'out-of-range minute must never throw/produce a bogus time');
+assert.equal(formatMinutes(1440), DASH, 'out-of-range minute (>= 24h) must never throw/produce a bogus time');
+console.log('formatMinutes: HH:MM formatting + DASH for null/invalid OK');
+
+// ── W9: columnsFor / defaultSortFor / COLUMNS_TOTALES / COLUMNS_TEMPORALES ──
+assert.ok(Array.isArray(COLUMNS_TOTALES) && COLUMNS_TOTALES.length > 0);
+assert.ok(Array.isArray(COLUMNS_TEMPORALES) && COLUMNS_TEMPORALES.length > 0);
+assert.deepEqual(columnsFor('totales'), COLUMNS_TOTALES);
+assert.deepEqual(columnsFor('temporales'), COLUMNS_TEMPORALES);
+assert.deepEqual(columnsFor(undefined), COLUMNS_TOTALES, 'default subTab is totales');
+assert.deepEqual(columnsFor('unknown-sub-tab'), COLUMNS_TOTALES, 'an unknown subTab falls back to totales, never throws');
+assert.deepEqual(defaultSortFor('totales'), { column: 'total', dir: 'desc' });
+assert.deepEqual(defaultSortFor('temporales'), { column: 'firstDate', dir: 'desc' });
+assert.deepEqual(defaultSortFor('unknown'), { column: 'total', dir: 'desc' }, 'unknown subTab defaults like totales');
+assert.ok(COLUMNS_TOTALES.some((c) => c.key === 'np' && c.label === 'Clase (P)'));
+assert.ok(COLUMNS_TOTALES.some((c) => c.key === 'codigo' && c.label === 'Código vigente'));
+assert.ok(COLUMNS_TEMPORALES.some((c) => c.key === 'codigo' && c.label === 'Código'));
+console.log('columnsFor/defaultSortFor OK');
+
+// ── W9: buildProfessionalRows now also carries avgStickersPerDay + the batch
+// temporal-metrics fields (reusing buildTemporalMetricsByKey — B1-style single
+// pass instead of a per-subtab recompute) ───────────────────────────────────
+{
+  const stickers = [
+    { inspector: { nombre_completo: 'Gil Soto', identificacion: '1' }, fecha: '2026-01-01T09:00:00+00:00', fase: 1, fuente: 'atencionsismo', inspector_fuente: 'evaluacion' },
+    { inspector: { nombre_completo: 'Gil Soto', identificacion: '1' }, fecha: '2026-01-02T10:00:00+00:00', fase: 1, fuente: 'atencionsismo', inspector_fuente: 'evaluacion' },
+  ];
+  const result = buildProfessionalRows({ stickers, surveys: [], today: '2026-01-09' });
+  const row = result.rows[0];
+  assert.equal(row.avgStickersPerDay, 1, '2 stickers / 2 active days');
+  assert.equal(row.daysSinceFirst, 8, 'today (01-09) minus firstDate (01-01)');
+  assert.equal(typeof row.prevDayFirstMinutes, 'number');
+}
+console.log('buildProfessionalRows: avgStickersPerDay + temporal fields merged in OK');
+
+{
+  // activeDays 0 (no dated records at all) -> avgStickersPerDay is null (never
+  // NaN/Infinity, never a silent 0 masquerading as "confirmed zero pace").
+  const stickers = [
+    { inspector: { nombre_completo: 'Ana Ruiz' }, fecha: null, fase: 1, fuente: 'atencionsismo' },
+  ];
+  const result = buildProfessionalRows({ stickers, surveys: [] });
+  assert.equal(result.rows[0].avgStickersPerDay, null);
+}
+console.log('buildProfessionalRows: avgStickersPerDay null when activeDays is 0 OK');
+
+// ── W9: xlsxRowsFor ──────────────────────────────────────────────────────────
+{
+  const rowFull = {
+    key: 'ced:1', name: 'Gil Soto', cedula: '123', codigo: 'B1', entidad: 'DAGRD',
+    np: 'P2', tarjetaProfesional: 'TP-1', celular: '300', correo: 'g@x.com',
+    stickersFase1: 2, stickersFase2: 1, stickersTotal: 3, surveyTotal: 1, total: 4,
+    firstDate: '2026-01-01', lastDate: '2026-01-05', activeDays: 3, avgPerActiveDay: 1.33,
+    avgStickersPerDay: 1, rosterSourced: 0, barriosActivos: ['San Antonio', 'El Poblado'],
+    daysSinceFirst: 8, prevDay: '2026-01-08', prevDayFirstMinutes: 480, prevDayLastMinutes: 600,
+    avgFirstMinutes: 500, avgLastMinutes: 620,
+  };
+  // Row missing contact/temporal data entirely (only the bare minimum a
+  // buildProfessionalRows result can produce for an untimed professional) --
+  // every key must still be present, defaulted via `?? ''`, never a missing
+  // key/undefined value.
+  const rowSparse = {
+    key: 'nom:sin datos', name: 'Sin Datos', cedula: '', codigo: '', entidad: '',
+    np: '', tarjetaProfesional: '', celular: '', correo: '',
+    stickersFase1: 0, stickersFase2: 0, stickersTotal: 0, surveyTotal: 0, total: 0,
+    firstDate: null, lastDate: null, activeDays: 0, avgPerActiveDay: 0,
+    avgStickersPerDay: null, rosterSourced: 0, barriosActivos: [],
+    daysSinceFirst: null, prevDay: null, prevDayFirstMinutes: null, prevDayLastMinutes: null,
+    avgFirstMinutes: null, avgLastMinutes: null,
+  };
+
+  const totalesRows = xlsxRowsFor([rowFull, rowSparse], { subTab: 'totales' });
+  assert.equal(totalesRows.length, 2);
+  const keysFull = Object.keys(totalesRows[0]).sort();
+  const keysSparse = Object.keys(totalesRows[1]).sort();
+  assert.deepEqual(keysFull, keysSparse, 'every row must carry the identical key set');
+  assert.equal(totalesRows[0].profesional, 'Gil Soto');
+  assert.equal(totalesRows[0].clase_p, 'P2');
+  assert.equal(totalesRows[0].codigo_vigente, 'B1');
+  assert.equal(totalesRows[0].tarjeta_profesional, 'TP-1');
+  assert.equal(totalesRows[0].barrios_activos_7d, 'San Antonio; El Poblado');
+  assert.equal(totalesRows[0].stickers_promedio_diario, 1);
+  assert.equal(totalesRows[1].tarjeta_profesional, '', 'missing contact data defaults to empty string, never undefined');
+  assert.equal(totalesRows[1].barrios_activos_7d, '');
+  assert.equal(totalesRows[1].stickers_promedio_diario, '', 'null avgStickersPerDay -> empty string, never the literal null');
+
+  const temporalesRows = xlsxRowsFor([rowFull, rowSparse], { subTab: 'temporales' });
+  assert.equal(temporalesRows.length, 2);
+  const tKeysFull = Object.keys(temporalesRows[0]).sort();
+  const tKeysSparse = Object.keys(temporalesRows[1]).sort();
+  assert.deepEqual(tKeysFull, tKeysSparse, 'every temporales row must carry the identical key set too');
+  assert.equal(temporalesRows[0].hora_1er_registro_dia_ant, '08:00');
+  assert.equal(temporalesRows[0].hora_prom_ult_registro, '10:20');
+  assert.equal(temporalesRows[1].hora_1er_registro_dia_ant, DASH, 'a professional with no timed record shows DASH, not a crash/blank');
+  assert.equal(temporalesRows[1].fecha_primer_registro, '');
+  assert.equal(temporalesRows[1].dias_desde_primera_actividad, '');
+}
+console.log('xlsxRowsFor: totales/temporales sheets carry the identical key set, missing data defaults via ?? "" OK');
+
+{
+  // Empty/undefined input -> empty array, never throws.
+  assert.deepEqual(xlsxRowsFor([], { subTab: 'totales' }), []);
+  assert.deepEqual(xlsxRowsFor(undefined, { subTab: 'totales' }), []);
+  assert.deepEqual(xlsxRowsFor([], {}), [], 'default subTab (totales) with no rows');
+}
+console.log('xlsxRowsFor: empty/undefined input OK');
+
+// ── sortRows: temporal (nullable numeric minute) column, per W9 ────────────
+{
+  const rows = [
+    { key: 'a', prevDayFirstMinutes: null },
+    { key: 'b', prevDayFirstMinutes: 300 },
+    { key: 'c', prevDayFirstMinutes: 60 },
+  ];
+  const asc = sortRows(rows, 'prevDayFirstMinutes', 'asc');
+  assert.deepEqual(asc.map((r) => r.key), ['a', 'c', 'b'], 'null (no previous timed day) sorts lowest, ascending');
+  const desc = sortRows(rows, 'prevDayFirstMinutes', 'desc');
+  assert.deepEqual(desc.map((r) => r.key), ['b', 'c', 'a'], 'null still sorts lowest, i.e. LAST descending');
+}
+console.log('sortRows: nullable temporal-minutes column (prevDayFirstMinutes) OK');
 
 console.log('seguimiento.test.mjs: all assertions passed');

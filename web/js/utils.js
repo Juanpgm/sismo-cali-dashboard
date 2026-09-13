@@ -1278,14 +1278,36 @@ export function showToast(message, variant = 'success') {
   }, 3800);
 }
 
-// Fecha de generación del Excel = momento del clic (fecha de descarga). Devuelve
-// dos formas: `legible` para una celda dentro del archivo y `slug` para el nombre.
-export function downloadStamp() {
-  const d = new Date();
+// Fecha de generación del Excel/PDF = momento del clic (fecha de descarga),
+// SIEMPRE en hora de Bogotá (offset fijo -05:00, sin horario de verano) --
+// nunca la zona LOCAL de la máquina que ejecuta el código. Antes esta función
+// usaba `new Date()` + sus getters LOCALES (getFullYear/getMonth/getDate/
+// getHours/getMinutes) y un `toLocaleString('es-CO', …)` SIN `timeZone`, así
+// que un admin con laptop en otro huso horario que en Cali obtenía una
+// fecha/hora de generación distinta para el MISMO clic -- mismo tipo de bug
+// que D6/dateOnly en seguimiento.js (que ya usa el mismo offset fijo). `now`
+// (epoch ms, default Date.now()) es opcional/inyectable -- mismo patrón que
+// seguimiento.js's bogotaToday(now) -- para que sea testeable
+// determinísticamente entre husos horarios (ver utils.test.mjs). BOGOTA_
+// OFFSET_MIN es una copia intencional de seguimiento.js's
+// BOGOTA_UTC_OFFSET_MIN: utils.js no puede importar de seguimiento.js, que
+// ya importa DE utils.js. Devuelve dos formas: `legible` para una celda
+// dentro del archivo y `slug` para el nombre.
+const BOGOTA_OFFSET_MIN = -300;
+export function downloadStamp(now = Date.now()) {
   const pad = (n) => String(n).padStart(2, '0');
+  // `legible` va por Intl con `timeZone` EXPLÍCITO -- Intl convierte al huso
+  // pedido sin importar la zona del proceso que ejecuta node/el navegador.
+  const legible = new Date(now).toLocaleString('es-CO', {
+    dateStyle: 'long', timeStyle: 'short', timeZone: 'America/Bogota',
+  });
+  // `slug` necesita los componentes numéricos por separado -- Intl no los
+  // devuelve directamente -- así que se calculan con la MISMA aritmética de
+  // offset fijo (nunca getters locales de Date) que bogotaParts/bogotaToday.
+  const bd = new Date(now + BOGOTA_OFFSET_MIN * 60000);
   return {
-    legible: d.toLocaleString('es-CO', { dateStyle: 'long', timeStyle: 'short' }),
-    slug: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}-${pad(d.getMinutes())}`,
+    legible,
+    slug: `${bd.getUTCFullYear()}-${pad(bd.getUTCMonth() + 1)}-${pad(bd.getUTCDate())}_${pad(bd.getUTCHours())}-${pad(bd.getUTCMinutes())}`,
   };
 }
 

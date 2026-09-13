@@ -1,11 +1,13 @@
 // Self-check for address-aware search normalization. Run: node web/js/utils.test.mjs
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   normalizeAddressText, buildSearchIndex, barrioVeredaDisplay, resolveBarrioVereda, labelForField,
   filterOptionsByLabel, mountCombobox, isTypedAddress, addressDisplay,
   danoGradoColor, DANO_GRADO_ORDER, formatValue, COLORS, sourceLabel, setSourceLabels,
   pointInPolygon, resolveZonaInteres, isInsideCali, faseInspector, faseKeyDe,
-  satelliteTileUrl, debounce, stableStringify,
+  satelliteTileUrl, debounce, stableStringify, downloadStamp,
 } from './utils.js';
 
 // Real variants seen in the dataset for the same building should normalize
@@ -779,3 +781,64 @@ console.log('ok — debounce .cancel()');
   assert.equal(stableStringify([]), '[]');
 }
 console.log('ok — stableStringify (key-order immunity, nested, null/undefined, primitives)');
+
+// ── downloadStamp: Bogotá-fixed (America/Bogota, UTC-5), never machine-local ─
+// CONTRATO CAMBIADO DELIBERADAMENTE: downloadStamp() used to build `legible`/
+// `slug` from `new Date()`'s LOCAL getters (getFullYear/getMonth/getDate/
+// getHours/getMinutes) and a bare `toLocaleString('es-CO', …)` with no
+// `timeZone` -- both silently follow the RUNNING MACHINE's own timezone, so
+// an admin's laptop set to a different zone than Cali would stamp a
+// different date/time onto the SAME click than one in Bogotá. Now `now`
+// (epoch ms) is optionally injectable (default Date.now(), mirroring
+// seguimiento.js's bogotaToday(now)) precisely so this is deterministically
+// testable across timezones without a real clock race. `legible`'s
+// conversion goes through Intl's own explicit `timeZone: 'America/Bogota'`
+// (never affected by TZ); `slug` is built via manual UTC-getter + fixed
+// -05:00 offset arithmetic (same technique as seguimiento.js's bogotaParts/
+// bogotaToday) — neither depends on the process' own TZ.
+{
+  const utilsUrl = pathToFileURL(fileURLToPath(new URL('./utils.js', import.meta.url))).href;
+
+  function stampUnderTz(tz, now) {
+    const script = `import { downloadStamp } from '${utilsUrl}'; console.log(JSON.stringify(downloadStamp(${now})));`;
+    const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      env: { ...process.env, TZ: tz }, encoding: 'utf8',
+    });
+    assert.equal(res.status, 0, `downloadStamp() under TZ=${tz} must not throw: ${res.stderr}`);
+    return JSON.parse(res.stdout.trim());
+  }
+
+  // Plan's own worked control example (§Zona horaria): 22:32 UTC on
+  // 2026-09-12 is 17:32 in Bogotá, SAME calendar day.
+  const NOW = Date.UTC(2026, 8, 12, 22, 32, 0);
+  const utc = stampUnderTz('UTC', NOW);
+  const bogota = stampUnderTz('America/Bogota', NOW);
+  const madrid = stampUnderTz('Europe/Madrid', NOW);
+
+  assert.deepEqual(utc, bogota, 'downloadStamp must be identical regardless of the machine timezone (UTC vs Bogotá)');
+  assert.deepEqual(utc, madrid, 'downloadStamp must be identical regardless of the machine timezone (UTC vs Madrid)');
+  assert.equal(utc.slug, '2026-09-12_17-32', 'plan control example: 22:32Z -> 17:32 Bogotá, same calendar day');
+  assert.ok(/12 de septiembre de 2026/.test(utc.legible), 'legible must show the Bogotá calendar day, not the UTC one');
+  assert.ok(/5:32/.test(utc.legible), 'legible must show the Bogotá time-of-day (17:32 = 5:32 p. m.)');
+  assert.ok(Object.keys(utc).sort().join(',') === 'legible,slug', 'shape must stay exactly {legible, slug}');
+}
+console.log('ok — downloadStamp: Bogotá-fixed offset, identical across TZ=UTC/America-Bogota/Europe-Madrid');
+
+{
+  // A UTC instant that rolls to the PREVIOUS Bogotá day (02:00 UTC -> 21:00
+  // the day before in Bogotá) -- the slug's date part must reflect Bogotá,
+  // not the UTC calendar day.
+  const NOW = Date.UTC(2026, 0, 2, 2, 0, 0); // 2026-01-02T02:00:00Z
+  const stamp = downloadStamp(NOW);
+  assert.equal(stamp.slug, '2026-01-01_21-00', '02:00 UTC on Jan 2 is 21:00 Bogotá on Jan 1 (day rolls back)');
+}
+console.log('ok — downloadStamp: a UTC instant just after midnight rolls back to the previous Bogotá day');
+
+{
+  // No-arg call must still work (every real caller in the app) — defaults to
+  // the real clock, shape-only assertions (can't pin an exact value here).
+  const stamp = downloadStamp();
+  assert.equal(typeof stamp.legible, 'string');
+  assert.match(stamp.slug, /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}$/, 'slug must match the YYYY-MM-DD_HH-MM shape');
+}
+console.log('ok — downloadStamp: no-arg call (real clock) keeps the {legible, slug} shape');
