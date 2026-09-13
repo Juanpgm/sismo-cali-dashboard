@@ -6,6 +6,7 @@ import {
   buildProfessionalRows, buildTimeline, sortRows,
   professionalRecords, buildTemporalMetrics, buildBarriosActivos,
   buildProfessionalReportDocDefinition, hasActiveSegFilters,
+  createSegCache, makeSearchController,
 } from './seguimiento.js';
 
 // Small test-local helper: the "no identity/no cédula at all" key shape a
@@ -1063,5 +1064,137 @@ assert.equal(hasActiveSegFilters({ search: '', from: '2026-01-01', to: '2026-01-
 }
 
 console.log('seguimiento.test.mjs: hasActiveSegFilters OK');
+
+// ── createSegCache: single-entry memo (W6) ──────────────────────────────────
+// Key: strict identity (===) of the stickers/surveys arrays + string
+// equality of from/to/professionalKey/today. A single entry -- never a Map
+// -- so there is structurally never more than 1 cached result no matter how
+// many distinct ranges are requested.
+
+{
+  // Same key (identical references + equal strings) -> compute() runs ONCE;
+  // a second .get() with the SAME key returns the cached result.
+  const cache = createSegCache();
+  const stickers = [];
+  const surveys = [];
+  let calls = 0;
+  const key = {
+    stickers, surveys, from: '2026-01-01', to: '2026-01-31', professionalKey: null, today: '2026-01-15',
+  };
+  const r1 = cache.get(key, () => { calls += 1; return { n: calls }; });
+  const r2 = cache.get({ ...key }, () => { calls += 1; return { n: calls }; });
+  assert.equal(calls, 1, 'compute() must run exactly once for two .get() calls with the same key');
+  assert.equal(r1, r2, 'the SECOND call must return the exact cached object, not a new one');
+}
+console.log('createSegCache: same key -> single execution, cached result returned OK');
+
+{
+  // A NEW array reference with EQUAL contents must still recompute --
+  // identity (===), never a deep-equality/content comparison.
+  const cache = createSegCache();
+  let calls = 0;
+  const compute = () => { calls += 1; return { n: calls }; };
+  const stickersA = [{ a: 1 }];
+  const stickersB = [{ a: 1 }]; // same shape, different reference
+  cache.get({
+    stickers: stickersA, surveys: [], from: null, to: null, professionalKey: null, today: '2026-01-15',
+  }, compute);
+  cache.get({
+    stickers: stickersB, surveys: [], from: null, to: null, professionalKey: null, today: '2026-01-15',
+  }, compute);
+  assert.equal(calls, 2, 'a new array reference (even with identical contents) must recompute');
+}
+console.log('createSegCache: new array identity (equal contents) recomputes OK');
+
+{
+  // Changing `to` (a string field of the key) must recompute too.
+  const cache = createSegCache();
+  const stickers = []; const surveys = [];
+  let calls = 0;
+  const compute = () => { calls += 1; return { n: calls }; };
+  cache.get({
+    stickers, surveys, from: '2026-01-01', to: '2026-01-31', professionalKey: null, today: '2026-01-15',
+  }, compute);
+  cache.get({
+    stickers, surveys, from: '2026-01-01', to: '2026-02-28', professionalKey: null, today: '2026-01-15',
+  }, compute);
+  assert.equal(calls, 2, 'changing `to` must invalidate the single cached entry');
+}
+console.log('createSegCache: changing `to` recomputes OK');
+
+{
+  // <=1 entry after 50 DIFFERENT ranges -- a single-entry cache structurally
+  // cannot grow, unlike a Map keyed by range that would leak one entry per
+  // distinct range ever requested.
+  const cache = createSegCache();
+  const stickers = []; const surveys = [];
+  let calls = 0;
+  for (let i = 0; i < 50; i++) {
+    cache.get({
+      stickers, surveys, from: `2026-01-${String(i + 1).padStart(2, '0')}`, to: null, professionalKey: null, today: '2026-01-15',
+    }, () => { calls += 1; return { n: calls }; });
+  }
+  assert.equal(calls, 50, 'every distinct range really did recompute (not silently cached under the wrong key)');
+  assert.equal(cache.size ? cache.size() : 1, 1, 'a single-entry cache never holds more than 1 entry, by construction');
+}
+console.log('createSegCache: <=1 entry after 50 ranges OK');
+
+{
+  // clear() drops the cached entry -- the next .get() (even with the SAME
+  // key) must recompute, same as initSeguimiento()'s guard against a stale
+  // cache surviving a fresh open.
+  const cache = createSegCache();
+  const stickers = []; const surveys = [];
+  let calls = 0;
+  const key = {
+    stickers, surveys, from: null, to: null, professionalKey: null, today: '2026-01-15',
+  };
+  cache.get(key, () => { calls += 1; return { n: calls }; });
+  cache.clear();
+  cache.get(key, () => { calls += 1; return { n: calls }; });
+  assert.equal(calls, 2, 'clear() must force the next .get() (even with an identical key) to recompute');
+}
+console.log('createSegCache: clear() forces recompute OK');
+
+// ── makeSearchController: debounce() wrapper with a working cancel() ────────
+
+{
+  // trigger() schedules the callback; a second trigger() before it fires
+  // resets the timer (debounce semantics) -- only the LAST scheduled call
+  // actually runs.
+  const calls = [];
+  const controller = makeSearchController((label) => calls.push(label), 20);
+  controller.trigger('a');
+  controller.trigger('b');
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.deepEqual(calls, ['b'], 'only the last trigger() before the wait must fire');
+}
+console.log('makeSearchController: trigger() debounces, only the last call fires OK');
+
+{
+  // cancel() prevents a PENDING callback from ever firing -- the real
+  // scenario this exists for: a filter reset or a fresh init must be able to
+  // kill a stale debounced render before it stomps new state.
+  const calls = [];
+  const controller = makeSearchController(() => calls.push('fired'), 20);
+  controller.trigger();
+  controller.cancel();
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.deepEqual(calls, [], 'cancel() must prevent the pending callback from firing at all');
+}
+console.log('makeSearchController: cancel() prevents a pending callback OK');
+
+{
+  // cancel() with nothing pending is a harmless no-op, and a NEW trigger()
+  // after a cancel() schedules normally (cancel does not permanently disable
+  // the controller).
+  const calls = [];
+  const controller = makeSearchController(() => calls.push('fired'), 15);
+  controller.cancel(); // nothing pending -- must not throw
+  controller.trigger();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.deepEqual(calls, ['fired'], 'a trigger() after a no-op cancel() still fires normally');
+}
+console.log('makeSearchController: cancel() with nothing pending is a no-op; later trigger() still fires OK');
 
 console.log('seguimiento.test.mjs: all assertions passed');

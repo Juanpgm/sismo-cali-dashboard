@@ -12,7 +12,7 @@
 // the DOM section below. The pure functions never import data.js (it pulls
 // the Firebase SDK via a bare https:// specifier, which breaks Node's ESM
 // loader on plain import).
-import { COLORS, escapeHtml, normalize, loadXlsx, downloadStamp, showToast, faseKeyDe } from './utils.js';
+import { COLORS, escapeHtml, normalize, loadXlsx, downloadStamp, showToast, faseKeyDe, debounce } from './utils.js';
 import { upsertChart, baseOptions, totalDataLabelPlugin } from './charts.js';
 import { fetchEvaluacionesOnce } from './stickers.js';
 import { loadPdfmake } from './report.js';
@@ -921,6 +921,82 @@ export function sortRows(rows, column, dir = 'asc') {
   return copy;
 }
 
+// ── createSegCache: single-entry memo (W6) ──────────────────────────────────
+// A render() pass recomputes buildProfessionalRows over the whole
+// stickers/surveys arrays (now including the per-row buildBarriosActivos
+// pass, and eventually — a later work unit — buildTemporalMetrics' hour
+// columns for the "Análisis temporales" sub-tab) on every keystroke-settle/
+// filter change, even when NOTHING that would change the result actually
+// changed (e.g. a sort-only click, W9). A single-entry memo — never a Map —
+// skips that recomputation whenever the exact same inputs come back, while
+// staying trivially bounded (never more than 1 entry, so no cache
+// invalidation/eviction policy is needed at all).
+//
+// Keyed on STRICT identity (===) of the stickers/surveys arrays — never a
+// deep/content comparison, which would be both slower than just recomputing
+// and wrong for data.js's `data.js:263-265`-style in-place mutation (a
+// caller that mutates an array in place and expects a cache miss would
+// never get one under a content comparison) — plus plain string equality of
+// from/to/professionalKey/today. The whole tuple is stored as the key
+// alongside the RESULT of the last call, and any single field's mismatch
+// (a new array reference, or ANY string field a caller changed) invalidates
+// the one entry.
+export function createSegCache() {
+  let entry = null;
+
+  function sameKey(a, b) {
+    return a.stickers === b.stickers
+      && a.surveys === b.surveys
+      && a.from === b.from
+      && a.to === b.to
+      && a.professionalKey === b.professionalKey
+      && a.today === b.today;
+  }
+
+  return {
+    /** Returns the cached result when `key` matches the last call's key
+     *  (see sameKey above); otherwise calls `compute()`, stores its result
+     *  as the (only) entry, and returns it. */
+    get(key, compute) {
+      if (entry && sameKey(entry.key, key)) return entry.result;
+      const result = compute();
+      entry = { key, result };
+      return result;
+    },
+    /** Drops the cached entry — the next get() (even with an identical key)
+     *  recomputes. Called at the top of initSeguimiento() so a fresh open
+     *  never reuses a stale entry from a previous session's stickers/
+     *  surveys arrays (which, being garbage-collectable, could in principle
+     *  share a memory address with a brand-new array — vanishingly unlikely
+     *  in practice, but a stale entry surviving a full re-init would be a
+     *  much more mundane bug: e.g. a `from`/`to` reset should never keep
+     *  yesterday's result just because a value happened to match by luck). */
+    clear() {
+      entry = null;
+    },
+  };
+}
+
+/** Debounced search-input controller (W6): wraps utils.js's own debounce()
+ *  instead of the hand-rolled clearTimeout/setTimeout pair this module used
+ *  to carry — one fewer bespoke timer implementation to keep in sync with
+ *  the shared one. `trigger()` schedules `callback` after `wait` ms,
+ *  resetting the timer on every call (standard debounce semantics); a
+ *  caller that fires `trigger()` again before it settles gets only the LAST
+ *  call's effect. `cancel()` drops any pending call without scheduling a
+ *  new one — the real reason this needs its own name instead of being
+ *  inlined at each call site: a filter reset or a fresh initSeguimiento()
+ *  must be able to kill a stale pending render from the OLD state before it
+ *  fires against a tbody/currentRows that no longer exists (same class of
+ *  bug `debounce()`'s own doc comment describes). */
+export function makeSearchController(callback, wait = 250) {
+  const debounced = debounce(callback, wait);
+  return {
+    trigger: debounced,
+    cancel: debounced.cancel,
+  };
+}
+
 // ── DOM section ─────────────────────────────────────────────────────────────
 // Same overall recipe as reportes-ciudadanos.js: initSeguimiento(root, ...)
 // re-renders root.innerHTML on every open (the tab is admin-only and
@@ -946,7 +1022,18 @@ const COLUMNS = [
 ];
 
 let loadSeq = 0;
-let searchDebounceTimer = null;
+// W6: the hand-rolled clearTimeout/setTimeout pair this used to be is now
+// utils.js's shared debounce() via makeSearchController() — reassigned on
+// every initSeguimiento() call (same pattern as activeRenderChart/
+// activeUpdateRecords below), so a stale controller from a previous open
+// never fires against a torn-down tbody/currentRows.
+let activeSearchDebounced = null;
+// W6: one single-entry memo for the whole module lifetime — cleared (not
+// replaced) at the top of every initSeguimiento() so a fresh open never
+// reuses a stale entry, but a re-render WITHIN the same open (e.g. a filter
+// change that ends up producing the exact same stickers/surveys/from/to) can
+// still hit the cache.
+const segCache = createSegCache();
 
 function formatDateCell(d) {
   return d || 'Sin dato';
@@ -1164,7 +1251,7 @@ function timelineChartConfig(timeline) {
 // 'seguimiento-timeline' destroyed with nothing left to rebuild it unless
 // this module reacts to the same event. `activeRenderChart` always points at
 // the MOST RECENT initSeguimiento() call's own renderChart closure (reset on
-// every open, same idea as loadSeq/searchDebounceTimer above) so a stale
+// every open, same idea as loadSeq/activeSearchDebounced above) so a stale
 // closure from a previous open never fires after a fresh one has taken over.
 //
 // Deferred via setTimeout(...,0): this listener is registered at module load
@@ -1249,8 +1336,8 @@ async function descargarInformeProfesional(row, { stickers, surveys, identity })
  *  chain and break the Node self-check). Stickers are fetched fresh on every
  *  open via fetchEvaluacionesOnce, same lifecycle as the Stickers tab. */
 export function initSeguimiento(root, { getToken, records }) {
-  clearTimeout(searchDebounceTimer);
-  searchDebounceTimer = null;
+  if (activeSearchDebounced) activeSearchDebounced.cancel();
+  segCache.clear();
   root.innerHTML = sectionHtml();
 
   const $ = (id) => root.querySelector(`#${id}`);
@@ -1401,12 +1488,28 @@ export function initSeguimiento(root, { getToken, records }) {
     // "días desde 1ª actividad"/barrios-activos-7d against yesterday's data.
     currentIdentity = buildIdentityIndex({ stickers, surveys });
     const today = bogotaToday();
+    const { from, to } = currentFilters();
     // `unassigned` (the Sin-profesional bucket, broken down by source) is
     // not destructured here — the UI only ever surfaces it as one combined
     // KPI tile (totals.unassigned), rendered by kpisHtml below.
-    const { rows, stickersWithoutDate, totals } = buildProfessionalRows({
-      stickers, surveys, ...currentFilters(), identity: currentIdentity, today,
-    });
+    //
+    // W6: memoized via segCache — a re-render with the SAME stickers/
+    // surveys array references and the SAME from/to/today (e.g. a sort-only
+    // interaction that still routes through render(), or two consecutive
+    // opens with an unchanged store) skips recomputing buildProfessionalRows
+    // (and its nested buildBarriosActivos pass per row) entirely.
+    // `professionalKey` is reserved for a future unit that folds
+    // buildTimeline's chart-selection filter into this same cached call; it
+    // plays no role in buildProfessionalRows itself, so a fixed `null` here
+    // never causes a spurious cache miss.
+    const { rows, stickersWithoutDate, totals } = segCache.get(
+      {
+        stickers, surveys, from, to, professionalKey: null, today,
+      },
+      () => buildProfessionalRows({
+        stickers, surveys, from, to, identity: currentIdentity, today,
+      }),
+    );
     currentRows = rows;
     kpisEl.innerHTML = kpisHtml(totals, stickersLoaded);
     sinFechaNoteEl.hidden = !stickersLoaded || stickersWithoutDate === 0;
@@ -1449,9 +1552,13 @@ export function initSeguimiento(root, { getToken, records }) {
     }
   });
 
+  // Reassigned on every initSeguimiento() call (this init's OWN renderTable/
+  // currentRows closure), same pattern as activeRenderChart/
+  // activeUpdateRecords — the shared module-level handle above always
+  // points at the CURRENTLY open init's controller.
+  activeSearchDebounced = makeSearchController(() => renderTable(currentRows), 250);
   searchEl.addEventListener('input', () => {
-    clearTimeout(searchDebounceTimer);
-    searchDebounceTimer = setTimeout(() => renderTable(currentRows), 250);
+    activeSearchDebounced.trigger();
   });
 
   fromEl.addEventListener('change', render);
@@ -1467,8 +1574,7 @@ export function initSeguimiento(root, { getToken, records }) {
   // Ritmo diario chart highlights — a display-mode selection, the same
   // category as "colorear por", not a filter. Sort order is left alone too.
   resetFiltersBtn.addEventListener('click', () => {
-    clearTimeout(searchDebounceTimer);
-    searchDebounceTimer = null;
+    activeSearchDebounced.cancel();
     searchEl.value = '';
     fromEl.value = '';
     toEl.value = '';
