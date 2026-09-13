@@ -216,35 +216,213 @@ function surveyIncluded(survey, from, to) {
   return inDateRange(d, from, to);
 }
 
-/** Per-professional rows joining stickers + Survey by normalized name, plus
- *  the "Sin profesional identificado" bucket and the sticker-without-fecha
- *  count the UI surfaces as its own KPI/note. `from`/`to` (YYYY-MM-DD,
- *  either may be null) filter both sources — Survey via fecha_inspeccion,
- *  stickers via fecha's date part; see stickerIncluded/surveyIncluded above
- *  for the null-date edge case. */
-export function buildProfessionalRows({ stickers, surveys, from = null, to = null } = {}) {
+// ── Identidad: cédula primero, nombre como respaldo (D7) ────────────────────
+// Único resolver de identidad para TODO el módulo (invariante "un solo
+// resolver de identidad" del plan): buildProfessionalRows, buildTimeline,
+// professionalRecords, buildTemporalMetrics y buildBarriosActivos llaman
+// TODOS a professionalKeyOf — ninguno vuelve a derivar normalizeName por su
+// cuenta. `row.key` conserva el nombre de campo pero ahora es el valor de
+// professionalKeyOf ('ced:...' | 'nom:...'), nunca un normalizeName() a
+// secas — cambio de contrato deliberado, ver los tests actualizados.
+
+/** Digits-only join key for a cédula — mirrors the backend's `cedula_key`
+ *  (stickers_atencionsismo.py:220) EXACTLY: strips every non-digit
+ *  character (dots, spaces, dashes, …) so "1.234.567", 1234567 (number) and
+ *  " 1234567 " all resolve to the same key. Decision (leading zeros): kept
+ *  VERBATIM, never stripped — same as the backend, which only does
+ *  `re.sub(r"\D", "", ...)` and nothing else; a cédula that legitimately
+ *  starts with "0" must not collide with one that doesn't. Returns "" when
+ *  nothing digit-like remains (blank/non-numeric input, e.g. "CC" typed into
+ *  the cédula field by mistake) — callers treat "" as "no cédula". */
+export function cedulaKey(raw) {
+  return String(raw === null || raw === undefined ? '' : raw).replace(/\D/g, '');
+}
+
+const EMPTY_IDENTITY = Object.freeze({ eligibleCedulas: new Set(), nameToCedula: new Map() });
+
+/** Whether `record` is a Survey record (has `nombre_evaluador`, even if
+ *  blank) rather than a sticker (has `inspector`/`inspector_fuente`) — the
+ *  two source shapes never carry a cédula the same way, so every caller
+ *  needs to tell them apart before resolving a key. */
+function isSurveyRecord(record) {
+  return Object.prototype.hasOwnProperty.call(record, 'nombre_evaluador');
+}
+
+/** THE single identity resolver (see the module note above): a sticker or
+ *  Survey record -> its professional key, `'ced:<digits>'` when a cédula
+ *  resolves it, `'nom:<normalizedName>'` when only a name does, or `''` when
+ *  neither resolves (no name at all — the "sin profesional identificado"
+ *  case, unchanged from before).
+ *
+ *  Resolution order: (1) the record's OWN cédula, but ONLY when that cédula
+ *  is "eligible" (`identity.eligibleCedulas` — has appeared at least once
+ *  with `inspector_fuente !== 'roster'` ANYWHERE in the sticker set; a
+ *  cédula seen ONLY via the roster is never a merge key — misattribution
+ *  risk, see stickers_atencionsismo.py:20-27); (2) failing that, the
+ *  record's normalized name, unified to a cédula ONLY when that name maps to
+ *  EXACTLY ONE eligible cédula across the whole sticker set
+ *  (`identity.nameToCedula`, built by buildIdentityIndex) — this is what
+ *  lets a Survey record (which never carries a cédula at all) attach to the
+ *  same row as a sticker professional; (3) otherwise a plain name key. A
+ *  name that maps to >=2 eligible cédulas (homonyms with different
+ *  identities) is NEVER unified — each cédula keeps its own row, and a
+ *  name-only record for that name falls into its own separate `nom:` bucket
+ *  rather than guessing which person it belongs to ("nombre con dos
+ *  cédulas -> 3 filas"). `identity` defaults to "no cédula ever eligible",
+ *  i.e. every record resolves via name alone — a safe, pure default that
+ *  needs no prior buildIdentityIndex() call for a single-source test. */
+export function professionalKeyOf(record, identity = EMPTY_IDENTITY) {
+  if (!record) return '';
+  const idx = identity || EMPTY_IDENTITY;
+  if (isSurveyRecord(record)) {
+    const nameKey = normalizeName(record.nombre_evaluador || '');
+    if (!nameKey) return '';
+    if (idx.nameToCedula.has(nameKey)) return `ced:${idx.nameToCedula.get(nameKey)}`;
+    return `nom:${nameKey}`;
+  }
+  const insp = record.inspector || {};
+  const ownCedula = cedulaKey(insp.identificacion);
+  if (ownCedula && idx.eligibleCedulas.has(ownCedula)) return `ced:${ownCedula}`;
+  const nameKey = normalizeName(insp.nombre_completo || '');
+  if (nameKey && idx.nameToCedula.has(nameKey)) return `ced:${idx.nameToCedula.get(nameKey)}`;
+  return nameKey ? `nom:${nameKey}` : '';
+}
+
+/** Builds the identity index every other pure function in this module
+ *  resolves through (via professionalKeyOf): which cédulas are eligible
+ *  merge keys, which normalized names unify to exactly one of them, AND the
+ *  per-key `profiles` (display name via "most frequent raw spelling wins",
+ *  same as before; cédula/código/entidad/np/tarjetaProfesional/celular/
+ *  correo via "first non-blank wins"; `ambiguous` for a homonym split) that
+ *  buildProfessionalRows reads instead of re-deriving them inline.
+ *
+ *  Built from the FULL, unfiltered {stickers, surveys} — identity is a
+ *  property of the whole dataset, never of a date-filtered slice (a `from`/
+ *  `to` range must not change WHO a cédula/name resolves to, only which of
+ *  their records count toward a KPI). */
+export function buildIdentityIndex({ stickers = [], surveys = [] } = {}) {
   const stickerList = Array.isArray(stickers) ? stickers : [];
   const surveyList = Array.isArray(surveys) ? surveys : [];
+
+  const eligibleCedulas = new Set();
+  const nameCedulaCandidates = new Map(); // normalizedName -> Set<cedula>
+  for (const s of stickerList) {
+    if (!s) continue;
+    const insp = s.inspector || {};
+    const ced = cedulaKey(insp.identificacion);
+    if (!ced) continue;
+    if (s.inspector_fuente !== 'roster') eligibleCedulas.add(ced);
+    const nameKey = normalizeName(insp.nombre_completo || '');
+    if (!nameKey) continue;
+    if (!nameCedulaCandidates.has(nameKey)) nameCedulaCandidates.set(nameKey, new Set());
+    nameCedulaCandidates.get(nameKey).add(ced);
+  }
+
+  const nameToCedula = new Map();
+  const ambiguousNames = new Set();
+  for (const [nameKey, cedSet] of nameCedulaCandidates) {
+    const eligible = [...cedSet].filter((c) => eligibleCedulas.has(c));
+    if (eligible.length === 1) nameToCedula.set(nameKey, eligible[0]);
+    else if (eligible.length >= 2) ambiguousNames.add(nameKey);
+  }
+
+  const resolverCore = { eligibleCedulas, nameToCedula };
+  const keyForSticker = (record) => professionalKeyOf(record, resolverCore);
+  const keyForSurvey = (record) => professionalKeyOf(record, resolverCore);
+
+  const profiles = new Map();
+  function ensureProfile(key) {
+    let p = profiles.get(key);
+    if (!p) {
+      p = {
+        nameCounts: new Map(), cedula: '', codigo: '', entidad: '',
+        np: '', tarjetaProfesional: '', celular: '', correo: '',
+        ambiguous: false,
+      };
+      profiles.set(key, p);
+    }
+    return p;
+  }
+
+  for (const s of stickerList) {
+    if (!s) continue;
+    const insp = s.inspector || {};
+    const rawName = insp.nombre_completo || '';
+    const key = keyForSticker(s);
+    if (!key) continue;
+    const p = ensureProfile(key);
+    if (rawName) p.nameCounts.set(rawName, (p.nameCounts.get(rawName) || 0) + 1);
+    if (!p.cedula && insp.identificacion) p.cedula = insp.identificacion;
+    if (!p.codigo && insp.codigo) p.codigo = insp.codigo;
+    if (!p.entidad && insp.entidad) p.entidad = insp.entidad;
+    if (!p.np && insp.np) p.np = insp.np;
+    if (!p.tarjetaProfesional && insp.tarjeta_profesional) p.tarjetaProfesional = insp.tarjeta_profesional;
+    if (!p.celular && insp.num_telefono) p.celular = insp.num_telefono;
+    if (!p.correo && insp.correo_contacto) p.correo = insp.correo_contacto;
+    const nameKey = normalizeName(rawName);
+    if (nameKey && ambiguousNames.has(nameKey)) p.ambiguous = true;
+  }
+  for (const sv of surveyList) {
+    if (!sv) continue;
+    const rawName = sv.nombre_evaluador || '';
+    const key = keyForSurvey(sv);
+    if (!key) continue;
+    const p = ensureProfile(key);
+    if (rawName) p.nameCounts.set(rawName, (p.nameCounts.get(rawName) || 0) + 1);
+    if (!p.entidad && sv.entidad) p.entidad = sv.entidad;
+    const nameKey = normalizeName(rawName);
+    if (nameKey && ambiguousNames.has(nameKey)) p.ambiguous = true;
+  }
+
+  for (const p of profiles.values()) {
+    let bestName = '';
+    let bestCount = -1;
+    for (const [name, count] of p.nameCounts) {
+      if (count > bestCount) { bestCount = count; bestName = name; }
+    }
+    p.name = bestName;
+  }
+
+  return { eligibleCedulas, nameToCedula, ambiguousNames, profiles, keyForSticker, keyForSurvey };
+}
+
+/** Per-professional rows joining stickers + Survey by identity
+ *  (professionalKeyOf — cédula first, name as fallback; see the module note
+ *  above), plus the "Sin profesional identificado" bucket and the
+ *  sticker-without-fecha count the UI surfaces as its own KPI/note.
+ *  `from`/`to` (YYYY-MM-DD, either may be null) filter both sources — Survey
+ *  via fecha_inspeccion, stickers via fecha's Bogotá date part; see
+ *  stickerIncluded/surveyIncluded above for the null-date edge case.
+ *  `identity` defaults to a fresh buildIdentityIndex() over the SAME
+ *  {stickers, surveys} (correct — identity must come from the whole
+ *  dataset, which these already are); pass an explicitly pre-built one when
+ *  calling this repeatedly so identity isn't recomputed every time (W6).
+ *  `today` (YYYY-MM-DD, Bogotá) defaults to bogotaToday() and flows into
+ *  buildBarriosActivos for the per-row "barrios activos (7 d)" derivation. */
+export function buildProfessionalRows({
+  stickers, surveys, from = null, to = null, identity, today,
+} = {}) {
+  const stickerList = Array.isArray(stickers) ? stickers : [];
+  const surveyList = Array.isArray(surveys) ? surveys : [];
+  const idx = identity || buildIdentityIndex({ stickers: stickerList, surveys: surveyList });
+  const todayStr = today || bogotaToday();
 
   const rowsByKey = new Map();
   let unassignedStickers = 0;
   let unassignedSurveys = 0;
   let stickersWithoutDate = 0;
 
-  function ensureRow(key, rawName) {
+  function ensureRow(key) {
     let row = rowsByKey.get(key);
     if (!row) {
       row = {
         key,
-        nameCounts: new Map(),
-        cedula: '', codigo: '', entidad: '',
         stickersFase1: 0, stickersFase2: 0, stickersTotal: 0,
         surveyTotal: 0, rosterSourced: 0,
         dates: [],
       };
       rowsByKey.set(key, row);
     }
-    row.nameCounts.set(rawName, (row.nameCounts.get(rawName) || 0) + 1);
     return row;
   }
 
@@ -256,19 +434,15 @@ export function buildProfessionalRows({ stickers, surveys, from = null, to = nul
     // timeline, or a per-professional report — not kept in its own "sin
     // fase" bucket the way it used to be, which let it silently inflate
     // stickersTotal even though it can't be attributed to a real Fase I/II
-    // inspection. Checked first, before the date/name filters below, so it
-    // never counts toward those either.
+    // inspection. Checked first, before the date/identity filters below, so
+    // it never counts toward those either.
     if (faseKeyDe(s) === 'SIN_DATO') continue;
     if (!stickerIncluded(s, from, to)) continue;
-    const rawName = (s.inspector && s.inspector.nombre_completo) || '';
-    const key = normalizeName(rawName);
+    const key = professionalKeyOf(s, idx);
     const dateVal = dateOnly(s.fecha);
     if (dateVal === null) stickersWithoutDate += 1;
     if (!key) { unassignedStickers += 1; continue; }
-    const row = ensureRow(key, rawName);
-    if (!row.cedula && s.inspector && s.inspector.identificacion) row.cedula = s.inspector.identificacion;
-    if (!row.codigo && s.inspector && s.inspector.codigo) row.codigo = s.inspector.codigo;
-    if (!row.entidad && s.inspector && s.inspector.entidad) row.entidad = s.inspector.entidad;
+    const row = ensureRow(key);
     // Shared Fase I/II rule (utils.js's faseKeyDe) instead of a second,
     // independent `fase === 1/2` switch: for an atencionsismo sticker whose
     // `fase` isn't 1 or 2, this falls back to the inspector's NP category
@@ -286,31 +460,33 @@ export function buildProfessionalRows({ stickers, surveys, from = null, to = nul
   for (const sv of surveyList) {
     if (!sv) continue;
     if (!surveyIncluded(sv, from, to)) continue;
-    const rawName = sv.nombre_evaluador || '';
-    const key = normalizeName(rawName);
+    const key = professionalKeyOf(sv, idx);
     if (!key) { unassignedSurveys += 1; continue; }
-    const row = ensureRow(key, rawName);
-    if (!row.entidad && sv.entidad) row.entidad = sv.entidad;
+    const row = ensureRow(key);
     row.surveyTotal += 1;
     const dateVal = dateOnly(sv.fecha_inspeccion);
     if (dateVal) row.dates.push(dateVal);
   }
 
   const rows = [...rowsByKey.values()].map((row) => {
-    let bestName = '';
-    let bestCount = -1;
-    for (const [name, count] of row.nameCounts) {
-      if (count > bestCount) { bestCount = count; bestName = name; }
-    }
+    const profile = idx.profiles.get(row.key) || {};
     const sortedDates = [...row.dates].sort();
     const activeDays = new Set(sortedDates).size;
     const datedRecords = sortedDates.length;
-    return {
+    const builtRow = {
       key: row.key,
-      name: bestName,
-      cedula: row.cedula,
-      codigo: row.codigo,
-      entidad: row.entidad,
+      name: profile.name || '',
+      cedula: profile.cedula || '',
+      codigo: profile.codigo || '',
+      entidad: profile.entidad || '',
+      // W5: contact/identity fields for the future report/table columns
+      // (W7-W10) -- "first non-blank wins" across every sticker attributed
+      // to this professional, computed once by buildIdentityIndex.
+      np: profile.np || '',
+      tarjetaProfesional: profile.tarjetaProfesional || '',
+      celular: profile.celular || '',
+      correo: profile.correo || '',
+      ambiguous: Boolean(profile.ambiguous),
       stickersFase1: row.stickersFase1,
       stickersFase2: row.stickersFase2,
       stickersTotal: row.stickersTotal,
@@ -322,6 +498,12 @@ export function buildProfessionalRows({ stickers, surveys, from = null, to = nul
       avgPerActiveDay: activeDays ? Math.round((datedRecords / activeDays) * 100) / 100 : 0,
       rosterSourced: row.rosterSourced,
     };
+    // D1 (plan §Decisiones): "barrios activos (7 d)" derived from THIS
+    // professional's OWN stickers in the last 7 days (Bogotá), regardless
+    // of the from/to filter currently narrowing the table -- always the
+    // most recent real-world week, not the selected range.
+    builtRow.barriosActivos = buildBarriosActivos(builtRow, { stickers: stickerList, today: todayStr, identity: idx });
+    return builtRow;
   });
 
   const stickersAssigned = rows.reduce((n, r) => n + r.stickersTotal, 0);
@@ -347,76 +529,110 @@ export function buildProfessionalRows({ stickers, surveys, from = null, to = nul
  *  chart with missing days would misread as "no activity that day" the same
  *  way as "no data yet". Records with no resolvable date (see dateOnly)
  *  never enter the timeline, only the KPI/totals in buildProfessionalRows.
- *  `professionalKey` restricts to one professional's normalized name; null
- *  (or any other falsy value) means every professional. */
-export function buildTimeline({ stickers, surveys, from = null, to = null, professionalKey = null } = {}) {
+ *  `professionalKey` restricts to one professional's key (professionalKeyOf
+ *  — see the module note above); null (or any other falsy value) means
+ *  every professional.
+ *
+ *  Also computes the PRE-RANGE `offsets` in this SAME loop (pure, so it
+ *  belongs here even though only W8's chart consumes it): for each source,
+ *  how many of the (identity/SIN_DATO-filtered) records fall STRICTLY
+ *  BEFORE `from` — these never enter the daily/cumulative series (they are
+ *  outside the visible window) but W8's running total starts counting from
+ *  this offset instead of zero, so a mid-range `from` doesn't misrepresent
+ *  the cumulative total as if history began at the window's left edge. A
+ *  record without a date contributes 0 to the offset (never assumed to be
+ *  "before" anything); one AFTER `to` is excluded entirely (neither the
+ *  series nor the offset — it's simply outside scope); `from` null -> the
+ *  offset is always 0 (there is no "before" an unbounded window). */
+export function buildTimeline({
+  stickers, surveys, from = null, to = null, professionalKey = null, identity,
+} = {}) {
   const stickerList = Array.isArray(stickers) ? stickers : [];
   const surveyList = Array.isArray(surveys) ? surveys : [];
+  const idx = identity || buildIdentityIndex({ stickers: stickerList, surveys: surveyList });
 
   const stickerCounts = new Map();
   const surveyCounts = new Map();
+  let stickerOffset = 0;
+  let surveyOffset = 0;
 
   for (const s of stickerList) {
     if (!s) continue;
     // Same SIN_DATO exclusion as buildProfessionalRows (#29) — a record whose
     // Fase never resolves never contributes a point to the timeline either.
     if (faseKeyDe(s) === 'SIN_DATO') continue;
-    if (!stickerIncluded(s, from, to)) continue;
-    if (professionalKey && normalizeName((s.inspector && s.inspector.nombre_completo) || '') !== professionalKey) continue;
+    if (professionalKey && professionalKeyOf(s, idx) !== professionalKey) continue;
     const d = dateOnly(s.fecha);
-    if (!d) continue;
+    if (!d) continue; // sin fecha aporta 0 -- ni a la serie ni al offset
+    if (to && d > to) continue; // fuera del rango visible (futuro) -- nunca cuenta
+    if (from && d < from) { stickerOffset += 1; continue; } // pre-range -> offset, no serie
     stickerCounts.set(d, (stickerCounts.get(d) || 0) + 1);
   }
 
   for (const sv of surveyList) {
     if (!sv) continue;
-    if (!surveyIncluded(sv, from, to)) continue;
-    if (professionalKey && normalizeName(sv.nombre_evaluador || '') !== professionalKey) continue;
+    if (professionalKey && professionalKeyOf(sv, idx) !== professionalKey) continue;
     const d = dateOnly(sv.fecha_inspeccion);
     if (!d) continue;
+    if (to && d > to) continue;
+    if (from && d < from) { surveyOffset += 1; continue; }
     surveyCounts.set(d, (surveyCounts.get(d) || 0) + 1);
   }
 
   const allDates = [...new Set([...stickerCounts.keys(), ...surveyCounts.keys()])].sort();
+  const offsets = { stickers: stickerOffset, surveys: surveyOffset };
   if (!allDates.length) {
-    return { labels: [], stickers: [], surveys: [], stickersCumulative: [], surveysCumulative: [] };
+    return {
+      labels: [], stickers: [], surveys: [], stickersCumulative: [], surveysCumulative: [], offsets,
+    };
   }
 
   const labels = [];
-  const cursor = new Date(`${allDates[0]}T00:00:00Z`);
-  const end = new Date(`${allDates[allDates.length - 1]}T00:00:00Z`);
-  while (cursor.getTime() <= end.getTime()) {
-    labels.push(cursor.toISOString().slice(0, 10));
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  let cursor = allDates[0];
+  const endLabel = allDates[allDates.length - 1];
+  while (cursor <= endLabel) {
+    labels.push(cursor);
+    cursor = shiftDateStr(cursor, 1);
   }
 
   const stickersDaily = labels.map((d) => stickerCounts.get(d) || 0);
   const surveysDaily = labels.map((d) => surveyCounts.get(d) || 0);
   // Running totals, one per source — each accumulates independently across
-  // every label (including zero-count days, which never reset it).
-  let stickersRunning = 0;
-  let surveysRunning = 0;
+  // every label (including zero-count days, which never reset it), starting
+  // from the pre-range offset rather than zero.
+  let stickersRunning = stickerOffset;
+  let surveysRunning = surveyOffset;
   const stickersCumulative = stickersDaily.map((n) => (stickersRunning += n));
   const surveysCumulative = surveysDaily.map((n) => (surveysRunning += n));
 
-  return { labels, stickers: stickersDaily, surveys: surveysDaily, stickersCumulative, surveysCumulative };
+  return {
+    labels, stickers: stickersDaily, surveys: surveysDaily, stickersCumulative, surveysCumulative, offsets,
+  };
 }
 
 /** The raw stickers/surveys attributed to ONE professional (`row.key`, the
- *  same normalized-name join buildProfessionalRows/buildTimeline already
- *  use) — "los puntos recogidos", for the per-professional PDF report.
- *  Unlike buildTimeline/buildProfessionalRows this never applies a date
- *  filter: the report is a full career summary for that person, not a
- *  filtered view. An undated sticker still appears (it IS a real collected
- *  point — same reasoning as the "sin fecha" KPI), sorted after every dated
- *  one; an invalid/garbage fecha_inspeccion is treated the same as missing. */
-export function professionalRecords(row, { stickers, surveys }) {
+ *  same professionalKeyOf identity buildProfessionalRows/buildTimeline
+ *  already use) — "los puntos recogidos", for the per-professional PDF
+ *  report. `from`/`to` (both default null, meaning "whole career" — the
+ *  ORIGINAL, unfiltered behavior, for the existing per-row report button):
+ *  when either is set, records are narrowed to that period via the SAME
+ *  stickerIncluded/surveyIncluded rules used everywhere else (an undated
+ *  record then drops out, same as buildProfessionalRows/buildTimeline)
+ *  instead of the old "always include undated, sorted last" behavior, which
+ *  only still applies when NO period is given at all. */
+export function professionalRecords(row, {
+  stickers, surveys, identity, from = null, to = null,
+} = {}) {
+  const stickerList = Array.isArray(stickers) ? stickers : [];
+  const surveyList = Array.isArray(surveys) ? surveys : [];
+  const idx = identity || buildIdentityIndex({ stickers: stickerList, surveys: surveyList });
   const key = row && row.key;
-  const stickerList = (Array.isArray(stickers) ? stickers : [])
+
+  const stickerPoints = stickerList
     // Same SIN_DATO exclusion as buildProfessionalRows/buildTimeline (#29) —
     // a record whose Fase never resolves never shows up as one of this
     // professional's "puntos recogidos" either.
-    .filter((s) => s && faseKeyDe(s) !== 'SIN_DATO' && normalizeName((s.inspector && s.inspector.nombre_completo) || '') === key)
+    .filter((s) => s && faseKeyDe(s) !== 'SIN_DATO' && professionalKeyOf(s, idx) === key && stickerIncluded(s, from, to))
     .map((s) => ({
       codigo: s.codigo_edificacion || '',
       direccion: (s.descripcion && s.descripcion.direccion) || '',
@@ -424,28 +640,147 @@ export function professionalRecords(row, { stickers, surveys }) {
       fecha: dateOnly(s.fecha),
       faseLabel: FASE_LABELS[faseKeyDe(s)] || FASE_LABELS.SIN_DATO,
     }));
-  stickerList.sort((a, b) => {
+  stickerPoints.sort((a, b) => {
     if (a.fecha === b.fecha) return a.codigo < b.codigo ? -1 : a.codigo > b.codigo ? 1 : 0;
     if (a.fecha === null) return 1;
     if (b.fecha === null) return -1;
     return a.fecha < b.fecha ? -1 : 1;
   });
 
-  const surveyList = (Array.isArray(surveys) ? surveys : [])
-    .filter((sv) => sv && normalizeName(sv.nombre_evaluador || '') === key)
+  const surveyPoints = surveyList
+    .filter((sv) => sv && professionalKeyOf(sv, idx) === key && surveyIncluded(sv, from, to))
     .map((sv) => ({
       direccion: sv.direccion || '',
       nombreEdificacion: sv.nombre_edificacion || '',
       fecha: dateOnly(sv.fecha_inspeccion),
     }));
-  surveyList.sort((a, b) => {
+  surveyPoints.sort((a, b) => {
     if (a.fecha === b.fecha) return a.direccion < b.direccion ? -1 : a.direccion > b.direccion ? 1 : 0;
     if (a.fecha === null) return 1;
     if (b.fecha === null) return -1;
     return a.fecha < b.fecha ? -1 : 1;
   });
 
-  return { stickerPoints: stickerList, surveyPoints: surveyList };
+  return { stickerPoints, surveyPoints };
+}
+
+/** Hour-of-day / activity-recency metrics for ONE professional row's
+ *  "Análisis temporales" columns: first/last record time-of-day (Bogotá
+ *  minutes since midnight), the arithmetic-mean minute-of-day across the
+ *  DAYS that have at least one timed record (never circular — a 23:50 and a
+ *  00:10 average to ~12:00, not to midnight; documented, not "fixed", since
+ *  averaging times-of-day has no single correct convention), `prevDay` (the
+ *  last day STRICTLY BEFORE `today` with >=1 timed record — never "ayer"),
+ *  and `daysSinceFirst` (today minus row.firstDate, in days).
+ *
+ *  A dated-but-untimed record (Survey missing `fecha_hora`, or one whose
+ *  value fails to parse) still counts toward buildProfessionalRows'
+ *  `activeDays` (computed there, from `dates`) but contributes NOTHING here
+ *  — "día sin hora cuenta en activeDays, no en promedios" (plan edge case):
+ *  this function's own day-set only ever contains days with a real time. */
+export function buildTemporalMetrics(row, {
+  stickers, surveys, today, identity,
+} = {}) {
+  const stickerList = Array.isArray(stickers) ? stickers : [];
+  const surveyList = Array.isArray(surveys) ? surveys : [];
+  const idx = identity || buildIdentityIndex({ stickers: stickerList, surveys: surveyList });
+  const todayStr = today || bogotaToday();
+  const key = row && row.key;
+
+  const byDay = new Map(); // date -> { min, max } minutes-of-day
+  function feed(dateStr, minutes) {
+    if (dateStr === null || dateStr === undefined || minutes === null || minutes === undefined) return;
+    const bucket = byDay.get(dateStr);
+    if (!bucket) { byDay.set(dateStr, { min: minutes, max: minutes }); return; }
+    if (minutes < bucket.min) bucket.min = minutes;
+    if (minutes > bucket.max) bucket.max = minutes;
+  }
+
+  for (const s of stickerList) {
+    if (!s) continue;
+    if (faseKeyDe(s) === 'SIN_DATO') continue;
+    if (professionalKeyOf(s, idx) !== key) continue;
+    const parts = bogotaParts(s.fecha);
+    if (!parts || parts.minutes === null) continue;
+    feed(parts.date, parts.minutes);
+  }
+  for (const sv of surveyList) {
+    if (!sv) continue;
+    if (professionalKeyOf(sv, idx) !== key) continue;
+    const parts = bogotaParts(sv.fecha_hora);
+    if (!parts || parts.minutes === null) continue;
+    feed(parts.date, parts.minutes);
+  }
+
+  const daysSinceFirst = (row && row.firstDate) ? daysBetween(row.firstDate, todayStr) : null;
+
+  const days = [...byDay.keys()].sort();
+  if (!days.length) {
+    return {
+      firstRecordMinutes: null, lastRecordMinutes: null,
+      avgFirstMinutes: null, avgLastMinutes: null,
+      prevDay: null, daysSinceFirst,
+    };
+  }
+
+  const firstDay = days[0];
+  const lastDay = days[days.length - 1];
+  const sumFirst = days.reduce((acc, d) => acc + byDay.get(d).min, 0);
+  const sumLast = days.reduce((acc, d) => acc + byDay.get(d).max, 0);
+  // Last day STRICTLY before today with >=1 timed record -- "no ayer": if
+  // the only timed day IS today, there is no such day (null), not "today".
+  let prevDay = null;
+  for (let i = days.length - 1; i >= 0; i--) {
+    if (days[i] < todayStr) { prevDay = days[i]; break; }
+  }
+
+  return {
+    firstRecordMinutes: byDay.get(firstDay).min,
+    lastRecordMinutes: byDay.get(lastDay).max,
+    avgFirstMinutes: Math.round(sumFirst / days.length),
+    avgLastMinutes: Math.round(sumLast / days.length),
+    prevDay,
+    daysSinceFirst,
+  };
+}
+
+/** "Barrios activos (7 d)" for ONE professional row (D1, plan
+ *  §Decisiones): derived from the barrios of THIS professional's OWN
+ *  stickers dated within the last `days` days up to and including `today`
+ *  (Bogotá) — there is no real "active assignment" data (assignments are
+ *  per-point, not per-barrio/per-professional), so this is an explicitly
+ *  DERIVED signal, never a claim of formal assignment (the UI's job, W7+,
+ *  is to label it as such). Window is INCLUSIVE of `today` and
+ *  `today - (days - 1)`, i.e. `today - 6` is IN for the default 7-day
+ *  window and `today - 7` is OUT. A blank `barrio_reportado` or one that
+ *  reads as "Sin identificar" (case/accent-insensitive) never counts;
+ *  accent/case variants of the same real barrio count once (deduped via
+ *  utils.js's `normalize`). Returns a plain array of distinct display
+ *  strings, sorted (es collation) for a deterministic render order. */
+export function buildBarriosActivos(row, {
+  stickers, today, days = 7, identity,
+} = {}) {
+  const stickerList = Array.isArray(stickers) ? stickers : [];
+  const idx = identity || buildIdentityIndex({ stickers: stickerList, surveys: [] });
+  const todayStr = today || bogotaToday();
+  const cutoff = shiftDateStr(todayStr, -(days - 1));
+  const key = row && row.key;
+
+  const seen = new Map(); // normalized barrio -> first-seen display spelling
+  for (const s of stickerList) {
+    if (!s) continue;
+    if (faseKeyDe(s) === 'SIN_DATO') continue;
+    if (professionalKeyOf(s, idx) !== key) continue;
+    const parts = bogotaParts(s.fecha);
+    if (!parts) continue;
+    if (parts.date < cutoff || parts.date > todayStr) continue;
+    const raw = (s.barrio_reportado || '').trim();
+    if (!raw) continue;
+    const normKey = normalize(raw);
+    if (normKey === 'sin identificar') continue;
+    if (!seen.has(normKey)) seen.set(normKey, raw);
+  }
+  return [...seen.values()].sort((a, b) => a.localeCompare(b, 'es'));
 }
 
 // ── Per-professional PDF report ─────────────────────────────────────────────
@@ -899,8 +1234,8 @@ async function fetchStickersWithRetry(getToken) {
  *  pdfmake (report.js — the same instance every other PDF report in the app
  *  uses, cached after the first call) and triggers the download. Mirrors
  *  report.js's own generarInformePdf/generarInformeCandidato shape. */
-async function descargarInformeProfesional(row, { stickers, surveys }) {
-  const points = professionalRecords(row, { stickers, surveys });
+async function descargarInformeProfesional(row, { stickers, surveys, identity }) {
+  const points = professionalRecords(row, { stickers, surveys, identity });
   const def = buildProfessionalReportDocDefinition(row, points);
   const pdfMake = await loadPdfmake();
   const nameSlug = String(row.name || 'profesional').trim().replace(/[^\w-]+/g, '_') || 'profesional';
@@ -952,6 +1287,11 @@ export function initSeguimiento(root, { getToken, records }) {
   let stickersLoaded = false;
   let isDegraded = false;
   let stickerFetchErrorMessage = '';
+  // Identity index (W5/D7: cédula-first join) for the CURRENT stickers/
+  // surveys — recomputed once per render() (not once per pure-function
+  // call) so buildProfessionalRows/buildTimeline/the per-row PDF report all
+  // resolve identity through the exact SAME index for a given render pass.
+  let currentIdentity = buildIdentityIndex({ stickers, surveys });
 
   function currentFilters() {
     return { from: fromEl.value || null, to: toEl.value || null };
@@ -1020,7 +1360,7 @@ export function initSeguimiento(root, { getToken, records }) {
       return;
     }
     const timeline = buildTimeline({
-      stickers, surveys, ...currentFilters(), professionalKey: chartSelectEl.value || null,
+      stickers, surveys, ...currentFilters(), professionalKey: chartSelectEl.value || null, identity: currentIdentity,
     });
     try {
       // recreate: true — root.innerHTML is replaced on every open (see the
@@ -1055,11 +1395,17 @@ export function initSeguimiento(root, { getToken, records }) {
   };
 
   function render() {
+    // Identity + "hoy" (Bogotá) are recomputed on every render() — a store
+    // refresh (updateSeguimientoRecords) swaps `surveys` in place, and a
+    // stale identity/today would silently keep resolving keys or
+    // "días desde 1ª actividad"/barrios-activos-7d against yesterday's data.
+    currentIdentity = buildIdentityIndex({ stickers, surveys });
+    const today = bogotaToday();
     // `unassigned` (the Sin-profesional bucket, broken down by source) is
     // not destructured here — the UI only ever surfaces it as one combined
     // KPI tile (totals.unassigned), rendered by kpisHtml below.
     const { rows, stickersWithoutDate, totals } = buildProfessionalRows({
-      stickers, surveys, ...currentFilters(),
+      stickers, surveys, ...currentFilters(), identity: currentIdentity, today,
     });
     currentRows = rows;
     kpisEl.innerHTML = kpisHtml(totals, stickersLoaded);
@@ -1093,7 +1439,7 @@ export function initSeguimiento(root, { getToken, records }) {
     btn.disabled = true;
     btn.textContent = 'Generando…';
     try {
-      await descargarInformeProfesional(row, { stickers, surveys });
+      await descargarInformeProfesional(row, { stickers, surveys, identity: currentIdentity });
     } catch (err) {
       console.error('seguimiento: fallo al generar el informe PDF', err);
       showToast('No se pudo generar el informe PDF.', 'error');
