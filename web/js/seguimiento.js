@@ -704,6 +704,14 @@ function toStickerPoint(s) {
     municipio: s.municipio || '',
     fecha: dateOnly(s.fecha),
     faseLabel: FASE_LABELS[faseKeyDe(s)] || FASE_LABELS.SIN_DATO,
+    // W11: additive — the raw ATC-20 classification fields (same fields
+    // evaluaciones.js already reads: color_etiqueta/clasificacion, see
+    // stickers_atencionsismo.py's own output shape), carried through so the
+    // per-professional PDF report's "Listado de stickers" table can render a
+    // colored classification badge (badgeStyleFor/badgeCell below) instead
+    // of losing this signal. Never renamed/removed an existing field.
+    colorEtiqueta: s.color_etiqueta || '',
+    clasificacion: s.clasificacion || '',
   };
 }
 function toSurveyPoint(sv) {
@@ -1148,7 +1156,15 @@ function kvTable(rows) {
 /** Multi-column table for a list of points, or a plain "sin registros"
  *  message when the list is empty — a report a professional's manager reads
  *  should never render a silently-empty table and leave them guessing
- *  whether that means zero work or a rendering bug. */
+ *  whether that means zero work or a rendering bug.
+ *
+ *  W11: a cell may now ALSO be a pre-built pdfmake cell object (e.g.
+ *  badgeCell(...), for the "Listado de stickers" classification column)
+ *  instead of a plain string/number — passed through untouched rather than
+ *  being coerced via String(cell) (which would otherwise flatten it into the
+ *  useless literal "[object Object]"). Every EXISTING caller only ever
+ *  passes strings/numbers, so this is purely additive — their rendering is
+ *  byte-identical to before. */
 function pointsTable(headers, rows, emptyText) {
   if (!rows.length) return [{ text: emptyText, style: 'fieldValue', margin: [0, 0, 0, 10] }];
   return [{
@@ -1157,7 +1173,10 @@ function pointsTable(headers, rows, emptyText) {
       widths: headers.map(() => '*'),
       body: [
         headers.map((h) => ({ text: h, style: 'tableHeader' })),
-        ...rows.map((r) => r.map((cell) => ({ text: cell === '' || cell === null ? 'Sin dato' : String(cell), style: 'fieldValue' }))),
+        ...rows.map((r) => r.map((cell) => {
+          if (cell && typeof cell === 'object') return cell;
+          return { text: cell === '' || cell === null ? 'Sin dato' : String(cell), style: 'fieldValue' };
+        })),
       ],
     },
     layout: 'lightHorizontalLines',
@@ -1176,6 +1195,230 @@ function cappedPointsTable(headers, rows, emptyText, cap = REPORT_STICKERS_CAP) 
   const overflow = rows.length - shown.length;
   if (overflow > 0) table.push({ text: `…y ${overflow} más`, style: 'disclaimer', margin: [0, -6, 0, 10] });
   return table;
+}
+
+// ── W11: report visual redesign — colored badges, KPI stat cards, section
+// rule, activity sparkline ──────────────────────────────────────────────────
+// Merges the best of both Claude Design mockups ("Reporte Profesional" —
+// card-style KPI grid, colored header rule; "Reporte Borrador" — same PLUS a
+// colored sticker classification badge + "Total stickers en período" line)
+// into the EXISTING report, without dropping anything it already showed.
+// Every function here is a PURE pdfmake-node builder (no fetch/DOM/pdfmake
+// dependency), same recipe as kvTable/pointsTable above.
+
+// A4 content width in pdfmake points: 595.28 (A4 width) - 40 - 40 (default
+// pageMargins, unchanged by this report) ≈ 515. Used by the header/section
+// rule canvases so they always span the full text column, mirroring the
+// mockups' `border-bottom` (which spans its container's full width).
+const REPORT_CONTENT_WIDTH = 515;
+
+// The mockups' fixed color palette (see context/mejoras_seguimiento/*.dc.html):
+// header/section rule + card values #151F55, stat card bg #f0f2f7 (border
+// #e0e3ea), the highlighted "objetivo diario" card #e8f0fc bg / #2186E0 text.
+// pdfmake ships only Roboto by default (no Montserrat font file) — headers
+// approximate the mockups' bold look with `bold:true` + this same color
+// instead of a font-family change (never add a new font asset for this).
+const REPORT_HEADER_COLOR = '#151F55';
+const REPORT_CARD_BG = '#f0f2f7';
+const REPORT_CARD_BORDER = '#e0e3ea';
+const REPORT_ACCENT_BG = '#e8f0fc';
+const REPORT_ACCENT_COLOR = '#2186E0';
+
+// A SINGLE shared layout object (module-scope, built once) for every
+// statCard() — never a fresh `{ hLineWidth: () => 1, ... }` object literal
+// PER CALL. buildMassReportDocDefinition's per-professional equality
+// guarantee is `assert.deepStrictEqual` (via 'node:assert/strict'), which
+// compares functions by REFERENCE, never by behavior — two behaviorally
+// identical but separately-allocated arrow functions (one from the solo
+// build, one from the mass build) would never be deepStrictEqual, breaking
+// that invariant for a reason that has nothing to do with the actual
+// content. Sharing one object/one set of function references sidesteps this
+// entirely, the same way a bug like it must be FIXED here, never worked
+// around by loosening the test (per this file's own W10 doc comment on the
+// mass/solo guarantee).
+const REPORT_CARD_LAYOUT = {
+  hLineWidth: () => 1,
+  vLineWidth: () => 1,
+  hLineColor: () => REPORT_CARD_BORDER,
+  vLineColor: () => REPORT_CARD_BORDER,
+};
+
+// Sticker classification badge styles — reuses the app's OWN ATC-20/
+// colorEtiqueta vocabulary (utils.js KNOWN_LABELS/habitabilityColor,
+// evaluaciones.js's color_etiqueta/clasificacion usage) rather than
+// inventing a parallel one. Badge LABEL TEXT follows the Borrador mockup's
+// own Spanish wording (Inspeccionado / Con restricciones / Inseguro), which
+// does not conflict with the app's vocabulary — only the mockup's exact
+// COLOR HEX values are novel here (the rest of the dashboard has no
+// pre-existing "badge" treatment to stay consistent with).
+const BADGE_STYLES = {
+  inspeccionado: { bg: '#e6f4ea', color: '#1a7d3a', label: 'Inspeccionado' },
+  restringido: { bg: '#fff3e0', color: '#b8730a', label: 'Con restricciones' },
+  inseguro: { bg: '#fce4ec', color: '#c62828', label: 'Inseguro' },
+  neutral: { bg: '#eeeeee', color: '#555555', label: 'Sin clasificar' },
+};
+
+/** Sticker classification (colorEtiqueta primary, clasificacion fallback)
+ *  -> `{ bg, color, label }` badge style. `colorEtiqueta` is the atencionsismo
+ *  API's own human label ("Habitable" / "Acceso restringido" / "No
+ *  habitable" / "Sin clasificación", per docs/api-informe-json.md) — the
+ *  PRIMARY signal, since it's the single field guaranteed present. When it's
+ *  blank, `clasificacion` (ATC-20: inspeccionado/uso_restringido/
+ *  peligro_colapso, OR the backend's own INSPECCIONADA/USO_RESTRINGIDO/
+ *  INSEGURO clase-fallback vocabulary — see stickers_atencionsismo.py's
+ *  COLOR_TO_CLASE) is the fallback signal. Case/accent-insensitive
+ *  (normalize(), same helper the rest of this module already uses). Never
+ *  throws: blank/null/unrecognized input always falls through to the
+ *  neutral badge, same "fail-soft, never fabricate" invariant as DASH. */
+export function badgeStyleFor(colorEtiqueta, clasificacion) {
+  const label = normalize(colorEtiqueta);
+  const clase = normalize(clasificacion);
+  if (label === 'habitable' || clase === 'inspeccionado' || clase === 'inspeccionada') {
+    return { ...BADGE_STYLES.inspeccionado };
+  }
+  if (label === 'acceso restringido' || clase === 'uso_restringido') {
+    return { ...BADGE_STYLES.restringido };
+  }
+  if (label === 'no habitable' || clase === 'inseguro' || clase === 'peligro_colapso') {
+    return { ...BADGE_STYLES.inseguro };
+  }
+  return { ...BADGE_STYLES.neutral };
+}
+
+/** One colored pdfmake table cell for a sticker classification badge —
+ *  suitable as a `pointsTable`/`cappedPointsTable` cell (they now pass
+ *  object cells through untouched, see pointsTable above). */
+export function badgeCell(text, style) {
+  return {
+    text: String(text),
+    color: style.color,
+    fillColor: style.bg,
+    alignment: 'center',
+    bold: true,
+    fontSize: 8,
+    margin: [2, 2, 2, 2],
+  };
+}
+
+/** One KPI "stat card": a colored, bordered single-cell table containing a
+ *  stacked label + value (+ optional caption below, e.g. the "objetivo
+ *  diario" card's "Proyectado al …" methodology note). `accent: true` is the
+ *  Borrador/Profesional mockups' highlighted blue "objetivo diario" card
+ *  (`#e8f0fc` bg / `#2186E0` value text); otherwise the plain gray card
+ *  (`#f0f2f7` bg / `#e0e3ea` border / `#151F55` value text) every other
+ *  metric uses. Pure pdfmake node construction — no pdfmake dependency, no
+ *  randomness/identity quirks, so buildMassReportDocDefinition's per-
+ *  professional equality guarantee (same inputs -> deepEqual output) holds. */
+export function statCard(label, value, { accent = false, caption } = {}) {
+  const stack = [
+    { text: String(label), fontSize: 8, color: '#555555', margin: [0, 0, 0, 2] },
+    { text: String(value), fontSize: 14, bold: true, color: accent ? REPORT_ACCENT_COLOR : REPORT_HEADER_COLOR },
+  ];
+  if (caption) stack.push({ text: String(caption), fontSize: 7, color: '#888888', margin: [0, 2, 0, 0] });
+  return {
+    table: {
+      widths: ['*'],
+      body: [[{ stack, fillColor: accent ? REPORT_ACCENT_BG : REPORT_CARD_BG, margin: [8, 8, 8, 8] }]],
+    },
+    layout: REPORT_CARD_LAYOUT,
+    margin: [0, 0, 8, 8],
+  };
+}
+
+/** Chunks `cards` (statCard(...) nodes) into pdfmake `columns` rows of
+ *  `perRow` — so N cards always render as a proper grid regardless of count
+ *  (the last, partial row is never padded with empty cells). */
+export function statCardsRow(cards, perRow = 3) {
+  const rows = [];
+  for (let i = 0; i < cards.length; i += perRow) {
+    rows.push({ columns: cards.slice(i, i + perRow), columnGap: 8, margin: [0, 0, 0, 0] });
+  }
+  return rows;
+}
+
+/** A section title + a thin colored bottom rule (canvas line), mirroring
+ *  both mockups' `border-bottom: 2px solid #151F55` section-header
+ *  treatment — replaces the plain bold-text-only `sectionHeader` style used
+ *  everywhere in this report. Returns a stack-like array, spread into
+ *  `content` the same way kvTable/pointsTable already are. */
+export function sectionHeaderNode(text) {
+  return [
+    { text: String(text), style: 'sectionHeader' },
+    {
+      canvas: [{
+        type: 'line', x1: 0, y1: 0, x2: REPORT_CONTENT_WIDTH, y2: 0, lineWidth: 1.5, lineColor: REPORT_HEADER_COLOR,
+      }],
+      margin: [0, -2, 0, 6],
+    },
+  ];
+}
+
+/** The new graphical element (present in NEITHER mockup): a bounded,
+ *  deterministic bar chart of sticker activity per day, built straight from
+ *  `stickerPoints`' own `fecha` (already a Bogotá calendar-day string —
+ *  dateOnly()/bogotaParts() already ran upstream in professionalRecords/
+ *  toStickerPoint, so this never re-derives timezone logic, just buckets an
+ *  already-resolved day string).
+ *
+ *  Chronological daily counts are built for EVERY day between the first and
+ *  last dated point (via the same shiftDateStr helper buildTimeline already
+ *  uses) — a day with zero stickers in the middle of the range still gets
+ *  its own (1px baseline tick) bar, so "no data that day" (impossible once
+ *  there's a range) is never visually confused with "confirmed zero that
+ *  day" (this project's standing fail-soft invariant, same reasoning as
+ *  DASH). When the range spans more days than `maxBars`, consecutive days
+ *  are summed into ~`maxBars` fixed-size buckets so the drawing stays
+ *  bounded for a professional active across many months.
+ *
+ *  0 stickers with a resolvable date -> a `{ canvas: [...] }` node (bars
+ *  bottom-aligned, height proportional to count, color `COLORS.accent` —
+ *  the app's own accent, not an invented one). 0 stickers AT ALL (or every
+ *  point's fecha unresolvable) -> an explanatory `{ text }` node instead of
+ *  an empty/misleading canvas — NEVER throws. */
+export function buildActivitySparkline(stickerPoints, { maxBars = 30, width = REPORT_CONTENT_WIDTH, height = 40 } = {}) {
+  const dates = (Array.isArray(stickerPoints) ? stickerPoints : [])
+    .map((p) => p && p.fecha)
+    .filter(Boolean)
+    .sort();
+  if (!dates.length) return { text: 'Sin actividad para graficar.', style: 'fieldValue', italics: true };
+
+  const counts = new Map();
+  for (const d of dates) counts.set(d, (counts.get(d) || 0) + 1);
+
+  const first = dates[0];
+  const last = dates[dates.length - 1];
+  const daily = [];
+  let cursor = first;
+  while (cursor <= last) {
+    daily.push(counts.get(cursor) || 0);
+    cursor = shiftDateStr(cursor, 1);
+  }
+
+  // Aggregate into <= maxBars fixed-size buckets when the range is long —
+  // Math.ceil so the LAST bucket is the (possibly smaller) remainder rather
+  // than ever exceeding maxBars.
+  const bucketSize = Math.ceil(daily.length / maxBars) || 1;
+  const buckets = [];
+  for (let i = 0; i < daily.length; i += bucketSize) {
+    buckets.push(daily.slice(i, i + bucketSize).reduce((a, b) => a + b, 0));
+  }
+
+  const maxCount = Math.max(1, ...buckets);
+  const n = buckets.length;
+  const gap = 2;
+  const barW = Math.max(1, width / n - gap);
+  const usableH = Math.max(height - 4, 4);
+  const canvas = buckets.map((count, i) => {
+    // A zero-count bucket still renders a 1px baseline tick (never omitted);
+    // a real (non-zero) count is always visibly taller (>= 2px) so the two
+    // cases stay distinguishable at a glance, never both collapsing to the
+    // same 1px sliver.
+    const h = count > 0 ? Math.max(2, Math.round((count / maxCount) * usableH)) : 1;
+    return {
+      type: 'rect', x: i * (barW + gap), y: height - h, w: barW, h, color: COLORS.accent,
+    };
+  });
+  return { canvas };
 }
 
 /** Pure builder: a professional's row (buildProfessionalRows output, already
@@ -1207,16 +1450,33 @@ export function buildProfessionalReportDocDefinition(row, { stickerPoints, surve
   const caveat = row.rosterSourced > 0
     ? [{ text: `⚠ ${row.rosterSourced} sticker(s) con identidad completada por roster (aproximada, no verificada contra la evaluación).`, style: 'caveat', margin: [0, 0, 0, 8] }]
     : [];
-  const objetivoText = Number.isFinite(ctx.objetivoDiario)
-    ? `${ctx.objetivoDiario} (Proyectado al ${OBJETIVO_DEADLINE_LABEL})`
-    : 'sin dato';
+  // W11: the accent "objetivo diario" stat card shows the NUMBER alone as its
+  // value (or 'sin dato' when not finite — never a fabricated number) and the
+  // "Proyectado al …" phrasing as its own caption underneath — same two
+  // pieces of information the old single concatenated string carried, now
+  // split to match the mockups' card layout (value + small gray caption).
+  const objetivoValue = Number.isFinite(ctx.objetivoDiario) ? String(ctx.objetivoDiario) : 'sin dato';
+  const objetivoCaption = `Proyectado al ${OBJETIVO_DEADLINE_LABEL}`;
   const last7 = Number.isFinite(ctx.last7) ? ctx.last7 : 0;
   const visitasPeriodo = stickerPoints.length + surveyPoints.length;
-  const stickersNumbered = stickerPoints.map((p, i) => [i + 1, p.codigo, p.faseLabel, p.fecha || 'Sin fecha']);
+  const stickersNumbered = stickerPoints.map((p, i) => {
+    const style = badgeStyleFor(p.colorEtiqueta, p.clasificacion);
+    return [i + 1, p.codigo, p.faseLabel, badgeCell(style.label, style), p.fecha || 'Sin fecha'];
+  });
   return {
     content: [
       { text: `Informe de seguimiento — ${row.name || 'Sin dato'}`, style: 'title' },
-      { text: `Cédula: ${row.cedula || 'Sin dato'} · Código: ${row.codigo || 'Sin dato'} · Entidad: ${row.entidad || 'Sin dato'}`, style: 'subtitle' },
+      {
+        canvas: [{
+          type: 'line', x1: 0, y1: 0, x2: REPORT_CONTENT_WIDTH, y2: 0, lineWidth: 1.5, lineColor: REPORT_HEADER_COLOR,
+        }],
+        margin: [0, 2, 0, 6],
+      },
+      // W11: Tarjeta profesional (TP) is now ALSO shown here, inline, so it's
+      // visible at a glance without opening "Datos del profesional" further
+      // down — the field itself already existed (row.tarjetaProfesional);
+      // this only makes it more prominent, it stays in the kvTable below too.
+      { text: `Cédula: ${row.cedula || 'Sin dato'} · TP: ${row.tarjetaProfesional || DASH} · Código: ${row.codigo || 'Sin dato'} · Entidad: ${row.entidad || 'Sin dato'}`, style: 'subtitle' },
       // M4: prefer ctx.generatedAt (set once per render pass by the caller,
       // buildReportCtx) over calling downloadStamp() again here — the mass
       // export shares ONE ctx across every professional (buildMassReport
@@ -1227,10 +1487,8 @@ export function buildProfessionalReportDocDefinition(row, { stickerPoints, surve
       // only when no ctx.generatedAt was given (e.g. calling this directly
       // in a test, or a future caller that hasn't been updated).
       { text: `Fecha de generación: ${ctx.generatedAt || downloadStamp().legible}`, style: 'subtitle' },
-      { text: REPORT_DISCLAIMER, style: 'disclaimer', margin: [0, 4, 0, 4] },
-      { text: REPORT_CONFIDENTIALITY_NOTICE, style: 'disclaimer', margin: [0, 0, 0, 12] },
       ...caveat,
-      { text: 'Datos del profesional', style: 'sectionHeader' },
+      ...sectionHeaderNode('Datos del profesional'),
       ...kvTable([
         ['Nombre', row.name || DASH],
         ['Cédula', row.cedula || DASH],
@@ -1240,34 +1498,56 @@ export function buildProfessionalReportDocDefinition(row, { stickerPoints, surve
         ['Correo', row.correo || DASH],
         ['Barrios activos (7 d)', (row.barriosActivos && row.barriosActivos.length) ? row.barriosActivos.join(', ') : DASH],
       ]),
-      { text: 'Métricas de seguimiento', style: 'sectionHeader' },
-      ...kvTable([
-        ['Visitas totales en el período', visitasPeriodo],
-        ['Visitas últimos 7 días (a hoy)', last7],
-        ['Promedio diario de stickers', Number.isFinite(row.avgStickersPerDay) ? row.avgStickersPerDay : DASH],
-        ['Día inicio', row.firstDate || DASH],
-        ['Fecha última visita', row.lastDate || DASH],
-        ['Visita objetivo diario', objetivoText],
+      ...sectionHeaderNode('Métricas de seguimiento'),
+      ...statCardsRow([
+        statCard('Visitas totales en el período', visitasPeriodo),
+        statCard('Visitas últimos 7 días (a hoy)', last7),
+        statCard('Promedio diario de stickers', Number.isFinite(row.avgStickersPerDay) ? row.avgStickersPerDay : DASH),
+        statCard('Día inicio', row.firstDate || DASH),
+        statCard('Fecha última visita', row.lastDate || DASH),
+        statCard('Visita objetivo diario', objetivoValue, { accent: true, caption: objetivoCaption }),
       ]),
-      { text: `Listado de stickers del período (${stickerPoints.length})`, style: 'sectionHeader' },
+      // W11: the new graphical element — present in NEITHER mockup — a
+      // bounded daily-activity bar chart built from the same stickerPoints
+      // already listed below, so the two sections never disagree.
+      ...sectionHeaderNode('Actividad en el período'),
+      { text: 'Stickers registrados por día (barras más altas = más actividad).', style: 'fieldValue', margin: [0, 0, 0, 4] },
+      buildActivitySparkline(stickerPoints),
+      ...sectionHeaderNode(`Listado de stickers del período (${stickerPoints.length})`),
       ...cappedPointsTable(
-        ['#', 'Número', 'Clasificación', 'Fecha'],
+        ['#', 'Número', 'Fase', 'Clasificación', 'Fecha'],
         stickersNumbered,
         'Sin registros de stickers.',
       ),
-      { text: `Puntos recogidos — Survey (${surveyPoints.length})`, style: 'sectionHeader' },
+      // Borrador mockup's footer line under the sticker table — the
+      // UNCAPPED total (never the capped/shown-at-most-50 count), so a very
+      // active professional's true volume is never understated.
+      { text: `Total stickers en período: ${stickerPoints.length}`, style: 'disclaimer', alignment: 'right', margin: [0, -6, 0, 10] },
+      ...sectionHeaderNode(`Puntos recogidos — Survey (${surveyPoints.length})`),
       ...pointsTable(
         ['Dirección', 'Edificación', 'Fecha'],
         surveyPoints.map((p) => [p.direccion, p.nombreEdificacion, p.fecha || 'Sin fecha']),
         'Sin registros de Survey.',
       ),
+      // Footer (both mockups have one): the pre-existing disclaimer +
+      // confidentiality notice, now visually separated as a real footer
+      // (thin light-gray top rule) instead of sitting at the top of the
+      // page — content unchanged, only its position/presentation moved.
+      {
+        canvas: [{
+          type: 'line', x1: 0, y1: 0, x2: REPORT_CONTENT_WIDTH, y2: 0, lineWidth: 1, lineColor: '#dddddd',
+        }],
+        margin: [0, 14, 0, 6],
+      },
+      { text: REPORT_DISCLAIMER, style: 'disclaimer', margin: [0, 0, 0, 4] },
+      { text: REPORT_CONFIDENTIALITY_NOTICE, style: 'disclaimer', margin: [0, 0, 0, 0] },
     ],
     styles: {
-      title: { fontSize: 16, bold: true },
+      title: { fontSize: 16, bold: true, color: REPORT_HEADER_COLOR },
       subtitle: { fontSize: 9, color: '#555' },
       disclaimer: { fontSize: 8, italics: true, color: '#777' },
       caveat: { fontSize: 9, italics: true, color: '#a15c00' },
-      sectionHeader: { fontSize: 12, bold: true, margin: [0, 10, 0, 4] },
+      sectionHeader: { fontSize: 12, bold: true, color: REPORT_HEADER_COLOR, margin: [0, 10, 0, 2] },
       fieldLabel: { fontSize: 9, bold: true },
       fieldValue: { fontSize: 9 },
       tableHeader: { fontSize: 9, bold: true, fillColor: '#eeeeee' },

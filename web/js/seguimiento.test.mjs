@@ -15,7 +15,11 @@ import {
   objetivoDiario, visitasUltimos7Dias, reportFilenameSlug, buildMassReportDocDefinition,
   cellHtml, rowReportButtonsBlocked, canStartMassExport, shouldDeliverExport,
   professionalRecordsByKey, visitasUltimos7DiasByKey, massExportOverlayText,
+  // W11: report visual redesign — colored classification badges, KPI stat
+  // cards, section-header rule, and the new activity sparkline.
+  badgeStyleFor, badgeCell, statCard, statCardsRow, sectionHeaderNode, buildActivitySparkline,
 } from './seguimiento.js';
+import { COLORS } from './utils.js';
 
 // Small test-local helper: the "no identity/no cédula at all" key shape a
 // name-only record resolves to — every existing single-professional fixture
@@ -1183,17 +1187,175 @@ console.log('professionalRecords: SIN_DATO sticker excluded entirely OK');
 }
 console.log('professionalRecords: optional from/to period filter (default = whole career) OK');
 
+// ── W11: badgeStyleFor — sticker classification -> colored badge style ─────
+// Reuses the app's OWN ATC-20/colorEtiqueta vocabulary (see utils.js
+// KNOWN_LABELS/habitabilityColor and evaluaciones.js's color_etiqueta/
+// clasificacion usage) instead of inventing a parallel one: colorEtiqueta
+// ("Habitable" / "Acceso restringido" / "No habitable" / "Sin clasificación",
+// the human label the atencionsismo API already gives) is the PRIMARY
+// signal; clasificacion (ATC-20: inspeccionado/uso_restringido/
+// peligro_colapso, or the backend's own INSPECCIONADA/USO_RESTRINGIDO/
+// INSEGURO clase fallback) is the FALLBACK signal used only when
+// colorEtiqueta is blank.
+{
+  const inspeccionado = { bg: '#e6f4ea', color: '#1a7d3a', label: 'Inspeccionado' };
+  const restringido = { bg: '#fff3e0', color: '#b8730a', label: 'Con restricciones' };
+  const inseguro = { bg: '#fce4ec', color: '#c62828', label: 'Inseguro' };
+  const neutral = { bg: '#eeeeee', color: '#555555', label: 'Sin clasificar' };
+
+  assert.deepEqual(badgeStyleFor('Habitable', ''), inspeccionado, 'colorEtiqueta "Habitable" -> green Inspeccionado badge');
+  assert.deepEqual(badgeStyleFor('', 'inspeccionado'), inspeccionado, 'clasificacion "inspeccionado" (ATC-20) falls back correctly');
+  assert.deepEqual(badgeStyleFor('', 'INSPECCIONADA'), inspeccionado, 'backend clase fallback "INSPECCIONADA" (uppercase, different suffix) still matches');
+  assert.deepEqual(badgeStyleFor('HABITABLE', ''), inspeccionado, 'case-insensitive');
+
+  assert.deepEqual(badgeStyleFor('Acceso restringido', ''), restringido, 'colorEtiqueta "Acceso restringido" -> orange badge');
+  assert.deepEqual(badgeStyleFor('', 'uso_restringido'), restringido, 'clasificacion "uso_restringido" falls back correctly');
+  assert.deepEqual(badgeStyleFor('', 'USO_RESTRINGIDO'), restringido, 'backend clase fallback, uppercase');
+  assert.deepEqual(badgeStyleFor('Áccéso Réstringído', ''), restringido, 'accent-insensitive (normalize() strips diacritics)');
+
+  assert.deepEqual(badgeStyleFor('No habitable', ''), inseguro, 'colorEtiqueta "No habitable" -> red badge');
+  assert.deepEqual(badgeStyleFor('', 'peligro_colapso'), inseguro, 'clasificacion "peligro_colapso" (ATC-20) falls back correctly');
+  assert.deepEqual(badgeStyleFor('', 'INSEGURO'), inseguro, 'backend clase fallback "INSEGURO"');
+
+  assert.deepEqual(badgeStyleFor('Sin clasificación', ''), neutral, 'the API\'s own "no classification yet" label never throws, renders neutral');
+  assert.deepEqual(badgeStyleFor('', ''), neutral, 'both blank -> neutral fallback, never a crash');
+  assert.deepEqual(badgeStyleFor(null, null), neutral, 'null input -> neutral fallback');
+  assert.deepEqual(badgeStyleFor(undefined, undefined), neutral, 'undefined input -> neutral fallback');
+  assert.deepEqual(badgeStyleFor('algo-desconocido', 'algo-desconocido'), neutral, 'an unrecognized value never throws, renders neutral');
+}
+console.log('badgeStyleFor: maps colorEtiqueta/clasificacion to the app\'s own ATC-20 badge vocabulary OK');
+
+// ── W11: badgeCell — pure pdfmake cell for one colored classification badge ─
+{
+  const style = badgeStyleFor('Habitable', '');
+  const cell = badgeCell(style.label, style);
+  assert.equal(cell.text, 'Inspeccionado');
+  assert.equal(cell.color, '#1a7d3a');
+  assert.equal(cell.fillColor, '#e6f4ea');
+  assert.equal(cell.alignment, 'center');
+}
+console.log('badgeCell: pure pdfmake cell shape (text/color/fillColor/alignment) OK');
+
+// ── W11: statCard — one colored KPI card, plain or highlighted ─────────────
+{
+  const plain = statCard('Visitas totales en el período', 6);
+  assert.ok(plain.table, 'must be a pdfmake table node (so it renders as a bordered box)');
+  const plainStack = plain.table.body[0][0].stack;
+  assert.equal(plainStack.length, 2, 'no caption -> label + value only, no 3rd stack node');
+  const plainText = JSON.stringify(plain);
+  assert.ok(plainText.includes('Visitas totales en el período'));
+  assert.ok(plainText.includes('"6"'), 'the value must render as its own text node');
+  assert.ok(plainText.includes('#f0f2f7'), 'a plain card uses the neutral gray card background');
+  assert.ok(!plainText.includes('#e8f0fc'), 'a plain (non-accent) card never uses the accent blue background');
+
+  const accentCard = statCard('Visita objetivo diario', 2.5, {
+    accent: true, caption: 'Proyectado al 30 de septiembre de 2026',
+  });
+  const accentText = JSON.stringify(accentCard);
+  assert.equal(accentCard.table.body[0][0].stack.length, 3, 'a caption adds a 3rd stack node');
+  assert.ok(accentText.includes('#e8f0fc'), 'accent card uses the highlighted blue background from the mockups');
+  assert.ok(accentText.includes('#2186E0'), 'accent card value text uses the blue accent color');
+  assert.ok(accentText.includes('Proyectado al 30 de septiembre de 2026'), 'the caption renders when given');
+}
+console.log('statCard: plain vs accent card shape (background/text color, optional caption) OK');
+
+// ── W11: statCardsRow — chunks N cards into pdfmake `columns` rows ─────────
+{
+  const mk = (n) => Array.from({ length: n }, (_, i) => statCard(`L${i}`, i));
+  const two = statCardsRow(mk(2));
+  assert.equal(two.length, 1);
+  assert.equal(two[0].columns.length, 2);
+
+  const three = statCardsRow(mk(3));
+  assert.equal(three.length, 1);
+  assert.equal(three[0].columns.length, 3);
+
+  const five = statCardsRow(mk(5));
+  assert.equal(five.length, 2, '5 cards at 3/row -> 2 rows');
+  assert.equal(five[0].columns.length, 3);
+  assert.equal(five[1].columns.length, 2, 'the last row holds the remainder, never padded with empty cells');
+
+  const six = statCardsRow(mk(6));
+  assert.equal(six.length, 2, '6 cards at 3/row -> exactly 2 full rows');
+  assert.equal(six[0].columns.length, 3);
+  assert.equal(six[1].columns.length, 3);
+}
+console.log('statCardsRow: chunks 2/3/5/6 cards into proper columns rows (3/row) OK');
+
+// ── W11: sectionHeaderNode — section title + colored bottom rule ──────────
+{
+  const node = sectionHeaderNode('Datos del profesional');
+  assert.ok(Array.isArray(node), 'must be a stack-like array, spreadable into `content` like kvTable/pointsTable');
+  assert.equal(node[0].text, 'Datos del profesional');
+  assert.equal(node[0].style, 'sectionHeader');
+  assert.ok(Array.isArray(node[1].canvas), 'the 2nd node must be a canvas rule');
+  assert.equal(node[1].canvas[0].lineColor, '#151F55', 'the rule matches the mockups\' border-bottom:2px solid #151F55');
+}
+console.log('sectionHeaderNode: text + colored bottom rule (mirrors both mockups\' header style) OK');
+
+// ── W11: buildActivitySparkline — the new graphical element (neither mockup
+// had this): a bounded, deterministic daily-activity bar chart built from
+// stickerPoints' own `fecha` (already a Bogotá calendar day per
+// professionalRecords/toStickerPoint — dateOnly()/bogotaParts() already ran,
+// so this never re-derives timezone logic). ──────────────────────────────
+{
+  // 0 stickers -> never an empty/broken canvas, an explanatory message instead.
+  const empty = buildActivitySparkline([]);
+  assert.ok(!empty.canvas, 'no data at all -> no canvas node');
+  assert.ok(/sin actividad/i.test(empty.text), 'must explain there is nothing to graph');
+
+  // Every point has an unresolvable fecha -> same "no data" fallback, never a throw.
+  const onlyBlankDates = buildActivitySparkline([{ fecha: null }, { fecha: '' }]);
+  assert.ok(/sin actividad/i.test(onlyBlankDates.text));
+
+  // Single day -> exactly 1 bar, tall enough to read as "real activity".
+  const single = buildActivitySparkline([{ fecha: '2026-01-01' }, { fecha: '2026-01-01' }]);
+  assert.ok(Array.isArray(single.canvas));
+  assert.equal(single.canvas.length, 1);
+  assert.equal(single.canvas[0].type, 'rect');
+  assert.equal(single.canvas[0].color, COLORS.accent, 'bars use the app\'s own accent color, not an invented one');
+  assert.ok(single.canvas[0].h >= 2, 'a real (non-zero) count renders taller than the zero-count baseline tick');
+
+  // A zero-count day in the MIDDLE of the range must still get its own bar
+  // (a 1px baseline tick) — never silently skipped, which would misread as
+  // "no data that day" instead of "confirmed zero that day".
+  const gapPoints = [{ fecha: '2026-01-01' }, { fecha: '2026-01-03' }]; // 01-02 has zero
+  const withGap = buildActivitySparkline(gapPoints);
+  assert.equal(withGap.canvas.length, 3, 'the zero-count middle day must still produce a bar, not a gap');
+  assert.equal(withGap.canvas[1].h, 1, 'a zero-count day renders the minimum baseline tick');
+  assert.ok(withGap.canvas[0].h > withGap.canvas[1].h, 'a real day must still look taller than a zero-count day');
+
+  // A run longer than maxBars must aggregate into bounded buckets, never an
+  // ever-growing canvas for a professional active across many months.
+  function ymd(offsetDays) {
+    const d = new Date(Date.UTC(2026, 0, 1) + offsetDays * 86400000);
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+  }
+  const longPoints = Array.from({ length: 45 }, (_, i) => ({ fecha: ymd(i) }));
+  const long = buildActivitySparkline(longPoints, { maxBars: 30 });
+  assert.ok(Array.isArray(long.canvas));
+  assert.ok(long.canvas.length <= 30, `45 distinct days with maxBars=30 must aggregate (got ${long.canvas.length} buckets)`);
+  assert.ok(long.canvas.length > 1);
+  for (const rect of long.canvas) {
+    assert.ok(Number.isFinite(rect.h) && rect.h >= 1, 'every bucket must have a finite, positive height');
+    assert.ok(Number.isFinite(rect.x) && Number.isFinite(rect.w) && rect.w > 0, 'every bucket must have a valid, non-zero width');
+  }
+}
+console.log('buildActivitySparkline: empty/single-day/zero-gap/aggregation-over-maxBars all render safely OK');
+
 // ── buildProfessionalReportDocDefinition ────────────────────────────────────
 
 {
   const row = {
-    name: 'Gil Soto', cedula: '123', codigo: '004', entidad: 'DAGMA',
+    name: 'Gil Soto', cedula: '123', codigo: '004', entidad: 'DAGMA', tarjetaProfesional: 'TP-9988',
     stickersFase1: 2, stickersFase2: 1, surveyTotal: 3, total: 6,
     firstDate: '2026-01-01', lastDate: '2026-01-05', activeDays: 3, avgPerActiveDay: 2, rosterSourced: 0,
   };
   const points = {
     stickerPoints: [
-      { codigo: '76001-1-0010001', direccion: 'Cl 5 # 1-2', municipio: 'Cali', fecha: '2026-01-01', faseLabel: 'Fase I' },
+      {
+        codigo: '76001-1-0010001', direccion: 'Cl 5 # 1-2', municipio: 'Cali', fecha: '2026-01-01', faseLabel: 'Fase I', colorEtiqueta: 'Habitable', clasificacion: '',
+      },
     ],
     surveyPoints: [
       { direccion: 'Cl 9 # 1-2', nombreEdificacion: 'Casa', fecha: '2026-01-05' },
@@ -1205,6 +1367,16 @@ console.log('professionalRecords: optional from/to period filter (default = whol
   assert.ok(flatText.includes('76001-1-0010001'), 'should list the sticker code');
   assert.ok(flatText.includes('Cl 9 # 1-2'), 'should list the survey address');
   assert.ok(/Fecha de generaci/i.test(flatText), 'should include a generation-date label');
+  // W11: TP prominence — visible in the subtitle line (glanceable), not only
+  // buried inside "Datos del profesional" further down the page.
+  assert.ok(/TP:\s*TP-9988/.test(flatText), 'the tarjeta profesional must be shown inline in the subtitle line');
+  // W11: the sticker's colorEtiqueta ("Habitable") renders as the
+  // "Inspeccionado" colored badge instead of plain text.
+  assert.ok(flatText.includes('Inspeccionado'), 'a Habitable sticker must render the green "Inspeccionado" badge label');
+  // W11 (Borrador mockup): the uncapped total, right after the sticker table.
+  assert.ok(flatText.includes('Total stickers en período: 1'), 'must show the UNCAPPED sticker total');
+  // W11: the new graphical element neither mockup had.
+  assert.ok(flatText.includes('Actividad en el período'), 'must include the new activity sparkline section');
 }
 console.log('buildProfessionalReportDocDefinition: includes header, stats and points OK');
 
@@ -2200,6 +2372,9 @@ console.log('reportFilenameSlug OK');
   assert.ok(/sin dato/i.test(flatText), 'objetivoDiario null must render "sin dato", never a lying number');
   assert.ok(flatText.includes('—'), 'blank tarjeta/celular/correo/barrios must render the forced DASH');
   assert.ok(/personal/i.test(flatText), 'a confidentiality line about personal data must be present');
+  // W11: TP is also shown inline in the subtitle — a blank tarjetaProfesional
+  // must render the DASH there too, never a silently blank "TP: " label.
+  assert.ok(/TP:\s*—/.test(flatText), 'a blank tarjeta profesional must render as DASH in the subtitle, not blank');
 
   const docOther = buildProfessionalReportDocDefinition(row, points, { ...ctx, last7: 9 });
   assert.notEqual(JSON.stringify(docOther.content), flatText, 'ctx.last7 must actually reach the rendered report');
