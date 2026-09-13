@@ -4,9 +4,10 @@ import assert from 'node:assert/strict';
 import {
   normalizeName, cedulaKey, professionalKeyOf, buildIdentityIndex,
   buildProfessionalRows, buildTimeline, sortRows,
-  professionalRecords, buildTemporalMetrics, buildBarriosActivos,
+  professionalRecords, buildTemporalMetrics, buildTemporalMetricsByKey,
+  buildBarriosActivos, buildBarriosActivosByKey,
   buildProfessionalReportDocDefinition, hasActiveSegFilters,
-  createSegCache, makeSearchController,
+  createSegCache, createIdentityCache, makeSearchController,
 } from './seguimiento.js';
 
 // Small test-local helper: the "no identity/no cédula at all" key shape a
@@ -153,6 +154,51 @@ console.log('professionalKeyOf: homonyms with different cédulas separate into 3
   assert.equal(profile.ambiguous, false);
 }
 console.log('buildIdentityIndex: profiles merge display fields (most-frequent name, first-non-blank contact) OK');
+
+// ── buildIdentityIndex: SIN_DATO stickers must never drive identity (H2) ───
+// A record whose Fase never resolves (faseKeyDe -> 'SIN_DATO') is dropped
+// from buildProfessionalRows entirely (#29) -- but buildIdentityIndex used to
+// iterate ALL stickers regardless, so a discarded record could still steer a
+// profile's display name, cédula mapping or ambiguity flag. Both sticker
+// loops must skip SIN_DATO as their FIRST statement.
+
+{
+  // (a) Two SIN_DATO stickers with a misspelled name outnumber a single
+  // fase-1 sticker with the CORRECT spelling, same cédula -- "most frequent
+  // raw spelling wins" must never even see the SIN_DATO records, so the
+  // fase-1 spelling wins despite its lower raw count.
+  const stickers = [
+    { inspector: { nombre_completo: 'NOMBRE MAL ESCRITO', identificacion: '700' }, fecha: '2026-01-01', fase: null, fuente: 'atencionsismo', inspector_fuente: 'evaluacion' },
+    { inspector: { nombre_completo: 'NOMBRE MAL ESCRITO', identificacion: '700' }, fecha: '2026-01-02', fase: null, fuente: 'atencionsismo', inspector_fuente: 'evaluacion' },
+    { inspector: { nombre_completo: 'Nombre Bien Escrito', identificacion: '700' }, fecha: '2026-01-03', fase: 1, fuente: 'atencionsismo', inspector_fuente: 'evaluacion' },
+  ];
+  const identity = buildIdentityIndex({ stickers, surveys: [] });
+  const key = professionalKeyOf(stickers[2], identity);
+  assert.equal(key, 'ced:700');
+  const profile = identity.profiles.get(key);
+  assert.equal(profile.name, 'Nombre Bien Escrito', 'SIN_DATO records must never outvote the real fase-1 spelling');
+}
+console.log('buildIdentityIndex: SIN_DATO stickers never drive the display name (a) OK');
+
+{
+  // (b) A fase-1 sticker {Ana Lopez, 888} + a SIN_DATO sticker {Ana Lopez,
+  // 889} + a Survey record for "Ana Lopez" -- the SIN_DATO cédula must never
+  // become an eligible merge key, so the name maps to exactly ONE eligible
+  // cédula (888) and everything (sticker + Survey) merges into ONE row,
+  // never split into an ambiguous pair + a detached nom: row.
+  const stickers = [
+    { inspector: { nombre_completo: 'Ana Lopez', identificacion: '888' }, fecha: '2026-01-01', fase: 1, fuente: 'atencionsismo', inspector_fuente: 'evaluacion' },
+    { inspector: { nombre_completo: 'Ana Lopez', identificacion: '889' }, fecha: '2026-01-02', fase: null, fuente: 'atencionsismo', inspector_fuente: 'evaluacion' },
+  ];
+  const surveys = [{ nombre_evaluador: 'Ana Lopez', fecha_inspeccion: '2026-01-03' }];
+  const result = buildProfessionalRows({ stickers, surveys });
+  assert.equal(result.rows.length, 1, 'the SIN_DATO cédula must never fragment this into an ambiguous pair + detached nom: row');
+  assert.equal(result.rows[0].key, 'ced:888');
+  assert.equal(result.rows[0].stickersTotal, 1, 'only the fase-1 sticker counts (SIN_DATO excluded)');
+  assert.equal(result.rows[0].surveyTotal, 1);
+  assert.equal(result.rows[0].ambiguous, false);
+}
+console.log('buildIdentityIndex: SIN_DATO cédula never fragments a single-professional merge (b) OK');
 
 // ── buildProfessionalRows: empty inputs ────────────────────────────────────
 
@@ -546,7 +592,65 @@ console.log('buildBarriosActivos: blank/"Sin identificar" excluded, accent/case 
 }
 console.log('buildBarriosActivos: only own (non-SIN_DATO) stickers count OK');
 
+{
+  // L6: the dedupe key must strip accents, lowercase, AND collapse internal
+  // whitespace -- "San  Antonio" (double space) and "San Antonio" must
+  // dedupe to ONE entry, not two.
+  const row = { key: 'ced:1' };
+  const stickers = [
+    { inspector: { nombre_completo: 'X', identificacion: '1' }, inspector_fuente: 'evaluacion', fase: 1, fuente: 'atencionsismo', fecha: '2026-01-09T12:00:00+00:00', barrio_reportado: 'San  Antonio' },
+    { inspector: { nombre_completo: 'X', identificacion: '1' }, inspector_fuente: 'evaluacion', fase: 1, fuente: 'atencionsismo', fecha: '2026-01-09T13:00:00+00:00', barrio_reportado: 'San Antonio' },
+  ];
+  const identity = buildIdentityIndex({ stickers, surveys: [] });
+  const barrios = buildBarriosActivos(row, { stickers, today: '2026-01-09', identity });
+  assert.deepEqual(barrios, ['San  Antonio'], 'double-internal-space and single-space variants must dedupe to ONE entry (first-seen spelling kept)');
+}
+console.log('buildBarriosActivos: internal-whitespace variants dedupe to one entry (L6) OK');
+
+// ── buildBarriosActivosByKey (B1): ONE pass over all stickers, keyed by ────
+// professional -- buildProfessionalRows used to call buildBarriosActivos
+// (a full sticker rescan) once PER ROW: 110 rows x ~3,037 stickers each
+// rescanned ~ 334k identity resolutions (measured 168 ms vs 8.8 ms before
+// this change). buildBarriosActivos(row, ...) above is now a thin wrapper
+// over this batch builder -- same output, single pass.
+
+{
+  // Batch vs per-row equality on a mixed fixture (several professionals,
+  // SIN_DATO mixed in, blank/"Sin identificar" barrios, accent/case variants,
+  // out-of-window dates).
+  const stickers = [
+    { inspector: { nombre_completo: 'Gil Soto', identificacion: '1' }, inspector_fuente: 'evaluacion', fase: 1, fuente: 'atencionsismo', fecha: '2026-01-09T12:00:00+00:00', barrio_reportado: 'San Antonio' },
+    { inspector: { nombre_completo: 'Gil Soto', identificacion: '1' }, inspector_fuente: 'evaluacion', fase: 1, fuente: 'atencionsismo', fecha: '2026-01-08T12:00:00+00:00', barrio_reportado: 'SAN ANTONIO' },
+    { inspector: { nombre_completo: 'Gil Soto', identificacion: '1' }, inspector_fuente: 'evaluacion', fase: null, fuente: 'atencionsismo', fecha: '2026-01-09T12:00:00+00:00', barrio_reportado: 'Descartado' }, // SIN_DATO
+    { inspector: { nombre_completo: 'Gil Soto', identificacion: '1' }, inspector_fuente: 'evaluacion', fase: 1, fuente: 'atencionsismo', fecha: '2025-12-01T12:00:00+00:00', barrio_reportado: 'Fuera De Ventana' }, // out of window
+    { inspector: { nombre_completo: 'Ana Ruiz', identificacion: '2' }, inspector_fuente: 'evaluacion', fase: 1, fuente: 'atencionsismo', fecha: '2026-01-09T12:00:00+00:00', barrio_reportado: '' },
+    { inspector: { nombre_completo: 'Ana Ruiz', identificacion: '2' }, inspector_fuente: 'evaluacion', fase: 1, fuente: 'atencionsismo', fecha: '2026-01-09T13:00:00+00:00', barrio_reportado: 'Sin identificar' },
+    { inspector: { nombre_completo: 'Ana Ruiz', identificacion: '2' }, inspector_fuente: 'evaluacion', fase: 1, fuente: 'atencionsismo', fecha: '2026-01-09T14:00:00+00:00', barrio_reportado: 'Barrio Ana' },
+  ];
+  const identity = buildIdentityIndex({ stickers, surveys: [] });
+  const today = '2026-01-09';
+  const keys = ['ced:1', 'ced:2'];
+  const byKey = buildBarriosActivosByKey({
+    stickers, identity, today,
+  });
+  for (const key of keys) {
+    const perRow = buildBarriosActivos({ key }, { stickers, today, identity });
+    assert.deepEqual(byKey.get(key) || [], perRow, `batch and per-row must agree for ${key}`);
+  }
+  assert.deepEqual(byKey.get('ced:1'), ['San Antonio'], 'SIN_DATO excluded, out-of-window excluded, accent/case variant deduped');
+  assert.deepEqual(byKey.get('ced:2'), ['Barrio Ana'], 'blank and Sin identificar excluded');
+}
+console.log('buildBarriosActivosByKey: batch vs per-row equality on a mixed fixture (B1) OK');
+
 // ── buildTemporalMetrics ─────────────────────────────────────────────────────
+// CONTRATO CAMBIADO (H3): firstRecordMinutes/lastRecordMinutes used to come
+// from the EARLIEST day's min and the LATEST day's max respectively -- so
+// "last" could end up EARLIER than "first" (e.g. 09-10 09:00, 09-10 17:00,
+// 09-12 08:00 -> old first=540, old last=480). The UI's columns are "Hora
+// 1er/últ. registro (día ant.)": both must come from the SAME day, `prevDay`
+// (the latest day strictly before `today`) -- renamed prevDayFirstMinutes/
+// prevDayLastMinutes accordingly, null when prevDay is null or that day has
+// no timed record (defensive; prevDay is only ever set when it does).
 
 {
   // Empty (no timed records at all) -> everything null, daysSinceFirst null
@@ -554,7 +658,7 @@ console.log('buildBarriosActivos: only own (non-SIN_DATO) stickers count OK');
   const row = { key: nomKey('Gil Soto'), firstDate: null };
   const result = buildTemporalMetrics(row, { stickers: [], surveys: [], today: '2026-01-09' });
   assert.deepEqual(result, {
-    firstRecordMinutes: null, lastRecordMinutes: null,
+    prevDayFirstMinutes: null, prevDayLastMinutes: null,
     avgFirstMinutes: null, avgLastMinutes: null,
     prevDay: null, daysSinceFirst: null,
   });
@@ -562,16 +666,19 @@ console.log('buildBarriosActivos: only own (non-SIN_DATO) stickers count OK');
 console.log('buildTemporalMetrics: empty inputs OK');
 
 {
-  // Survey fecha_hora minute-of-day parsing: T00:05 -> 5, T12:05 -> 725.
+  // Survey fecha_hora minute-of-day parsing: T00:05 -> 5, T12:05 -> 725,
+  // both on the SAME (only) day, which resolves as prevDay.
   const row = { key: nomKey('Gil Soto'), firstDate: '2026-01-01' };
   const surveys = [
     { nombre_evaluador: 'Gil Soto', fecha_hora: '2026-01-01T00:05' },
-    { nombre_evaluador: 'Gil Soto', fecha_hora: '2026-01-02T12:05' },
+    { nombre_evaluador: 'Gil Soto', fecha_hora: '2026-01-01T12:05' },
   ];
   const result = buildTemporalMetrics(row, { stickers: [], surveys, today: '2026-01-09' });
-  assert.equal(result.firstRecordMinutes, 5);
-  assert.equal(result.lastRecordMinutes, 725);
-  assert.equal(result.avgFirstMinutes, Math.round((5 + 725) / 2));
+  assert.equal(result.prevDay, '2026-01-01');
+  assert.equal(result.prevDayFirstMinutes, 5);
+  assert.equal(result.prevDayLastMinutes, 725);
+  assert.equal(result.avgFirstMinutes, 5);
+  assert.equal(result.avgLastMinutes, 725);
 }
 console.log('buildTemporalMetrics: Survey fecha_hora minute-of-day (00:05->5, 12:05->725) OK');
 
@@ -585,18 +692,21 @@ console.log('buildTemporalMetrics: Survey fecha_hora minute-of-day (00:05->5, 12
     { nombre_evaluador: 'Gil Soto', fecha_hora: '2026-01-01T7:5' },
   ];
   const result = buildTemporalMetrics(row, { stickers: [], surveys, today: '2026-01-09' });
-  assert.equal(result.firstRecordMinutes, null);
+  assert.equal(result.prevDayFirstMinutes, null);
   assert.equal(result.avgFirstMinutes, null);
 }
 console.log('buildTemporalMetrics: missing/malformed fecha_hora -> no hour, never throws OK');
 
 {
   // prevDay: only a record dated TODAY -> prevDay null (never "yesterday"
-  // unless there really is a timed record on a day strictly before today).
+  // unless there really is a timed record on a day strictly before today) --
+  // and prevDayFirstMinutes/prevDayLastMinutes must be null right along with it.
   const row = { key: nomKey('Gil Soto'), firstDate: '2026-01-09' };
   const surveys = [{ nombre_evaluador: 'Gil Soto', fecha_hora: '2026-01-09T08:00' }];
   const result = buildTemporalMetrics(row, { stickers: [], surveys, today: '2026-01-09' });
   assert.equal(result.prevDay, null);
+  assert.equal(result.prevDayFirstMinutes, null);
+  assert.equal(result.prevDayLastMinutes, null);
   assert.equal(result.daysSinceFirst, 0);
 }
 console.log('buildTemporalMetrics: only-today record -> prevDay null, daysSinceFirst 0 OK');
@@ -612,6 +722,8 @@ console.log('buildTemporalMetrics: only-today record -> prevDay null, daysSinceF
   ];
   const result = buildTemporalMetrics(row, { stickers: [], surveys, today: '2026-01-09' });
   assert.equal(result.prevDay, '2026-01-07', 'the undated-hour 2026-01-08 record must not count as a timed day');
+  assert.equal(result.prevDayFirstMinutes, 570); // 09:30
+  assert.equal(result.prevDayLastMinutes, 570);
   assert.equal(result.daysSinceFirst, 4); // 2026-01-09 - 2026-01-05
 }
 console.log('buildTemporalMetrics: daysSinceFirst (yesterday=1 case covered via prevDay path) + untimed day excluded OK');
@@ -623,6 +735,59 @@ console.log('buildTemporalMetrics: daysSinceFirst (yesterday=1 case covered via 
   assert.equal(result.daysSinceFirst, 1);
 }
 console.log('buildTemporalMetrics: daysSinceFirst yesterday -> 1 OK');
+
+{
+  // H3 (Blocker regression, reproduced exactly): 09-10 09:00 (540), 09-10
+  // 17:00 (1020), 09-12 08:00 (480) -- the OLD firstRecordMinutes/
+  // lastRecordMinutes (earliest-day-min / latest-day-max) gave first=540,
+  // last=480, i.e. "last" EARLIER than "first". Both prevDayFirstMinutes and
+  // prevDayLastMinutes must come from THE SAME day (prevDay = 09-12, the
+  // latest day strictly before today), so last >= first always holds.
+  const row = { key: nomKey('Gil Soto'), firstDate: '2026-09-10' };
+  const surveys = [
+    { nombre_evaluador: 'Gil Soto', fecha_hora: '2026-09-10T09:00' },
+    { nombre_evaluador: 'Gil Soto', fecha_hora: '2026-09-10T17:00' },
+    { nombre_evaluador: 'Gil Soto', fecha_hora: '2026-09-12T08:00' },
+  ];
+  const result = buildTemporalMetrics(row, { stickers: [], surveys, today: '2026-09-13' });
+  assert.equal(result.prevDay, '2026-09-12');
+  assert.equal(result.prevDayFirstMinutes, 480);
+  assert.equal(result.prevDayLastMinutes, 480);
+  assert.ok(result.prevDayLastMinutes >= result.prevDayFirstMinutes, 'last must never be earlier than first (H3)');
+}
+console.log('buildTemporalMetrics: prevDayFirst/LastMinutes come from the SAME day, last>=first (H3) OK');
+
+{
+  // M5: batch vs per-row equality on a mixed fixture (several professionals,
+  // stickers + surveys, SIN_DATO mixed in, untimed records mixed in) --
+  // buildTemporalMetricsByKey's single-pass result must match calling
+  // buildTemporalMetrics() once per professional exactly.
+  const stickers = [
+    { inspector: { nombre_completo: 'Gil Soto', identificacion: '1' }, fecha: '2026-01-05T09:00:00+00:00', fase: 1, fuente: 'atencionsismo', inspector_fuente: 'evaluacion' },
+    { inspector: { nombre_completo: 'Gil Soto', identificacion: '1' }, fecha: '2026-01-06T14:30:00+00:00', fase: 1, fuente: 'atencionsismo', inspector_fuente: 'evaluacion' },
+    { inspector: { nombre_completo: 'Gil Soto', identificacion: '1' }, fecha: '2026-01-05T20:00:00+00:00', fase: null, fuente: 'atencionsismo', inspector_fuente: 'evaluacion' }, // SIN_DATO
+    { inspector: { nombre_completo: 'Ana Ruiz', identificacion: '2' }, fecha: '2026-01-07T12:00:00+00:00', fase: 1, fuente: 'atencionsismo', inspector_fuente: 'evaluacion' },
+  ];
+  const surveys = [
+    { nombre_evaluador: 'Gil Soto', fecha_hora: '2026-01-08T08:15' },
+    { nombre_evaluador: 'Ana Ruiz', fecha_hora: '2026-01-08T09:45' },
+    { nombre_evaluador: 'Ana Ruiz', fecha_inspeccion: '2026-01-08', fecha_hora: undefined }, // dated, untimed
+  ];
+  const identity = buildIdentityIndex({ stickers, surveys });
+  const today = '2026-01-09';
+  const keys = ['ced:1', 'ced:2'];
+  const byKey = buildTemporalMetricsByKey({
+    stickers, surveys, identity, today,
+  });
+  for (const key of keys) {
+    const perRow = buildTemporalMetrics({ key, firstDate: null }, {
+      stickers, surveys, identity, today,
+    });
+    const { daysSinceFirst, ...perRowMetrics } = perRow;
+    assert.deepEqual(byKey.get(key), perRowMetrics, `batch and per-row must agree for ${key}`);
+  }
+}
+console.log('buildTemporalMetricsByKey: batch vs per-row equality on a mixed fixture (M5) OK');
 
 // ── sortRows ────────────────────────────────────────────────────────────
 
@@ -849,6 +1014,26 @@ console.log('buildTimeline: offsets — record after `to` excluded entirely OK')
   assert.deepEqual(result.stickers, [1]);
 }
 console.log('buildTimeline: date range filter OK');
+
+{
+  // N10: an inverted range (`to` < `from`) has no valid window at all --
+  // labels must be empty (already true before this fix) AND offsets must be
+  // {stickers: 0, surveys: 0} (the bug: `to < from` made every date <= `to`
+  // satisfy both "not > to" and "< from", so it fell into the offset
+  // instead of being excluded, producing a non-zero offset alongside empty
+  // labels).
+  const stickers = [
+    { inspector: { nombre_completo: 'Gil Soto' }, fecha: '2026-01-01', fase: 1 },
+    { inspector: { nombre_completo: 'Gil Soto' }, fecha: '2026-01-05', fase: 1 },
+  ];
+  const surveys = [{ nombre_evaluador: 'Gil Soto', fecha_inspeccion: '2026-01-03' }];
+  const result = buildTimeline({
+    stickers, surveys, from: '2026-02-01', to: '2026-01-01',
+  });
+  assert.deepEqual(result.labels, []);
+  assert.deepEqual(result.offsets, { stickers: 0, surveys: 0 }, 'an inverted range must never produce a non-zero offset');
+}
+console.log('buildTimeline: inverted range (to < from) -> empty labels AND zero offsets (N10) OK');
 
 // ── buildTimeline: UTC-aware timestamp buckets to the BOGOTÁ calendar day ──
 // CONTRATO CAMBIADO DELIBERADAMENTE (D6, plan §Zona horaria): antes este test
@@ -1135,7 +1320,10 @@ console.log('createSegCache: changing `to` recomputes OK');
     }, () => { calls += 1; return { n: calls }; });
   }
   assert.equal(calls, 50, 'every distinct range really did recompute (not silently cached under the wrong key)');
-  assert.equal(cache.size ? cache.size() : 1, 1, 'a single-entry cache never holds more than 1 entry, by construction');
+  // L7: a REAL size() (0 or 1), not a vacuous `cache.size ? cache.size() : 1`
+  // fallback that always passes regardless of what the cache actually holds.
+  assert.equal(typeof cache.size, 'function', 'createSegCache must expose a real size() method');
+  assert.equal(cache.size(), 1, 'a single-entry cache holds exactly 1 entry after 50 distinct ranges, never more');
 }
 console.log('createSegCache: <=1 entry after 50 ranges OK');
 
@@ -1155,6 +1343,52 @@ console.log('createSegCache: <=1 entry after 50 ranges OK');
   assert.equal(calls, 2, 'clear() must force the next .get() (even with an identical key) to recompute');
 }
 console.log('createSegCache: clear() forces recompute OK');
+
+// ── createIdentityCache (M4): single-entry memo keyed on stickers/surveys ──
+// array identity, independent of segCache's own (from/to/professionalKey/
+// today) key -- render() used to call buildIdentityIndex() UNCONDITIONALLY
+// before the segCache memo check even ran (7.6 ms every render, regardless
+// of whether segCache itself would hit), even though its only real inputs
+// are the exact same stickers/surveys array references segCache already
+// keys on.
+
+{
+  // Same stickers/surveys refs -> compute() runs ONCE across two .get() calls.
+  const cache = createIdentityCache();
+  const stickers = []; const surveys = [];
+  let calls = 0;
+  const compute = () => { calls += 1; return { n: calls }; };
+  const r1 = cache.get(stickers, surveys, compute);
+  const r2 = cache.get(stickers, surveys, compute);
+  assert.equal(calls, 1, 'compute() must run once for two .get() calls with identical stickers/surveys refs');
+  assert.equal(r1, r2, 'the second call must return the exact cached object, not a new one');
+}
+console.log('createIdentityCache: same stickers/surveys refs -> single execution OK');
+
+{
+  // A NEW array reference (even with identical/empty contents) must recompute.
+  const cache = createIdentityCache();
+  let calls = 0;
+  const compute = () => { calls += 1; return { n: calls }; };
+  const surveys = [];
+  cache.get([], surveys, compute);
+  cache.get([], surveys, compute);
+  assert.equal(calls, 2, 'a new stickers array reference must recompute, even with identical (empty) contents');
+}
+console.log('createIdentityCache: new array reference recomputes OK');
+
+{
+  // clear() forces the next .get() (even with the SAME refs) to recompute.
+  const cache = createIdentityCache();
+  const stickers = []; const surveys = [];
+  let calls = 0;
+  const compute = () => { calls += 1; return { n: calls }; };
+  cache.get(stickers, surveys, compute);
+  cache.clear();
+  cache.get(stickers, surveys, compute);
+  assert.equal(calls, 2, 'clear() must force the next .get() to recompute');
+}
+console.log('createIdentityCache: clear() forces recompute OK');
 
 // ── makeSearchController: debounce() wrapper with a working cancel() ────────
 

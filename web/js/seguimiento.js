@@ -308,6 +308,12 @@ export function buildIdentityIndex({ stickers = [], surveys = [] } = {}) {
   const nameCedulaCandidates = new Map(); // normalizedName -> Set<cedula>
   for (const s of stickerList) {
     if (!s) continue;
+    // H2: a record whose Fase never resolves (faseKeyDe -> 'SIN_DATO') is
+    // dropped from every downstream KPI/report (#29) -- it must never drive
+    // identity either (a discarded record steering a display name, a
+    // cédula->name mapping, or an ambiguity flag would silently contradict
+    // that exclusion). Checked FIRST, before this loop touches anything else.
+    if (faseKeyDe(s) === 'SIN_DATO') continue;
     const insp = s.inspector || {};
     const ced = cedulaKey(insp.identificacion);
     if (!ced) continue;
@@ -346,6 +352,12 @@ export function buildIdentityIndex({ stickers = [], surveys = [] } = {}) {
 
   for (const s of stickerList) {
     if (!s) continue;
+    // Same SIN_DATO guard as the eligibility loop above (H2) -- this second
+    // loop builds the per-key PROFILE (display name/cedula/codigo/entidad/…),
+    // so a discarded record must not reach it either, even though
+    // professionalKeyOf could still resolve it (via name->cédula unification)
+    // to a key that DOES have real, eligible records.
+    if (faseKeyDe(s) === 'SIN_DATO') continue;
     const insp = s.inspector || {};
     const rawName = insp.nombre_completo || '';
     const key = keyForSticker(s);
@@ -468,6 +480,12 @@ export function buildProfessionalRows({
     if (dateVal) row.dates.push(dateVal);
   }
 
+  // B1: ONE pass over the whole sticker list for "barrios activos" across
+  // EVERY professional, instead of buildBarriosActivos rescanning it once
+  // PER ROW below (110 rows x ~3,037 stickers each rescanned -- measured
+  // 168 ms vs 8.8 ms before this change).
+  const barriosByKey = buildBarriosActivosByKey({ stickers: stickerList, today: todayStr, identity: idx });
+
   const rows = [...rowsByKey.values()].map((row) => {
     const profile = idx.profiles.get(row.key) || {};
     const sortedDates = [...row.dates].sort();
@@ -501,8 +519,9 @@ export function buildProfessionalRows({
     // D1 (plan §Decisiones): "barrios activos (7 d)" derived from THIS
     // professional's OWN stickers in the last 7 days (Bogotá), regardless
     // of the from/to filter currently narrowing the table -- always the
-    // most recent real-world week, not the selected range.
-    builtRow.barriosActivos = buildBarriosActivos(builtRow, { stickers: stickerList, today: todayStr, identity: idx });
+    // most recent real-world week, not the selected range. B1: read from the
+    // single batch pass above instead of rescanning per row.
+    builtRow.barriosActivos = barriosByKey.get(row.key) || [];
     return builtRow;
   });
 
@@ -547,6 +566,18 @@ export function buildProfessionalRows({
 export function buildTimeline({
   stickers, surveys, from = null, to = null, professionalKey = null, identity,
 } = {}) {
+  // N10: an inverted range (`to` < `from`) has no valid window at all -- the
+  // per-record loop below would otherwise count every date <= `to` (all of
+  // which are also < `from`) toward the offset, producing a non-zero
+  // offset alongside the (already correctly) empty labels/series. Bail out
+  // to the same all-zero shape empty inputs return, before touching either.
+  if (from && to && to < from) {
+    return {
+      labels: [], stickers: [], surveys: [], stickersCumulative: [], surveysCumulative: [],
+      offsets: { stickers: 0, surveys: 0 },
+    };
+  }
+
   const stickerList = Array.isArray(stickers) ? stickers : [];
   const surveyList = Array.isArray(surveys) ? surveys : [];
   const idx = identity || buildIdentityIndex({ stickers: stickerList, surveys: surveyList });
@@ -664,32 +695,46 @@ export function professionalRecords(row, {
   return { stickerPoints, surveyPoints };
 }
 
-/** Hour-of-day / activity-recency metrics for ONE professional row's
- *  "Análisis temporales" columns: first/last record time-of-day (Bogotá
- *  minutes since midnight), the arithmetic-mean minute-of-day across the
- *  DAYS that have at least one timed record (never circular — a 23:50 and a
- *  00:10 average to ~12:00, not to midnight; documented, not "fixed", since
- *  averaging times-of-day has no single correct convention), `prevDay` (the
- *  last day STRICTLY BEFORE `today` with >=1 timed record — never "ayer"),
- *  and `daysSinceFirst` (today minus row.firstDate, in days).
+/** M5/H3: batch version of buildTemporalMetrics — ONE pass over
+ *  stickers+surveys grouping timed records per professional KEY per Bogotá
+ *  day (instead of buildProfessionalRows/callers re-scanning the full
+ *  stickers+surveys arrays once PER ROW — measured 278 ms for 110 rows
+ *  before this change). Returns `Map<key, metrics>` where `metrics` is
+ *  everything buildTemporalMetrics computes EXCEPT `daysSinceFirst` (that
+ *  one depends on `row.firstDate`, a per-row value the batch pass has no
+ *  business knowing about — the thin per-row wrapper below adds it back).
+ *
+ *  H3 (renamed from firstRecordMinutes/lastRecordMinutes): the old fields
+ *  came from the EARLIEST day's min and the LATEST day's max — two
+ *  DIFFERENT days — so "last" could end up earlier than "first" (e.g.
+ *  09-10 09:00, 09-10 17:00, 09-12 08:00 -> old first=540, old last=480).
+ *  `prevDayFirstMinutes`/`prevDayLastMinutes` both come from `prevDay` (the
+ *  latest day STRICTLY BEFORE `today` with >=1 timed record — never
+ *  "ayer"), i.e. the SAME day, so last is never earlier than first. Both
+ *  are null when there is no such day (never today itself). `avgFirst/
+ *  LastMinutes` are unchanged: the arithmetic-mean minute-of-day across ALL
+ *  days that have a timed record (never circular — a 23:50 and a 00:10
+ *  average to ~12:00, not to midnight; documented, not "fixed", since
+ *  averaging times-of-day has no single correct convention).
  *
  *  A dated-but-untimed record (Survey missing `fecha_hora`, or one whose
  *  value fails to parse) still counts toward buildProfessionalRows'
  *  `activeDays` (computed there, from `dates`) but contributes NOTHING here
  *  — "día sin hora cuenta en activeDays, no en promedios" (plan edge case):
  *  this function's own day-set only ever contains days with a real time. */
-export function buildTemporalMetrics(row, {
-  stickers, surveys, today, identity,
+export function buildTemporalMetricsByKey({
+  stickers, surveys, identity, today,
 } = {}) {
   const stickerList = Array.isArray(stickers) ? stickers : [];
   const surveyList = Array.isArray(surveys) ? surveys : [];
   const idx = identity || buildIdentityIndex({ stickers: stickerList, surveys: surveyList });
   const todayStr = today || bogotaToday();
-  const key = row && row.key;
 
-  const byDay = new Map(); // date -> { min, max } minutes-of-day
-  function feed(dateStr, minutes) {
-    if (dateStr === null || dateStr === undefined || minutes === null || minutes === undefined) return;
+  const byKeyDay = new Map(); // key -> Map<date, { min, max }>
+  function feed(key, dateStr, minutes) {
+    if (!key || dateStr === null || dateStr === undefined || minutes === null || minutes === undefined) return;
+    let byDay = byKeyDay.get(key);
+    if (!byDay) { byDay = new Map(); byKeyDay.set(key, byDay); }
     const bucket = byDay.get(dateStr);
     if (!bucket) { byDay.set(dateStr, { min: minutes, max: minutes }); return; }
     if (minutes < bucket.min) bucket.min = minutes;
@@ -699,88 +744,145 @@ export function buildTemporalMetrics(row, {
   for (const s of stickerList) {
     if (!s) continue;
     if (faseKeyDe(s) === 'SIN_DATO') continue;
-    if (professionalKeyOf(s, idx) !== key) continue;
+    const key = professionalKeyOf(s, idx);
+    if (!key) continue;
     const parts = bogotaParts(s.fecha);
     if (!parts || parts.minutes === null) continue;
-    feed(parts.date, parts.minutes);
+    feed(key, parts.date, parts.minutes);
   }
   for (const sv of surveyList) {
     if (!sv) continue;
-    if (professionalKeyOf(sv, idx) !== key) continue;
+    const key = professionalKeyOf(sv, idx);
+    if (!key) continue;
     const parts = bogotaParts(sv.fecha_hora);
     if (!parts || parts.minutes === null) continue;
-    feed(parts.date, parts.minutes);
+    feed(key, parts.date, parts.minutes);
   }
+
+  const result = new Map();
+  for (const [key, byDay] of byKeyDay) {
+    const days = [...byDay.keys()].sort();
+    const sumFirst = days.reduce((acc, d) => acc + byDay.get(d).min, 0);
+    const sumLast = days.reduce((acc, d) => acc + byDay.get(d).max, 0);
+    // Last day STRICTLY before today with >=1 timed record -- "no ayer": if
+    // the only timed day IS today, there is no such day (null), not "today".
+    let prevDay = null;
+    for (let i = days.length - 1; i >= 0; i--) {
+      if (days[i] < todayStr) { prevDay = days[i]; break; }
+    }
+    const prevDayBucket = prevDay ? byDay.get(prevDay) : null;
+    result.set(key, {
+      prevDayFirstMinutes: prevDayBucket ? prevDayBucket.min : null,
+      prevDayLastMinutes: prevDayBucket ? prevDayBucket.max : null,
+      avgFirstMinutes: Math.round(sumFirst / days.length),
+      avgLastMinutes: Math.round(sumLast / days.length),
+      prevDay,
+    });
+  }
+  return result;
+}
+
+/** Hour-of-day / activity-recency metrics for ONE professional row's
+ *  "Análisis temporales" columns — thin wrapper over
+ *  buildTemporalMetricsByKey (M5) for the single-row callers (W10 per-row
+ *  report), plus `daysSinceFirst` (today minus row.firstDate, in days),
+ *  which the batch pass above never computes since it has no `row` to read
+ *  `firstDate` from. See buildTemporalMetricsByKey's own doc comment for the
+ *  full field contract (H3: prevDayFirst/LastMinutes, not firstRecordMinutes/
+ *  lastRecordMinutes). */
+export function buildTemporalMetrics(row, {
+  stickers, surveys, today, identity,
+} = {}) {
+  const stickerList = Array.isArray(stickers) ? stickers : [];
+  const surveyList = Array.isArray(surveys) ? surveys : [];
+  const idx = identity || buildIdentityIndex({ stickers: stickerList, surveys: surveyList });
+  const todayStr = today || bogotaToday();
+  const key = row && row.key;
 
   const daysSinceFirst = (row && row.firstDate) ? daysBetween(row.firstDate, todayStr) : null;
 
-  const days = [...byDay.keys()].sort();
-  if (!days.length) {
+  const map = buildTemporalMetricsByKey({
+    stickers: stickerList, surveys: surveyList, identity: idx, today: todayStr,
+  });
+  const metrics = map.get(key);
+  if (!metrics) {
     return {
-      firstRecordMinutes: null, lastRecordMinutes: null,
+      prevDayFirstMinutes: null, prevDayLastMinutes: null,
       avgFirstMinutes: null, avgLastMinutes: null,
       prevDay: null, daysSinceFirst,
     };
   }
-
-  const firstDay = days[0];
-  const lastDay = days[days.length - 1];
-  const sumFirst = days.reduce((acc, d) => acc + byDay.get(d).min, 0);
-  const sumLast = days.reduce((acc, d) => acc + byDay.get(d).max, 0);
-  // Last day STRICTLY before today with >=1 timed record -- "no ayer": if
-  // the only timed day IS today, there is no such day (null), not "today".
-  let prevDay = null;
-  for (let i = days.length - 1; i >= 0; i--) {
-    if (days[i] < todayStr) { prevDay = days[i]; break; }
-  }
-
-  return {
-    firstRecordMinutes: byDay.get(firstDay).min,
-    lastRecordMinutes: byDay.get(lastDay).max,
-    avgFirstMinutes: Math.round(sumFirst / days.length),
-    avgLastMinutes: Math.round(sumLast / days.length),
-    prevDay,
-    daysSinceFirst,
-  };
+  return { ...metrics, daysSinceFirst };
 }
 
-/** "Barrios activos (7 d)" for ONE professional row (D1, plan
- *  §Decisiones): derived from the barrios of THIS professional's OWN
- *  stickers dated within the last `days` days up to and including `today`
- *  (Bogotá) — there is no real "active assignment" data (assignments are
- *  per-point, not per-barrio/per-professional), so this is an explicitly
- *  DERIVED signal, never a claim of formal assignment (the UI's job, W7+,
- *  is to label it as such). Window is INCLUSIVE of `today` and
- *  `today - (days - 1)`, i.e. `today - 6` is IN for the default 7-day
- *  window and `today - 7` is OUT. A blank `barrio_reportado` or one that
- *  reads as "Sin identificar" (case/accent-insensitive) never counts;
- *  accent/case variants of the same real barrio count once (deduped via
- *  utils.js's `normalize`). Returns a plain array of distinct display
- *  strings, sorted (es collation) for a deterministic render order. */
-export function buildBarriosActivos(row, {
+/** B1: batch version of buildBarriosActivos — ONE pass over ALL stickers,
+ *  grouping "barrios activos" per professional KEY (instead of
+ *  buildProfessionalRows calling buildBarriosActivos, a full sticker
+ *  rescan, once PER ROW — 110 rows x ~3,037 stickers each rescanned via
+ *  faseKeyDe + professionalKeyOf + bogotaParts ~ 334k identity resolutions,
+ *  measured 168 ms vs 8.8 ms before this change). Returns `Map<key,
+ *  string[]>`; buildBarriosActivos(row, …) below is now a thin single-key
+ *  lookup over this same batch pass, so both stay identical by
+ *  construction. See buildBarriosActivos' own doc comment (still accurate)
+ *  for the full window/exclusion/dedupe contract this shares — repeated
+ *  briefly here: window INCLUSIVE of `today` and `today - (days - 1)`; a
+ *  blank `barrio_reportado` or one reading as "Sin identificar" (case/
+ *  accent/whitespace-insensitive) never counts; SIN_DATO stickers excluded.
+ *
+ *  L6: the dedupe key uses normalizeName (not utils.js's bare `normalize`)
+ *  because it ALSO collapses internal whitespace — "San  Antonio" (double
+ *  space) and "San Antonio" must dedupe to ONE entry, not two; a barrio
+ *  name is free text typed by different people, same drift as a
+ *  professional's name. */
+export function buildBarriosActivosByKey({
   stickers, today, days = 7, identity,
 } = {}) {
   const stickerList = Array.isArray(stickers) ? stickers : [];
   const idx = identity || buildIdentityIndex({ stickers: stickerList, surveys: [] });
   const todayStr = today || bogotaToday();
   const cutoff = shiftDateStr(todayStr, -(days - 1));
-  const key = row && row.key;
 
-  const seen = new Map(); // normalized barrio -> first-seen display spelling
+  const seenByKey = new Map(); // key -> Map<normalized barrio, first-seen display spelling>
   for (const s of stickerList) {
     if (!s) continue;
     if (faseKeyDe(s) === 'SIN_DATO') continue;
-    if (professionalKeyOf(s, idx) !== key) continue;
+    const key = professionalKeyOf(s, idx);
+    if (!key) continue;
     const parts = bogotaParts(s.fecha);
     if (!parts) continue;
     if (parts.date < cutoff || parts.date > todayStr) continue;
     const raw = (s.barrio_reportado || '').trim();
     if (!raw) continue;
-    const normKey = normalize(raw);
+    const normKey = normalizeName(raw);
     if (normKey === 'sin identificar') continue;
+    let seen = seenByKey.get(key);
+    if (!seen) { seen = new Map(); seenByKey.set(key, seen); }
     if (!seen.has(normKey)) seen.set(normKey, raw);
   }
-  return [...seen.values()].sort((a, b) => a.localeCompare(b, 'es'));
+
+  const result = new Map();
+  for (const [key, seen] of seenByKey) {
+    result.set(key, [...seen.values()].sort((a, b) => a.localeCompare(b, 'es')));
+  }
+  return result;
+}
+
+/** "Barrios activos (7 d)" for ONE professional row (D1, plan
+ *  §Decisiones) — thin wrapper over buildBarriosActivosByKey (B1) for the
+ *  single-row callers (W10 per-row report); see that function's doc
+ *  comment for the full contract. Returns a plain array of distinct
+ *  display strings, sorted (es collation) for a deterministic render
+ *  order, or `[]` when this professional has none in the window. */
+export function buildBarriosActivos(row, {
+  stickers, today, days = 7, identity,
+} = {}) {
+  const stickerList = Array.isArray(stickers) ? stickers : [];
+  const idx = identity || buildIdentityIndex({ stickers: stickerList, surveys: [] });
+  const key = row && row.key;
+  const map = buildBarriosActivosByKey({
+    stickers: stickerList, today, days, identity: idx,
+  });
+  return map.get(key) || [];
 }
 
 // ── Per-professional PDF report ─────────────────────────────────────────────
@@ -974,6 +1076,43 @@ export function createSegCache() {
     clear() {
       entry = null;
     },
+    /** L7: 0 or 1, never anything else — a real reflection of whether the
+     *  single entry currently holds a cached result, for a self-check to
+     *  assert against instead of a vacuous "size if it exists" fallback. */
+    size() {
+      return entry ? 1 : 0;
+    },
+  };
+}
+
+// ── createIdentityCache: single-entry memo for buildIdentityIndex (M4) ─────
+// render() used to call buildIdentityIndex({ stickers, surveys })
+// UNCONDITIONALLY, before segCache.get()'s own memo check even ran (7.6 ms
+// every render, regardless of whether segCache itself would have hit) —
+// even though buildIdentityIndex's only real inputs are the EXACT SAME
+// stickers/surveys array references segCache already keys on. A dedicated
+// (simpler) single-entry memo, keyed on just those two references — never
+// the full segCache tuple, since identity must NOT be invalidated by a mere
+// from/to/today change the way the per-filter row computation is.
+export function createIdentityCache() {
+  let entry = null;
+
+  return {
+    /** Returns the cached result when `stickers`/`surveys` are the exact
+     *  same references as the last call's (see the module note above);
+     *  otherwise calls `compute()`, stores its result, and returns it. */
+    get(stickers, surveys, compute) {
+      if (entry && entry.stickers === stickers && entry.surveys === surveys) return entry.result;
+      const result = compute();
+      entry = { stickers, surveys, result };
+      return result;
+    },
+    /** Drops the cached entry — same reasoning as createSegCache's own
+     *  clear(), called at the top of initSeguimiento() so a fresh open
+     *  never reuses a stale identity index from a previous session. */
+    clear() {
+      entry = null;
+    },
   };
 }
 
@@ -1034,6 +1173,10 @@ let activeSearchDebounced = null;
 // change that ends up producing the exact same stickers/surveys/from/to) can
 // still hit the cache.
 const segCache = createSegCache();
+// M4: identity index memo, alongside segCache — see createIdentityCache's
+// own doc comment for why it is a SEPARATE cache (identity must not be
+// invalidated by a mere from/to/today change).
+const identityCache = createIdentityCache();
 
 function formatDateCell(d) {
   return d || 'Sin dato';
@@ -1338,6 +1481,7 @@ async function descargarInformeProfesional(row, { stickers, surveys, identity })
 export function initSeguimiento(root, { getToken, records }) {
   if (activeSearchDebounced) activeSearchDebounced.cancel();
   segCache.clear();
+  identityCache.clear();
   root.innerHTML = sectionHtml();
 
   const $ = (id) => root.querySelector(`#${id}`);
@@ -1482,11 +1626,15 @@ export function initSeguimiento(root, { getToken, records }) {
   };
 
   function render() {
-    // Identity + "hoy" (Bogotá) are recomputed on every render() — a store
-    // refresh (updateSeguimientoRecords) swaps `surveys` in place, and a
-    // stale identity/today would silently keep resolving keys or
-    // "días desde 1ª actividad"/barrios-activos-7d against yesterday's data.
-    currentIdentity = buildIdentityIndex({ stickers, surveys });
+    // Identity is memoized (M4) on the stickers/surveys array REFERENCES —
+    // a store refresh (updateSeguimientoRecords) swaps `surveys` in place
+    // (a new reference), which still correctly invalidates this cache, so
+    // identity never goes stale; but a re-render with the SAME references
+    // (e.g. a sort-only interaction) now skips buildIdentityIndex entirely,
+    // instead of rebuilding it unconditionally before segCache's own memo
+    // check even ran (7.6 ms every render, regardless of whether segCache
+    // itself would hit).
+    currentIdentity = identityCache.get(stickers, surveys, () => buildIdentityIndex({ stickers, surveys }));
     const today = bogotaToday();
     const { from, to } = currentFilters();
     // `unassigned` (the Sin-profesional bucket, broken down by source) is

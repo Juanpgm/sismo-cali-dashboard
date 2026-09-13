@@ -120,15 +120,32 @@ console.log(`seguimiento-fechas.test.mjs: identical results across ${JSON.string
   const fs = await import('node:fs');
   const src = fs.readFileSync(new URL('./seguimiento.js', import.meta.url), 'utf8');
   const forbidden = /\.get(FullYear|Month|Date|Hours|Minutes|Day)\(\)/;
-  // Only inspect the Bogotá date/hour section (BOGOTA_UTC_OFFSET_MIN through
-  // the end of dateOnly) -- the rest of the file (DOM section) legitimately
-  // formats things for on-screen display and is out of scope for this check.
-  const start = src.indexOf('BOGOTA_UTC_OFFSET_MIN');
-  const end = src.indexOf('function dateOnly(value) {');
-  const section = src.slice(start, end + 400);
-  assert.equal(forbidden.test(section), false, 'bogotaParts/bogotaToday section must never call a LOCAL (non-UTC) Date getter');
+
+  // N11: scan the WHOLE body of each timezone-sensitive function (from its
+  // `function`/`export function` declaration line to the next line that is
+  // JUST `}` at column 0) instead of a fixed char-count window from a fixed
+  // start marker -- a window like `indexOf('function dateOnly(value) {') +
+  // 400` silently stops checking partway through if a future edit (a longer
+  // doc comment, an added branch, …) pushes real code past the +400 cutoff,
+  // with no failure to signal it. Extracting each function's REAL body has
+  // no such blind spot regardless of how the surrounding source reflows.
+  function extractFunctionBody(source, declarationRe) {
+    const m = declarationRe.exec(source);
+    assert.ok(m, `declaration not found in seguimiento.js: ${declarationRe}`);
+    const closeIdx = source.indexOf('\n}', m.index);
+    assert.ok(closeIdx !== -1, `closing brace ('\\n}' at column 0) not found for: ${declarationRe}`);
+    return source.slice(m.index, closeIdx + 2);
+  }
+
+  const section = [
+    extractFunctionBody(src, /export function bogotaParts\(value\) \{/),
+    extractFunctionBody(src, /export function bogotaToday\(now = Date\.now\(\)\) \{/),
+    extractFunctionBody(src, /function dateOnly\(value\) \{/),
+  ].join('\n');
+
+  assert.equal(forbidden.test(section), false, 'bogotaParts/bogotaToday/dateOnly must never call a LOCAL (non-UTC) Date getter');
   assert.equal(/new Date\(`/.test(section), false, 'must never build a Date from a template-string literal (naive-string local parse)');
 }
-console.log('seguimiento-fechas.test.mjs: grep-level guard (no local Date getters) OK');
+console.log('seguimiento-fechas.test.mjs: grep-level guard scans whole function bodies, not a fixed char window (N11) OK');
 
 console.log('seguimiento-fechas.test.mjs: all assertions passed');
