@@ -22,18 +22,29 @@ def _rep(**over) -> dict:
 
 # ── parse_fecha_es_co ─────────────────────────────────────────────────────
 
+def test_parse_fecha_es_co_renders_in_utc_not_bogota():
+    # Regression (2026-09-13): informe/json's `fechaCreacion`, like
+    # informe/stickers's, is rendered in UTC — verified live with
+    # desde_utc/hasta_utc windowed calls (a report tagged "10:32 p. m." only
+    # appears inside the 22:00-22:40 UTC window, never the 17:00-17:40 UTC
+    # window that would match if the string were already Bogota-local).
+    # Tagging it `-05:00` (the old behavior) shifted every displayed date/time
+    # 5h into the future relative to the real moment. Must be `+00:00`.
+    assert rc.parse_fecha_es_co("sábado, 12 de septiembre de 2026, 10:32 p. m.") == "2026-09-12T22:32:00+00:00"
+
+
 def test_parse_fecha_pm():
-    assert rc.parse_fecha_es_co("martes, 18 de agosto de 2026, 06:33 p. m.") == "2026-08-18T18:33:00-05:00"
+    assert rc.parse_fecha_es_co("martes, 18 de agosto de 2026, 06:33 p. m.") == "2026-08-18T18:33:00+00:00"
 
 
 def test_parse_fecha_am_and_noon_midnight():
-    assert rc.parse_fecha_es_co("jueves, 20 de agosto de 2026, 07:19 a. m.") == "2026-08-20T07:19:00-05:00"
-    assert rc.parse_fecha_es_co("lunes, 3 de agosto de 2026, 12:05 p. m.") == "2026-08-03T12:05:00-05:00"
-    assert rc.parse_fecha_es_co("lunes, 3 de agosto de 2026, 12:05 a. m.") == "2026-08-03T00:05:00-05:00"
+    assert rc.parse_fecha_es_co("jueves, 20 de agosto de 2026, 07:19 a. m.") == "2026-08-20T07:19:00+00:00"
+    assert rc.parse_fecha_es_co("lunes, 3 de agosto de 2026, 12:05 p. m.") == "2026-08-03T12:05:00+00:00"
+    assert rc.parse_fecha_es_co("lunes, 3 de agosto de 2026, 12:05 a. m.") == "2026-08-03T00:05:00+00:00"
 
 
 def test_parse_fecha_without_weekday_and_nbsp():
-    assert rc.parse_fecha_es_co("18 de agosto de 2026, 6:33 p. m.") == "2026-08-18T18:33:00-05:00"
+    assert rc.parse_fecha_es_co("18 de agosto de 2026, 6:33 p. m.") == "2026-08-18T18:33:00+00:00"
 
 
 def test_parse_fecha_invalid():
@@ -44,21 +55,21 @@ def test_parse_fecha_invalid():
 # ── parse_fecha_es_co: mandatory edge cases ────────────────────────────────
 
 def test_parse_fecha_uppercase_month():
-    assert rc.parse_fecha_es_co("martes, 18 de AGOSTO de 2026, 06:33 p. m.") == "2026-08-18T18:33:00-05:00"
+    assert rc.parse_fecha_es_co("martes, 18 de AGOSTO de 2026, 06:33 p. m.") == "2026-08-18T18:33:00+00:00"
 
 
 def test_parse_fecha_pm_without_inner_space():
-    assert rc.parse_fecha_es_co("martes, 18 de agosto de 2026, 06:33 p.m.") == "2026-08-18T18:33:00-05:00"
+    assert rc.parse_fecha_es_co("martes, 18 de agosto de 2026, 06:33 p.m.") == "2026-08-18T18:33:00+00:00"
 
 
 def test_parse_fecha_leading_and_trailing_whitespace():
-    assert rc.parse_fecha_es_co("  martes, 18 de agosto de 2026, 06:33 p. m.  ") == "2026-08-18T18:33:00-05:00"
+    assert rc.parse_fecha_es_co("  martes, 18 de agosto de 2026, 06:33 p. m.  ") == "2026-08-18T18:33:00+00:00"
 
 
 def test_parse_fecha_nbsp_before_meridiem():
     # Real data (Task 0): the API may embed U+00A0 right before "p. m.".
     texto = "martes, 18 de agosto de 2026, 06:33 p. m."
-    assert rc.parse_fecha_es_co(texto) == "2026-08-18T18:33:00-05:00"
+    assert rc.parse_fecha_es_co(texto) == "2026-08-18T18:33:00+00:00"
 
 
 def test_parse_fecha_february_30_is_none():
@@ -73,7 +84,7 @@ def test_project_keeps_only_tab_fields():
                         "nombre_edificio", "lat", "lng", "creado", "creado_texto", "habitabilidad", "visitado",
                         "pudo_evaluar", "alcance", "descripcion", "sticker"}
     assert out["estado"] == "Visitado crítico" and out["visitado"] is True
-    assert out["creado"] == "2026-08-18T18:33:00-05:00"
+    assert out["creado"] == "2026-08-18T18:33:00+00:00"
     assert out["sticker"] == {"numero": "76001-1-0040001", "color": "rojo", "etiqueta": "No habitable",
                               "origen": "firebase", "clasificacion": "peligro_colapso"}
 

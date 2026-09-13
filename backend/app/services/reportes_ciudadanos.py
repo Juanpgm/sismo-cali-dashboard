@@ -3,15 +3,15 @@ public snapshot the "Reportes ciudadanos" tab reads (design D5 in
 docs/superpowers/specs/2026-09-08-atencionsismo-reportes-ciudadanos-stickers-design.md).
 Input is the already PII/heavy-stripped record `dashboard_refresh._raw_record_mapper`
 produces; this narrows it further to what the tab renders and parses the
-es-CO formatted creation date into ISO 8601 (Bogota, UTC-5)."""
+es-CO formatted creation date into ISO 8601 (UTC — see `parse_fecha_es_co`)."""
 from __future__ import annotations
 
 import math
 import re
+from datetime import timezone
 from typing import Any, Iterable
 
 from app.services import fechas_es_co
-from app.services.fechas_es_co import BOGOTA
 
 DESCRIPCION_MAX = 240
 # 7+ digits, optionally separated by a single space/dot/dash between each
@@ -47,8 +47,7 @@ _STICKER_KEYS = (("numero", "numero"), ("color", "color"), ("colorEtiqueta", "et
 # D8 (plan cozy-wobbling-dragonfly W1): this used to be its own independent
 # regex/month-table parser, duplicated (with a DIFFERENT, contradictory tz)
 # in `planeacion_cruce.parse_fecha_creacion_es`. Both now delegate to the
-# one shared, tz-explicit parser in `app.services.fechas_es_co` — this
-# function keeps its exact own signature and Bogota-offset ISO output. NOT
+# one shared, tz-explicit parser in `app.services.fechas_es_co`. NOT
 # byte-for-byte with the pre-shared parser on every input (M4, adversarial
 # review 2026-09-12): the shared parser is DELIBERATELY more permissive on
 # two axes this parser never covered before — a bare 24h `HH:mm[:ss]`
@@ -58,12 +57,21 @@ _STICKER_KEYS = (("numero", "numero"), ("color", "color"), ("colorEtiqueta", "et
 # matching the "hour % 12 + 12 if pm" rule's own valid range instead of
 # silently wrapping. Every other input — including the tolerant weekday/
 # leading-junk/leading-zero handling M3 restored — parses identically to
-# the old parser. NOTE (tracked separately, see the plan's "Fuera de
-# alcance"): this tz may itself be wrong if `informe/json`'s own
-# `fechaCreacion` also renders in UTC like `informe/stickers`'s does —
-# unverified and NOT changed here.
+# the old parser.
+#
+# TZ FIX (2026-09-13, follow-up flagged in the plan's "Fuera de alcance"):
+# `informe/json`'s `fechaCreacion` is rendered in UTC, exactly like
+# `informe/stickers`'s — verified live with `desde_utc`/`hasta_utc` windowed
+# calls (a report string reading "10:32 p. m." only appears inside the
+# 22:00-22:40 UTC window, never 17:00-17:40 UTC). This function used to tag
+# the parsed wall-clock numbers as Bogota (`-05:00`), which shifted every
+# `creado` timestamp published to the PUBLIC reportes_ciudadanos.json 5
+# hours into the future relative to the real moment. Now tags them `utc`
+# (`+00:00`) — the frontend's `new Date(iso).toLocaleString('es-CO', …)`
+# (no explicit `timeZone`) already renders in the viewer's local time, so a
+# correct absolute instant is all it needs; no frontend change required.
 def parse_fecha_es_co(texto: object) -> str | None:
-    dt = fechas_es_co.parse_fecha_es_co(texto, tz=BOGOTA)
+    dt = fechas_es_co.parse_fecha_es_co(texto, tz=timezone.utc)
     return fechas_es_co.to_iso(dt) if dt is not None else None
 
 

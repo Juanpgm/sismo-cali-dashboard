@@ -294,6 +294,12 @@ El color se calcula con la misma lógica del dashboard: ATC-20, luego EDE, luego
 
 `estadoVerificacion` usa estas etiquetas: Reportado, Asignado, Visitado, Visitado crítico, Evaluación especializada, Visita fallida.
 
+#### Nota de integración (2026-09-13)
+
+`fechaCreacion`/`fechaEnvio` de `reportes[]` (línea 264: "Valores formateados en español (`es-CO`)...") **también se renderizan en UTC**, igual que `fechaCreacion` en `/api/informe/stickers` (ver la Nota de integración de 2026-09-12 en la sección Stickers JSON) — verificado en vivo con las mismas ventanas `desde_utc`/`hasta_utc`: un reporte etiquetado "10:32 p. m." solo aparece dentro de la ventana 22:00–22:40 UTC.
+
+`backend/app/services/reportes_ciudadanos.py::parse_fecha_es_co` etiquetaba estas fechas como hora de Bogotá (`-05:00`) en vez de UTC, corriendo 5 horas hacia el futuro cada `creado` publicado en `reportes_ciudadanos.json` (bug detectado y corregido el 2026-09-13; ver `backend/tests/services/test_reportes_ciudadanos.py::test_parse_fecha_es_co_renders_in_utc_not_bogota`).
+
 ### Errores
 
 | HTTP | Cuerpo | Causa |
