@@ -12,6 +12,7 @@ import {
   kpiTotals, matchesSearch, visibleRowsFor, degradedStickerNote, unassignedNote, kpisHtml,
   timelineChartConfig, timelineDataKey,
   COLUMNS_TOTALES, COLUMNS_TEMPORALES, columnsFor, defaultSortFor, formatMinutes, xlsxRowsFor,
+  objetivoDiario, visitasUltimos7Dias, reportFilenameSlug, buildMassReportDocDefinition,
 } from './seguimiento.js';
 
 // Small test-local helper: the "no identity/no cédula at all" key shape a
@@ -1864,5 +1865,252 @@ console.log('xlsxRowsFor: empty/undefined input OK');
   assert.deepEqual(desc.map((r) => r.key), ['b', 'c', 'a'], 'null still sorts lowest, i.e. LAST descending');
 }
 console.log('sortRows: nullable temporal-minutes column (prevDayFirstMinutes) OK');
+
+// ── W10: objetivoDiario ──────────────────────────────────────────────────────
+assert.equal(objetivoDiario({ pendientes: null, profesionalesActivos: 10, today: '2026-09-13' }), null, 'non-finite pendientes -> null, never substituted with 0');
+assert.equal(objetivoDiario({ pendientes: NaN, profesionalesActivos: 10, today: '2026-09-13' }), null);
+assert.equal(objetivoDiario({ pendientes: undefined, profesionalesActivos: 10, today: '2026-09-13' }), null, 'missing pendientes (agg without kpis) -> null, never 0');
+assert.equal(objetivoDiario({ pendientes: 100, profesionalesActivos: 0, today: '2026-09-13' }), null, 'zero active professionals -> null');
+assert.equal(objetivoDiario({ pendientes: 100, profesionalesActivos: -1, today: '2026-09-13' }), null, 'negative active professionals -> null');
+assert.equal(objetivoDiario({ pendientes: 100, profesionalesActivos: 10, today: '2026-10-01' }), null, 'today past the deadline -> null');
+assert.equal(objetivoDiario({ pendientes: 100, profesionalesActivos: 10, today: null }), null, 'missing today -> null');
+{
+  // today === deadline -> days = max(1, 0) = 1, never a division by zero.
+  const v = objetivoDiario({
+    pendientes: 50, profesionalesActivos: 5, today: '2026-09-30', deadline: '2026-09-30',
+  });
+  assert.equal(v, 10, '50/5/1 día = 10.0');
+}
+{
+  // Normal rounding to 1 decimal.
+  const v = objetivoDiario({
+    pendientes: 333, profesionalesActivos: 10, today: '2026-09-20', deadline: '2026-09-30',
+  });
+  assert.equal(v, 3.3, '333 / 10 profesionales / 10 días = 3.33 -> 3.3');
+}
+console.log('objetivoDiario: null-cases + normal rounding OK');
+
+// ── W10: visitasUltimos7Dias — rolling today-6..today (inclusive), stickers +
+// surveys, SIN_DATO excluded first (D3) ──────────────────────────────────────
+{
+  const stickers = [
+    { inspector: { nombre_completo: 'X', identificacion: '1' }, inspector_fuente: 'evaluacion', fase: 1, fuente: 'atencionsismo', fecha: '2026-01-09T12:00:00+00:00' }, // today
+    { inspector: { nombre_completo: 'X', identificacion: '1' }, inspector_fuente: 'evaluacion', fase: 1, fuente: 'atencionsismo', fecha: '2026-01-03T12:00:00+00:00' }, // today-6, IN
+    { inspector: { nombre_completo: 'X', identificacion: '1' }, inspector_fuente: 'evaluacion', fase: 1, fuente: 'atencionsismo', fecha: '2026-01-02T12:00:00+00:00' }, // today-7, OUT
+    { inspector: { nombre_completo: 'X', identificacion: '1' }, inspector_fuente: 'evaluacion', fase: null, fuente: 'atencionsismo', fecha: '2026-01-09T12:00:00+00:00' }, // SIN_DATO, excluded
+  ];
+  const surveys = [
+    { nombre_evaluador: 'X', fecha_inspeccion: '2026-01-08' }, // IN
+  ];
+  const identity = buildIdentityIndex({ stickers, surveys });
+  const row = { key: 'ced:1' };
+  const n = visitasUltimos7Dias(row, {
+    stickers, surveys, identity, today: '2026-01-09',
+  });
+  assert.equal(n, 3, '2 in-window stickers (SIN_DATO excluded) + 1 survey');
+}
+console.log('visitasUltimos7Dias: window inclusive today-6/exclusive today-7, SIN_DATO excluded first OK');
+
+{
+  // Zero records in the window -> 0, never throws.
+  const row = { key: 'ced:99' };
+  const n = visitasUltimos7Dias(row, { stickers: [], surveys: [], today: '2026-01-09' });
+  assert.equal(n, 0);
+}
+console.log('visitasUltimos7Dias: zero records -> 0 OK');
+
+// ── W10: reportFilenameSlug ──────────────────────────────────────────────────
+assert.equal(reportFilenameSlug('Gil Soto'), 'Gil_Soto');
+assert.equal(reportFilenameSlug(''), 'profesional', 'blank name falls back to a stable slug, never an empty filename');
+assert.equal(reportFilenameSlug('   '), 'profesional', 'whitespace-only name falls back too');
+assert.equal(reportFilenameSlug(null), 'profesional');
+assert.equal(reportFilenameSlug(undefined), 'profesional');
+assert.equal(reportFilenameSlug('Gil/Soto?'), 'Gil_Soto_', 'unsafe filename characters collapse to _, never dropped silently in a way that could collide');
+console.log('reportFilenameSlug OK');
+
+// ── W10: buildProfessionalReportDocDefinition — ctx-driven extensions ───────
+{
+  const row = {
+    name: 'Gil Soto', cedula: '123', codigo: '004', entidad: 'DAGMA', np: 'P2',
+    tarjetaProfesional: '', celular: '', correo: '', barriosActivos: [],
+    stickersFase1: 2, stickersFase2: 1, surveyTotal: 3, total: 6,
+    firstDate: '2026-01-01', lastDate: '2026-01-05', activeDays: 3, avgPerActiveDay: 2,
+    avgStickersPerDay: 1, rosterSourced: 0,
+  };
+  const points = { stickerPoints: [], surveyPoints: [] };
+  const ctx = {
+    from: '2026-01-01', to: '2026-01-05', generatedAt: '2026-01-06', today: '2026-01-06',
+    objetivoDiario: null, degraded: false,
+  };
+  const doc = buildProfessionalReportDocDefinition(row, points, { ...ctx, last7: 2 });
+  const flatText = JSON.stringify(doc.content);
+  assert.ok(/sin dato/i.test(flatText), 'objetivoDiario null must render "sin dato", never a lying number');
+  assert.ok(flatText.includes('—'), 'blank tarjeta/celular/correo/barrios must render the forced DASH');
+  assert.ok(/personal/i.test(flatText), 'a confidentiality line about personal data must be present');
+
+  const docOther = buildProfessionalReportDocDefinition(row, points, { ...ctx, last7: 9 });
+  assert.notEqual(JSON.stringify(docOther.content), flatText, 'ctx.last7 must actually reach the rendered report');
+  assert.ok(JSON.stringify(docOther.content).includes('"9"'), 'the last7 value must render as its own cell text');
+}
+console.log('buildProfessionalReportDocDefinition: ctx-driven fields (objetivoDiario sin dato, DASH-forced blanks, confidentiality line, last7) OK');
+
+{
+  const row = {
+    name: 'X', cedula: '1', codigo: '', entidad: '', np: '', barriosActivos: [],
+    stickersFase1: 0, stickersFase2: 0, surveyTotal: 0, total: 0,
+    firstDate: null, lastDate: null, activeDays: 0, avgPerActiveDay: 0,
+    avgStickersPerDay: null, rosterSourced: 0,
+  };
+  const doc = buildProfessionalReportDocDefinition(row, { stickerPoints: [], surveyPoints: [] }, { objetivoDiario: 3.3, last7: 0 });
+  const flatText = JSON.stringify(doc.content);
+  assert.ok(flatText.includes('3.3'), 'a real objetivoDiario value must render');
+  assert.ok(/30 de septiembre de 2026/.test(flatText), 'must show the "Proyectado al 30 de septiembre de 2026" phrasing');
+}
+console.log('buildProfessionalReportDocDefinition: objetivoDiario real value renders with the "Proyectado…" phrasing OK');
+
+{
+  const row = { name: 'X' };
+  assert.throws(
+    () => buildProfessionalReportDocDefinition(row, { stickerPoints: [], surveyPoints: [] }, { degraded: true }),
+    /degradad/i,
+    'a degraded data source must refuse to build the report, not silently ship redacted/wrong data',
+  );
+}
+console.log('buildProfessionalReportDocDefinition: degraded ctx refuses to build (throws) OK');
+
+{
+  const row = {
+    name: 'Gil Soto', cedula: '1', codigo: '', entidad: '', np: '', barriosActivos: [],
+    stickersFase1: 60, stickersFase2: 0, surveyTotal: 0, total: 60,
+    firstDate: '2026-01-01', lastDate: '2026-03-01', activeDays: 60, avgPerActiveDay: 1,
+    avgStickersPerDay: 1, rosterSourced: 0,
+  };
+  const stickerPoints = Array.from({ length: 60 }, (_, i) => ({
+    codigo: `COD-${i}`, direccion: 'x', municipio: 'Cali', fecha: '2026-01-01', faseLabel: 'Fase I',
+  }));
+  const doc = buildProfessionalReportDocDefinition(row, { stickerPoints, surveyPoints: [] }, {});
+  const flatText = JSON.stringify(doc.content);
+  assert.ok(flatText.includes('COD-49'), 'the 50th row (index 49) must still be included');
+  assert.ok(!flatText.includes('COD-50'), 'row 51 (index 50) must be cut off — cap is 50');
+  assert.ok(/y 10 m.s/i.test(flatText), 'overflow note must report the exact excess count (60-50=10)');
+}
+console.log('buildProfessionalReportDocDefinition: sticker listing capped at 50 rows + overflow note OK');
+
+{
+  const row = {
+    name: '', cedula: '', codigo: '', entidad: '', np: '', barriosActivos: [],
+    stickersFase1: 0, stickersFase2: 0, surveyTotal: 0, total: 0,
+    firstDate: null, lastDate: null, activeDays: 0, avgPerActiveDay: 0,
+    avgStickersPerDay: null, rosterSourced: 0,
+  };
+  const doc = buildProfessionalReportDocDefinition(row, { stickerPoints: [], surveyPoints: [] }, {});
+  const flatText = JSON.stringify(doc.content);
+  assert.ok(flatText.includes('Sin dato'), 'a blank name must render as "Sin dato" in the title, never an empty header');
+}
+console.log('buildProfessionalReportDocDefinition: row.name === "" renders "Sin dato" OK');
+
+{
+  // A professional with zero stickers in the requested period still renders
+  // "Sin registros" instead of an empty/blank table (existing convention,
+  // still exercised here explicitly for the period-filtered W10 flow).
+  const row = {
+    name: 'Sin Stickers', cedula: '1', codigo: '', entidad: '', np: '', barriosActivos: [],
+    stickersFase1: 0, stickersFase2: 0, surveyTotal: 2, total: 2,
+    firstDate: '2026-01-01', lastDate: '2026-01-02', activeDays: 2, avgPerActiveDay: 1,
+    avgStickersPerDay: null, rosterSourced: 0,
+  };
+  const doc = buildProfessionalReportDocDefinition(row, {
+    stickerPoints: [], surveyPoints: [{ direccion: 'X', nombreEdificacion: 'Y', fecha: '2026-01-01' }],
+  }, {});
+  assert.ok(/sin registros/i.test(JSON.stringify(doc.content)));
+}
+console.log('buildProfessionalReportDocDefinition: zero stickers in range -> "Sin registros" OK');
+
+// ── W10: buildMassReportDocDefinition ────────────────────────────────────────
+{
+  const rowA = {
+    name: 'Ana Ruiz', cedula: '1', codigo: '', entidad: '', np: '', barriosActivos: [],
+    stickersFase1: 1, stickersFase2: 0, surveyTotal: 0, total: 1,
+    firstDate: '2026-01-01', lastDate: '2026-01-01', activeDays: 1, avgPerActiveDay: 1,
+    avgStickersPerDay: 1, rosterSourced: 0,
+  };
+  const rowB = {
+    name: 'Beto Ríos', cedula: '2', codigo: '', entidad: '', np: '', barriosActivos: [],
+    stickersFase1: 0, stickersFase2: 1, surveyTotal: 0, total: 1,
+    firstDate: '2026-01-02', lastDate: '2026-01-02', activeDays: 1, avgPerActiveDay: 1,
+    avgStickersPerDay: 1, rosterSourced: 0,
+  };
+  const pointsA = { stickerPoints: [{ codigo: 'A1', direccion: '', municipio: '', fecha: '2026-01-01', faseLabel: 'Fase I' }], surveyPoints: [] };
+  const pointsB = { stickerPoints: [{ codigo: 'B1', direccion: '', municipio: '', fecha: '2026-01-02', faseLabel: 'Fase II' }], surveyPoints: [] };
+  const ctx = {
+    from: '2026-01-01', to: '2026-01-02', generatedAt: '2026-01-03', today: '2026-01-03', objetivoDiario: null, degraded: false,
+  };
+
+  const mass = buildMassReportDocDefinition([
+    { row: rowA, points: pointsA, last7: 1 },
+    { row: rowB, points: pointsB, last7: 1 },
+  ], ctx);
+
+  const soloA = buildProfessionalReportDocDefinition(rowA, pointsA, { ...ctx, last7: 1 });
+  const soloB = buildProfessionalReportDocDefinition(rowB, pointsB, { ...ctx, last7: 1 });
+
+  const breakIndex = mass.content.findIndex((n) => n && n.pageBreak === 'before');
+  assert.ok(breakIndex > 0, 'a page break must exist before the second professional');
+  const firstBlock = mass.content.slice(0, breakIndex);
+  const secondBlock = mass.content.slice(breakIndex).map((n, i) => {
+    if (i !== 0) return n;
+    const { pageBreak, ...rest } = n;
+    return rest;
+  });
+  assert.deepEqual(firstBlock, soloA.content, 'first professional block must match the solo builder exactly');
+  assert.deepEqual(secondBlock, soloB.content, 'second professional block (pageBreak stripped) must match the solo builder exactly');
+}
+console.log('buildMassReportDocDefinition: individual and mass builders produce identical per-professional content OK');
+
+{
+  // 0 professionals -> a single informational page, never an empty content array.
+  const doc = buildMassReportDocDefinition([], {});
+  assert.ok(doc.content.length > 0, 'must never ship an empty content array');
+  assert.ok(JSON.stringify(doc.content).includes('Sin profesionales para los filtros seleccionados'));
+}
+console.log('buildMassReportDocDefinition: 0 professionals -> single "sin profesionales" page OK');
+
+{
+  // Degraded ctx refuses the whole batch too, even with 0 rows.
+  assert.throws(() => buildMassReportDocDefinition([], { degraded: true }), /degradad/i);
+}
+console.log('buildMassReportDocDefinition: degraded ctx refuses (throws) OK');
+
+{
+  // W10 perf sanity (Node-side only -- pdfmake's actual PAGE LAYOUT cannot run
+  // outside a browser; the real timing/heap gate from the plan's performance
+  // budget (< 20 s and < 700 MB for 110 professionals) must be measured
+  // manually in DevTools against the real dataset.
+  // TODO perf gate: manual measurement required (browser: getBlob() timing +
+  // heap snapshot around the mass-export click, per the plan's own
+  // "Presupuesto de rendimiento" table, row "Export masivo build/total").
+  const rowsWithPoints = Array.from({ length: 110 }, (_, i) => {
+    const row = {
+      key: `ced:${i}`, name: `Profesional ${i}`, cedula: String(1000 + i), codigo: 'B1', entidad: 'DAGRD',
+      np: 'P2', tarjetaProfesional: 'TP', celular: '300', correo: 'x@x.com',
+      stickersFase1: 15, stickersFase2: 15, surveyTotal: 0, total: 30,
+      firstDate: '2026-08-01', lastDate: '2026-09-01', activeDays: 20, avgPerActiveDay: 1.5,
+      avgStickersPerDay: 1.5, rosterSourced: 0, barriosActivos: ['Barrio A'],
+    };
+    const stickerPoints = Array.from({ length: 30 }, (_, j) => ({
+      codigo: `COD-${i}-${j}`, direccion: `Calle ${j}`, municipio: 'Cali', fecha: '2026-08-15', faseLabel: j % 2 ? 'Fase I' : 'Fase II',
+    }));
+    return { row, points: { stickerPoints, surveyPoints: [] }, last7: 5 };
+  });
+  const def = buildMassReportDocDefinition(rowsWithPoints, {
+    from: '2026-08-01', to: '2026-09-01', generatedAt: '2026-09-13', objetivoDiario: 2.5, degraded: false, today: '2026-09-13',
+  });
+  const pageBreaks = def.content.filter((n) => n && n.pageBreak === 'before').length;
+  assert.equal(pageBreaks, 109, '110 professionals -> 109 page breaks (none before the first)');
+  const size = JSON.stringify(def).length;
+  assert.ok(size < 3 * 1024 * 1024, `doc-definition JSON should stay under 3MB (was ${size} bytes)`);
+  console.log(`buildMassReportDocDefinition: 110-professional doc-definition size = ${(size / 1024).toFixed(1)} KB`);
+}
+console.log('buildMassReportDocDefinition: 110-professional perf sanity (page breaks + size) — TODO perf gate: manual browser measurement per plan OK');
 
 console.log('seguimiento.test.mjs: all assertions passed');

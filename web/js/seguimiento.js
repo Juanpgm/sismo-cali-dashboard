@@ -913,6 +913,67 @@ export function buildBarriosActivos(row, {
   return map.get(key) || [];
 }
 
+// ── W10: reporting helpers (objetivo diario, visitas 7d, filename slug) ────
+
+/** Daily visit target needed to clear a backlog by `deadline` (D5: fixed
+ *  project deadline, 2026-09-30), spread evenly across `profesionalesActivos`
+ *  and the remaining days. `null` (never a fabricated number) when:
+ *   - `pendientes` isn't a finite number — `reportes_agg.json` may not carry
+ *     `kpis` at all (see kpisOficialesFrom's own contract in
+ *     reportes-ciudadanos.js): a missing/non-finite value must NEVER be
+ *     silently treated as 0 pending buildings;
+ *   - `profesionalesActivos` isn't a finite number, or is <= 0 — dividing by
+ *     zero (or a meaningless negative headcount) has no sane answer;
+ *   - `today` is missing, or already past `deadline` (string compare works
+ *     because both are zero-padded YYYY-MM-DD) — there is no daily PACE that
+ *     still "clears the backlog by then" once the deadline has passed.
+ *  `days` is `max(1, daysBetween(today, deadline))` — `today === deadline`
+ *  still yields exactly 1 day (never a division by zero), and any malformed
+ *  date daysBetween can't parse also resolves to `null` here (defensive;
+ *  today/deadline are both expected to already be validated YYYY-MM-DD). */
+export function objetivoDiario({
+  pendientes, profesionalesActivos, today, deadline = '2026-09-30',
+} = {}) {
+  if (!Number.isFinite(pendientes)) return null;
+  if (!Number.isFinite(profesionalesActivos) || profesionalesActivos <= 0) return null;
+  if (!today || today > deadline) return null;
+  const rawDays = daysBetween(today, deadline);
+  if (rawDays === null) return null;
+  const days = Math.max(1, rawDays);
+  const value = pendientes / profesionalesActivos / days;
+  return Math.round(value * 10) / 10;
+}
+
+/** Rolling count of this professional's stickers + Survey records in the
+ *  last 7 days INCLUDING today (`today-6` .. `today`, D3 — "a hoy", never
+ *  "hasta ayer"). Reuses professionalRecords' own from/to narrowing (same
+ *  stickerIncluded/surveyIncluded rules, same SIN_DATO exclusion via
+ *  faseKeyDe applied FIRST) instead of a second, independent window/filter
+ *  implementation that could silently drift from it. */
+export function visitasUltimos7Dias(row, {
+  stickers, surveys, identity, today,
+} = {}) {
+  const todayStr = today || bogotaToday();
+  const from = shiftDateStr(todayStr, -6);
+  const points = professionalRecords(row, {
+    stickers, surveys, identity, from, to: todayStr,
+  });
+  return points.stickerPoints.length + points.surveyPoints.length;
+}
+
+/** A professional's display name -> a safe PDF filename fragment: unsafe
+ *  filename characters collapse to `_` (never dropped silently, which could
+ *  make two DIFFERENT names collide into the same slug); a blank/whitespace-
+ *  only/missing name falls back to the literal 'profesional' rather than
+ *  producing an empty filename segment. Extracted from the existing
+ *  per-row/per-selection report download logic (unchanged behavior) so the
+ *  mass export's per-professional filenames — and a self-check — can reuse
+ *  the exact same rule instead of a second, copy-pasted regex. */
+export function reportFilenameSlug(name) {
+  const slug = String(name || 'profesional').trim().replace(/[^\w-]+/g, '_');
+  return slug || 'profesional';
+}
+
 // ── Per-professional PDF report ─────────────────────────────────────────────
 // Same recipe as report.js: a PURE doc-definition builder (no fetch/DOM/
 // pdfmake dependency, so it is Node-testable) plus a thin async orchestrator
@@ -920,6 +981,20 @@ export function buildBarriosActivos(row, {
 
 const REPORT_DISCLAIMER = 'Informe generado automáticamente a partir del cruce aproximado por nombre '
   + 'entre Stickers y Survey — ver la nota de la pestaña Seguimiento. No constituye un documento oficial certificado.';
+
+// W10: the individual/mass report now prints celular/correo/cédula — a
+// dedicated confidentiality line alongside the pre-existing cross-source
+// caveat, since the mass export in particular ships this for every
+// professional in one file.
+const REPORT_CONFIDENTIALITY_NOTICE = 'Este informe contiene datos personales del profesional (cédula, celular, correo) — '
+  + 'tratar conforme a la política de protección de datos; no distribuir fuera de los canales autorizados.';
+
+const REPORT_STICKERS_CAP = 50;
+
+// Proyección fija (D5/plan): visita objetivo diario se calcula "al 30 de
+// septiembre de 2026" -- el mismo deadline que objetivoDiario() usa por
+// defecto, y el mismo texto que este builder muestra junto al valor.
+const OBJETIVO_DEADLINE_LABEL = '30 de septiembre de 2026';
 
 /** 2-column key/value table, filtering out blank values — same idea as
  *  report.js's own (private) fieldTable, kept local here since this report's
@@ -960,36 +1035,85 @@ function pointsTable(headers, rows, emptyText) {
   }];
 }
 
-/** Pure builder: a professional's row (buildProfessionalRows output) + their
- *  raw points (professionalRecords output) -> pdfmake document definition.
- *  Same style tokens as report.js's builders, so this report reads as part
- *  of the same family of PDFs the app already generates. */
-export function buildProfessionalReportDocDefinition(row, { stickerPoints, surveyPoints }) {
+/** Same idea as pointsTable, capped at `cap` rows with a "…y N más" note when
+ *  the real count exceeds it — a manager reading the printed listing needs a
+ *  bounded page count regardless of how many stickers a very active
+ *  professional collected, while still being told the true total exists
+ *  (never silently truncated with no indication). */
+function cappedPointsTable(headers, rows, emptyText, cap = REPORT_STICKERS_CAP) {
+  const shown = rows.slice(0, cap);
+  const table = pointsTable(headers, shown, emptyText);
+  const overflow = rows.length - shown.length;
+  if (overflow > 0) table.push({ text: `…y ${overflow} más`, style: 'disclaimer', margin: [0, -6, 0, 10] });
+  return table;
+}
+
+/** Pure builder: a professional's row (buildProfessionalRows output, already
+ *  carrying the W9 avgStickersPerDay/barriosActivos/temporal fields) + their
+ *  raw points (professionalRecords output, already period-filtered by the
+ *  caller's `from`/`to`) + `ctx` -> pdfmake document definition. Same style
+ *  tokens as report.js's builders, so this report reads as part of the same
+ *  family of PDFs the app already generates.
+ *
+ *  `ctx = { from, to, generatedAt, objetivoDiario, degraded, today, last7 }`
+ *  — every field optional/defaulted:
+ *   - `degraded: true` REFUSES to build (throws) rather than ship a report
+ *     built from redacted/incomplete identities (D5/plan fail-soft matrix)
+ *     — the caller (DOM section) never even reaches pdfMake.createPdf() in
+ *     that case, so no partial/misleading file is ever produced;
+ *   - `objetivoDiario` (objetivoDiario()'s own return value, precomputed by
+ *     the caller — this builder stays pure, no fetch) renders "sin dato"
+ *     when null/non-finite, never a fabricated number;
+ *   - `last7` (visitasUltimos7Dias()'s own return value, same reasoning —
+ *     precomputed by the caller) defaults to 0 when not a finite number.
+ *  `from`/`to`/`generatedAt`/`today` are accepted for forward-compat/caller
+ *  bookkeeping (mass export's per-professional loop threads the same ctx to
+ *  every builder call) but this function reads dates straight off `row`/
+ *  `points`, which the caller already filtered to the right period. */
+export function buildProfessionalReportDocDefinition(row, { stickerPoints, surveyPoints }, ctx = {}) {
+  if (ctx.degraded) {
+    throw new Error('No se puede generar el informe: origen de datos degradado (identidades no disponibles).');
+  }
   const caveat = row.rosterSourced > 0
     ? [{ text: `⚠ ${row.rosterSourced} sticker(s) con identidad completada por roster (aproximada, no verificada contra la evaluación).`, style: 'caveat', margin: [0, 0, 0, 8] }]
     : [];
+  const objetivoText = Number.isFinite(ctx.objetivoDiario)
+    ? `${ctx.objetivoDiario} (Proyectado al ${OBJETIVO_DEADLINE_LABEL})`
+    : 'sin dato';
+  const last7 = Number.isFinite(ctx.last7) ? ctx.last7 : 0;
+  const visitasPeriodo = stickerPoints.length + surveyPoints.length;
+  const stickersNumbered = stickerPoints.map((p, i) => [i + 1, p.codigo, p.faseLabel, p.fecha || 'Sin fecha']);
   return {
     content: [
       { text: `Informe de seguimiento — ${row.name || 'Sin dato'}`, style: 'title' },
       { text: `Cédula: ${row.cedula || 'Sin dato'} · Código: ${row.codigo || 'Sin dato'} · Entidad: ${row.entidad || 'Sin dato'}`, style: 'subtitle' },
       { text: `Fecha de generación: ${downloadStamp().legible}`, style: 'subtitle' },
-      { text: REPORT_DISCLAIMER, style: 'disclaimer', margin: [0, 4, 0, 12] },
+      { text: REPORT_DISCLAIMER, style: 'disclaimer', margin: [0, 4, 0, 4] },
+      { text: REPORT_CONFIDENTIALITY_NOTICE, style: 'disclaimer', margin: [0, 0, 0, 12] },
       ...caveat,
-      { text: 'Resumen', style: 'sectionHeader' },
+      { text: 'Datos del profesional', style: 'sectionHeader' },
       ...kvTable([
-        ['Stickers Fase I', row.stickersFase1],
-        ['Stickers Fase II', row.stickersFase2],
-        ['Evaluaciones Survey', row.surveyTotal],
-        ['Total', row.total],
-        ['Primer registro', row.firstDate || 'Sin dato'],
-        ['Último registro', row.lastDate || 'Sin dato'],
-        ['Días activos', row.activeDays],
-        ['Promedio por día activo', row.avgPerActiveDay],
+        ['Nombre', row.name || DASH],
+        ['Cédula', row.cedula || DASH],
+        ['Tarjeta profesional', row.tarjetaProfesional || DASH],
+        ['Clase (P) / Código vigente', `${row.np || DASH} / ${row.codigo || DASH}`],
+        ['Celular', row.celular || DASH],
+        ['Correo', row.correo || DASH],
+        ['Barrios activos (7 d)', (row.barriosActivos && row.barriosActivos.length) ? row.barriosActivos.join(', ') : DASH],
       ]),
-      { text: `Puntos recogidos — Stickers (${stickerPoints.length})`, style: 'sectionHeader' },
-      ...pointsTable(
-        ['Código', 'Dirección', 'Municipio', 'Fecha', 'Fase'],
-        stickerPoints.map((p) => [p.codigo, p.direccion, p.municipio, p.fecha || 'Sin fecha', p.faseLabel]),
+      { text: 'Métricas de seguimiento', style: 'sectionHeader' },
+      ...kvTable([
+        ['Visitas totales en el período', visitasPeriodo],
+        ['Visitas últimos 7 días (a hoy)', last7],
+        ['Promedio diario de stickers', Number.isFinite(row.avgStickersPerDay) ? row.avgStickersPerDay : DASH],
+        ['Día inicio', row.firstDate || DASH],
+        ['Fecha última visita', row.lastDate || DASH],
+        ['Visita objetivo diario', objetivoText],
+      ]),
+      { text: `Listado de stickers del período (${stickerPoints.length})`, style: 'sectionHeader' },
+      ...cappedPointsTable(
+        ['#', 'Número', 'Clasificación', 'Fecha'],
+        stickersNumbered,
         'Sin registros de stickers.',
       ),
       { text: `Puntos recogidos — Survey (${surveyPoints.length})`, style: 'sectionHeader' },
@@ -1011,6 +1135,47 @@ export function buildProfessionalReportDocDefinition(row, { stickerPoints, surve
     },
     defaultStyle: { fontSize: 9 },
   };
+}
+
+/** Mass export (D5, plan §Decisiones): ONE pdfmake document spanning every
+ *  professional, `pageBreak: 'before'` on each professional's FIRST content
+ *  node except the very first professional — built incrementally (list.
+ *  forEach, one buildProfessionalReportDocDefinition() call per entry) so
+ *  the individual and mass reports are GUARANTEED to render identical
+ *  per-professional content (they share the exact same builder, never a
+ *  second/parallel "mass" layout that could drift). `rowsWithPoints` is
+ *  `[{ row, points, last7 }, …]` (points = professionalRecords() output for
+ *  that row/period, last7 = visitasUltimos7Dias() for that row — both
+ *  precomputed by the caller, same reasoning as ctx.objetivoDiario above).
+ *  `ctx` is the SAME ctx buildProfessionalReportDocDefinition takes, applied
+ *  to every professional (only `last7` varies per entry — everything else,
+ *  incl. `degraded`/`objetivoDiario`, is a property of the whole export, not
+ *  of one professional). 0 professionals -> one informational page, never an
+ *  empty `content` array (pdfmake would otherwise render nothing at all,
+ *  indistinguishable from a silent failure). */
+export function buildMassReportDocDefinition(rowsWithPoints, ctx = {}) {
+  if (ctx.degraded) {
+    throw new Error('No se puede generar el informe: origen de datos degradado (identidades no disponibles).');
+  }
+  const list = Array.isArray(rowsWithPoints) ? rowsWithPoints : [];
+  if (!list.length) {
+    return {
+      content: [{ text: 'Sin profesionales para los filtros seleccionados', style: 'emptyMessage' }],
+      styles: { emptyMessage: { fontSize: 14, bold: true, alignment: 'center', margin: [0, 60, 0, 0] } },
+      defaultStyle: { fontSize: 9 },
+    };
+  }
+  let styles = null;
+  let defaultStyle = null;
+  const content = [];
+  list.forEach((entry, i) => {
+    const single = buildProfessionalReportDocDefinition(entry.row, entry.points, { ...ctx, last7: entry.last7 });
+    if (!styles) { styles = single.styles; defaultStyle = single.defaultStyle; }
+    single.content.forEach((node, idx) => {
+      content.push(i > 0 && idx === 0 ? { ...node, pageBreak: 'before' } : node);
+    });
+  });
+  return { content, styles, defaultStyle };
 }
 
 /** Sorts a copy of `rows` by `column`, ascending or descending. String
@@ -1484,7 +1649,7 @@ function sectionHtml() {
           </label>
           <button type="button" class="sticker-action" id="seg-download">Exportar XLSX</button>
           <button type="button" class="sticker-action" id="seg-report-selected" disabled>Reporte PDF individual</button>
-          <button type="button" class="sticker-action" id="seg-report-mass" disabled title="Disponible en la próxima entrega">Exportación masiva reportes</button>
+          <button type="button" class="sticker-action" id="seg-report-mass" disabled>Exportación masiva reportes</button>
         </div>
       </div>
 
@@ -1775,19 +1940,47 @@ async function fetchStickersWithRetry(getToken) {
   }
 }
 
-/** Orchestrator for the per-row "📄 Informe" button: gathers this
- *  professional's raw points (professionalRecords, pure), builds the doc
- *  definition (buildProfessionalReportDocDefinition, pure) + lazy-loads
- *  pdfmake (report.js — the same instance every other PDF report in the app
- *  uses, cached after the first call) and triggers the download. Mirrors
- *  report.js's own generarInformePdf/generarInformeCandidato shape. */
-async function descargarInformeProfesional(row, { stickers, surveys, identity }) {
-  const points = professionalRecords(row, { stickers, surveys, identity });
-  const def = buildProfessionalReportDocDefinition(row, points);
+/** Orchestrator for the per-row "📄 Informe"/"Reporte PDF individual" button:
+ *  gathers this professional's raw points for `ctx.from`/`ctx.to` (W10: the
+ *  CURRENT date range, not the professional's whole career — see
+ *  professionalRecords' own doc comment), the last-7-days count, builds the
+ *  doc definition (buildProfessionalReportDocDefinition, pure — throws when
+ *  `ctx.degraded`) + lazy-loads pdfmake (report.js — the same instance every
+ *  other PDF report in the app uses, cached after the first call, retried on
+ *  failure via memoizeLoader) and triggers the download. Mirrors report.js's
+ *  own generarInformePdf/generarInformeCandidato shape. */
+async function descargarInformeProfesional(row, { stickers, surveys, identity }, ctx) {
+  const points = professionalRecords(row, {
+    stickers, surveys, identity, from: ctx.from, to: ctx.to,
+  });
+  const last7 = visitasUltimos7Dias(row, {
+    stickers, surveys, identity, today: ctx.today,
+  });
+  const def = buildProfessionalReportDocDefinition(row, points, { ...ctx, last7 });
   const pdfMake = await loadPdfmake();
-  const nameSlug = String(row.name || 'profesional').trim().replace(/[^\w-]+/g, '_') || 'profesional';
-  const filename = `informe_seguimiento_${nameSlug}_${downloadStamp().slug}.pdf`;
+  const filename = `informe_seguimiento_${reportFilenameSlug(row.name)}_${downloadStamp().slug}.pdf`;
   pdfMake.createPdf(def).download(filename);
+}
+
+/** `reportes_agg.json`'s `kpis.pendientes` — fail-soft (`.catch(() => null)`,
+ *  and `null` on any other shape mismatch): objetivoDiario() already treats
+ *  a non-finite value as "sin dato", never a fabricated 0, exactly the same
+ *  contract kpisOficialesFrom (reportes-ciudadanos.js) already applies to
+ *  this same JSON file's `kpis` object. Lazy `import('./data.js')` — this
+ *  module must stay importable under plain Node (data.js pulls in the
+ *  Firebase SDK via a bare https:// specifier, which breaks Node's ESM
+ *  loader on a static import), same pattern W10's own plan calls for. */
+async function fetchPendientes() {
+  try {
+    const { fetchData } = await import('./data.js');
+    const res = await fetchData('reportes_agg.json');
+    if (!res.ok) return null;
+    const agg = await res.json();
+    const pendientes = agg && agg.kpis && agg.kpis.pendientes;
+    return Number.isFinite(pendientes) ? pendientes : null;
+  } catch {
+    return null;
+  }
 }
 
 /** initSeguimiento(root, { getToken, records }) — renders the tab and wires
@@ -1832,6 +2025,13 @@ export function initSeguimiento(root, { getToken, records }) {
   let subTab = 'totales';
   let sortState = defaultSortFor(subTab);
   let currentRows = [];
+  // W10: true while a mass-export build is in flight — makes
+  // updateSeguimientoRecords() defer its re-render until the export
+  // finishes (a store refresh mid-export must never swap `surveys`/`stickers`
+  // out from under an already-snapshotted export loop), and blocks a second
+  // click from starting a concurrent export.
+  let busy = false;
+  let pendingRecordsDuringExport = null;
   // Search-filtered rows, hoisted so the XLSX export and the empty-table
   // guard both read the SAME set the user is actually looking at — the
   // export used to silently ignore the search box and always dump every
@@ -1849,40 +2049,71 @@ export function initSeguimiento(root, { getToken, records }) {
   // call) so buildProfessionalRows/buildTimeline/the per-row PDF report all
   // resolve identity through the exact SAME index for a given render pass.
   let currentIdentity = buildIdentityIndex({ stickers, surveys });
+  // W10: reportes_agg.json's kpis.pendientes, fetched once per init
+  // (fetchPendientes — fail-soft, null on any failure/shape mismatch) and
+  // reused by every report/export click during this session; never blocks
+  // the tab (fetched in the background, alongside the sticker fetch below).
+  let pendientesValue = null;
 
   function currentFilters() {
     return { from: fromEl.value || null, to: toEl.value || null };
   }
 
-  // W7: the three download/report actions (XLSX, per-selection PDF, mass
-  // export) all share the isDegraded||!stickersLoaded block; the PDF button
-  // additionally needs a professional SELECTED (seg-chart-professional), and
-  // the mass-export button stays hard-disabled regardless — W10 implements
-  // the real export, this is just the button shell.
+  /** The `ctx` every report builder call shares this render pass: the
+   *  current Desde/Hasta filters, "now" (both as a Bogotá date and as a
+   *  ready-to-print `legible` timestamp), the degraded flag (the builder
+   *  itself refuses when true), and objetivoDiario() computed from the
+   *  CURRENTLY known professional count + pendientesValue — recomputed on
+   *  every call (cheap: pure arithmetic) rather than cached, so it always
+   *  reflects the latest filters/row count. `extra` lets a caller override/
+   *  add fields (mass export sets `last7` per professional, individual
+   *  reports leave it to descargarInformeProfesional). */
+  function buildReportCtx(extra = {}) {
+    const { from, to } = currentFilters();
+    const today = bogotaToday();
+    return {
+      from,
+      to,
+      today,
+      generatedAt: downloadStamp().legible,
+      degraded: isDegraded,
+      objetivoDiario: objetivoDiario({
+        pendientes: pendientesValue, profesionalesActivos: currentRows.length, today,
+      }),
+      ...extra,
+    };
+  }
+
+  // W7/W10: the three download/report actions (XLSX, per-selection PDF,
+  // mass export) all share the isDegraded||!stickersLoaded block, PLUS
+  // `busy` (a mass export in flight) — a second export/report must never
+  // start while stickers/surveys could be swapped out from under the first
+  // one's already-snapshotted loop. The PDF button additionally needs a
+  // professional SELECTED (seg-chart-professional).
   function updateDownloadAvailability() {
     // Blocked while degraded (identities are redacted, see fetchStickers
     // below) OR before stickers have resolved at all — exporting mid-flight
     // would silently ship a file whose sticker columns are all "unknown".
     const blocked = isDegraded || !stickersLoaded;
     const loadingTitle = 'Esperando a que carguen los stickers…';
-    downloadBtn.disabled = blocked;
-    downloadBtn.title = isDegraded ? DEGRADED_TITLE : (!stickersLoaded ? loadingTitle : '');
+    const busyTitle = 'Generando exportación masiva…';
+    const allBlocked = blocked || busy;
+    downloadBtn.disabled = allBlocked;
+    downloadBtn.title = isDegraded ? DEGRADED_TITLE : (!stickersLoaded ? loadingTitle : busy ? busyTitle : '');
 
     const hasSelection = Boolean(chartSelectEl.value);
-    reportSelectedBtn.disabled = blocked || !hasSelection;
+    reportSelectedBtn.disabled = allBlocked || !hasSelection;
     reportSelectedBtn.title = isDegraded ? DEGRADED_TITLE
       : !stickersLoaded ? loadingTitle
-        : !hasSelection ? 'Seleccioná un profesional en el filtro "Profesional (gráfico y tabla)" para descargar su informe.'
-          : 'Descargar informe PDF de este profesional';
+        : busy ? busyTitle
+          : !hasSelection ? 'Seleccioná un profesional en el filtro "Profesional (gráfico y tabla)" para descargar su informe.'
+            : 'Descargar informe PDF de este profesional';
 
-    // Always disabled — the real mass-export (W10) doesn't exist yet; this
-    // is only the button shell so its place in the toolbar is stable once
-    // W10 lands. The degraded/loading title still takes priority when either
-    // applies, so an admin sees the SAME reason the other two buttons show.
-    reportMassBtn.disabled = true;
+    reportMassBtn.disabled = allBlocked;
     reportMassBtn.title = isDegraded ? DEGRADED_TITLE
       : !stickersLoaded ? loadingTitle
-        : 'Disponible en la próxima entrega';
+        : busy ? busyTitle
+          : 'Generar un PDF con el informe de cada profesional visible (según los filtros aplicados)';
   }
 
   function renderStatusBanner() {
@@ -2000,7 +2231,15 @@ export function initSeguimiento(root, { getToken, records }) {
   // Reassigned on every initSeguimiento() call, same idea as
   // activeRenderChart above — main.js's onStoreChange always targets
   // whichever init is CURRENTLY open.
+  //
+  // W10: while a mass export is `busy`, the update is DEFERRED (stashed in
+  // `pendingRecordsDuringExport`) instead of swapping `surveys`/re-rendering
+  // immediately — the export loop already snapshotted its OWN `surveys`
+  // reference at click time, so an in-place store refresh mid-export must
+  // never race it; the deferred update is applied once, right after the
+  // export's own `finally` clears `busy` (see generarReportesMasivos below).
   activeUpdateRecords = (newRecords) => {
+    if (busy) { pendingRecordsDuringExport = newRecords; return; }
     surveys = Array.isArray(newRecords) ? newRecords : [];
     render();
   };
@@ -2098,7 +2337,7 @@ export function initSeguimiento(root, { getToken, records }) {
     btn.disabled = true;
     btn.textContent = 'Generando…';
     try {
-      await descargarInformeProfesional(row, { stickers, surveys, identity: currentIdentity });
+      await descargarInformeProfesional(row, { stickers, surveys, identity: currentIdentity }, buildReportCtx());
     } catch (err) {
       console.error('seguimiento: fallo al generar el informe PDF', err);
       showToast('No se pudo generar el informe PDF.', 'error');
@@ -2165,7 +2404,7 @@ export function initSeguimiento(root, { getToken, records }) {
     reportSelectedBtn.disabled = true;
     reportSelectedBtn.textContent = 'Generando…';
     try {
-      await descargarInformeProfesional(row, { stickers, surveys, identity: currentIdentity });
+      await descargarInformeProfesional(row, { stickers, surveys, identity: currentIdentity }, buildReportCtx());
     } catch (err) {
       console.error('seguimiento: fallo al generar el informe PDF (selección)', err);
       showToast('No se pudo generar el informe PDF.', 'error');
@@ -2174,6 +2413,89 @@ export function initSeguimiento(root, { getToken, records }) {
       updateDownloadAvailability();
     }
   });
+
+  // W10: mass export — one PDF spanning every professional currently ON
+  // SCREEN (visibleRows: search + Desde/Hasta + professional-select
+  // narrowing, same set the XLSX export uses), one pageBreak per
+  // professional (buildMassReportDocDefinition). Snapshots `loadSeq`/
+  // `stickers`/`surveys`/`visibleRows` at click time so a store refresh
+  // mid-build (deferred via `busy`, see activeUpdateRecords above) can never
+  // shift the data out from under an already-running loop; a toast at the
+  // end tells the admin if the snapshot went stale in the meantime.
+  async function generarReportesMasivos() {
+    // Double-click guard (belt-and-suspenders alongside .disabled).
+    if (busy) return;
+    if (isDegraded) { showToast('No se puede exportar: mostrando una copia de respaldo con datos incompletos.', 'error'); return; }
+    if (!stickersLoaded) { showToast('Esperá a que carguen los stickers antes de exportar.', 'error'); return; }
+    const rowsToExport = visibleRows.slice();
+    if (!rowsToExport.length) { showToast('No hay profesionales para exportar.', 'error'); return; }
+    // Hard cap (plan D5/W10): a document beyond this size risks the
+    // performance budget (< 20 s / < 700 MB for ~110 profesionales) — acotar
+    // los filtros en vez de generar un archivo desmedido.
+    if (rowsToExport.length > 200) {
+      showToast('Máximo 200 profesionales por exportación — acotá los filtros (búsqueda/rango/profesional) antes de exportar.', 'error');
+      return;
+    }
+    if (rowsToExport.length > 60) {
+      const proceed = confirm(`Vas a generar el informe de ${rowsToExport.length} profesionales en un solo PDF. Esto puede tardar. ¿Continuar?`);
+      if (!proceed) return;
+    }
+
+    const seq = loadSeq;
+    const stk = stickers;
+    const svy = surveys;
+    const identitySnapshot = currentIdentity;
+    const ctx = buildReportCtx();
+    busy = true;
+    updateDownloadAvailability();
+    const originalLabel = reportMassBtn.textContent;
+    try {
+      const rowsWithPoints = [];
+      for (let i = 0; i < rowsToExport.length; i += 1) {
+        const row = rowsToExport[i];
+        const points = professionalRecords(row, {
+          stickers: stk, surveys: svy, identity: identitySnapshot, from: ctx.from, to: ctx.to,
+        });
+        const last7 = visitasUltimos7Dias(row, {
+          stickers: stk, surveys: svy, identity: identitySnapshot, today: ctx.today,
+        });
+        rowsWithPoints.push({ row, points, last7 });
+        // Yield to the event loop every ~10 professionals (plan's own
+        // performance note: no task in the build phase should exceed
+        // 50 ms) — also refreshes the progress label an admin sees during
+        // what can be a multi-second synchronous-ish build.
+        if ((i + 1) % 10 === 0 || i === rowsToExport.length - 1) {
+          reportMassBtn.textContent = `Generando… ${i + 1}/${rowsToExport.length}`;
+          await new Promise((resolve) => { setTimeout(resolve, 0); });
+        }
+      }
+      const def = buildMassReportDocDefinition(rowsWithPoints, ctx);
+      const pdfMake = await loadPdfmake();
+      pdfMake.createPdf(def).download(`informes_seguimiento_masivo_${downloadStamp().slug}.pdf`);
+      if (seq !== loadSeq) {
+        showToast('Los datos se actualizaron durante la generación; el archivo corresponde a la carga anterior.', 'error');
+      } else {
+        showToast('Reportes generados.');
+      }
+    } catch (err) {
+      console.error('seguimiento: fallo la exportación masiva de reportes', err);
+      showToast('No se pudo generar la exportación masiva.', 'error');
+    } finally {
+      busy = false;
+      reportMassBtn.textContent = originalLabel;
+      updateDownloadAvailability();
+      // A store refresh that arrived mid-export was deferred (see
+      // activeUpdateRecords) — apply it now that this export is done,
+      // exactly once, instead of dropping it silently.
+      if (pendingRecordsDuringExport !== null) {
+        const next = pendingRecordsDuringExport;
+        pendingRecordsDuringExport = null;
+        surveys = Array.isArray(next) ? next : [];
+        render();
+      }
+    }
+  }
+  reportMassBtn.addEventListener('click', () => { generarReportesMasivos(); });
 
   downloadBtn.addEventListener('click', async () => {
     // Belt-and-suspenders alongside the disabled attribute (updateDownload
@@ -2221,6 +2543,12 @@ export function initSeguimiento(root, { getToken, records }) {
   updateDownloadAvailability();
   render();
   renderStatusBanner();
+
+  // W10: fetch reportes_agg.json's kpis.pendientes in the background — never
+  // blocks the tab, never surfaces an error (fetchPendientes is fail-soft by
+  // construction); objetivoDiario() already treats a still-null value the
+  // same as a genuinely missing one ("sin dato" in the report, never 0).
+  fetchPendientes().then((value) => { pendientesValue = value; });
 
   (async () => {
     const seq = ++loadSeq;

@@ -1,7 +1,7 @@
 // Self-check for the pure PDF-report builder. Run: node web/js/report.test.mjs
 import assert from 'node:assert/strict';
 import {
-  buildReportDocDefinition, buildEvaluacionDocDefinition, MAX_PHOTOS, evalFaseLabelDe,
+  buildReportDocDefinition, buildEvaluacionDocDefinition, MAX_PHOTOS, evalFaseLabelDe, memoizeLoader,
 } from './report.js';
 import { DETAIL_GROUPS } from './utils.js';
 
@@ -183,3 +183,59 @@ const apiSourcedText = JSON.stringify(buildEvaluacionDocDefinition(apiSourced, {
 assert.ok(!apiSourcedText.includes(CAVEAT_TEXT), 'inspector_fuente "api" must not print the roster caveat');
 
 console.log('report.test.mjs: roster-fallback inspector caveat OK');
+
+// --- memoizeLoader (W10): loadPdfmake's retry-after-failure policy, tested
+// via the generic wrapper since the real loadPdfmake() (script-tag injection
+// + onload/onerror) has no DOM to run against under Node -------------------
+// CONTRATO CAMBIADO (bug fix): loadPdfmake() used to cache a REJECTED
+// promise FOREVER (`pdfmakePromise` was set once and never reset on
+// failure) -- one transient CDN blip during the FIRST report of the session
+// poisoned every subsequent report attempt with the exact same stale
+// rejection, even though a retry moments later would have succeeded. Same
+// class of bug already fixed in evaluaciones.js's geoCache.
+{
+  let calls = 0;
+  const loader = memoizeLoader(() => {
+    calls += 1;
+    return calls === 1 ? Promise.reject(new Error('fail once')) : Promise.resolve('ok');
+  });
+  await assert.rejects(loader(), /fail once/, 'first call must reject with the underlying error');
+  assert.equal(calls, 1);
+  const result = await loader(); // retry: the failed promise must NOT be cached forever
+  assert.equal(result, 'ok', 'a call AFTER a failure must retry fn(), not replay the same rejection forever');
+  assert.equal(calls, 2);
+  const cached = await loader(); // now cached -- a THIRD call must not call fn() again
+  assert.equal(cached, 'ok');
+  assert.equal(calls, 2, 'once resolved, the result is cached forever — fn() never runs a third time');
+}
+console.log('report.test.mjs: memoizeLoader retries after a rejection, then caches the success OK');
+
+{
+  // Concurrent calls before the promise settles share the SAME in-flight
+  // promise (fn() runs exactly once, not once per caller).
+  let calls = 0;
+  const loader = memoizeLoader(() => {
+    calls += 1;
+    return new Promise((resolve) => { setTimeout(() => resolve('x'), 5); });
+  });
+  const [a, b] = await Promise.all([loader(), loader()]);
+  assert.equal(a, 'x');
+  assert.equal(b, 'x');
+  assert.equal(calls, 1, 'concurrent callers before settle must share one in-flight call, never two');
+}
+console.log('report.test.mjs: memoizeLoader shares one in-flight call among concurrent callers OK');
+
+{
+  // A synchronously-throwing fn() must behave exactly like a rejected
+  // promise (reset + rethrow), never an uncaught exception escaping loader().
+  let calls = 0;
+  const loader = memoizeLoader(() => {
+    calls += 1;
+    if (calls === 1) throw new Error('sync fail');
+    return Promise.resolve('ok');
+  });
+  await assert.rejects(loader(), /sync fail/, 'a synchronous throw inside fn() must surface as a rejected promise');
+  const result = await loader();
+  assert.equal(result, 'ok', 'a retry after a synchronous throw must still work');
+}
+console.log('report.test.mjs: memoizeLoader handles a synchronously-throwing fn() OK');
