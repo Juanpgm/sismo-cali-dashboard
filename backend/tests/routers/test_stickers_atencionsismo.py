@@ -98,6 +98,9 @@ def test_no_match_sticker_completes_full_identity_from_roster_end_to_end(client)
         "identificacion": "123",
         "entidad": "Curaduria 1",
         "np": "P4",
+        "tarjeta_profesional": "",
+        "num_telefono": "",
+        "correo_contacto": "",
     }
 
 
@@ -154,6 +157,9 @@ def test_matched_sticker_uses_evaluacion_identity_not_roster(monkeypatch):
         "identificacion": "1",
         "entidad": "E",
         "np": "P4",
+        "tarjeta_profesional": "",
+        "num_telefono": "",
+        "correo_contacto": "",
     }
 
 
@@ -270,7 +276,8 @@ def test_redaction_blanks_persona_and_np():
                               "entidad": "E", "np": "P4"}, "comentarios": "c", "fotos": ["x"]}]
     out = router_mod.redact_for_blob(payload)[0]
     assert out["descripcion"] == {"nombre": "", "direccion": "Calle 1"}
-    assert out["inspector"] == {"uid": "u", "codigo": "004", "entidad": "E", "nombre_completo": "", "identificacion": "", "np": ""}
+    assert out["inspector"] == {"uid": "u", "codigo": "004", "entidad": "E", "nombre_completo": "", "identificacion": "", "np": "",
+                                "tarjeta_profesional": "", "num_telefono": "", "correo_contacto": ""}
     assert out["comentarios"] == "" and out["fotos"] == []
     assert out["fuente"] == "atencionsismo" and out["origen"] == "firebase" and out["color_etiqueta"] == "Habitable"
     assert payload[0]["descripcion"]["nombre"] == "Juan"  # never mutates input
@@ -311,6 +318,117 @@ def test_redaction_keeps_inspector_fuente_it_is_not_personally_identifying():
                               "entidad": "E", "np": "P4"}, "comentarios": "c", "fotos": ["x"]}]
     out = router_mod.redact_for_blob(payload)[0]
     assert out["inspector_fuente"] == "roster"
+
+
+# ── W3 (plan cozy-wobbling-dragonfly): redaction keeps fecha_fuente,
+# barrio_reportado, comuna_reportada (not PII), and blanks contact fields
+# WITH the keys still present (never removed). ──────────────────────────
+
+
+def _blob_payload_row(**over) -> dict:
+    base = {"id": "1", "fuente": "atencionsismo", "origen": "firebase", "color_etiqueta": "Habitable",
+            "codigo_edificacion": "c", "consecutivo": 1, "municipio": "76001", "area": "1", "area_nombre": "",
+            "clasificacion": "INSPECCIONADA", "alcance": "", "coords": {"lat": 1, "lng": 2, "accuracy": None},
+            "restricciones": "", "acciones_posteriores": {"barricadas": False, "evaluacion_detallada": False},
+            "fecha": "2026-08-18T18:33:00+00:00", "fecha_fuente": "api",
+            "barrio_reportado": "San Antonio", "comuna_reportada": "Comuna 3",
+            "descripcion": {"nombre": "Juan", "direccion": "Calle 1"},
+            "inspector": {"uid": "u", "codigo": "004", "nombre_completo": "Ana", "identificacion": "1",
+                          "entidad": "E", "np": "P4", "tarjeta_profesional": "TP-1",
+                          "num_telefono": "3001234567", "correo_contacto": "ana@x.co"},
+            "comentarios": "c", "fotos": ["x"]}
+    base.update(over)
+    return base
+
+
+def test_redaction_keeps_fecha_fuente_barrio_and_comuna():
+    out = router_mod.redact_for_blob([_blob_payload_row()])[0]
+    assert out["fecha"] == "2026-08-18T18:33:00+00:00"
+    assert out["fecha_fuente"] == "api"
+    assert out["barrio_reportado"] == "San Antonio"
+    assert out["comuna_reportada"] == "Comuna 3"
+
+
+def test_redaction_blanks_contact_fields_but_keeps_the_keys():
+    out = router_mod.redact_for_blob([_blob_payload_row()])[0]
+    assert out["inspector"]["tarjeta_profesional"] == ""
+    assert out["inspector"]["num_telefono"] == ""
+    assert out["inspector"]["correo_contacto"] == ""
+    for key in ("tarjeta_profesional", "num_telefono", "correo_contacto"):
+        assert key in out["inspector"]
+
+
+def test_redaction_never_mutates_the_input_contact_fields():
+    payload = [_blob_payload_row()]
+    router_mod.redact_for_blob(payload)
+    assert payload[0]["inspector"]["tarjeta_profesional"] == "TP-1"
+    assert payload[0]["inspector"]["num_telefono"] == "3001234567"
+    assert payload[0]["inspector"]["correo_contacto"] == "ana@x.co"
+
+
+def test_redaction_unknown_field_never_leaks():
+    out = router_mod.redact_for_blob([_blob_payload_row(campo_desconocido="x")])[0]
+    assert "campo_desconocido" not in out
+
+
+def test_redaction_degraded_payload_has_no_identity_or_contact_end_to_end(client, monkeypatch):
+    _degrade_evaluaciones_cache(client)
+    old_row = {"id": "old", "fuente": "atencionsismo", "origen": "firebase", "color_etiqueta": "",
+               "codigo_edificacion": "c", "consecutivo": 1, "municipio": "76001", "area": "1",
+               "area_nombre": "", "clasificacion": "", "alcance": "", "coords": None,
+               "restricciones": "", "acciones_posteriores": {"barricadas": False, "evaluacion_detallada": False},
+               "fecha": None, "fecha_fuente": "no_aplica", "barrio_reportado": "", "comuna_reportada": "",
+               "descripcion": {"nombre": "", "direccion": ""},
+               "inspector": {"uid": "", "codigo": "", "nombre_completo": "", "identificacion": "",
+                             "entidad": "", "np": "", "tarjeta_profesional": "", "num_telefono": "",
+                             "correo_contacto": ""},
+               "comentarios": "", "fotos": []}
+
+    def fake_load(pathname, expected_type):
+        if pathname == router_mod.STICKERS_LKG_BLOB:
+            return [old_row]
+        return None
+
+    monkeypatch.setattr(stickers.blob_lkg, "load_json", fake_load)
+
+    resp = client.get("/stickers-atencionsismo")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["degraded"] is True
+    row = body["evaluaciones"][0]
+    assert row["inspector"]["identificacion"] == ""
+    assert row["inspector"]["tarjeta_profesional"] == ""
+    assert row["inspector"]["num_telefono"] == ""
+    assert row["inspector"]["correo_contacto"] == ""
+
+
+def test_blob_allowed_fields_extended_with_fecha_fuente_barrio_comuna():
+    for field in ("fecha_fuente", "barrio_reportado", "comuna_reportada"):
+        assert field in router_mod._BLOB_ALLOWED_FIELDS
+
+
+def test_stickers_blob_allowed_inspector_untouched():
+    # W3 hard rule: never touch stickers._BLOB_ALLOWED_INSPECTOR — it is
+    # shared with /evaluaciones.
+    assert stickers._BLOB_ALLOWED_INSPECTOR == ("uid", "codigo", "entidad")
+
+
+def test_redact_for_blob_3000_rows_size_canary_under_4mb():
+    import json
+
+    payload = [_blob_payload_row(id=str(i)) for i in range(3000)]
+    out = router_mod.redact_for_blob(payload)
+    size = len(json.dumps(out).encode("utf-8"))
+    assert size < 4_000_000, f"redacted payload is {size} bytes, budget is 4_000_000"
+
+
+def test_redact_for_blob_logs_payload_size(caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        router_mod.redact_for_blob([_blob_payload_row()])
+    assert any("stickers_atencionsismo" in r.message and "bytes" in r.message for r in caplog.records)
 
 
 # ── A1: evaluaciones cache degraded -> build_payload fails completo, so the

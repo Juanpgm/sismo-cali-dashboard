@@ -145,23 +145,27 @@ def _coords(row: dict) -> dict[str, Any] | None:
     return {"lat": lat, "lng": lng, "accuracy": None}
 
 
-def _profesional_fields(row: dict) -> tuple[str, str, str]:
-    """Cleaned (cedula, nombre, rango) from the API's `profesional` object,
-    tolerant of it being missing, None, or not a dict at all — every one of
-    those is treated as "no data", never a crash. Values pass through
-    `_clean` (F1), not a bare `.strip()`: the API's own placeholder strings
-    ("Sin código"/"Sin dirección"/"Sin identificar") are not real data and
-    must collapse to "" here too, same as every other API field — a bare
-    `.strip()` used to leave them as truthy non-empty text, which could
-    wrongly read as `profesional` "naming a person" (step 2) or carrying a
-    usable bare rango (step 3) when it actually carried nothing at all."""
+def _profesional_fields(row: dict) -> tuple[str, str, str, str]:
+    """Cleaned (cedula, nombre, rango, tarjeta_profesional) from the API's
+    `profesional` object, tolerant of it being missing, None, or not a dict
+    at all — every one of those is treated as "no data", never a crash.
+    Values pass through `_clean` (F1), not a bare `.strip()`: the API's own
+    placeholder strings ("Sin código"/"Sin dirección"/"Sin identificar")
+    are not real data and must collapse to "" here too, same as every
+    other API field — a bare `.strip()` used to leave them as truthy
+    non-empty text, which could wrongly read as `profesional` "naming a
+    person" (step 2) or carrying a usable bare rango (step 3) when it
+    actually carried nothing at all. `tarjetaProfesional` (W3, plan
+    cozy-wobbling-dragonfly — undocumented API field) follows the exact
+    same cleaning rule."""
     profesional = row.get("profesional")
     if not isinstance(profesional, dict):
         profesional = {}
     cedula = _clean(profesional.get("cedula"))
     nombre = _clean(profesional.get("nombre"))
     rango = _clean(profesional.get("rango"))
-    return cedula, nombre, rango
+    tarjeta = _clean(profesional.get("tarjetaProfesional"))
+    return cedula, nombre, rango, tarjeta
 
 
 def _fase(value: object) -> int | None:
@@ -250,7 +254,7 @@ def normalize_sticker(
     # to the roster here could hand an old evaluación the new inspector's
     # identity.
     roster_match = roster_by_codigo.get(codigo_inspector, {}) if codigo_inspector else {}
-    cedula_api, nombre_api, rango_api = _profesional_fields(row)
+    cedula_api, nombre_api, rango_api, tarjeta_api = _profesional_fields(row)
     profesional_names_person = bool(cedula_api or nombre_api)
     # F3: `profesional` is trusted ONLY when the row's own `origen` is
     # "sistema" — the SAME atencionsismo import that tags every
@@ -270,6 +274,14 @@ def normalize_sticker(
         identificacion_value = str(insp_match.get("identificacion") or "")
         entidad_value = str(insp_match.get("entidad") or "")
         inspector_fuente = "evaluacion"
+        # W3 (plan cozy-wobbling-dragonfly): contact fields (never present
+        # on a Firestore evaluación doc) stay blank on the matched branch —
+        # same "never mix sources field-by-field" invariant as np/identity
+        # above: neither the API's `profesional` nor the roster is ever
+        # consulted once a Firestore evaluación has matched.
+        tarjeta_value = ""
+        telefono_value = ""
+        correo_value = ""
     elif trust_profesional and profesional_names_person:
         # Contrato v3, step 2: `profesional` is the technician tied to THIS
         # evaluation — its `cedula` is a unique per-person key, unlike the
@@ -286,6 +298,13 @@ def normalize_sticker(
         uid_value = str(roster_cedula_match.get("uid") or "")
         entidad_value = str(roster_cedula_match.get("entidad") or "")
         inspector_fuente = "api"
+        # W3: same "API wins, roster only backfills what's blank" pattern
+        # as np_value above. `num_telefono`/`correo_contacto` have no API
+        # source at all (contrato v3 only adds `tarjetaProfesional`), so
+        # those two always come from the roster (blank if absent there).
+        tarjeta_value = tarjeta_api or str(roster_cedula_match.get("tarjeta_profesional") or "").strip()
+        telefono_value = str(roster_cedula_match.get("num_telefono") or "").strip()
+        correo_value = str(roster_cedula_match.get("correo_contacto") or "").strip()
     elif trust_profesional and rango_api:
         # Contrato v3, step 3: `profesional` carries a bare `rango` (no
         # person to name it). F4: never mix sources field-by-field — if the
@@ -303,6 +322,13 @@ def normalize_sticker(
         nombre_completo_value = str(roster_match.get("nombre_completo") or "")
         identificacion_value = str(roster_match.get("identificacion") or "")
         entidad_value = str(roster_match.get("entidad") or "")
+        # W3: contact fields follow the SAME brigade-code roster this
+        # branch already reads uid/identity from — regardless of
+        # `roster_names_person` below, exactly like uid_value above (they
+        # are blank anyway when the roster entry names nobody).
+        tarjeta_value = str(roster_match.get("tarjeta_profesional") or "").strip()
+        telefono_value = str(roster_match.get("num_telefono") or "").strip()
+        correo_value = str(roster_match.get("correo_contacto") or "").strip()
         roster_names_person = any((nombre_completo_value, identificacion_value, entidad_value))
         if roster_names_person:
             np_value = str(roster_match.get("np") or "")
@@ -325,6 +351,11 @@ def normalize_sticker(
         nombre_completo_value = str(roster_match.get("nombre_completo") or "")
         identificacion_value = str(roster_match.get("identificacion") or "")
         entidad_value = str(roster_match.get("entidad") or "")
+        # W3: same brigade-code roster, same "coerce None/absent to ''"
+        # rule as the other roster-sourced fields just above.
+        tarjeta_value = str(roster_match.get("tarjeta_profesional") or "").strip()
+        telefono_value = str(roster_match.get("num_telefono") or "").strip()
+        correo_value = str(roster_match.get("correo_contacto") or "").strip()
         # "roster" only when the roster actually names a PERSON (any one of
         # nombre_completo/identificacion/entidad non-blank) — a roster entry
         # carrying only `np` (a Fase number) has nobody to attribute, so it
@@ -392,7 +423,12 @@ def normalize_sticker(
             "identificacion": identificacion_value,
             "entidad": entidad_value,
             "np": np_value,
+            "tarjeta_profesional": tarjeta_value,
+            "num_telefono": telefono_value,
+            "correo_contacto": correo_value,
         },
+        "barrio_reportado": _clean(row.get("barrio")),
+        "comuna_reportada": _clean(row.get("comuna")),
         "descripcion": {
             "nombre": _clean(desc_match.get("nombre")) or _clean(row.get("personaAfectada")),
             "direccion": _clean(row.get("direccion")) or _clean(desc_match.get("direccion")),

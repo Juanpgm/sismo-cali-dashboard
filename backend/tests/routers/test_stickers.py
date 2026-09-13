@@ -1004,6 +1004,9 @@ def test_inspector_profile_by_codigo_returns_full_profile():
             "identificacion": "123",
             "entidad": "Curaduria 1",
             "np": "P4",
+            "tarjeta_profesional": "",
+            "num_telefono": "",
+            "correo_contacto": "",
         }
     }
 
@@ -1033,7 +1036,8 @@ def test_inspector_profile_by_codigo_skips_empty_or_missing_code():
 def test_inspector_profile_by_codigo_defaults_missing_fields_to_empty_string():
     db = _FakeFirestore({"inspectores": {"u1": {"codigo": "004"}}})
     assert stickers.inspector_profile_by_codigo(db) == {
-        "004": {"uid": "u1", "nombre_completo": "", "identificacion": "", "entidad": "", "np": ""}
+        "004": {"uid": "u1", "nombre_completo": "", "identificacion": "", "entidad": "", "np": "",
+                "tarjeta_profesional": "", "num_telefono": "", "correo_contacto": ""}
     }
 
 
@@ -1071,6 +1075,9 @@ def test_inspector_profile_by_identificacion_returns_full_profile():
             "identificacion": "123",
             "entidad": "Curaduria 1",
             "np": "P4",
+            "tarjeta_profesional": "",
+            "num_telefono": "",
+            "correo_contacto": "",
         }
     }
 
@@ -1100,7 +1107,8 @@ def test_inspector_profile_by_identificacion_empty_roster():
 def test_inspector_profile_by_identificacion_strips_whitespace():
     db = _FakeFirestore({"inspectores": {"u1": {"identificacion": "  123  ", "nombre_completo": "Ana"}}})
     assert stickers.inspector_profile_by_identificacion(db) == {
-        "123": {"uid": "u1", "nombre_completo": "Ana", "identificacion": "123", "entidad": "", "np": ""}
+        "123": {"uid": "u1", "nombre_completo": "Ana", "identificacion": "123", "entidad": "", "np": "",
+                "tarjeta_profesional": "", "num_telefono": "", "correo_contacto": ""}
     }
 
 
@@ -1148,6 +1156,32 @@ def test_inspector_profiles_maps_do_not_alias_the_same_profile_dict():
     by_codigo, by_identificacion = stickers.inspector_profiles(db)
     by_codigo["004"]["nombre_completo"] = "Mutated"
     assert by_identificacion["123"]["nombre_completo"] == "Ana"
+
+
+# ── W3 (plan cozy-wobbling-dragonfly): inspector_profiles ALSO projects
+# tarjeta_profesional/num_telefono/correo_contacto, from the SAME single
+# scan (F6) — no second Firestore read. ─────────────────────────────────
+
+
+def test_inspector_profiles_projects_contact_fields_from_one_scan():
+    db = _FakeFirestore({
+        "inspectores": {"u1": {"codigo": "004", "identificacion": "123", "nombre_completo": "Ana",
+                              "tarjeta_profesional": "TP-1", "num_telefono": "3001234567",
+                              "correo_contacto": "ana@x.co"}},
+    })
+    by_codigo, by_identificacion = stickers.inspector_profiles(db)
+    for profile in (by_codigo["004"], by_identificacion["123"]):
+        assert profile["tarjeta_profesional"] == "TP-1"
+        assert profile["num_telefono"] == "3001234567"
+        assert profile["correo_contacto"] == "ana@x.co"
+
+
+def test_inspector_profiles_contact_fields_default_to_empty_string_when_absent():
+    db = _FakeFirestore({"inspectores": {"u1": {"codigo": "004"}}})
+    by_codigo, _ = stickers.inspector_profiles(db)
+    assert by_codigo["004"]["tarjeta_profesional"] == ""
+    assert by_codigo["004"]["num_telefono"] == ""
+    assert by_codigo["004"]["correo_contacto"] == ""
 
 
 # ── EvaluacionesCache: parametrized Blob pathname + redaction ────────────

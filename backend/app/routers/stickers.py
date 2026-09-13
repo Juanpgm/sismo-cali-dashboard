@@ -459,6 +459,14 @@ def inspector_profiles(db: Any) -> tuple[dict[str, dict[str, str]], dict[str, di
             "identificacion": str(d.get("identificacion") or "").strip(),
             "entidad": str(d.get("entidad") or "").strip(),
             "np": str(d.get("NP") or "").strip(),
+            # W3 (plan cozy-wobbling-dragonfly): projected from the SAME
+            # scan, no second Firestore read. `tarjeta_profesional` has no
+            # backing Firestore field yet (plumbing kept ready for when one
+            # exists, D2); `num_telefono` already does (see
+            # `create_inspector`'s own `StickersRequest.num_telefono`).
+            "tarjeta_profesional": str(d.get("tarjeta_profesional") or "").strip(),
+            "num_telefono": str(d.get("num_telefono") or "").strip(),
+            "correo_contacto": str(d.get("correo_contacto") or "").strip(),
         }
         raw_codigo = str(d.get("codigo") or "").strip()
         if raw_codigo:

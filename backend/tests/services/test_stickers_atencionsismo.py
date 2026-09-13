@@ -99,7 +99,8 @@ def test_normalize_uses_firestore_evaluacion_when_code_matches():
 def test_normalize_falls_back_to_roster_np_by_inspector_code():
     out = sa.normalize_sticker(_row(), roster_by_codigo={"004": {"np": "P2"}}, evaluacion_by_codigo={})
     assert out["inspector"] == {"uid": "", "codigo": "004", "nombre_completo": "", "identificacion": "",
-                                "entidad": "", "np": "P2"}
+                                "entidad": "", "np": "P2", "tarjeta_profesional": "", "num_telefono": "",
+                                "correo_contacto": ""}
     assert out["fecha"] is None and out["fotos"] == []
 
 
@@ -131,7 +132,8 @@ def test_normalize_no_match_completes_full_identity_from_roster():
                       "entidad": "Curaduria 1", "uid": "u-004"}}
     out = sa.normalize_sticker(_row(), roster_by_codigo=roster, evaluacion_by_codigo={})
     assert out["inspector"] == {"uid": "u-004", "codigo": "004", "nombre_completo": "Ana Gomez",
-                                "identificacion": "123", "entidad": "Curaduria 1", "np": "P4"}
+                                "identificacion": "123", "entidad": "Curaduria 1", "np": "P4",
+                                "tarjeta_profesional": "", "num_telefono": "", "correo_contacto": ""}
 
 
 def test_normalize_evaluacion_match_never_mixes_roster_identity():
@@ -147,7 +149,8 @@ def test_normalize_evaluacion_match_never_mixes_roster_identity():
     out = sa.normalize_sticker(_row(), roster_by_codigo=roster,
                                evaluacion_by_codigo={"76001-1-0040007": matched_eval})
     assert out["inspector"] == {"uid": "u1", "codigo": "004", "nombre_completo": "Ana",
-                                "identificacion": "1", "entidad": "E", "np": "P4"}
+                                "identificacion": "1", "entidad": "E", "np": "P4",
+                                "tarjeta_profesional": "", "num_telefono": "", "correo_contacto": ""}
     for value in roster["004"].values():
         assert value not in out["inspector"].values()
 
@@ -172,7 +175,8 @@ def test_normalize_no_codigo_parsed_ignores_nonempty_roster():
     out = sa.normalize_sticker(_row(origen="sistema", numero="Sin código"), roster_by_codigo=roster,
                                evaluacion_by_codigo={})
     assert out["inspector"] == {"uid": "", "codigo": "", "nombre_completo": "", "identificacion": "",
-                                "entidad": "", "np": ""}
+                                "entidad": "", "np": "", "tarjeta_profesional": "", "num_telefono": "",
+                                "correo_contacto": ""}
 
 
 def test_normalize_color_to_clase():
@@ -303,7 +307,8 @@ def test_roster_none_identity_values_coerce_to_empty_string_not_none():
                       "identificacion": None, "entidad": None}}
     out = sa.normalize_sticker(_row(), roster_by_codigo=roster, evaluacion_by_codigo={})
     assert out["inspector"] == {"uid": "", "codigo": "004", "nombre_completo": "",
-                                "identificacion": "", "entidad": "", "np": ""}
+                                "identificacion": "", "entidad": "", "np": "",
+                                "tarjeta_profesional": "", "num_telefono": "", "correo_contacto": ""}
     assert out["inspector_fuente"] == ""  # all blank after coercion -> no person to attribute
 
 
@@ -354,7 +359,8 @@ def test_profesional_placeholder_cedula_and_nombre_do_not_leak_falls_back_to_ros
     # Roster fallback applies (step 4, not step 2/3): the placeholders never
     # named a person nor carried a bare rango.
     assert out["inspector"] == {"uid": "u-004", "codigo": "004", "nombre_completo": "Ana Gomez",
-                                "identificacion": "123", "entidad": "Curaduria 1", "np": "P4"}
+                                "identificacion": "123", "entidad": "Curaduria 1", "np": "P4",
+                                "tarjeta_profesional": "", "num_telefono": "", "correo_contacto": ""}
     assert out["inspector_fuente"] == "roster"
     for placeholder in ("Sin código", "Sin identificar"):
         assert placeholder not in out["inspector"].values()
@@ -386,7 +392,8 @@ def test_profesional_rango_only_uses_roster_np_when_roster_names_a_person():
     out = sa.normalize_sticker(_row(origen="sistema", profesional={"rango": "P9"}),
                                roster_by_codigo=roster, evaluacion_by_codigo={})
     assert out["inspector"] == {"uid": "u-004", "codigo": "004", "nombre_completo": "Ana Gomez",
-                                "identificacion": "123", "entidad": "Curaduria 1", "np": "P4"}
+                                "identificacion": "123", "entidad": "Curaduria 1", "np": "P4",
+                                "tarjeta_profesional": "", "num_telefono": "", "correo_contacto": ""}
     assert out["inspector_fuente"] == "roster"
 
 
@@ -435,7 +442,8 @@ def test_profesional_cedula_and_nombre_without_roster_hit_is_fuente_api():
         roster_by_codigo={}, evaluacion_by_codigo={}, roster_by_cedula={},
     )
     assert out["inspector"] == {"uid": "", "codigo": "004", "nombre_completo": "Juan Perez",
-                                "identificacion": "123", "entidad": "", "np": "P2"}
+                                "identificacion": "123", "entidad": "", "np": "P2",
+                                "tarjeta_profesional": "", "num_telefono": "", "correo_contacto": ""}
     assert out["inspector_fuente"] == "api"
 
 
@@ -447,7 +455,8 @@ def test_profesional_cedula_found_in_roster_by_cedula_fills_uid_and_entidad():
     )
     # API values win on conflict: nombre and np both came from the API.
     assert out["inspector"] == {"uid": "u9", "codigo": "004", "nombre_completo": "Juan Perez",
-                                "identificacion": "123", "entidad": "E9", "np": "P2"}
+                                "identificacion": "123", "entidad": "E9", "np": "P2",
+                                "tarjeta_profesional": "", "num_telefono": "", "correo_contacto": ""}
     assert out["inspector_fuente"] == "api"
 
 
@@ -487,7 +496,8 @@ def test_profesional_ignored_when_evaluacion_matched():
     # F9: full inspector dict equality, not just a couple of fields — the
     # matched evaluación's own inspector must be untouched, in full.
     assert out["inspector"] == {"uid": "u1", "codigo": "004", "nombre_completo": "Ana",
-                                "identificacion": "1", "entidad": "E", "np": "P4"}
+                                "identificacion": "1", "entidad": "E", "np": "P4",
+                                "tarjeta_profesional": "", "num_telefono": "", "correo_contacto": ""}
     assert out["inspector_fuente"] == "evaluacion"
 
 
@@ -821,6 +831,141 @@ def test_build_evaluaciones_sorts_dated_before_undated_with_mixed_fecha_formats(
     assert by_id["a"]["fecha"] is None
     assert by_id["b"]["fecha"] == "2026-08-18T18:33:00+00:00"
     assert by_id["c"]["fecha"] == "2026-09-01T00:00:00Z"
+
+
+# ── W3 (plan cozy-wobbling-dragonfly): `barrio_reportado`, `comuna_reportada`
+# and inspector contact fields (`tarjeta_profesional`, `num_telefono`,
+# `correo_contacto`), always-present, never mixed sources on the matched
+# branch. ────────────────────────────────────────────────────────────────
+
+
+def test_barrio_reportado_from_row_barrio_field():
+    out = sa.normalize_sticker(_row(barrio="San Antonio"), roster_by_codigo={}, evaluacion_by_codigo={})
+    assert out["barrio_reportado"] == "San Antonio"
+
+
+def test_barrio_reportado_placeholder_becomes_empty():
+    # Goes through `_clean` (:124) — "Sin identificar" is a documented API
+    # placeholder, not real data.
+    out = sa.normalize_sticker(_row(barrio="Sin identificar"), roster_by_codigo={}, evaluacion_by_codigo={})
+    assert out["barrio_reportado"] == ""
+
+
+def test_barrio_reportado_missing_key_is_empty():
+    out = sa.normalize_sticker(_row(), roster_by_codigo={}, evaluacion_by_codigo={})
+    assert out["barrio_reportado"] == ""
+
+
+def test_comuna_reportada_int_becomes_string():
+    out = sa.normalize_sticker(_row(comuna=3), roster_by_codigo={}, evaluacion_by_codigo={})
+    assert out["comuna_reportada"] == "3"
+
+
+def test_comuna_reportada_string_kept():
+    out = sa.normalize_sticker(_row(comuna="Comuna 3"), roster_by_codigo={}, evaluacion_by_codigo={})
+    assert out["comuna_reportada"] == "Comuna 3"
+
+
+def test_comuna_reportada_missing_key_is_empty():
+    out = sa.normalize_sticker(_row(), roster_by_codigo={}, evaluacion_by_codigo={})
+    assert out["comuna_reportada"] == ""
+
+
+def test_contact_fields_blank_on_matched_branch_never_mixes_roster_or_api():
+    matched_eval = _eval_firestore()
+    roster = {"004": {"tarjeta_profesional": "TP-ROSTER", "num_telefono": "3000000000",
+                      "correo_contacto": "roster@x.co"}}
+    out = sa.normalize_sticker(
+        _row(origen="sistema", profesional={"cedula": "1", "nombre": "A", "tarjetaProfesional": "TP-API"}),
+        roster_by_codigo=roster, evaluacion_by_codigo={"76001-1-0040007": matched_eval},
+        roster_by_cedula={"1": {"tarjeta_profesional": "TP-CEDULA"}},
+    )
+    assert out["inspector"]["tarjeta_profesional"] == ""
+    assert out["inspector"]["num_telefono"] == ""
+    assert out["inspector"]["correo_contacto"] == ""
+
+
+def test_contact_fields_api_branch_prefers_api_tarjeta_roster_backfills_telefono_and_correo():
+    roster_cedula = {"123": {"tarjeta_profesional": "TP-ROSTER", "num_telefono": "3001112233",
+                             "correo_contacto": "ana@x.co"}}
+    out = sa.normalize_sticker(
+        _row(origen="sistema", profesional={"cedula": "123", "nombre": "Juan Perez",
+                                            "tarjetaProfesional": "TP-API"}),
+        roster_by_codigo={}, evaluacion_by_codigo={}, roster_by_cedula=roster_cedula,
+    )
+    assert out["inspector"]["tarjeta_profesional"] == "TP-API"  # API wins on conflict
+    assert out["inspector"]["num_telefono"] == "3001112233"  # no API source -> roster backfill
+    assert out["inspector"]["correo_contacto"] == "ana@x.co"
+
+
+def test_contact_fields_api_branch_backfills_tarjeta_when_api_blank():
+    roster_cedula = {"123": {"tarjeta_profesional": "TP-ROSTER"}}
+    out = sa.normalize_sticker(
+        _row(origen="sistema", profesional={"cedula": "123", "nombre": "Juan Perez", "tarjetaProfesional": ""}),
+        roster_by_codigo={}, evaluacion_by_codigo={}, roster_by_cedula=roster_cedula,
+    )
+    assert out["inspector"]["tarjeta_profesional"] == "TP-ROSTER"
+
+
+def test_contact_fields_rango_only_branch_uses_brigade_code_roster():
+    roster = {"004": {"np": "P4", "nombre_completo": "Ana Gomez", "identificacion": "123",
+                      "entidad": "Curaduria 1", "uid": "u-004", "tarjeta_profesional": "TP-1",
+                      "num_telefono": "3009998877", "correo_contacto": "ana@x.co"}}
+    out = sa.normalize_sticker(_row(origen="sistema", profesional={"rango": "P9"}),
+                               roster_by_codigo=roster, evaluacion_by_codigo={})
+    assert out["inspector"]["tarjeta_profesional"] == "TP-1"
+    assert out["inspector"]["num_telefono"] == "3009998877"
+    assert out["inspector"]["correo_contacto"] == "ana@x.co"
+
+
+def test_contact_fields_plain_roster_fallback_branch_uses_brigade_code_roster():
+    roster = {"004": {"np": "P4", "nombre_completo": "Ana Gomez", "tarjeta_profesional": "TP-2",
+                      "num_telefono": "3001112222", "correo_contacto": "ana2@x.co"}}
+    out = sa.normalize_sticker(_row(), roster_by_codigo=roster, evaluacion_by_codigo={})
+    assert out["inspector"]["tarjeta_profesional"] == "TP-2"
+    assert out["inspector"]["num_telefono"] == "3001112222"
+    assert out["inspector"]["correo_contacto"] == "ana2@x.co"
+
+
+def test_contact_fields_none_roster_values_coerce_to_empty_string():
+    roster = {"004": {"tarjeta_profesional": None, "num_telefono": None, "correo_contacto": None}}
+    out = sa.normalize_sticker(_row(), roster_by_codigo=roster, evaluacion_by_codigo={})
+    assert out["inspector"]["tarjeta_profesional"] == ""
+    assert out["inspector"]["num_telefono"] == ""
+    assert out["inspector"]["correo_contacto"] == ""
+
+
+def test_profesional_absent_contact_keys_present_and_blank():
+    # Extends test_profesional_missing_falls_back_to_roster_by_codigo: the
+    # roster-by-codigo fallback path still yields the contact keys, blank
+    # when the roster has nothing for them.
+    roster = {"004": {"np": "P4", "nombre_completo": "Ana Gomez"}}
+    out = sa.normalize_sticker(_row(), roster_by_codigo=roster, evaluacion_by_codigo={})
+    assert out["inspector"]["tarjeta_profesional"] == ""
+    assert out["inspector"]["num_telefono"] == ""
+    assert out["inspector"]["correo_contacto"] == ""
+
+
+def test_cedula_with_punctuation_joins_roster_for_contact_fields_too():
+    # Extends test_profesional_cedula_with_punctuation_joins_digits_only_roster_key.
+    roster_cedula = {"1234567": {"uid": "u9", "entidad": "E9", "tarjeta_profesional": "TP-9",
+                                 "num_telefono": "3005551111", "correo_contacto": "u9@x.co"}}
+    out = sa.normalize_sticker(
+        _row(origen="sistema", profesional={"cedula": "1.234.567", "nombre": "Juan Perez"}),
+        roster_by_codigo={}, evaluacion_by_codigo={}, roster_by_cedula=roster_cedula,
+    )
+    assert out["inspector"]["identificacion"] == "1.234.567"  # verbatim, not the join key
+    assert out["inspector"]["tarjeta_profesional"] == "TP-9"
+    assert out["inspector"]["num_telefono"] == "3005551111"
+    assert out["inspector"]["correo_contacto"] == "u9@x.co"
+
+
+def test_inspector_shape_lock_new_contact_keys_always_present():
+    out = sa.normalize_sticker(_row(), roster_by_codigo={}, evaluacion_by_codigo={})
+    for key in ("tarjeta_profesional", "num_telefono", "correo_contacto"):
+        assert key in out["inspector"]
+        assert out["inspector"][key] == ""
+    assert "barrio_reportado" in out and "comuna_reportada" in out
 
 
 def test_build_evaluaciones_3000_rows_perf_budget():

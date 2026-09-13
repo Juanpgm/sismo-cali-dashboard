@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import json
 import logging
 from typing import Any
 
@@ -69,8 +70,14 @@ STICKERS_FETCH_DEADLINE_S = 45.0
 # (stickers_atencionsismo.normalize_sticker). fase (contrato v3, 2026-09-08)
 # is likewise a bare 1|2|None value, not PII — it is the Stickers tab's own
 # Fase I/II signal (API developer confirmation), not a raw storage artifact.
+# fecha_fuente ("evaluacion"|"api"|"no_aplica"|"sin_fecha", W2) is the same
+# kind of bare enum. barrio_reportado/comuna_reportada (W3, plan
+# cozy-wobbling-dragonfly) are the CITIZEN-reported location of the
+# building, not personal data about anyone — same class as the existing
+# `municipio`/`area` fields already on this allowlist.
 _BLOB_ALLOWED_FIELDS = stickers._BLOB_ALLOWED_FIELDS + (
     "fuente", "origen", "color_etiqueta", "inspector_fuente", "fase",
+    "fecha_fuente", "barrio_reportado", "comuna_reportada",
 )
 
 
@@ -78,7 +85,11 @@ def redact_for_blob(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Allowlist projection for the PUBLIC Blob copy — `descripcion.nombre`
     is the affected person's name here (personaAfectada), so it is blanked
     along with `inspector.np`; everything else mirrors
-    `stickers._redact_for_blob`. Never mutates the input."""
+    `stickers._redact_for_blob`. `tarjeta_profesional`/`num_telefono`/
+    `correo_contacto` (W3) are blanked with an explicit `""` placeholder —
+    the KEYS stay present (never popped) so a degraded frontend never has
+    to guard `undefined` before a `.trim()`/render. Never mutates the
+    input."""
     out: list[dict[str, Any]] = []
     for e in payload:
         insp = e.get("inspector") or {}
@@ -87,10 +98,19 @@ def redact_for_blob(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
             **{k: e.get(k) for k in _BLOB_ALLOWED_FIELDS},
             "descripcion": {"nombre": "", "direccion": desc.get("direccion") or ""},
             "inspector": {**{k: insp.get(k) or "" for k in stickers._BLOB_ALLOWED_INSPECTOR},
-                          "nombre_completo": "", "identificacion": "", "np": ""},
+                          "nombre_completo": "", "identificacion": "", "np": "",
+                          "tarjeta_profesional": "", "num_telefono": "", "correo_contacto": ""},
             "comentarios": "",
             "fotos": [],
         })
+    # W3: size visibility for the payload actually persisted to Blob — the
+    # canary budget is 4 MB (`test_redact_for_blob_3000_rows_size_canary_under_4mb`);
+    # if a real payload approaches ~2 MB, `blob_lkg._TIMEOUT_S` may need
+    # raising for the upload to still land inside its own timeout.
+    logging.info(
+        "stickers_atencionsismo: payload redactado bytes=%d filas=%d",
+        len(json.dumps(out)), len(out),
+    )
     return out
 
 
