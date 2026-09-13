@@ -10,6 +10,7 @@ import {
   createSegCache, createIdentityCache, makeSearchController,
   DASH, DEGRADED_STICKERS_NOTE,
   kpiTotals, matchesSearch, visibleRowsFor, degradedStickerNote, unassignedNote, kpisHtml,
+  timelineChartConfig, timelineDataKey,
 } from './seguimiento.js';
 
 // Small test-local helper: the "no identity/no cédula at all" key shape a
@@ -1619,5 +1620,119 @@ console.log('kpisHtml: 5 tiles, old ones dropped, new one present OK');
   assert.ok(html.includes(DASH), 'DASH must appear in the rendered HTML while stickers have not loaded');
 }
 console.log('kpisHtml: stickersLoaded=false renders DASH OK');
+
+// ── W8: timelineChartConfig ───────────────────────────────────────────────
+// Dual linear axis (replaces the old shared logarithmic axis): daily counts
+// on the right ('y1'), cumulative running totals on the left ('y').
+
+{
+  const empty = { labels: [], stickers: [], surveys: [], stickersCumulative: [], surveysCumulative: [], offsets: { stickers: 0, surveys: 0 } };
+  const config = timelineChartConfig(empty);
+  assert.deepEqual(config.data.labels, []);
+  for (const ds of config.data.datasets) assert.deepEqual(ds.data, []);
+}
+console.log('timelineChartConfig: empty timeline -> empty dataset arrays, never throws OK');
+
+{
+  // Single label: the cumulative (dashed, normally pointRadius 0) datasets
+  // get pointRadius 3 instead -- a 1-point dashed line with radius 0 would
+  // otherwise render NOTHING at all.
+  const single = {
+    labels: ['2026-01-01'], stickers: [2], surveys: [1], stickersCumulative: [5], surveysCumulative: [3],
+    offsets: { stickers: 3, surveys: 2 },
+  };
+  const config = timelineChartConfig(single);
+  const cumulativeDatasets = config.data.datasets.filter((d) => /acum/i.test(d.label));
+  assert.equal(cumulativeDatasets.length, 2);
+  for (const ds of cumulativeDatasets) assert.equal(ds.pointRadius, 3);
+  const dailyDatasets = config.data.datasets.filter((d) => /diario/i.test(d.label));
+  assert.equal(dailyDatasets.length, 2);
+  for (const ds of dailyDatasets) { assert.equal(ds.pointRadius, 3); assert.equal(ds.borderWidth, 3); }
+}
+console.log('timelineChartConfig: single label -> cumulative pointRadius 3 OK');
+
+{
+  // A day with 0 daily records still plots 0 (not null/undefined) -- Chart.js
+  // would otherwise render a gap instead of a real zero point.
+  const timeline = {
+    labels: ['2026-01-01', '2026-01-02'], stickers: [1, 0], surveys: [0, 0],
+    stickersCumulative: [1, 1], surveysCumulative: [0, 0], offsets: { stickers: 0, surveys: 0 },
+  };
+  const config = timelineChartConfig(timeline);
+  const stickerDaily = config.data.datasets.find((d) => d.label === 'Sticker diario');
+  assert.equal(stickerDaily.data[1], 0);
+  assert.notEqual(stickerDaily.data[1], null);
+}
+console.log('timelineChartConfig: a zero-count day plots 0, not null OK');
+
+{
+  // yAxisID assignment: daily on y1 (right), cumulative on y (left) --
+  // scales.y is titled "Acumulado", scales.y1 "Diario", y1 never draws its
+  // own gridlines over y's (drawOnChartArea:false).
+  const timeline = { labels: ['2026-01-01'], stickers: [1], surveys: [1], stickersCumulative: [1], surveysCumulative: [1], offsets: { stickers: 0, surveys: 0 } };
+  const config = timelineChartConfig(timeline);
+  const byLabel = Object.fromEntries(config.data.datasets.map((d) => [d.label, d]));
+  assert.equal(byLabel['Sticker diario'].yAxisID, 'y1');
+  assert.equal(byLabel['Survey diario'].yAxisID, 'y1');
+  assert.equal(byLabel['Sticker acum.'].yAxisID, 'y');
+  assert.equal(byLabel['Survey acum.'].yAxisID, 'y');
+  assert.equal(config.options.scales.y.title.text, 'Acumulado');
+  assert.equal(config.options.scales.y1.title.text, 'Diario');
+  assert.equal(config.options.scales.y1.grid.drawOnChartArea, false);
+  // Node-safe theming (baseOptions/themeColor return fallbacks without `document`).
+  assert.ok(config.options.scales.y1.ticks.color, 'y1 must be themed (W8 baseOptions fix)');
+  assert.equal(config.options.scales.y.type, 'linear');
+  assert.equal(config.options.scales.y1.type, 'linear');
+}
+console.log('timelineChartConfig: daily on y1 (right), cumulative on y (left), both linear + themed OK');
+
+{
+  // Last-point label (_totalLabel) equals offset + Σ daily -- exactly
+  // timeline.*Cumulative's own last entry (buildTimeline already folds the
+  // offset into the running total), never recomputed a second, divergent way.
+  const timeline = {
+    labels: ['2026-01-01', '2026-01-02'], stickers: [2, 3], surveys: [1, 1],
+    stickersCumulative: [7, 10], surveysCumulative: [4, 5], offsets: { stickers: 5, surveys: 3 },
+  };
+  const config = timelineChartConfig(timeline);
+  const byLabel = Object.fromEntries(config.data.datasets.map((d) => [d.label, d]));
+  assert.equal(byLabel['Sticker acum.']._totalLabel, '10');
+  assert.equal(byLabel['Survey acum.']._totalLabel, '5');
+}
+console.log('timelineChartConfig: last-point label equals offset + Σ daily OK');
+
+// ── W8: timelineDataKey ───────────────────────────────────────────────────
+// Drives renderChart()'s upsertChart-skip: identical inputs -> identical key;
+// any of labels/from/to/professionalKey/offsets/series-sums changing ->
+// a different key.
+
+{
+  const t1 = { labels: ['2026-01-01'], stickers: [1], surveys: [0], stickersCumulative: [1], surveysCumulative: [0], offsets: { stickers: 0, surveys: 0 } };
+  const t2 = { labels: ['2026-01-01'], stickers: [1], surveys: [0], stickersCumulative: [1], surveysCumulative: [0], offsets: { stickers: 0, surveys: 0 } };
+  assert.equal(
+    timelineDataKey(t1, { from: '2026-01-01', to: '2026-01-31', professionalKey: null }),
+    timelineDataKey(t2, { from: '2026-01-01', to: '2026-01-31', professionalKey: null }),
+    'identical inputs -> identical key',
+  );
+  assert.notEqual(
+    timelineDataKey(t1, { from: '2026-01-01', to: '2026-01-31', professionalKey: null }),
+    timelineDataKey(t1, { from: '2026-02-01', to: '2026-01-31', professionalKey: null }),
+    '`from` changing must change the key',
+  );
+  assert.notEqual(
+    timelineDataKey(t1, { professionalKey: null }),
+    timelineDataKey(t1, { professionalKey: 'ced:1' }),
+    '`professionalKey` changing must change the key',
+  );
+  const t3 = { ...t1, offsets: { stickers: 5, surveys: 0 } };
+  assert.notEqual(
+    timelineDataKey(t1, {}),
+    timelineDataKey(t3, {}),
+    'offsets changing must change the key even when labels/series are identical',
+  );
+  const t4 = { ...t1, labels: ['2026-01-01', '2026-01-02'], stickers: [1, 0] };
+  assert.notEqual(timelineDataKey(t1, {}), timelineDataKey(t4, {}), 'labels changing must change the key');
+}
+console.log('timelineDataKey: identical inputs -> identical key, any relevant field changing -> different key OK');
 
 console.log('seguimiento.test.mjs: all assertions passed');

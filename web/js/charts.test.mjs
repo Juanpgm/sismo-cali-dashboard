@@ -2,7 +2,10 @@
 // (ADR-5's safety net — run before AND after touching upsertChart/renderStatistics).
 // Run: node web/js/charts.test.mjs
 import assert from 'node:assert/strict';
-import { tipologiaDe, tipologiaCounts, colapsoHabCounts, danosEstructuraCounts } from './charts.js';
+import {
+  tipologiaDe, tipologiaCounts, colapsoHabCounts, danosEstructuraCounts, baseOptions,
+} from './charts.js';
+import { themeColor } from './utils.js';
 
 // --- tipologiaDe edge cases -------------------------------------------------
 assert.equal(tipologiaDe({ n_pisos: null }), 'sin_dato');
@@ -142,3 +145,37 @@ assert.deepEqual(colapsoHabCounts(fixture), expectedCH);
 
 console.log('ok — charts.js aggregation parity');
 console.log('ok — danosEstructuraCounts "Sin dato" bucket');
+
+// --- baseOptions: themes EVERY x*/y*-prefixed scale key, not just the ------
+// literal 'x'/'y' pair (W8) — a caller adding a second axis (e.g. 'y1' for a
+// right-hand linear scale, seguimiento.js's dual-axis timeline chart) used to
+// get NO theming at all: the old merge only ever touched the literal keys
+// 'x' and 'y', so any other key from the caller's own `scales` passed through
+// untouched, silently unthemed in light mode.
+{
+  const mutedFallback = themeColor('--text-muted', '#7c8ca3');
+  const borderFallback = themeColor('--border', 'rgba(255,255,255,0.10)');
+
+  const opts = baseOptions({ scales: { y1: { position: 'right' } } });
+  assert.equal(opts.scales.y1.ticks.color, mutedFallback, 'a new y*-prefixed key must get the themed tick color');
+  assert.equal(opts.scales.y1.grid.color, borderFallback, 'a new y*-prefixed key must get the themed grid color');
+  assert.equal(opts.scales.y1.position, 'right', 'the caller override itself must survive the merge');
+  assert.equal(opts.scales.y1.beginAtZero, true, 'a y-like axis gets the same beginAtZero default as the literal y axis');
+
+  // Existing x/y behavior is unchanged by the generalization.
+  assert.equal(opts.scales.x.ticks.color, mutedFallback);
+  assert.equal(opts.scales.y.beginAtZero, true);
+  assert.equal(opts.scales.y.ticks.color, mutedFallback);
+
+  // An override on the literal 'y' key still survives alongside the themed
+  // defaults (same one-level merge contract as before).
+  const opts2 = baseOptions({ scales: { y: { type: 'logarithmic' } } });
+  assert.equal(opts2.scales.y.type, 'logarithmic');
+  assert.equal(opts2.scales.y.ticks.color, mutedFallback);
+
+  // A non-x/non-y scale key (unusual, but must not crash) passes through
+  // without the themed axis defaults (grid/ticks stay whatever the caller gave).
+  const opts3 = baseOptions({ scales: { r: { min: 0 } } });
+  assert.equal(opts3.scales.r.min, 0);
+}
+console.log('baseOptions: themes every x*/y*-prefixed scale key (W8) OK');

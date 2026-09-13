@@ -13,7 +13,9 @@
 // the Firebase SDK via a bare https:// specifier, which breaks Node's ESM
 // loader on plain import).
 import { COLORS, escapeHtml, normalize, loadXlsx, downloadStamp, showToast, faseKeyDe, debounce } from './utils.js';
-import { upsertChart, baseOptions, totalDataLabelPlugin } from './charts.js';
+import {
+  upsertChart, baseOptions, totalDataLabelPlugin, setChartEmpty, clearChartEmpty,
+} from './charts.js';
 import { fetchEvaluacionesOnce } from './stickers.js';
 import { loadPdfmake } from './report.js';
 
@@ -1365,7 +1367,7 @@ function sectionHtml() {
         <div class="chart-tile" style="height:320px">
           <canvas id="seguimiento-timeline"></canvas>
         </div>
-        <p class="chart-note">Eje Y en <strong>escala logarítmica</strong>: permite comparar en el mismo gráfico el ritmo diario (unidades/decenas) con el acumulado corrido (cientos), como en el gráfico "Inspecciones por día" del Panel. Las líneas punteadas son el acumulado de cada fuente, con el total rotulado sobre el último punto.</p>
+        <p class="chart-note">Eje izquierdo: acumulado corrido (línea punteada), iniciado en el total previo al rango. Eje derecho: registros del día (línea sólida). Rango: Desde–Hasta.</p>
       </div>
 
       <div class="card eval-workspace-card">
@@ -1447,31 +1449,11 @@ function rowHtml(r, stickersLoaded, isDegraded) {
   </tr>`;
 }
 
-/** Shows a small note in the chart tile instead of a blank/broken canvas —
- *  same idea as charts.js's own (private) setChartEmpty, duplicated here
- *  rather than exported since this is the only caller outside charts.js. */
-function renderChartUnavailable(message) {
-  const canvas = document.getElementById('seguimiento-timeline');
-  if (!canvas) return;
-  canvas.style.display = 'none';
-  const tile = canvas.closest('.chart-tile');
-  if (!tile) return;
-  let note = tile.querySelector('.chart-empty');
-  if (!note) {
-    note = document.createElement('p');
-    note.className = 'chart-empty';
-    tile.appendChild(note);
-  }
-  note.textContent = message;
-}
-
-function clearChartUnavailable() {
-  const canvas = document.getElementById('seguimiento-timeline');
-  if (!canvas) return;
-  canvas.style.display = '';
-  const note = canvas.closest('.chart-tile') && canvas.closest('.chart-tile').querySelector('.chart-empty');
-  if (note) note.remove();
-}
+// The empty-chart-tile note (used when Chart.js failed to load, or the
+// current filter/range has zero activity — W8) reuses charts.js's own
+// setChartEmpty/clearChartEmpty (exported for exactly this — W8's "reutilizar
+// sin duplicar" rule) instead of a second, drifting copy of the same
+// hide-canvas + `.chart-empty` note + registry-cleanup logic.
 
 const fmtCount = (n) => Math.round(n || 0).toLocaleString('es-CO');
 
@@ -1479,53 +1461,87 @@ const fmtCount = (n) => Math.round(n || 0).toLocaleString('es-CO');
  *  tooltip colors follow the same theme tokens as every other chart in the
  *  dashboard instead of a second, hand-rolled (and un-themed) copy.
  *
- *  Mirrors the Panel's "Inspecciones por día" chart (charts.js renderTimeSeries):
- *  daily counts + cumulative running totals on ONE logarithmic Y axis, so
- *  a handful of stickers on a given day and a running total in the hundreds
- *  can share the same chart without the daily line flattening to zero.
- *  Cumulative lines reuse the daily line's own color (dashed, no points) so
- *  a source stays visually one color across both its daily and cumulative
- *  series; the running total is labeled on the last point via the same
- *  totalDataLabelPlugin the Panel chart uses. */
-function timelineChartConfig(timeline) {
+ *  CONTRATO CAMBIADO (W8): the shared logarithmic axis is GONE — a single
+ *  log axis could never plot a literal 0 (log(0) is undefined), so a
+ *  zero-count day silently dropped its point instead of showing the real
+ *  zero. Replaced with a genuine DUAL LINEAR axis: daily counts (solid,
+ *  thicker lines) on the RIGHT axis (`y1`), cumulative running totals
+ *  (dashed, no points) on the LEFT axis (`y`) — each series lives on the
+ *  scale suited to its own magnitude, and a zero-count day plots a real 0.
+ *  `timeline.stickersCumulative`/`surveysCumulative` already start from
+ *  `timeline.offsets` (buildTimeline's own pre-range count folded into the
+ *  running total), so the left axis' first point reflects the true running
+ *  total even when `from` narrows the visible window mid-history — nothing
+ *  here recomputes that. A single-label timeline gives the (normally
+ *  pointRadius 0) cumulative lines pointRadius 3 instead, since a 1-point
+ *  dashed line with radius 0 renders NOTHING at all. The running total is
+ *  labeled on the last point via the same totalDataLabelPlugin the Panel
+ *  chart uses, with a per-dataset vertical nudge (`_labelOffsetY`) so the two
+ *  cumulative labels don't overlap when their values are close. */
+export function timelineChartConfig(timeline) {
+  const singleLabel = timeline.labels.length === 1;
   return {
     type: 'line',
     data: {
       labels: timeline.labels,
       datasets: [
         {
-          label: 'Stickers', data: timeline.stickers, borderColor: COLORS.accent,
-          backgroundColor: 'transparent', tension: 0.15, pointRadius: 3, borderWidth: 2,
+          label: 'Sticker diario', data: timeline.stickers, borderColor: COLORS.accent,
+          backgroundColor: 'transparent', tension: 0.15, pointRadius: 3, borderWidth: 3, yAxisID: 'y1',
         },
         {
-          label: 'Survey', data: timeline.surveys, borderColor: COLORS.categorical[0],
-          backgroundColor: 'transparent', tension: 0.15, pointRadius: 3, borderWidth: 2,
+          label: 'Survey diario', data: timeline.surveys, borderColor: COLORS.categorical[0],
+          backgroundColor: 'transparent', tension: 0.15, pointRadius: 3, borderWidth: 3, yAxisID: 'y1',
         },
         {
-          label: 'Stickers (acumulado)', data: timeline.stickersCumulative, borderColor: COLORS.accent,
-          backgroundColor: 'transparent', tension: 0.15, pointRadius: 0, borderWidth: 2, borderDash: [6, 4],
+          label: 'Sticker acum.', data: timeline.stickersCumulative, borderColor: COLORS.accent,
+          backgroundColor: 'transparent', tension: 0.15, pointRadius: singleLabel ? 3 : 0, borderWidth: 2, borderDash: [6, 4],
+          yAxisID: 'y',
           _totalLabel: fmtCount(timeline.stickersCumulative[timeline.stickersCumulative.length - 1]),
+          _labelOffsetY: -5,
         },
         {
-          label: 'Survey (acumulado)', data: timeline.surveysCumulative, borderColor: COLORS.categorical[0],
-          backgroundColor: 'transparent', tension: 0.15, pointRadius: 0, borderWidth: 2, borderDash: [6, 4],
+          label: 'Survey acum.', data: timeline.surveysCumulative, borderColor: COLORS.categorical[0],
+          backgroundColor: 'transparent', tension: 0.15, pointRadius: singleLabel ? 3 : 0, borderWidth: 2, borderDash: [6, 4],
+          yAxisID: 'y',
           _totalLabel: fmtCount(timeline.surveysCumulative[timeline.surveysCumulative.length - 1]),
+          _labelOffsetY: -18,
         },
       ],
     },
     plugins: [totalDataLabelPlugin],
     options: baseOptions({
       interaction: { mode: 'index', intersect: false },
-      // Logarithmic axis, same reasoning as the Panel chart: lets a daily
-      // count of a handful and a cumulative total in the hundreds share one
-      // Y axis legibly. Chart.js's log scale can't plot a literal 0 (log(0)
-      // is undefined), so a day with zero stickers/survey records simply
-      // has no point for that series on that day — the line resumes on the
-      // next non-zero day, same behavior the Panel chart already has.
-      scales: { y: { type: 'logarithmic' } },
+      scales: {
+        y: {
+          type: 'linear', position: 'left', beginAtZero: true, title: { display: true, text: 'Acumulado' },
+        },
+        y1: {
+          type: 'linear', position: 'right', beginAtZero: true, grid: { drawOnChartArea: false }, title: { display: true, text: 'Diario' },
+        },
+      },
       plugins: { legend: { display: true }, tooltip: { mode: 'index', intersect: false } },
     }),
   };
+}
+
+/** Cache key for renderChart()'s upsertChart-skip (W8): identical inputs (the
+ *  visible labels, the date range, which professional is selected, the
+ *  pre-range offsets, and each series' own sum) -> identical key, so a
+ *  re-render that would produce the EXACT SAME chart (e.g. a sort-only
+ *  interaction, which still routes through render()) can skip upsertChart
+ *  entirely instead of re-diffing/repainting Chart.js for no visual change.
+ *  Deliberately a plain joined string, not a content hash — cheap to compute
+ *  and trivially different whenever any input field differs. */
+export function timelineDataKey(timeline, { from = null, to = null, professionalKey = null } = {}) {
+  const sum = (arr) => (Array.isArray(arr) ? arr.reduce((a, b) => a + b, 0) : 0);
+  const offsets = (timeline && timeline.offsets) || {};
+  return [
+    (timeline && timeline.labels ? timeline.labels.join(',') : ''),
+    from || '', to || '', professionalKey || '',
+    offsets.stickers || 0, offsets.surveys || 0,
+    sum(timeline && timeline.stickers), sum(timeline && timeline.surveys),
+  ].join('|');
 }
 
 // The timeline chart lives in charts.js's shared Chart.js registry, keyed
@@ -1746,6 +1762,15 @@ export function initSeguimiento(root, { getToken, records }) {
     resetFiltersBtn.classList.toggle('is-filter-active', active);
   }
 
+  // W8: skips upsertChart entirely when the last successfully rendered
+  // chart's own dataKey (timelineDataKey) is unchanged — a re-render that
+  // would produce the EXACT SAME chart (e.g. a sort-only interaction, which
+  // still routes through render()) no longer re-diffs/repaints Chart.js for
+  // no visual change. Reset to null whenever the chart is torn down (empty
+  // range, Chart.js missing, a render error) so the NEXT successful render
+  // always re-creates rather than silently staying blank.
+  let lastChartDataKey = null;
+
   function renderChart() {
     // Chart.js loads from a CDN (see index.html) — if it failed to load (or
     // hasn't yet), `Chart` is simply undefined here; upsertChart() would
@@ -1758,12 +1783,27 @@ export function initSeguimiento(root, { getToken, records }) {
     // wiring) or, worse, escape into data.js's notify() loop and take other
     // subscribers down with it.
     if (typeof Chart === 'undefined') {
-      renderChartUnavailable('Gráfico no disponible (no se pudo cargar Chart.js).');
+      setChartEmpty('seguimiento-timeline', 'Gráfico no disponible (no se pudo cargar Chart.js).');
+      lastChartDataKey = null;
       return;
     }
+    const { from, to } = currentFilters();
+    const professionalKey = chartSelectEl.value || null;
     const timeline = buildTimeline({
-      stickers, surveys, ...currentFilters(), professionalKey: chartSelectEl.value || null, identity: currentIdentity,
+      stickers, surveys, from, to, professionalKey, identity: currentIdentity,
     });
+    // W8: an empty timeline (no dated records in range at all, INCLUDING an
+    // inverted `to < from`, which buildTimeline already returns as empty
+    // labels) has nothing to plot — same empty-state convention (and
+    // registry cleanup) as charts.js's own setChartEmpty, reused here rather
+    // than duplicated.
+    if (!timeline.labels.length) {
+      setChartEmpty('seguimiento-timeline', 'Sin actividad en el rango seleccionado.');
+      lastChartDataKey = null;
+      return;
+    }
+    const dataKey = timelineDataKey(timeline, { from, to, professionalKey });
+    if (dataKey === lastChartDataKey) return; // unchanged since the last render -- nothing to repaint
     try {
       // recreate: true — root.innerHTML is replaced on every open (see the
       // top of this function), which orphans the PREVIOUS open's <canvas>
@@ -1773,10 +1813,12 @@ export function initSeguimiento(root, { getToken, records }) {
       // the new one actually on screen, so the chart stayed blank from the
       // second open on.
       upsertChart('seguimiento-timeline', timelineChartConfig(timeline), { recreate: true });
-      clearChartUnavailable();
+      clearChartEmpty('seguimiento-timeline');
+      lastChartDataKey = dataKey;
     } catch (err) {
       console.warn('seguimiento: fallo al renderizar el gráfico de ritmo diario', err);
-      renderChartUnavailable('Gráfico no disponible (error al renderizar).');
+      setChartEmpty('seguimiento-timeline', 'Gráfico no disponible (error al renderizar).');
+      lastChartDataKey = null;
     }
   }
   // Wrapped, not the bare closure: `root` stays in the DOM (just hidden)

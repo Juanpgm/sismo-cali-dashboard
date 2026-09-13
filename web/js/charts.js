@@ -96,17 +96,6 @@ export function baseOptions(overrides = {}) {
   const border = themeColor('--border', 'rgba(255,255,255,0.10)');
   const surface2 = themeColor('--surface-2', '#1a3a63');
 
-  const defaultScales = {
-    x: {
-      grid: { color: border },
-      ticks: { color: textMuted, font: { size: 11 } },
-    },
-    y: {
-      beginAtZero: true,
-      grid: { color: border },
-      ticks: { color: textMuted, font: { size: 11 } },
-    },
-  };
   const defaultPlugins = {
     legend: {
       display: false,
@@ -129,12 +118,31 @@ export function baseOptions(overrides = {}) {
   // `plugins: { legend: {...} }` must not wipe out the themed defaults for the
   // sibling keys it didn't mention (this previously dropped the dark-theme
   // tooltip/legend styling and axis tick colors wholesale).
+  //
+  // W8: generalized from the literal 'x'/'y' pair to EVERY scale key whose
+  // name starts with 'x' or 'y' — a caller adding a second axis (e.g. 'y1'
+  // for a right-hand linear scale, seguimiento.js's dual-axis timeline chart)
+  // used to get NO theming at all, since the old merge only ever touched
+  // 'x'/'y' by name; any other key from the caller's own `scales` passed
+  // through completely untouched, silently unthemed in light mode.
   const { scales: scalesOverride, plugins: pluginsOverride, ...rest } = overrides;
-  const mergedScales = {
-    ...scalesOverride,
-    x: { ...defaultScales.x, ...(scalesOverride && scalesOverride.x) },
-    y: { ...defaultScales.y, ...(scalesOverride && scalesOverride.y) },
-  };
+  const scaleKeys = new Set(['x', 'y', ...Object.keys(scalesOverride || {})]);
+  const mergedScales = {};
+  for (const key of scaleKeys) {
+    const isAxisLike = /^[xy]/.test(key);
+    const themedDefault = isAxisLike ? {
+      ...(key.startsWith('y') ? { beginAtZero: true } : {}),
+      grid: { color: border },
+      ticks: { color: textMuted, font: { size: 11 } },
+    } : {};
+    const ov = (scalesOverride && scalesOverride[key]) || {};
+    mergedScales[key] = {
+      ...themedDefault,
+      ...ov,
+      grid: { ...themedDefault.grid, ...ov.grid },
+      ticks: { ...themedDefault.ticks, ...ov.ticks },
+    };
+  }
   const mergedPlugins = {
     ...defaultPlugins,
     ...pluginsOverride,
@@ -355,8 +363,12 @@ function renderHabByComuna(records) {
   });
 }
 
-/** Show a message inside a chart tile instead of an (empty/broken) canvas. */
-function setChartEmpty(canvasId, message) {
+/** Show a message inside a chart tile instead of an (empty/broken) canvas.
+ *  Exported (W8) so any OTHER module with its own Chart.js instance in this
+ *  same registry (seguimiento.js's timeline chart) can reuse the exact same
+ *  empty-state convention — hidden canvas + a `.chart-empty` note + registry
+ *  cleanup — instead of hand-rolling a second, drifting copy. */
+export function setChartEmpty(canvasId, message) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
   const existing = registry.get(canvasId);
@@ -372,8 +384,9 @@ function setChartEmpty(canvasId, message) {
   if (note) note.textContent = message;
 }
 
-/** Re-show a tile's canvas and drop any empty-state message. */
-function clearChartEmpty(canvasId) {
+/** Re-show a tile's canvas and drop any empty-state message. Exported (W8),
+ *  same reasoning as setChartEmpty above. */
+export function clearChartEmpty(canvasId) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
   canvas.style.display = '';
@@ -395,12 +408,18 @@ export const totalDataLabelPlugin = {
       const meta = chart.getDatasetMeta(i);
       const pt = meta.data[meta.data.length - 1];
       if (!pt) return;
+      // `_labelOffsetY` (W8): an optional per-dataset vertical nudge, so a
+      // chart with TWO labeled datasets whose last points land close together
+      // (seguimiento.js's dual cumulative lines) can offset one of them
+      // instead of the labels overlapping. Defaults to -5 — the exact
+      // vertical offset every caller before W8 already got.
+      const dy = ds._labelOffsetY ?? -5;
       ctx.save();
       ctx.font = '700 12px system-ui, -apple-system, sans-serif';
       ctx.fillStyle = ds.borderColor;
       ctx.textAlign = 'right';
       ctx.textBaseline = 'bottom';
-      ctx.fillText(ds._totalLabel, pt.x - 4, pt.y - 5);
+      ctx.fillText(ds._totalLabel, pt.x - 4, pt.y + dy);
       ctx.restore();
     });
   },
