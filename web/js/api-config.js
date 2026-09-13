@@ -21,7 +21,36 @@
 // `evaluaciones.js`, `stickers-asignacion.js` are
 // untouched; their own consolidation slices (6-8) flip their entries only
 // after each one's own parity check passes.
-const RAILWAY_BASE_URL = 'https://sismo-cali-dashboard-production.up.railway.app';
+const RAILWAY_BASE_URL_PROD = 'https://sismo-cali-dashboard-production.up.railway.app';
+
+// Local-development override, ONLY honored when the page itself is served
+// from localhost/127.0.0.1 (never on Vercel). Lets a developer point every
+// Railway-backed entry at a locally running backend without editing this
+// file: open `http://localhost:8080/?api=http://127.0.0.1:8000` once (the
+// value is persisted in localStorage under `sismo:apiBase`), or
+// `?api=reset` to go back to production. The backend already allows CORS
+// from any localhost port (backend/app/config.py CORS_ALLOW_ORIGIN_REGEX).
+function localDevApiBase() {
+  try {
+    if (typeof window === 'undefined') return '';
+    const host = window.location.hostname;
+    if (host !== 'localhost' && host !== '127.0.0.1') return '';
+    const KEY = 'sismo:apiBase';
+    const param = new URLSearchParams(window.location.search).get('api');
+    if (param === 'reset') {
+      window.localStorage.removeItem(KEY);
+      return '';
+    }
+    if (param && /^https?:\/\//.test(param)) {
+      window.localStorage.setItem(KEY, param.replace(/\/+$/, ''));
+    }
+    return window.localStorage.getItem(KEY) || '';
+  } catch (_) {
+    return '';
+  }
+}
+
+const RAILWAY_BASE_URL = localDevApiBase() || RAILWAY_BASE_URL_PROD;
 
 export const API_CONFIG = {
   reportados: `${RAILWAY_BASE_URL}/reportados`,
