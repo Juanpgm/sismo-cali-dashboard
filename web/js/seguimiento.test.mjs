@@ -1225,6 +1225,38 @@ console.log('professionalRecords: optional from/to period filter (default = whol
 }
 console.log('badgeStyleFor: maps colorEtiqueta/clasificacion to the app\'s own ATC-20 badge vocabulary OK');
 
+// ── H1/M4: badgeStyleFor priority — clasificacion is AUTHORITATIVE, not
+// colorEtiqueta. The backend (stickers_atencionsismo.py) sets `clasificacion`
+// from a matched Firestore evaluación when one exists, which can OVERRIDE a
+// stale `colorEtiqueta` from the raw API; evaluaciones.js's claseDe (what the
+// Stickers tab actually renders) reads `clasificacion` ONLY. A report that
+// prioritized colorEtiqueta could show the SAFER of two contradictory
+// classifications for the same sticker — dangerous for a disaster-response
+// tool. M4 (bundled): clasificacion is normalized with the same
+// `.replace(/[\s-]+/g, '_')` the two EXISTING readers of this field already
+// apply (evaluaciones.js's claseDe, report.js's evalClaseLabel), so
+// space/hyphen drift on this field is treated as noise here too. ───────────
+{
+  const restringido = { bg: '#fff3e0', color: '#b8730a', label: 'Con restricciones' };
+  const inseguro = { bg: '#fce4ec', color: '#c62828', label: 'Inseguro' };
+
+  // H1: a conflicting pair (colorEtiqueta says safe, clasificacion says
+  // unsafe) must resolve to clasificacion's RED "Inseguro" badge, matching
+  // what the Stickers tab shows for the same sticker — never the green
+  // badge just because colorEtiqueta happens to be checked first.
+  assert.deepEqual(
+    badgeStyleFor('Habitable', 'INSEGURO'),
+    inseguro,
+    'H1: clasificacion is authoritative — a conflicting colorEtiqueta must never win',
+  );
+
+  // M4: space/hyphen drift on clasificacion must not fall through to neutral.
+  assert.deepEqual(badgeStyleFor('', 'Uso restringido'), restringido, 'M4: space-separated clasificacion variant matches');
+  assert.deepEqual(badgeStyleFor('', 'uso-restringido'), restringido, 'M4: hyphenated clasificacion variant matches');
+  assert.deepEqual(badgeStyleFor('', 'uso_restringido'), restringido, 'M4: underscore clasificacion variant (baseline) matches');
+}
+console.log('badgeStyleFor (H1/M4): clasificacion is authoritative over colorEtiqueta; space/hyphen drift normalized OK');
+
 // ── W11: badgeCell — pure pdfmake cell for one colored classification badge ─
 {
   const style = badgeStyleFor('Habitable', '');
@@ -1281,6 +1313,27 @@ console.log('statCard: plain vs accent card shape (background/text color, option
   assert.equal(six[1].columns.length, 3);
 }
 console.log('statCardsRow: chunks 2/3/5/6 cards into proper columns rows (3/row) OK');
+
+// ── L9: statCardsRow — a trailing partial row must not render WIDER cards
+// than the full rows above it. pdfmake defaults a `columns` entry with no
+// explicit `width` to `'*'` (share of remaining space), so a 2-card final
+// row (perRow=3) used to stretch those 2 cards wider than the 3-card full
+// rows above — visually inconsistent. Every card, in every row, must now
+// carry the SAME explicit width. ────────────────────────────────────────
+{
+  const mk = (n) => Array.from({ length: n }, (_, i) => statCard(`L${i}`, i));
+  const four = statCardsRow(mk(4), 3);
+  assert.equal(four.length, 2, '4 cards at perRow=3 -> 2 rows (3 + 1)');
+  const widths4 = four.flatMap((r) => r.columns.map((c) => c.width));
+  assert.ok(widths4.every((w) => w !== undefined), 'L9: every card must carry an explicit width');
+  assert.ok(widths4.every((w) => w === widths4[0]), `L9: every card (incl. the trailing partial row) must share the same width (got ${JSON.stringify(widths4)})`);
+
+  const seven = statCardsRow(mk(7), 3);
+  assert.equal(seven.length, 3, '7 cards at perRow=3 -> 3 rows (3 + 3 + 1)');
+  const widths7 = seven.flatMap((r) => r.columns.map((c) => c.width));
+  assert.ok(widths7.every((w) => w === widths7[0]), `L9: every card across all rows must share the same width (got ${JSON.stringify(widths7)})`);
+}
+console.log('statCardsRow (L9): trailing partial row cards share the same width as full rows OK');
 
 // ── W11: sectionHeaderNode — section title + colored bottom rule ──────────
 {
@@ -1343,6 +1396,72 @@ console.log('sectionHeaderNode: text + colored bottom rule (mirrors both mockups
 }
 console.log('buildActivitySparkline: empty/single-day/zero-gap/aggregation-over-maxBars all render safely OK');
 
+// ── H2/L8/M5: buildActivitySparkline — rate-based buckets (not raw sums),
+// index-based bucket boundaries (not a fixed Math.ceil bucket SIZE), and an
+// exposed `bucketSize` for the caller's caption. ───────────────────────────
+{
+  function ymdFrom(base, offsetDays) {
+    const d = new Date(Date.UTC(base, 0, 1) + offsetDays * 86400000);
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+  }
+
+  // H2: a perfectly constant daily rate (4 stickers/day for 45 days) must
+  // produce EQUAL bar heights across ALL buckets, including the final one —
+  // the old sum-based last bucket (a shorter remainder) read as "output
+  // collapsed" when nothing actually changed.
+  const constantPoints = [];
+  for (let day = 0; day < 45; day += 1) {
+    for (let k = 0; k < 4; k += 1) constantPoints.push({ fecha: ymdFrom(2026, day) });
+  }
+  const constant = buildActivitySparkline(constantPoints, { maxBars: 30 });
+  assert.equal(constant.canvas.length, 30, 'L8: 45 days at maxBars=30 must still fill all 30 buckets');
+  const heights = constant.canvas.map((r) => r.h);
+  for (const h of heights) {
+    assert.equal(h, heights[0], `H2: every bucket (incl. the last) must be the same height for a constant rate (got ${JSON.stringify(heights)})`);
+  }
+  // M5: exposed effective days-per-bar for the caller's caption.
+  assert.equal(constant.bucketSize, 2, '45 days over 30 buckets -> ~1.5 days/bucket, rounds to 2');
+
+  const single = buildActivitySparkline([{ fecha: '2026-01-01' }], { maxBars: 30 });
+  assert.equal(single.bucketSize, 1, 'M5: a 1-day range must report bucketSize 1 (one day per bar)');
+
+  // L8: the resolution "cliff" — 31 days used to collapse to 16 bars
+  // (ceil(31/30)=2 forces bucketSize 2 for EVERY bucket); index-based
+  // boundaries must still fill all 30 bars.
+  const points31 = Array.from({ length: 31 }, (_, i) => ({ fecha: ymdFrom(2026, i) }));
+  const withL8 = buildActivitySparkline(points31, { maxBars: 30 });
+  assert.equal(withL8.canvas.length, 30, `L8: 31 days at maxBars=30 must yield 30 bars, not 16 (got ${withL8.canvas.length})`);
+
+  // L8 (count conservation): a spike on the very LAST day of a range longer
+  // than maxBars must land in the last bucket, not be silently dropped at a
+  // boundary miscalculation — proves the index-based partition covers every
+  // day exactly once, all the way to the end.
+  const spikePoints = [{ fecha: ymdFrom(2026, 0) }, ...Array.from({ length: 100 }, () => ({ fecha: ymdFrom(2026, 30) }))];
+  const spike = buildActivitySparkline(spikePoints, { maxBars: 30 });
+  assert.equal(spike.canvas.length, 30);
+  const spikeHeights = spike.canvas.map((r) => r.h);
+  const maxSpikeH = Math.max(...spikeHeights);
+  assert.equal(spikeHeights[spikeHeights.length - 1], maxSpikeH, 'L8: a spike on the last day must land in the last bucket, never dropped at the boundary');
+  assert.ok(maxSpikeH > Math.min(...spikeHeights) * 5, 'the spike must be clearly distinguishable from baseline buckets');
+}
+console.log('buildActivitySparkline (H2/L8/M5): rate-based equal-height buckets, smooth index-based bucket count, bucketSize exposed OK');
+
+// ── L10: buildActivitySparkline must not hang/allocate a huge array when a
+// malformed `fecha` is far outside any sane range (e.g. a stray
+// "9999-12-31") — this now runs ONCE PER PROFESSIONAL in the mass export
+// (up to ~110x), unlike the pre-existing single global buildTimeline call.
+{
+  const start = Date.now();
+  const degenerate = buildActivitySparkline([
+    { fecha: '2026-01-01' },
+    { fecha: '9999-12-31' },
+  ]);
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed < 2000, `L10: must return quickly even with a degenerate date span (took ${elapsed}ms)`);
+  assert.ok(!degenerate.canvas || degenerate.canvas.length <= 30, 'L10: must never produce an unbounded canvas');
+}
+console.log('buildActivitySparkline (L10): a degenerate far-future fecha never hangs or allocates an enormous array OK');
+
 // ── buildProfessionalReportDocDefinition ────────────────────────────────────
 
 {
@@ -1379,6 +1498,44 @@ console.log('buildActivitySparkline: empty/single-day/zero-gap/aggregation-over-
   assert.ok(flatText.includes('Actividad en el período'), 'must include the new activity sparkline section');
 }
 console.log('buildProfessionalReportDocDefinition: includes header, stats and points OK');
+
+// ── M5: the sparkline caption reflects the actual bucket size — plain
+// "Promedio diario de stickers." for a 1-day-per-bar range, an explicit
+// "(agrupado cada N días)" note when buildActivitySparkline aggregated
+// multiple days per bar. ─────────────────────────────────────────────────
+{
+  const row = {
+    name: 'Gil Soto', cedula: '1', codigo: '', entidad: '', np: '', barriosActivos: [],
+    stickersFase1: 1, stickersFase2: 0, surveyTotal: 0, total: 1,
+    firstDate: '2026-01-01', lastDate: '2026-01-01', activeDays: 1, avgPerActiveDay: 1,
+    avgStickersPerDay: 1, rosterSourced: 0,
+  };
+  // Look up the caption node by its TOP-LEVEL `.text` field directly in
+  // `doc.content` (not a flattened JSON string search) — the KPI stat card
+  // labeled "Promedio diario de stickers" is nested several levels deep
+  // inside a `statCardsRow` table/stack, so a naive substring search across
+  // the whole flattened content would trivially "pass" via that unrelated
+  // card regardless of what the sparkline caption actually says.
+  const oneDayPoints = { stickerPoints: [{ codigo: 'A1', direccion: '', municipio: '', fecha: '2026-01-01', faseLabel: 'Fase I' }], surveyPoints: [] };
+  const oneDayDoc = buildProfessionalReportDocDefinition(row, oneDayPoints, {});
+  const oneDayCaption = oneDayDoc.content.find((n) => n && typeof n.text === 'string' && /Promedio diario de stickers/.test(n.text));
+  assert.ok(oneDayCaption, 'M5: a 1-day-per-bar range must render the "Promedio diario de stickers" caption as its own content node');
+  assert.ok(!/agrupado cada/i.test(oneDayCaption.text), 'M5: a 1-day-per-bar range must NOT claim a multi-day grouping');
+
+  function ymdFrom(base, offsetDays) {
+    const d = new Date(Date.UTC(base, 0, 1) + offsetDays * 86400000);
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+  }
+  const manyDayPoints = Array.from({ length: 45 }, (_, i) => ({
+    codigo: `COD-${i}`, direccion: 'x', municipio: 'Cali', fecha: ymdFrom(2026, i), faseLabel: 'Fase I',
+  }));
+  const rowLong = { ...row, firstDate: '2026-01-01', lastDate: ymdFrom(2026, 44) };
+  const manyDayDoc = buildProfessionalReportDocDefinition(rowLong, { stickerPoints: manyDayPoints, surveyPoints: [] }, {});
+  const manyDayCaption = manyDayDoc.content.find((n) => n && typeof n.text === 'string' && /Promedio diario de stickers/.test(n.text));
+  assert.ok(manyDayCaption, 'M5: the multi-day-per-bar range must still render a "Promedio diario de stickers" caption node');
+  assert.ok(/agrupado cada 2 d.as/i.test(manyDayCaption.text), 'M5: a multi-day-per-bar range must state the effective bucket size in the caption');
+}
+console.log('buildProfessionalReportDocDefinition (M5): sparkline caption reflects effective bucketSize OK');
 
 {
   // A professional with zero points in one or both sources must not crash
@@ -2371,16 +2528,63 @@ console.log('reportFilenameSlug OK');
   const flatText = JSON.stringify(doc.content);
   assert.ok(/sin dato/i.test(flatText), 'objetivoDiario null must render "sin dato", never a lying number');
   assert.ok(flatText.includes('—'), 'blank tarjeta/celular/correo/barrios must render the forced DASH');
-  assert.ok(/personal/i.test(flatText), 'a confidentiality line about personal data must be present');
+  // M7 (CONTRACT CHANGE): the confidentiality notice moved OUT of `content`
+  // and into a repeating `footer:` function (see the dedicated M7 test
+  // below) — a ~110-person mass export must show it on every physical page,
+  // not just once wherever it happened to sit in the flattened content
+  // array. `doc.content` must therefore no longer carry it.
+  assert.ok(!/personal/i.test(flatText), 'M7: the confidentiality notice no longer lives in content — moved to the repeating footer');
   // W11: TP is also shown inline in the subtitle — a blank tarjetaProfesional
   // must render the DASH there too, never a silently blank "TP: " label.
   assert.ok(/TP:\s*—/.test(flatText), 'a blank tarjeta profesional must render as DASH in the subtitle, not blank');
+
+  // M6: a projection deadline caption ("Proyectado al …") attached to a
+  // non-existent projection is fabricated confidence — when ctx.objetivoDiario
+  // is null the "Visita objetivo diario" stat card must show "sin dato" with
+  // NO deadline text anywhere in its own structure (main's pre-redesign code
+  // never showed one either in this case).
+  const rows = doc.content.filter((n) => n && Array.isArray(n.columns));
+  const cards = rows.flatMap((r) => r.columns);
+  const objetivoCard = cards.find((c) => JSON.stringify(c).includes('Visita objetivo diario'));
+  assert.ok(objetivoCard, 'the objetivo diario stat card must be present');
+  assert.ok(!JSON.stringify(objetivoCard).includes('Proyectado al'), 'M6: no deadline caption when objetivoDiario is null (sin dato)');
 
   const docOther = buildProfessionalReportDocDefinition(row, points, { ...ctx, last7: 9 });
   assert.notEqual(JSON.stringify(docOther.content), flatText, 'ctx.last7 must actually reach the rendered report');
   assert.ok(JSON.stringify(docOther.content).includes('"9"'), 'the last7 value must render as its own cell text');
 }
 console.log('buildProfessionalReportDocDefinition: ctx-driven fields (objetivoDiario sin dato, DASH-forced blanks, confidentiality line, last7) OK');
+
+// ── M7: the confidentiality notice is now a pdfmake `footer:` function so it
+// repeats on EVERY page — a ~110-person mass export must show it for every
+// professional's pages, not only once wherever it happened to sit in the
+// flattened content array (previously it sat at the end of each
+// professional's own content block, unreachable once a reader has scrolled
+// past it on a multi-page-per-professional export). ────────────────────────
+{
+  const row = {
+    name: 'Gil Soto', cedula: '1', codigo: '', entidad: '', np: '', barriosActivos: [],
+    stickersFase1: 0, stickersFase2: 0, surveyTotal: 0, total: 0,
+    firstDate: null, lastDate: null, activeDays: 0, avgPerActiveDay: 0,
+    avgStickersPerDay: null, rosterSourced: 0,
+  };
+  const points = { stickerPoints: [], surveyPoints: [] };
+  const doc = buildProfessionalReportDocDefinition(row, points, {});
+  assert.ok(typeof doc.footer === 'function', 'M7: doc.footer must be a function so pdfmake repeats it on every page');
+  const rendered = doc.footer(1, 3);
+  assert.ok(/personal/i.test(JSON.stringify(rendered)), 'M7: the footer must carry the confidentiality notice');
+
+  // Two SEPARATE calls to the builder for identical inputs must still
+  // produce a footer that deepStrictEqual accepts as equal — function
+  // objects compare by REFERENCE only (never by behavior), so this only
+  // holds if the footer is a STABLE module-scope reference, same trick as
+  // the pre-existing REPORT_CARD_LAYOUT fix. Verify this explicitly by
+  // diffing `footer`, not just `.content` (the pre-existing mass≡individual
+  // test only ever diffed content).
+  const docAgain = buildProfessionalReportDocDefinition(row, points, {});
+  assert.deepEqual(doc.footer, docAgain.footer, 'M7: footer must be the SAME stable function reference across separate builder calls');
+}
+console.log('buildProfessionalReportDocDefinition (M7): confidentiality notice is a stable, repeating page footer OK');
 
 {
   const row = {
@@ -2492,6 +2696,16 @@ console.log('buildProfessionalReportDocDefinition: zero stickers in range -> "Si
   });
   assert.deepEqual(firstBlock, soloA.content, 'first professional block must match the solo builder exactly');
   assert.deepEqual(secondBlock, soloB.content, 'second professional block (pageBreak stripped) must match the solo builder exactly');
+
+  // M7: the mass export is ONE docDefinition/one PDF, so the confidentiality
+  // footer must be attached at the TOP LEVEL of the mass doc too (not only
+  // inside each merged-away per-professional `content`, which the merge
+  // above never carries a `footer` key from anyway) — otherwise only page 1
+  // of the whole mass PDF would ever show it. Diff `footer` explicitly, not
+  // just `.content` (the pre-existing equality test above only ever diffed
+  // content) — same deepStrictEqual-by-reference trick as REPORT_CARD_LAYOUT.
+  assert.ok(typeof mass.footer === 'function', 'M7: buildMassReportDocDefinition must expose a top-level footer function');
+  assert.deepEqual(mass.footer, soloA.footer, 'M7: the mass doc footer must be the SAME stable reference the solo builder uses');
 }
 console.log('buildMassReportDocDefinition: individual and mass builders produce identical per-professional content OK');
 

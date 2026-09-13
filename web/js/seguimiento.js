@@ -1127,6 +1127,23 @@ const REPORT_DISCLAIMER = 'Informe generado automáticamente a partir del cruce 
 const REPORT_CONFIDENTIALITY_NOTICE = 'Este informe contiene datos personales del profesional (cédula, celular, correo) — '
   + 'tratar conforme a la política de protección de datos; no distribuir fuera de los canales autorizados.';
 
+// M7: the confidentiality notice repeats on EVERY page as a pdfmake `footer:`
+// function — a ~110-person mass export otherwise only shows it once
+// (wherever it happened to sit in the flattened content array), unreachable
+// once a reader has scrolled past it on a multi-page-per-professional
+// export. A SINGLE module-scope function (never a fresh arrow function
+// PER CALL) for the same reason REPORT_CARD_LAYOUT above is a shared
+// object: buildMassReportDocDefinition's per-professional equality guarantee
+// is assert.deepStrictEqual, which compares functions by REFERENCE only —
+// two separately-allocated but behaviorally-identical closures would never
+// be deepStrictEqual. Sharing one function reference sidesteps this, and
+// lets buildMassReportDocDefinition attach the EXACT SAME reference as its
+// own single top-level footer (one PDF document = one footer, not one per
+// merged-in professional).
+function reportFooter() {
+  return { text: REPORT_CONFIDENTIALITY_NOTICE, style: 'disclaimer', margin: [40, 0, 40, 0] };
+}
+
 const REPORT_STICKERS_CAP = 50;
 
 // Proyección fija (D5/plan): visita objetivo diario se calcula "al 30 de
@@ -1258,28 +1275,56 @@ const BADGE_STYLES = {
   neutral: { bg: '#eeeeee', color: '#555555', label: 'Sin clasificar' },
 };
 
-/** Sticker classification (colorEtiqueta primary, clasificacion fallback)
- *  -> `{ bg, color, label }` badge style. `colorEtiqueta` is the atencionsismo
- *  API's own human label ("Habitable" / "Acceso restringido" / "No
- *  habitable" / "Sin clasificación", per docs/api-informe-json.md) — the
- *  PRIMARY signal, since it's the single field guaranteed present. When it's
- *  blank, `clasificacion` (ATC-20: inspeccionado/uso_restringido/
- *  peligro_colapso, OR the backend's own INSPECCIONADA/USO_RESTRINGIDO/
- *  INSEGURO clase-fallback vocabulary — see stickers_atencionsismo.py's
- *  COLOR_TO_CLASE) is the fallback signal. Case/accent-insensitive
- *  (normalize(), same helper the rest of this module already uses). Never
- *  throws: blank/null/unrecognized input always falls through to the
- *  neutral badge, same "fail-soft, never fabricate" invariant as DASH. */
+/** Sticker classification (clasificacion primary, colorEtiqueta fallback)
+ *  -> `{ bg, color, label }` badge style.
+ *
+ *  H1 (fixed): `clasificacion` is the AUTHORITATIVE signal, not
+ *  `colorEtiqueta` — the backend (stickers_atencionsismo.py) sets
+ *  `clasificacion` from a matched Firestore evaluación when one exists,
+ *  which can OVERRIDE a stale `colorEtiqueta` from the raw atencionsismo API;
+ *  evaluaciones.js's claseDe (what the Stickers tab actually renders) reads
+ *  `clasificacion` ONLY. Prioritizing colorEtiqueta could show the SAFER of
+ *  two contradictory classifications for the same sticker, disagreeing with
+ *  the Stickers tab — dangerous for a disaster-response tool. `clasificacion`
+ *  (ATC-20: inspeccionado/uso_restringido/peligro_colapso, OR the backend's
+ *  own INSPECCIONADA/USO_RESTRINGIDO/INSEGURO clase-fallback vocabulary —
+ *  see stickers_atencionsismo.py's COLOR_TO_CLASE) is checked first; only
+ *  when it's blank/unrecognized does `colorEtiqueta` (the atencionsismo
+ *  API's own human label — "Habitable" / "Acceso restringido" / "No
+ *  habitable" / "Sin clasificación", per docs/api-informe-json.md) act as
+ *  the fallback signal.
+ *
+ *  M4 (fixed): `clasificacion` is normalized with `.replace(/[\s-]+/g, '_')`
+ *  AFTER normalize(), same as the two EXISTING readers of this field
+ *  (evaluaciones.js's claseDe, report.js's evalClaseLabel) — this codebase
+ *  already treats space/hyphen drift on this field as real drift, not
+ *  noise, so "Uso restringido"/"uso-restringido"/"uso_restringido" must all
+ *  match the same code.
+ *
+ *  Case/accent-insensitive (normalize(), same helper the rest of this module
+ *  already uses). Never throws: blank/null/unrecognized input always falls
+ *  through to the neutral badge, same "fail-soft, never fabricate" invariant
+ *  as DASH. */
 export function badgeStyleFor(colorEtiqueta, clasificacion) {
-  const label = normalize(colorEtiqueta);
-  const clase = normalize(clasificacion);
-  if (label === 'habitable' || clase === 'inspeccionado' || clase === 'inspeccionada') {
+  const clase = normalize(clasificacion).replace(/[\s-]+/g, '_');
+  if (clase === 'inspeccionado' || clase === 'inspeccionada') {
     return { ...BADGE_STYLES.inspeccionado };
   }
-  if (label === 'acceso restringido' || clase === 'uso_restringido') {
+  if (clase === 'uso_restringido') {
     return { ...BADGE_STYLES.restringido };
   }
-  if (label === 'no habitable' || clase === 'inseguro' || clase === 'peligro_colapso') {
+  if (clase === 'inseguro' || clase === 'peligro_colapso') {
+    return { ...BADGE_STYLES.inseguro };
+  }
+  // clasificacion was blank/unrecognized -> fall back to colorEtiqueta.
+  const label = normalize(colorEtiqueta);
+  if (label === 'habitable') {
+    return { ...BADGE_STYLES.inspeccionado };
+  }
+  if (label === 'acceso restringido') {
+    return { ...BADGE_STYLES.restringido };
+  }
+  if (label === 'no habitable') {
     return { ...BADGE_STYLES.inseguro };
   }
   return { ...BADGE_STYLES.neutral };
@@ -1327,11 +1372,21 @@ export function statCard(label, value, { accent = false, caption } = {}) {
 
 /** Chunks `cards` (statCard(...) nodes) into pdfmake `columns` rows of
  *  `perRow` — so N cards always render as a proper grid regardless of count
- *  (the last, partial row is never padded with empty cells). */
+ *  (the last, partial row is never padded with empty cells).
+ *
+ *  L9 (fixed): every card, in every row, now carries an explicit
+ *  `width: '<100/perRow>%'` — a `columns` entry with no explicit width
+ *  defaults to pdfmake's `'*'` (share of remaining space), so a trailing
+ *  partial row (e.g. 4 cards at perRow=3 -> a 2-card final row) used to
+ *  render those cards WIDER than the full rows above it, visually
+ *  inconsistent. The explicit width keeps every card the same size
+ *  regardless of how many share its row. */
 export function statCardsRow(cards, perRow = 3) {
+  const width = `${Math.floor(100 / perRow)}%`;
   const rows = [];
   for (let i = 0; i < cards.length; i += perRow) {
-    rows.push({ columns: cards.slice(i, i + perRow), columnGap: 8, margin: [0, 0, 0, 0] });
+    const row = cards.slice(i, i + perRow).map((card) => ({ ...card, width }));
+    rows.push({ columns: row, columnGap: 8, margin: [0, 0, 0, 0] });
   }
   return rows;
 }
@@ -1366,15 +1421,44 @@ export function sectionHeaderNode(text) {
  *  its own (1px baseline tick) bar, so "no data that day" (impossible once
  *  there's a range) is never visually confused with "confirmed zero that
  *  day" (this project's standing fail-soft invariant, same reasoning as
- *  DASH). When the range spans more days than `maxBars`, consecutive days
- *  are summed into ~`maxBars` fixed-size buckets so the drawing stays
- *  bounded for a professional active across many months.
+ *  DASH).
  *
- *  0 stickers with a resolvable date -> a `{ canvas: [...] }` node (bars
- *  bottom-aligned, height proportional to count, color `COLORS.accent` —
- *  the app's own accent, not an invented one). 0 stickers AT ALL (or every
- *  point's fecha unresolvable) -> an explanatory `{ text }` node instead of
- *  an empty/misleading canvas — NEVER throws. */
+ *  L10: a day-span guard runs BEFORE the daily-array walk — a single
+ *  malformed `fecha` far outside any sane range (e.g. a stray "9999-12-31")
+ *  would otherwise make that walk allocate a multi-million-entry array; this
+ *  builder now runs ONCE PER PROFESSIONAL in the mass export (up to ~110x),
+ *  unlike the pre-existing single global buildTimeline call, so a >4000-day
+ *  (~11 year) span is treated as degenerate/unparseable input and falls back
+ *  to the same "no data to graph" safe path as blank dates, rather than
+ *  hanging or exhausting memory.
+ *
+ *  L8: when the range spans more days than `maxBars`, days are grouped into
+ *  exactly `min(daily.length, maxBars)` buckets by INDEX (`i * L / n`), never
+ *  a fixed Math.ceil(L / maxBars) bucket SIZE — the old size-based approach
+ *  wasted up to ~47% of available bar resolution right at the maxBars+1
+ *  boundary (30 days -> 30 bars, but 31 days -> only 16 bars, since
+ *  ceil(31/30)=2 forced every bucket to hold 2 days). Index-based boundaries
+ *  give a smooth bar count that only drops below maxBars once the range
+ *  itself is shorter than maxBars days, and — being a complete, non-
+ *  overlapping partition of `daily` — never drops or double-counts a day.
+ *
+ *  H2: each bar's height is driven by a per-day RATE (bucket sum / bucket
+ *  day count), never a raw SUM — summing a variable-length bucket (in
+ *  particular the old size-based approach's shorter final remainder) drew a
+ *  systematically shorter final bar even when daily output was perfectly
+ *  constant, misreading as "activity collapsed" when nothing changed.
+ *  Scaling against the max RATE (not the max sum) keeps constant-rate
+ *  buckets visually equal regardless of how many days each spans.
+ *
+ *  M5: the return value also carries `bucketSize` (the effective, rounded
+ *  days-per-bar) so the caller's caption can describe a multi-day bucket
+ *  accurately instead of unconditionally claiming one bar = one day.
+ *
+ *  0 stickers with a resolvable date -> a `{ canvas: [...], bucketSize }`
+ *  node (bars bottom-aligned, height proportional to rate, color
+ *  `COLORS.accent` — the app's own accent, not an invented one). 0 stickers
+ *  AT ALL (or every point's fecha unresolvable/degenerate) -> an explanatory
+ *  `{ text }` node instead of an empty/misleading canvas — NEVER throws. */
 export function buildActivitySparkline(stickerPoints, { maxBars = 30, width = REPORT_CONTENT_WIDTH, height = 40 } = {}) {
   const dates = (Array.isArray(stickerPoints) ? stickerPoints : [])
     .map((p) => p && p.fecha)
@@ -1382,11 +1466,19 @@ export function buildActivitySparkline(stickerPoints, { maxBars = 30, width = RE
     .sort();
   if (!dates.length) return { text: 'Sin actividad para graficar.', style: 'fieldValue', italics: true };
 
+  const first = dates[0];
+  const last = dates[dates.length - 1];
+
+  // L10: guard BEFORE walking the (potentially huge) day range.
+  const MAX_SPARKLINE_SPAN_DAYS = 4000;
+  const span = daysBetween(first, last);
+  if (span === null || span > MAX_SPARKLINE_SPAN_DAYS) {
+    return { text: 'Sin actividad para graficar.', style: 'fieldValue', italics: true };
+  }
+
   const counts = new Map();
   for (const d of dates) counts.set(d, (counts.get(d) || 0) + 1);
 
-  const first = dates[0];
-  const last = dates[dates.length - 1];
   const daily = [];
   let cursor = first;
   while (cursor <= last) {
@@ -1394,31 +1486,39 @@ export function buildActivitySparkline(stickerPoints, { maxBars = 30, width = RE
     cursor = shiftDateStr(cursor, 1);
   }
 
-  // Aggregate into <= maxBars fixed-size buckets when the range is long —
-  // Math.ceil so the LAST bucket is the (possibly smaller) remainder rather
-  // than ever exceeding maxBars.
-  const bucketSize = Math.ceil(daily.length / maxBars) || 1;
-  const buckets = [];
-  for (let i = 0; i < daily.length; i += bucketSize) {
-    buckets.push(daily.slice(i, i + bucketSize).reduce((a, b) => a + b, 0));
+  // L8: index-based bucket boundaries — a complete, non-overlapping
+  // partition of `daily` into exactly `n` buckets.
+  const n = Math.max(1, Math.min(daily.length, maxBars));
+  const bucketSums = [];
+  const bucketDayCounts = [];
+  for (let i = 0; i < n; i += 1) {
+    const startIdx = Math.floor((i * daily.length) / n);
+    const endIdx = Math.floor(((i + 1) * daily.length) / n);
+    const slice = daily.slice(startIdx, endIdx);
+    bucketDayCounts.push(slice.length);
+    bucketSums.push(slice.reduce((a, b) => a + b, 0));
   }
 
-  const maxCount = Math.max(1, ...buckets);
-  const n = buckets.length;
+  // H2: rate (sum / day count) per bucket, scaled against the max RATE.
+  const rates = bucketSums.map((sum, i) => sum / bucketDayCounts[i]);
+  const maxRate = Math.max(1e-9, ...rates);
   const gap = 2;
   const barW = Math.max(1, width / n - gap);
   const usableH = Math.max(height - 4, 4);
-  const canvas = buckets.map((count, i) => {
-    // A zero-count bucket still renders a 1px baseline tick (never omitted);
-    // a real (non-zero) count is always visibly taller (>= 2px) so the two
+  const canvas = rates.map((rate, i) => {
+    // A zero-rate bucket still renders a 1px baseline tick (never omitted);
+    // a real (non-zero) rate is always visibly taller (>= 2px) so the two
     // cases stay distinguishable at a glance, never both collapsing to the
     // same 1px sliver.
-    const h = count > 0 ? Math.max(2, Math.round((count / maxCount) * usableH)) : 1;
+    const h = rate > 0 ? Math.max(2, Math.round((rate / maxRate) * usableH)) : 1;
     return {
       type: 'rect', x: i * (barW + gap), y: height - h, w: barW, h, color: COLORS.accent,
     };
   });
-  return { canvas };
+
+  // M5: effective, rounded days-per-bar for the caller's caption.
+  const bucketSize = Math.max(1, Math.round(daily.length / n));
+  return { canvas, bucketSize };
 }
 
 /** Pure builder: a professional's row (buildProfessionalRows output, already
@@ -1458,6 +1558,17 @@ export function buildProfessionalReportDocDefinition(row, { stickerPoints, surve
   const objetivoValue = Number.isFinite(ctx.objetivoDiario) ? String(ctx.objetivoDiario) : 'sin dato';
   const objetivoCaption = `Proyectado al ${OBJETIVO_DEADLINE_LABEL}`;
   const last7 = Number.isFinite(ctx.last7) ? ctx.last7 : 0;
+  // M5: buildActivitySparkline now aggregates multiple days per bar once the
+  // period exceeds its default maxBars — the OLD caption ("Stickers
+  // registrados por día") unconditionally implied one bar = one day, which
+  // is false for any multi-month range (e.g. a 120-day range -> 4-day
+  // buckets). The caption now reads off the sparkline's own `bucketSize`
+  // (undefined when there's no data to graph, in which case no caption is
+  // rendered at all — see the `sparkline.canvas` guard in `content` below).
+  const sparkline = buildActivitySparkline(stickerPoints);
+  const sparklineCaption = sparkline.bucketSize > 1
+    ? `Promedio diario de stickers (agrupado cada ${sparkline.bucketSize} días).`
+    : 'Promedio diario de stickers.';
   const visitasPeriodo = stickerPoints.length + surveyPoints.length;
   const stickersNumbered = stickerPoints.map((p, i) => {
     const style = badgeStyleFor(p.colorEtiqueta, p.clasificacion);
@@ -1505,14 +1616,22 @@ export function buildProfessionalReportDocDefinition(row, { stickerPoints, surve
         statCard('Promedio diario de stickers', Number.isFinite(row.avgStickersPerDay) ? row.avgStickersPerDay : DASH),
         statCard('Día inicio', row.firstDate || DASH),
         statCard('Fecha última visita', row.lastDate || DASH),
-        statCard('Visita objetivo diario', objetivoValue, { accent: true, caption: objetivoCaption }),
+        // M6: the deadline caption is only meaningful alongside a REAL
+        // projected value — attaching "Proyectado al …" when objetivoDiario
+        // is null/non-finite (the card shows "sin dato") would be fabricated
+        // confidence about a projection that doesn't exist.
+        statCard('Visita objetivo diario', objetivoValue, {
+          accent: true,
+          caption: Number.isFinite(ctx.objetivoDiario) ? objetivoCaption : undefined,
+        }),
       ]),
       // W11: the new graphical element — present in NEITHER mockup — a
       // bounded daily-activity bar chart built from the same stickerPoints
       // already listed below, so the two sections never disagree.
       ...sectionHeaderNode('Actividad en el período'),
-      { text: 'Stickers registrados por día (barras más altas = más actividad).', style: 'fieldValue', margin: [0, 0, 0, 4] },
-      buildActivitySparkline(stickerPoints),
+      ...(sparkline.canvas
+        ? [{ text: sparklineCaption, style: 'fieldValue', margin: [0, 0, 0, 4] }, sparkline]
+        : [sparkline]),
       ...sectionHeaderNode(`Listado de stickers del período (${stickerPoints.length})`),
       ...cappedPointsTable(
         ['#', 'Número', 'Fase', 'Clasificación', 'Fecha'],
@@ -1529,10 +1648,13 @@ export function buildProfessionalReportDocDefinition(row, { stickerPoints, surve
         surveyPoints.map((p) => [p.direccion, p.nombreEdificacion, p.fecha || 'Sin fecha']),
         'Sin registros de Survey.',
       ),
-      // Footer (both mockups have one): the pre-existing disclaimer +
-      // confidentiality notice, now visually separated as a real footer
-      // (thin light-gray top rule) instead of sitting at the top of the
-      // page — content unchanged, only its position/presentation moved.
+      // Footer (both mockups have one): the pre-existing disclaimer, now
+      // visually separated as a real footer (thin light-gray top rule)
+      // instead of sitting at the top of the page — content unchanged, only
+      // its position/presentation moved. M7: the confidentiality notice is
+      // NO LONGER here — it moved to the top-level `footer:` function below
+      // so it repeats on EVERY page, not just wherever this content block
+      // happened to end.
       {
         canvas: [{
           type: 'line', x1: 0, y1: 0, x2: REPORT_CONTENT_WIDTH, y2: 0, lineWidth: 1, lineColor: '#dddddd',
@@ -1540,8 +1662,11 @@ export function buildProfessionalReportDocDefinition(row, { stickerPoints, surve
         margin: [0, 14, 0, 6],
       },
       { text: REPORT_DISCLAIMER, style: 'disclaimer', margin: [0, 0, 0, 4] },
-      { text: REPORT_CONFIDENTIALITY_NOTICE, style: 'disclaimer', margin: [0, 0, 0, 0] },
     ],
+    // M7: repeats REPORT_CONFIDENTIALITY_NOTICE on EVERY page — a stable,
+    // module-scope function reference (see reportFooter's own comment for
+    // why this must never be a fresh closure per call).
+    footer: reportFooter,
     styles: {
       title: { fontSize: 16, bold: true, color: REPORT_HEADER_COLOR },
       subtitle: { fontSize: 9, color: '#555' },
@@ -1586,15 +1711,28 @@ export function buildMassReportDocDefinition(rowsWithPoints, ctx = {}) {
   }
   let styles = null;
   let defaultStyle = null;
+  // M7: the mass export is ONE pdfmake docDefinition spanning every
+  // professional — each buildProfessionalReportDocDefinition() call carries
+  // its own `footer` (the confidentiality notice), but only `content` gets
+  // merged node-by-node above; `footer`/`styles`/`defaultStyle` are
+  // properties of the WHOLE document, so they're captured once (from the
+  // first professional — every professional shares the same `footer`
+  // reference, see reportFooter's own comment) and attached at the top
+  // level, the same way styles/defaultStyle already were, so the
+  // confidentiality footer repeats on every physical page of the mass PDF,
+  // not just page 1.
+  let footer = null;
   const content = [];
   list.forEach((entry, i) => {
     const single = buildProfessionalReportDocDefinition(entry.row, entry.points, { ...ctx, last7: entry.last7 });
-    if (!styles) { styles = single.styles; defaultStyle = single.defaultStyle; }
+    if (!styles) { styles = single.styles; defaultStyle = single.defaultStyle; footer = single.footer; }
     single.content.forEach((node, idx) => {
       content.push(i > 0 && idx === 0 ? { ...node, pageBreak: 'before' } : node);
     });
   });
-  return { content, styles, defaultStyle };
+  return {
+    content, styles, defaultStyle, footer,
+  };
 }
 
 /** Sorts a copy of `rows` by `column`, ascending or descending. String
