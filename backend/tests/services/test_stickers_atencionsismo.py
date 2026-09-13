@@ -968,6 +968,47 @@ def test_inspector_shape_lock_new_contact_keys_always_present():
     assert "barrio_reportado" in out and "comuna_reportada" in out
 
 
+# ── N1: `inspector` key set must be IDENTICAL across every identity
+# branch — evaluación match / api / rango-only / plain roster fallback —
+# so a frontend can render one shape regardless of which branch produced
+# it, never having to guard a branch-specific missing key. ────────────────
+
+
+def test_inspector_key_set_identical_across_all_four_identity_branches():
+    matched_eval = _eval_firestore()
+    evaluacion_branch = sa.normalize_sticker(
+        _row(), roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": matched_eval}
+    )
+    api_branch = sa.normalize_sticker(
+        _row(origen="sistema", profesional={"cedula": "123", "nombre": "Juan Perez", "rango": "P2"}),
+        roster_by_codigo={}, evaluacion_by_codigo={}, roster_by_cedula={},
+    )
+    roster = {"004": {"np": "P4", "nombre_completo": "Ana Gomez", "identificacion": "123",
+                      "entidad": "Curaduria 1", "uid": "u-004"}}
+    rango_only_branch = sa.normalize_sticker(
+        _row(origen="sistema", profesional={"rango": "P9"}),
+        roster_by_codigo=roster, evaluacion_by_codigo={},
+    )
+    roster_branch = sa.normalize_sticker(_row(), roster_by_codigo=roster, evaluacion_by_codigo={})
+
+    branches = {
+        "evaluacion": evaluacion_branch,
+        "api": api_branch,
+        "rango_only": rango_only_branch,
+        "roster": roster_branch,
+    }
+    # Sanity: prove these really are four DIFFERENT branches before
+    # asserting their shape agrees.
+    fuentes = {name: out["inspector_fuente"] for name, out in branches.items()}
+    assert fuentes == {"evaluacion": "evaluacion", "api": "api", "rango_only": "roster", "roster": "roster"}
+
+    key_sets = {name: set(out["inspector"]) for name, out in branches.items()}
+    expected = {"uid", "codigo", "nombre_completo", "identificacion", "entidad", "np",
+                "tarjeta_profesional", "num_telefono", "correo_contacto"}
+    for name, keys in key_sets.items():
+        assert keys == expected, f"{name} branch inspector keys: {keys}"
+
+
 def test_build_evaluaciones_3000_rows_perf_budget():
     import time
 
@@ -980,4 +1021,8 @@ def test_build_evaluaciones_3000_rows_perf_budget():
     out = sa.build_evaluaciones(rows, roster_by_codigo={}, evaluaciones_firestore=[])
     elapsed = time.perf_counter() - t0
     assert len(out) == 3000
-    assert elapsed < 1.0, f"build_evaluaciones took {elapsed:.3f}s for 3000 rows, budget is 1.0s"
+    # M6 (adversarial review 2026-09-12): measured ~0.03s -> the old 1.0s
+    # budget was 30x looser than reality and would never catch a real
+    # regression. 0.25s still comfortably CI-safe (>8x the measured time)
+    # while actually able to fail on a real slowdown.
+    assert elapsed < 0.25, f"build_evaluaciones took {elapsed:.3f}s for 3000 rows, budget is 0.25s"

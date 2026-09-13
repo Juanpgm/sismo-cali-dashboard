@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -403,6 +404,46 @@ def test_redaction_degraded_payload_has_no_identity_or_contact_end_to_end(client
     assert row["inspector"]["correo_contacto"] == ""
 
 
+def test_redaction_degraded_pre_rollout_blob_missing_new_keys_serves_verbatim_no_keyerror(client, monkeypatch):
+    # M7 (adversarial review 2026-09-12): `test_redaction_degraded_payload_
+    # has_no_identity_or_contact_end_to_end` above already has ALL the new
+    # W3 keys on its `old_row` fixture, so it never exercised the real
+    # rollout hazard — a Blob LKG copy written by a PRE-deploy process,
+    # before `fecha_fuente`/`barrio_reportado`/`comuna_reportada`/the
+    # contact fields existed at all. The route must still return 200 with
+    # `degraded: true` and serve that old shape verbatim (no KeyError) —
+    # it is served as-is, never re-normalized.
+    _degrade_evaluaciones_cache(client)
+    old_row_pre_rollout = {
+        "id": "old", "fuente": "atencionsismo", "origen": "firebase", "color_etiqueta": "",
+        "codigo_edificacion": "c", "consecutivo": 1, "municipio": "76001", "area": "1",
+        "area_nombre": "", "clasificacion": "", "alcance": "", "coords": None,
+        "restricciones": "", "acciones_posteriores": {"barricadas": False, "evaluacion_detallada": False},
+        "fecha": None,
+        # NOTE: no fecha_fuente/barrio_reportado/comuna_reportada — the
+        # pre-rollout shape.
+        "descripcion": {"nombre": "", "direccion": ""},
+        "inspector": {"uid": "", "codigo": "", "nombre_completo": "", "identificacion": "",
+                      "entidad": "", "np": ""},
+        # NOTE: no tarjeta_profesional/num_telefono/correo_contacto either.
+        "comentarios": "", "fotos": [],
+    }
+
+    def fake_load(pathname, expected_type):
+        if pathname == router_mod.STICKERS_LKG_BLOB:
+            return [old_row_pre_rollout]
+        return None
+
+    monkeypatch.setattr(stickers.blob_lkg, "load_json", fake_load)
+
+    resp = client.get("/stickers-atencionsismo")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["degraded"] is True
+    assert body["evaluaciones"] == [old_row_pre_rollout]  # served verbatim, untouched
+
+
 def test_blob_allowed_fields_extended_with_fecha_fuente_barrio_comuna():
     for field in ("fecha_fuente", "barrio_reportado", "comuna_reportada"):
         assert field in router_mod._BLOB_ALLOWED_FIELDS
@@ -415,20 +456,68 @@ def test_stickers_blob_allowed_inspector_untouched():
 
 
 def test_redact_for_blob_3000_rows_size_canary_under_4mb():
+    # L2 (adversarial review 2026-09-12): the OLD synthetic rows here were
+    # minimal (short/blank strings), so the canary measured a best-case
+    # that never reflected the headroom a REAL payload actually has —
+    # `direccion`/`restricciones`/`alcance` all survive redaction (see
+    # `_BLOB_ALLOWED_FIELDS`), so their real-world length matters for this
+    # budget. Realistic-length strings here, 4 MB threshold unchanged.
     import json
 
-    payload = [_blob_payload_row(id=str(i)) for i in range(3000)]
+    payload = [
+        _blob_payload_row(
+            id=str(i),
+            descripcion={"nombre": "Juan Perez", "direccion": "Carrera 10 # 25-30 Bis, Barrio San Antonio, Cali"},
+            restricciones="No ingresar sin acompañamiento de la brigada de emergencias",
+            alcance="Inspección visual exterior e interior completa de la edificación",
+            comentarios="Grietas visibles en fachada norte, se recomienda revisar el sistema de drenaje",
+        )
+        for i in range(3000)
+    ]
     out = router_mod.redact_for_blob(payload)
     size = len(json.dumps(out).encode("utf-8"))
     assert size < 4_000_000, f"redacted payload is {size} bytes, budget is 4_000_000"
 
 
-def test_redact_for_blob_logs_payload_size(caplog):
+def test_redact_for_blob_is_a_pure_projection_no_logging(caplog):
+    # H1 (adversarial review 2026-09-10): `redact_for_blob` must never log
+    # or serialize on its own — it used to run its own `json.dumps(out)`
+    # (WITHOUT `default=str`) just to log a byte count, which raised
+    # TypeError whenever `fecha` carried a raw `datetime` (see
+    # test_datetime_fecha_survives_redact_and_persist_without_raising
+    # below). Size visibility now lives at the Blob-upload decision point
+    # (`EvaluacionesCache._persist_last_good`), not here.
     import logging
 
     with caplog.at_level(logging.INFO):
         router_mod.redact_for_blob([_blob_payload_row()])
-    assert any("stickers_atencionsismo" in r.message and "bytes" in r.message for r in caplog.records)
+    assert caplog.records == []
+
+
+def test_datetime_fecha_survives_redact_and_persist_without_raising(monkeypatch):
+    # H1 regression: `stickers.list_evaluaciones` (~line 581) can hand back
+    # a raw `fecha_hora_dispositivo` `datetime` as `fecha`. The OLD
+    # `redact_for_blob` ran a bare `json.dumps(out)` (no `default=str`) just
+    # to log a byte count, which raised TypeError on that datetime. That
+    # TypeError propagated out of `_redact`/`_persist_last_good` into
+    # `get_or_fetch`'s `except Exception`, mis-logged as a fetch failure,
+    # armed the failure backoff, and the LKG Blob write never happened.
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "t")
+    saved: dict[str, object] = {}
+    monkeypatch.setattr(
+        stickers.blob_lkg, "save_json",
+        lambda path, payload: saved.update({path: payload}) or True,
+    )
+
+    cache = stickers.EvaluacionesCache(lkg_blob=router_mod.STICKERS_LKG_BLOB, redact=router_mod.redact_for_blob)
+    row = _blob_payload_row(fecha=datetime(2026, 8, 18, 18, 33))
+
+    result = cache.get_or_fetch(lambda: [row])
+
+    assert result == [row]  # served normally, not swallowed as a fetch failure
+    assert cache._failed_at is None  # no backoff armed
+    cache._persist_thread.join(timeout=2)
+    assert router_mod.STICKERS_LKG_BLOB in saved  # LKG save was actually invoked
 
 
 # ── A1: evaluaciones cache degraded -> build_payload fails completo, so the

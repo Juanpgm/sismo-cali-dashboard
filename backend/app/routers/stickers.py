@@ -29,6 +29,7 @@ Two Firebase surfaces, both memoized/named per ADR-4:
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -251,6 +252,21 @@ class EvaluacionesCache:
         h = blob_lkg.payload_hash(redacted)
         if h == self._blob_hash:
             return
+
+        # H1 (adversarial review 2026-09-10): size visibility for the
+        # payload actually about to be uploaded — logged HERE, once the
+        # hash gate above has already decided an upload is happening, never
+        # inside `_redact` itself (a pure projection must never serialize
+        # or log on its own). Re-serializes with `default=str` — the same
+        # safe dance `blob_lkg.payload_hash` just did — so a raw `datetime`
+        # in a field like `fecha` never raises. Guarded by `isEnabledFor`
+        # so a disabled INFO logger never pays for the serialization.
+        if logging.getLogger().isEnabledFor(logging.INFO):
+            size = len(json.dumps(redacted, default=str, ensure_ascii=False).encode("utf-8"))
+            logging.info(
+                "blob_lkg: subiendo payload redactado pathname=%s bytes=%d filas=%d",
+                self._lkg_blob, size, len(redacted),
+            )
 
         def _upload() -> None:
             if blob_lkg.save_json(self._lkg_blob, redacted):

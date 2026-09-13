@@ -72,6 +72,31 @@ def test_double_spaces_are_tolerated():
     assert (dt.day, dt.hour) == (18, 18)
 
 
+# ── M3 (adversarial review 2026-09-12): tolerant like the OLD unanchored
+# `re.search`-based `planeacion_cruce` parser — locate the date expression
+# ANYWHERE in the text (leading/trailing junk allowed), weekday optional
+# with an optional comma (not mandatory), and leading zeros on the day
+# tolerated. Switching the shared wrappers from `re.search` to a
+# full-string `re.match` narrowed the accepted set; these must parse again
+# while the mandatory-rejection set (unknown month, Feb 31, `13:00 p. m.`,
+# `0:30 a. m.`, garbage) still returns None. ───────────────────────────────
+
+
+def test_leading_junk_before_the_date_expression_is_tolerated():
+    dt = fe.parse_fecha_es_co("Creado el 18 de agosto de 2026, 06:33 p. m. por Juan", tz=UTC)
+    assert (dt.year, dt.month, dt.day, dt.hour, dt.minute) == (2026, 8, 18, 18, 33)
+
+
+def test_weekday_without_a_comma_is_tolerated():
+    dt = fe.parse_fecha_es_co("viernes 18 de agosto de 2026, 06:33 p. m.", tz=UTC)
+    assert (dt.day, dt.hour, dt.minute) == (18, 18, 33)
+
+
+def test_leading_zero_on_the_day_is_tolerated():
+    dt = fe.parse_fecha_es_co("018 de agosto de 2026, 06:33 p. m.", tz=UTC)
+    assert dt.day == 18
+
+
 # ── invalid input -> None, never raises ────────────────────────────────────
 
 
@@ -168,3 +193,28 @@ def test_to_iso_preserves_non_utc_offset():
 def test_cross_check_planeacion_cruce_matches_shared_parser():
     texto = "martes, 18 de agosto de 2026, 06:33 p. m."
     assert job.parse_fecha_creacion_es(texto) == fe.parse_fecha_es_co(texto, tz=UTC)
+
+
+# N2: table of >=8 inputs (valid and rejected) exercised through BOTH the
+# shared parser and `planeacion_cruce`'s own UTC wrapper, so the wrapper's
+# "byte-for-byte" delegation claim is checked against more than one input.
+_CROSS_CHECK_TABLE = [
+    "martes, 18 de agosto de 2026, 06:33 p. m.",
+    "18 de agosto de 2026, 6:33 p. m.",  # no weekday
+    "viernes 18 de agosto de 2026, 06:33 p. m.",  # weekday, no comma
+    "Creado el 18 de agosto de 2026, 06:33 p. m. por Juan",  # junk around the date
+    "018 de agosto de 2026, 06:33 p. m.",  # leading zero on the day
+    "18 de agosto de 2026, 22:15:47",  # 24h with seconds
+    "18 de agosto de 2026, 13:00 p. m.",  # rejected: hour out of 1-12 w/ marker
+    "31 de febrero de 2026, 06:33 p. m.",  # rejected: Feb 31
+    "18 de brumario de 2026, 06:33 p. m.",  # rejected: unknown month
+    "Sin fecha",  # rejected: garbage
+]
+
+
+def test_cross_check_planeacion_cruce_matches_shared_parser_table():
+    assert len(_CROSS_CHECK_TABLE) >= 8
+    for texto in _CROSS_CHECK_TABLE:
+        expected = fe.parse_fecha_es_co(texto, tz=UTC)
+        got = job.parse_fecha_creacion_es(texto)
+        assert got == expected, texto

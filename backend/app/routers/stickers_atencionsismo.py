@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import json
 import logging
 from typing import Any
 
@@ -89,7 +88,20 @@ def redact_for_blob(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
     `correo_contacto` (W3) are blanked with an explicit `""` placeholder —
     the KEYS stay present (never popped) so a degraded frontend never has
     to guard `undefined` before a `.trim()`/render. Never mutates the
-    input."""
+    input.
+
+    H1 (adversarial review 2026-09-10): this is a PURE projection — no
+    logging, no serialization. It used to run its own `json.dumps(out)`
+    (without `default=str`) just to log a byte count, which raised
+    TypeError whenever a `fecha` was a raw `datetime` (reachable via
+    `stickers.list_evaluaciones`'s `fecha_hora_dispositivo` fallback). That
+    TypeError propagated out of `EvaluacionesCache._persist_last_good`,
+    mis-logged as a fetch failure by `get_or_fetch`'s `except Exception`,
+    armed the failure backoff, and silently stopped the LKG Blob write
+    forever. Size visibility now lives in `_persist_last_good`
+    (`app/routers/stickers.py`), right after the hash gate decides an
+    upload is actually about to happen, reusing the same
+    `default=str`-safe serialization `blob_lkg.payload_hash` already does."""
     out: list[dict[str, Any]] = []
     for e in payload:
         insp = e.get("inspector") or {}
@@ -103,14 +115,6 @@ def redact_for_blob(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "comentarios": "",
             "fotos": [],
         })
-    # W3: size visibility for the payload actually persisted to Blob — the
-    # canary budget is 4 MB (`test_redact_for_blob_3000_rows_size_canary_under_4mb`);
-    # if a real payload approaches ~2 MB, `blob_lkg._TIMEOUT_S` may need
-    # raising for the upload to still land inside its own timeout.
-    logging.info(
-        "stickers_atencionsismo: payload redactado bytes=%d filas=%d",
-        len(json.dumps(out)), len(out),
-    )
     return out
 
 

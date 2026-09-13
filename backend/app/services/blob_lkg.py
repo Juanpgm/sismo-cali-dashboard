@@ -50,8 +50,13 @@ import blob_sync  # noqa: E402  (path must be set up first)
 # Short timeout on BOTH directions: this module runs inside (or right next
 # to) the web request path — a hung Blob must degrade in seconds, never
 # inherit blob_sync's cron-friendly 120s default (a cold-start 502 turning
-# into a 2-minute hang).
-_TIMEOUT_S = 10
+# into a 2-minute hang). M5 (adversarial review 2026-09-12): 10s measured
+# too tight — a realistic redacted stickers payload (see
+# `redact_for_blob`/L2's 3000-row canary) measures ~2.97 MB, and a PUT of
+# that size can legitimately take longer than 10s on a slow-but-alive
+# link; raised to 30s, still comfortably short of blob_sync's 120s cron
+# default and the request-path budgets this module sits inside.
+_TIMEOUT_S = 30
 
 _warned_no_token = False
 

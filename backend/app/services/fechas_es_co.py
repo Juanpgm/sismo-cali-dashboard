@@ -11,11 +11,19 @@ a deliberate no-op refactor; `reportes_ciudadanos`'s Bogota tz for a string
 that may actually be UTC is a separate, tracked issue — see the plan's
 "Fuera de alcance").
 
-Tolerant of: weekday prefix (optional, discarded), NBSP (U+00A0) and narrow
-NBSP (U+202F) anywhere in the text, diacritics on the weekday, "a. m."/
-"p. m." with or without the inner space/dots ("a.m.", "am", "pm"), extra
-whitespace, and both a 12h clock (with an am/pm marker, `hour % 12 + 12 if
-pm`) and a bare 24h `HH:mm[:ss]` clock (no am/pm marker). Never raises:
+Tolerant of: weekday prefix (optional, discarded, comma after it likewise
+optional — "viernes 18 de..." parses same as "viernes, 18 de..."),
+arbitrary leading/trailing text around the date expression itself (M3,
+adversarial review 2026-09-12 — the date is located with `re.search`
+anywhere in the string, not anchored to the whole string, matching the
+tolerance the two pre-D8 duplicated parsers had), a leading zero on the
+day ("018 de agosto..."), NBSP (U+00A0) and narrow NBSP (U+202F) anywhere
+in the text, diacritics on the weekday, "a. m."/"p. m." with or without
+the inner space/dots ("a.m.", "am", "pm"), extra whitespace, and both a
+12h clock (with an am/pm marker, `hour % 12 + 12 if pm`) and a bare 24h
+`HH:mm[:ss]` clock (no am/pm marker). Still rejects garbage-only text,
+unknown month names, out-of-range dates (e.g. Feb 31), and an out-of-range
+hour for the clock in play (12h: 13:00 p. m., 0:30 a. m.). Never raises:
 any unparseable/malformed/wrong-typed input returns `None`.
 """
 from __future__ import annotations
@@ -35,13 +43,18 @@ _MESES = {
     "noviembre": 11, "diciembre": 12,
 }
 
-# Weekday (optional, discarded) + "D de MES de AAAA[,] " + either a 12h
-# clock with an am/pm marker or a bare 24h HH:mm[:ss] with none.
+# Weekday (optional, discarded, trailing comma ALSO optional) + "D de MES de
+# AAAA[,] " (day tolerates one leading zero) + either a 12h clock with an
+# am/pm marker or a bare 24h HH:mm[:ss] with none. Deliberately UNANCHORED
+# (no `^`/`$`): M3 (adversarial review 2026-09-12) — matched with
+# `re.search`, not `re.match`, so the date expression is located anywhere
+# in the text, tolerating arbitrary leading/trailing text ("Creado el ...
+# por Juan") the same way the old pre-D8 `planeacion_cruce`-only parser did.
 _FECHA_ES_CO_RE = re.compile(
-    r"^(?:[a-z]+,\s*)?"
-    r"(?P<d>\d{1,2})\s+de\s+(?P<m>[a-z]+)\s+de\s+(?P<y>\d{4}),?\s*"
+    r"(?:[a-z]+,?\s+)?"
+    r"(?P<d>0?\d{1,2})\s+de\s+(?P<m>[a-z]+)\s+de\s+(?P<y>\d{4}),?\s*"
     r"(?P<h>\d{1,2}):(?P<mi>\d{2})(?::(?P<s>\d{2}))?"
-    r"(?:\s*(?P<ap>a\.?\s*m\.?|p\.?\s*m\.?))?\s*$",
+    r"(?:\s*(?P<ap>a\.?\s*m\.?|p\.?\s*m\.?))?",
     re.IGNORECASE,
 )
 
@@ -67,7 +80,7 @@ def parse_fecha_es_co(texto: object, *, tz: timezone) -> Optional[datetime]:
     if not isinstance(texto, str) or not texto.strip():
         return None
     normalized = _normalize(texto)
-    m = _FECHA_ES_CO_RE.match(normalized)
+    m = _FECHA_ES_CO_RE.search(normalized)
     if not m:
         return None
     mes = _MESES.get(m.group("m").lower())

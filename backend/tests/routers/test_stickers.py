@@ -1208,6 +1208,37 @@ def test_cache_custom_blob_and_redact(monkeypatch):
     assert saved == {"data/custom.json": [{"id": "1"}]}
 
 
+def test_persist_last_good_logs_size_only_when_an_upload_actually_happens(monkeypatch, caplog):
+    # H1 (adversarial review 2026-09-10): size visibility moved from
+    # `redact_for_blob` (a pure projection, no I/O) into
+    # `_persist_last_good`, logged only after the hash gate has decided an
+    # upload is happening, guarded by `isEnabledFor` so a disabled INFO
+    # logger never pays for the extra serialization.
+    import logging
+
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "t")
+    monkeypatch.setattr(stickers.blob_lkg, "save_json", lambda path, payload: True)
+    clock = {"t": 0.0}
+    monkeypatch.setattr(stickers.time, "monotonic", lambda: clock["t"])
+    cache = stickers.EvaluacionesCache()
+    payload = [{"id": "1", "inspector": {"np": "P4"}, "descripcion": {}}]
+
+    with caplog.at_level(logging.INFO):
+        cache.get_or_fetch(lambda: payload)
+    cache._persist_thread.join(timeout=2)
+
+    assert any("bytes=" in r.message for r in caplog.records)
+
+    caplog.clear()
+    clock["t"] += stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1  # force a re-fetch
+    with caplog.at_level(logging.INFO):
+        # Same (unchanged) payload content again -> re-fetched, but the hash
+        # gate short-circuits before any upload/log.
+        cache.get_or_fetch(lambda: payload)
+    cache._persist_thread.join(timeout=2) if cache._persist_thread else None
+    assert not any("bytes=" in r.message for r in caplog.records)
+
+
 def test_cache_cold_start_restores_from_custom_blob(monkeypatch):
     monkeypatch.setattr(stickers.blob_lkg, "load_json", lambda path, t: [{"id": "old"}] if path == "data/custom.json" else None)
     cache = stickers.EvaluacionesCache(lkg_blob="data/custom.json", redact=lambda p: p)

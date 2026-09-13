@@ -403,6 +403,8 @@ Reglas de fechas: iguales al informe JSON (`desde_utc` ≤ `hasta_utc`, enteros 
 }
 ```
 
+(el ejemplo anterior muestra `fechaCreacion` en formato 24h — `producción` de hecho renderiza 12h, `hh:mm a. m./p. m.`; ver la Nota de integración de 2026-09-12 más abajo.)
+
 ### Campos de cada sticker
 
 | Campo | Fuente InstantDB | Si falta |

@@ -48,8 +48,17 @@ _STICKER_KEYS = (("numero", "numero"), ("color", "color"), ("colorEtiqueta", "et
 # regex/month-table parser, duplicated (with a DIFFERENT, contradictory tz)
 # in `planeacion_cruce.parse_fecha_creacion_es`. Both now delegate to the
 # one shared, tz-explicit parser in `app.services.fechas_es_co` — this
-# function keeps its exact own signature and Bogota-offset ISO output,
-# byte-for-byte. NOTE (tracked separately, see the plan's "Fuera de
+# function keeps its exact own signature and Bogota-offset ISO output. NOT
+# byte-for-byte with the pre-shared parser on every input (M4, adversarial
+# review 2026-09-12): the shared parser is DELIBERATELY more permissive on
+# two axes this parser never covered before — a bare 24h `HH:mm[:ss]`
+# clock with no am/pm marker now parses (it used to return None), while
+# `13:00 p. m.`/`15:45 a. m.`/`0:30 a. m.`/`0:30 p. m.` (an hour outside
+# 1-12 WITH a 12h am/pm marker present) are now rejected by design,
+# matching the "hour % 12 + 12 if pm" rule's own valid range instead of
+# silently wrapping. Every other input — including the tolerant weekday/
+# leading-junk/leading-zero handling M3 restored — parses identically to
+# the old parser. NOTE (tracked separately, see the plan's "Fuera de
 # alcance"): this tz may itself be wrong if `informe/json`'s own
 # `fechaCreacion` also renders in UTC like `informe/stickers`'s does —
 # unverified and NOT changed here.

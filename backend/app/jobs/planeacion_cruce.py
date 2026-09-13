@@ -703,7 +703,17 @@ def write_planeacion_puntos(db, ops: list[tuple[str, dict]]) -> int:
 # regex/month-table parser, duplicated (with a DIFFERENT, contradictory tz)
 # in `reportes_ciudadanos.parse_fecha_es_co`. Both now delegate to the one
 # shared, tz-explicit parser in `app.services.fechas_es_co` — this function
-# keeps its exact own signature and UTC behavior, byte-for-byte.
+# keeps its exact own signature and UTC behavior. NOT byte-for-byte with
+# the pre-shared parser on every input (M4, adversarial review
+# 2026-09-12): the shared parser is DELIBERATELY more permissive on two
+# axes it never covered before — a bare 24h `HH:mm[:ss]` clock with no
+# am/pm marker now parses (it used to return None), while `13:00 p. m.`/
+# `15:45 a. m.`/`0:30 a. m.`/`0:30 p. m.` (an hour outside 1-12 WITH a
+# 12h am/pm marker present) are now rejected by design, matching the
+# "hour % 12 + 12 if pm" rule's own valid range instead of silently
+# wrapping. Every other input — including the tolerant weekday/leading-
+# junk/leading-zero handling M3 restored — parses identically to the old
+# parser.
 def parse_fecha_creacion_es(raw: str | None) -> datetime | None:
     """Parse the es-CO `fechaCreacion` string into a UTC `datetime`. Returns
     `None` for empty/unparseable input — `load_puntos` stores `None` in
