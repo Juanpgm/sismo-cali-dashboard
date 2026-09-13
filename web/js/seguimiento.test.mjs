@@ -8,6 +8,8 @@ import {
   buildBarriosActivos, buildBarriosActivosByKey,
   buildProfessionalReportDocDefinition, hasActiveSegFilters,
   createSegCache, createIdentityCache, makeSearchController,
+  DASH, DEGRADED_STICKERS_NOTE,
+  kpiTotals, matchesSearch, visibleRowsFor, degradedStickerNote, unassignedNote, kpisHtml,
 } from './seguimiento.js';
 
 // Small test-local helper: the "no identity/no cédula at all" key shape a
@@ -1430,5 +1432,192 @@ console.log('makeSearchController: cancel() prevents a pending callback OK');
   assert.deepEqual(calls, ['fired'], 'a trigger() after a no-op cancel() still fires normally');
 }
 console.log('makeSearchController: cancel() with nothing pending is a no-op; later trigger() still fires OK');
+
+// ── W7: kpiTotals ────────────────────────────────────────────────────────
+// The 5 KPI tiles' values, derived from a buildProfessionalRows() result —
+// "sin profesional identificado" and "stickers sin fecha" are no longer
+// tiles (W7, plan), replaced by barrios activos (7 d) and the promedio
+// tile now being STICKER-pace-specific (see doc comment on kpiTotals itself).
+
+{
+  // Empty rows -> everything zero, never NaN/throw.
+  const result = { rows: [], totals: { professionals: 0, stickers: 0, surveys: 0 } };
+  const t = kpiTotals(result, { stickersLoaded: true });
+  assert.deepEqual(t, {
+    professionals: 0, stickers: 0, surveys: 0, avgStickersPerDayPerProfessional: 0, barriosActivos: 0,
+  });
+}
+console.log('kpiTotals: empty rows OK');
+
+{
+  // stickersLoaded=false masks BOTH sticker-derived tiles (stickers total AND
+  // the per-professional daily-pace average) behind DASH — same reasoning as
+  // the old kpisHtml/rowHtml masking: a real 0 here would claim "confirmed
+  // zero" when the true state is "unknown, still loading/failed".
+  const result = {
+    rows: [{ stickersTotal: 4, activeDays: 2, barriosActivos: ['San Antonio'] }],
+    totals: { professionals: 1, stickers: 4, surveys: 0 },
+  };
+  const t = kpiTotals(result, { stickersLoaded: false });
+  assert.equal(t.stickers, DASH);
+  assert.equal(t.avgStickersPerDayPerProfessional, DASH);
+  // Survey and professionals count are NOT sticker-derived — never masked.
+  assert.equal(t.professionals, 1);
+  assert.equal(t.surveys, 0);
+}
+console.log('kpiTotals: stickersLoaded=false masks sticker-count and pace tiles behind DASH OK');
+
+{
+  // avgStickersPerDayPerProfessional = mean ACROSS PROFESSIONALS of each
+  // row's own stickersTotal/activeDays (0 when a professional has no active
+  // day) — NOT stickersAssigned / Σ activeDays (a single pooled average would
+  // let one very active professional dominate the tile).
+  const result = {
+    rows: [
+      { stickersTotal: 10, activeDays: 2, barriosActivos: [] }, // 5/day
+      { stickersTotal: 3, activeDays: 3, barriosActivos: [] }, // 1/day
+      { stickersTotal: 5, activeDays: 0, barriosActivos: [] }, // no active day -> 0, never NaN/Infinity
+    ],
+    totals: { professionals: 3, stickers: 18, surveys: 0 },
+  };
+  const t = kpiTotals(result, { stickersLoaded: true });
+  // (5 + 1 + 0) / 3 = 2
+  assert.equal(t.avgStickersPerDayPerProfessional, 2);
+}
+console.log('kpiTotals: avgStickersPerDayPerProfessional is the mean of each row\'s own pace, zero-activeDays-safe OK');
+
+{
+  // barriosActivos (7 d): count of DISTINCT barrios across ALL professionals'
+  // own barriosActivos arrays — accent/case variants across DIFFERENT
+  // professionals must still dedupe to one (same normalizeName rule
+  // buildBarriosActivosByKey uses internally for a single professional).
+  const result = {
+    rows: [
+      { stickersTotal: 1, activeDays: 1, barriosActivos: ['San Antonio', 'El Ingenio'] },
+      { stickersTotal: 1, activeDays: 1, barriosActivos: ['SAN ANTONIO', 'Otro Barrio'] },
+    ],
+    totals: { professionals: 2, stickers: 2, surveys: 0 },
+  };
+  const t = kpiTotals(result, { stickersLoaded: true });
+  // Distinct: San Antonio (deduped), El Ingenio, Otro Barrio = 3.
+  assert.equal(t.barriosActivos, 3);
+}
+console.log('kpiTotals: barriosActivos dedupes accent/case variants ACROSS professionals OK');
+
+{
+  // Missing/malformed rowsResult tolerated -- never throws.
+  const t = kpiTotals(undefined, {});
+  assert.deepEqual(t, {
+    professionals: 0, stickers: 0, surveys: 0, avgStickersPerDayPerProfessional: 0, barriosActivos: 0,
+  });
+}
+console.log('kpiTotals: missing/malformed rowsResult tolerated OK');
+
+// ── W7: matchesSearch ────────────────────────────────────────────────────
+// Cédula path when the query has >=3 digits (after stripping non-digits);
+// name path otherwise. A short numeric query ('123') must NOT match a name
+// like "Gil" via the name path (it never reaches it -- goes cedula path,
+// which correctly fails against a blank/non-matching cedula).
+
+assert.equal(matchesSearch({ name: 'Gil Soto', cedula: '' }, ''), true, 'empty query matches everything');
+assert.equal(matchesSearch({ name: 'Gil Soto', cedula: '' }, '   '), true, 'whitespace-only query matches everything');
+assert.equal(matchesSearch({ name: 'Gil Soto', cedula: '1234567' }, 'gil'), true, 'name substring, case-insensitive');
+assert.equal(matchesSearch({ name: 'María José López', cedula: '' }, 'jose lopez'), true, 'accent-insensitive name substring');
+assert.equal(matchesSearch({ name: 'Gil Soto', cedula: '' }, 'xyz'), false, 'no match on name');
+assert.equal(matchesSearch({ name: 'Gil', cedula: '' }, '123'), false, '"123" (>=3 digits) must NOT fall back to matching the name "Gil"');
+assert.equal(matchesSearch({ name: 'Ana', cedula: '1234567' }, '234'), true, '3-digit query matches a cedula substring');
+assert.equal(matchesSearch({ name: 'Ana', cedula: '1.234.567' }, '234'), true, 'cedula substring match ignores dots in the STORED cedula');
+assert.equal(matchesSearch({ name: 'Ana', cedula: '1234567' }, '99'), false, '2-digit query (below the >=3 threshold) falls back to the NAME path, "99" not in "Ana"');
+assert.equal(matchesSearch({ name: '99', cedula: '1234567' }, '99'), true, '2-digit query matches via the NAME path when the name itself is "99"');
+assert.equal(matchesSearch({ name: 'Ana', cedula: '' }, '234'), false, '3-digit query with a blank cedula never falls back to the name path');
+console.log('matchesSearch: cedula path (>=3 digits) vs name path OK');
+
+// ── W7: visibleRowsFor ──────────────────────────────────────────────────
+
+{
+  const rows = [
+    { key: 'ced:1', name: 'Ana Ruiz', cedula: '111' },
+    { key: 'ced:2', name: 'Beto Ríos', cedula: '222' },
+    { key: nomKey('Gil Soto'), name: 'Gil Soto', cedula: '' },
+  ];
+  assert.deepEqual(visibleRowsFor(rows, {}).map((r) => r.key), rows.map((r) => r.key), 'no filters -> everything visible');
+  assert.deepEqual(visibleRowsFor(rows, { query: 'ana' }).map((r) => r.key), ['ced:1']);
+  assert.deepEqual(visibleRowsFor(rows, { professionalKey: 'ced:2' }).map((r) => r.key), ['ced:2']);
+  assert.deepEqual(
+    visibleRowsFor(rows, { query: 'gil', professionalKey: 'ced:2' }).map((r) => r.key),
+    [],
+    'both filters apply together (AND), not either/or',
+  );
+  assert.deepEqual(visibleRowsFor([], { query: 'ana' }), [], 'empty rows -> empty, never throws');
+  assert.deepEqual(visibleRowsFor(undefined, {}), [], 'missing rows tolerated');
+}
+console.log('visibleRowsFor: search + professionalKey filters (AND) OK');
+
+// ── W7: degradedStickerNote ──────────────────────────────────────────────
+// 4 states (isDegraded x stickersLoaded): only BOTH true produces a note --
+// matches the real production flow (isDegraded is only ever set once the
+// sticker fetch has resolved, i.e. alongside stickersLoaded=true).
+
+assert.equal(degradedStickerNote(false, false), null);
+assert.equal(degradedStickerNote(false, true), null);
+assert.equal(degradedStickerNote(true, false), null, 'degraded-but-not-yet-loaded is defensively null, not a premature note');
+assert.equal(degradedStickerNote(true, true), DEGRADED_STICKERS_NOTE);
+assert.ok(!/sin profesional identificado/i.test(DEGRADED_STICKERS_NOTE), 'must not promise the removed "sin profesional identificado" KPI bucket');
+console.log('degradedStickerNote: 4-state truth table OK');
+
+// ── W7: unassignedNote ───────────────────────────────────────────────────
+// Reconciles the (now-hidden) "sin profesional identificado" count with the
+// visible stickers KPI/table, as a disclosure note instead of its own tile.
+
+assert.equal(unassignedNote({ stickers: 0, surveys: 5 }), null, 'zero unassigned stickers -> no note (surveys not this note\'s concern)');
+assert.equal(unassignedNote({ stickers: 0 }), null);
+assert.equal(unassignedNote(undefined), null, 'missing input tolerated');
+{
+  const note = unassignedNote({ stickers: 7, surveys: 2 });
+  assert.ok(/7/.test(note), 'must mention the unassigned STICKER count');
+  assert.ok(/sin profesional atribuible/i.test(note));
+}
+console.log('unassignedNote: null when zero, mentions the sticker count otherwise OK');
+
+// ── W7: hasActiveSegFilters gains `professional` ─────────────────────────
+// seg-chart-professional now ALSO narrows the table (W7) — so it must count
+// as an active filter for "Reiniciar filtros"' enabled/disabled state, unlike
+// before (W5/W6, when it only picked the chart's highlighted line).
+
+assert.equal(hasActiveSegFilters({ professional: 'ced:1' }), true, 'a professional selection alone is active');
+assert.equal(hasActiveSegFilters({ professional: '' }), false, 'an empty-string professional is not active');
+assert.equal(hasActiveSegFilters({ professional: null }), false);
+assert.equal(
+  hasActiveSegFilters({ search: '', from: null, to: null, professional: 'ced:1' }),
+  true,
+  'professional active even with every other filter empty',
+);
+console.log('hasActiveSegFilters: professional selection counts as an active filter (W7) OK');
+
+// ── W7: kpisHtml (5 tiles, HTML string) ──────────────────────────────────
+
+{
+  const rowsResult = {
+    rows: [{ stickersTotal: 4, activeDays: 2, barriosActivos: ['San Antonio'] }],
+    totals: { professionals: 1, stickers: 4, surveys: 2 },
+  };
+  const html = kpisHtml(rowsResult, true);
+  assert.ok(!/sin profesional identificado/i.test(html), 'the removed "sin profesional identificado" tile must not render');
+  assert.ok(!/stickers sin fecha/i.test(html), 'the removed "stickers sin fecha" tile must not render');
+  assert.ok(/barrios activos/i.test(html), 'the new "barrios activos (7 d)" tile must render');
+  assert.ok(/promedio diario por profesional/i.test(html));
+  const tileCount = (html.match(/kpi-tile/g) || []).length;
+  assert.equal(tileCount, 5, 'exactly 5 KPI tiles');
+}
+console.log('kpisHtml: 5 tiles, old ones dropped, new one present OK');
+
+{
+  // stickersLoaded=false masks the sticker-derived tiles with DASH in the
+  // rendered HTML too (not just the pure kpiTotals value).
+  const rowsResult = { rows: [], totals: { professionals: 0, stickers: 0, surveys: 0 } };
+  const html = kpisHtml(rowsResult, false);
+  assert.ok(html.includes(DASH), 'DASH must appear in the rendered HTML while stickers have not loaded');
+}
+console.log('kpisHtml: stickersLoaded=false renders DASH OK');
 
 console.log('seguimiento.test.mjs: all assertions passed');

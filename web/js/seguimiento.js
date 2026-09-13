@@ -990,14 +990,22 @@ export function buildProfessionalReportDocDefinition(row, { stickerPoints, surve
  *  numerically, with a null/undefined value sorting as the lowest ("-∞",
  *  never crashing on a missing firstDate/lastDate). Ties break by `key` so
  *  the result is deterministic regardless of the input's original order. */
-/** Whether the professional search box or the Desde/Hasta date range is
- *  currently narrowing the table — drives "Reiniciar filtros"' enabled/
- *  disabled + soft-orange state. Deliberately excludes `seg-chart-professional`
- *  (never narrows the table, only which line the Ritmo diario chart
- *  highlights) and sort order — neither is a data-narrowing filter. Exported
- *  so a self-check can cover the transitions without the DOM. */
-export function hasActiveSegFilters({ search = '', from = null, to = null } = {}) {
-  return Boolean(search || from || to);
+/** Whether the professional search box, the Desde/Hasta date range, OR the
+ *  `seg-chart-professional` select is currently narrowing the table — drives
+ *  "Reiniciar filtros"' enabled/disabled + soft-orange state.
+ *
+ *  CONTRATO CAMBIADO (W7): `seg-chart-professional` used to be excluded here
+ *  because it only picked which line the Ritmo diario chart highlighted,
+ *  never the table. W7 makes it ALSO narrow the table (label renamed to
+ *  "Profesional (gráfico y tabla)"), so it is now a genuine data-narrowing
+ *  filter and must count toward this — "Reiniciar filtros" must both clear
+ *  it AND re-enable/disable based on it, same as search/from/to. Sort order
+ *  is still excluded (never a data-narrowing filter). Exported so a
+ *  self-check can cover the transitions without the DOM. */
+export function hasActiveSegFilters({
+  search = '', from = null, to = null, professional = null,
+} = {}) {
+  return Boolean(search || from || to || professional);
 }
 
 export function sortRows(rows, column, dir = 'asc') {
@@ -1021,6 +1029,134 @@ export function sortRows(rows, column, dir = 'asc') {
     return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
   });
   return copy;
+}
+
+// ── W7: KPI/search/filter pure helpers ──────────────────────────────────────
+// DASH masks a value that is genuinely UNKNOWN (still loading, or a failed
+// fetch) — never a real 0. Moved up from the DOM section (still the same
+// sentinel value) and exported so the pure helpers below, and a self-check,
+// can reference/assert it directly instead of duplicating the literal '—'.
+export const DASH = '—';
+
+/** Shown while `isDegraded` (the sticker fetch fell back to the redacted LKG
+ *  Blob copy). CONTRATO CAMBIADO (W7): the old text promised a "sin
+ *  profesional identificado" KPI bucket that W7 removes as its own tile —
+ *  rewritten to state the concrete degraded-count fact instead ("0 stickers
+ *  atribuibles"), which stays true regardless of which tiles exist. */
+export const DEGRADED_STICKERS_NOTE = 'Mostrando una copia de respaldo de los stickers: los nombres e identificaciones de los '
+  + 'inspectores no están disponibles hasta reconectar la fuente en vivo — 0 stickers atribuibles (copia de respaldo sin identidades).';
+
+/** The 5-tile KPI values (W7: "sin profesional identificado" and "stickers
+ *  sin fecha" are no longer tiles — see DEGRADED_STICKERS_NOTE/unassignedNote/
+ *  the sinfecha note for where those counts still surface, as disclosures
+ *  instead of tiles) from a buildProfessionalRows() result.
+ *
+ *  `avgStickersPerDayPerProfessional` is deliberately NOT
+ *  `totals.avgPerProfessional` (which pools stickers+surveys across ALL
+ *  professionals into one ratio) — it is the MEAN, across professionals, of
+ *  each row's OWN `stickersTotal/activeDays` (0 for a professional with no
+ *  active day, never NaN/Infinity) — "promedio diario por profesional"
+ *  (plan W7) reads as a per-professional STICKER pace, not a pooled
+ *  stickers+surveys ratio one very active professional could dominate.
+ *
+ *  `barriosActivos` is the count of DISTINCT barrios across EVERY
+ *  professional's own `row.barriosActivos` (buildBarriosActivosByKey/D1) —
+ *  deduped the same way that per-row list already is (accent/case/whitespace
+ *  -insensitive), but now ACROSS professionals too (two professionals both
+ *  reporting "San Antonio"/"SAN ANTONIO" must still count as one barrio).
+ *
+ *  `stickersLoaded` masks the two sticker-derived tiles (stickers total, and
+ *  the per-professional daily pace) behind DASH — same reasoning as the old
+ *  kpisHtml/rowHtml masking: a real 0 would claim "confirmed zero" when the
+ *  true state is "unknown, still loading or failed". `professionals`/
+ *  `surveys` are never sticker-derived, so never masked. */
+export function kpiTotals(rowsResult, { stickersLoaded = true } = {}) {
+  const rows = (rowsResult && Array.isArray(rowsResult.rows)) ? rowsResult.rows : [];
+  const totals = (rowsResult && rowsResult.totals) || {};
+  const professionals = totals.professionals || 0;
+  const surveys = totals.surveys || 0;
+  const stickersRaw = totals.stickers || 0;
+
+  let avgStickersPerDayPerProfessional = 0;
+  if (rows.length) {
+    const sum = rows.reduce((acc, r) => acc + (r.activeDays ? r.stickersTotal / r.activeDays : 0), 0);
+    avgStickersPerDayPerProfessional = Math.round((sum / rows.length) * 100) / 100;
+  }
+
+  const seenBarrios = new Map(); // normalized -> first-seen spelling (unused, only the count matters)
+  for (const r of rows) {
+    for (const b of (r.barriosActivos || [])) {
+      const key = normalizeName(b);
+      if (key && !seenBarrios.has(key)) seenBarrios.set(key, b);
+    }
+  }
+
+  return {
+    professionals,
+    stickers: stickersLoaded ? stickersRaw : DASH,
+    surveys,
+    avgStickersPerDayPerProfessional: stickersLoaded ? avgStickersPerDayPerProfessional : DASH,
+    barriosActivos: seenBarrios.size,
+  };
+}
+
+/** Whether `row` matches the free-text search box: a query with >=3 digits
+ *  (after stripping every non-digit character) is treated as a CÉDULA search
+ *  — `cedulaKey(row.cedula)` must CONTAIN that digit run — else it's a NAME
+ *  search — `normalize(row.name)` must contain `normalize(query)`. A short
+ *  numeric query like "123" therefore never falls back to matching a name
+ *  (it stays on the cédula path, which correctly fails against a blank/
+ *  non-matching cedula) — the query is either "clearly a cédula fragment" or
+ *  "clearly a name fragment", never ambiguously both. Blank/whitespace-only
+ *  query matches every row (no filter active). */
+export function matchesSearch(row, query) {
+  const q = String(query === null || query === undefined ? '' : query).trim();
+  if (!q) return true;
+  const digits = cedulaKey(q);
+  if (digits.length >= 3) {
+    return cedulaKey(row && row.cedula).includes(digits);
+  }
+  return normalize((row && row.name) || '').includes(normalize(q));
+}
+
+/** The professional rows currently shown in the table: `rows` narrowed by
+ *  the search box (matchesSearch) AND, since W7, by the SAME
+ *  `seg-chart-professional` select the Ritmo diario chart uses (`row.key`
+ *  strict equality — the identity resolver's own key, never a re-derived
+ *  name) — both filters apply together (AND), not either/or. An empty/
+ *  falsy `professionalKey` leaves every professional in. */
+export function visibleRowsFor(rows, { query = '', professionalKey = '' } = {}) {
+  const list = Array.isArray(rows) ? rows : [];
+  const key = professionalKey || '';
+  return list.filter((r) => (!key || r.key === key) && matchesSearch(r, query));
+}
+
+/** The degraded-copy disclosure text (or `null`) — a dedicated pure function
+ *  instead of inlining the ternary in renderStatusBanner, so its 4-state
+ *  truth table (isDegraded × stickersLoaded) is directly assertable. Only
+ *  BOTH true produces the note: `isDegraded` is only ever set once the
+ *  sticker fetch has actually resolved (alongside `stickersLoaded = true`)
+ *  in the real init flow, so `isDegraded && !stickersLoaded` is defensively
+ *  null rather than showing a note about a fetch that hasn't settled yet. */
+export function degradedStickerNote(isDegraded, stickersLoaded) {
+  if (!isDegraded || !stickersLoaded) return null;
+  return DEGRADED_STICKERS_NOTE;
+}
+
+/** Disclosure text reconciling the (no-longer-a-tile) "sin profesional
+ *  identificado" sticker count with the visible stickers KPI/table — W7
+ *  dropped that dedicated tile, so this note is how an admin still learns
+ *  the stickers KPI includes N stickers no row in the table accounts for.
+ *  Only the STICKER half of `unassigned` (buildProfessionalRows' own
+ *  `{stickers, surveys}` bucket) is surfaced — the note's whole purpose is
+ *  reconciling the sticker-count KPI specifically. `null` when there is
+ *  nothing to disclose (0 unassigned stickers, or a missing/malformed
+ *  input). */
+export function unassignedNote(unassigned) {
+  const n = (unassigned && unassigned.stickers) || 0;
+  if (!n) return null;
+  return `${n.toLocaleString('es-CO')} stickers sin profesional atribuible (sin nombre de inspector resolvible en el sticker); `
+    + 'se cuentan en el KPI de stickers pero no aparecen en ninguna fila de la tabla.';
 }
 
 // ── createSegCache: single-entry memo (W6) ──────────────────────────────────
@@ -1142,9 +1278,10 @@ export function makeSearchController(callback, wait = 250) {
 // re-fetches every time, same lifecycle as Stickers), with module-level
 // guards so a re-open never leaks a pending fetch/timer into a fresh init.
 
-const DASH = '—';
+// DASH/DEGRADED_STICKERS_NOTE now live in the pure section above (exported —
+// W7), used here as-is; only DEGRADED_TITLE (a control `title` attribute
+// string, not a KPI/note value) stays local to the DOM section.
 const DEGRADED_TITLE = 'No disponible: mostrando una copia de respaldo con datos incompletos.';
-const DEGRADED_STICKERS_NOTE = 'Mostrando una copia de respaldo de los stickers: los nombres e identificaciones de los inspectores no están disponibles hasta reconectar la fuente en vivo, así que la mayoría de los stickers aparecerán como "Sin profesional identificado".';
 
 const COLUMNS = [
   { key: 'name', label: 'Profesional' },
@@ -1193,11 +1330,12 @@ function sectionHtml() {
       <p class="sticker-note" id="seg-status" role="status" hidden></p>
       <p class="sticker-note">Cruce aproximado por nombre: Stickers usa inspector.nombre_completo, Survey usa nombre_evaluador.</p>
       <p class="sticker-note" id="seg-sinfecha-note" hidden></p>
+      <p class="sticker-note" id="seg-unassigned-note" hidden></p>
 
       <div class="eval-filters" id="seg-filters">
         <div class="asignacion-search">
           <input type="search" id="seg-search" class="sticker-search-input"
-            placeholder="Buscar profesional…" aria-label="Buscar profesional">
+            placeholder="Buscar profesional por nombre o cédula…" aria-label="Buscar profesional por nombre o cédula">
         </div>
         <div class="card-toolbar asignacion-filters">
           <label class="sticker-field asignacion-inline-field">
@@ -1209,10 +1347,12 @@ function sectionHtml() {
             <input type="date" id="seg-to" aria-label="Fecha hasta">
           </label>
           <label class="sticker-field asignacion-inline-field">
-            <span>Profesional (gráfico)</span>
-            <select id="seg-chart-professional" aria-label="Profesional para el gráfico"><option value="">Todos</option></select>
+            <span>Profesional (gráfico y tabla)</span>
+            <select id="seg-chart-professional" aria-label="Profesional (gráfico y tabla)"><option value="">Todos</option></select>
           </label>
-          <button type="button" class="sticker-action" id="seg-download">Descargar XLSX</button>
+          <button type="button" class="sticker-action" id="seg-download">Exportar XLSX</button>
+          <button type="button" class="sticker-action" id="seg-report-selected" disabled>Reporte PDF individual</button>
+          <button type="button" class="sticker-action" id="seg-report-mass" disabled title="Disponible en la próxima entrega">Exportación masiva reportes</button>
         </div>
       </div>
 
@@ -1242,12 +1382,14 @@ function sectionHtml() {
     </section>`;
 }
 
-/** `stickersLoaded` masks the two sticker-derived KPI tiles behind DASH
- *  while stickers haven't resolved yet (in flight, or failed after the
- *  retry) — a real 0 here would silently claim "confirmed zero stickers"
- *  when the true state is "unknown", which is a materially different and
- *  misleading message to show an admin. */
-function kpisHtml(totals, stickersLoaded) {
+/** 5 KPI tiles (W7 — "sin profesional identificado" and "stickers sin fecha"
+ *  are no longer tiles; see unassignedNote/the sinfecha note for where those
+ *  counts still surface, as disclosures). `rowsResult` is the (subset of)
+ *  buildProfessionalRows() output kpiTotals itself needs (`rows` + `totals`);
+ *  `stickersLoaded` masks the two sticker-derived tiles behind DASH — see
+ *  kpiTotals' own doc comment for why. */
+export function kpisHtml(rowsResult, stickersLoaded) {
+  const t = kpiTotals(rowsResult, { stickersLoaded });
   const fmt = (v) => (v === DASH ? DASH : Number(v || 0).toLocaleString('es-CO'));
   const tile = (label, value) => `
     <div class="kpi-tile is-neutral">
@@ -1255,12 +1397,11 @@ function kpisHtml(totals, stickersLoaded) {
       <span class="kpi-value">${fmt(value)}</span>
     </div>`;
   return [
-    tile('profesionales activos', totals.professionals),
-    tile('stickers', stickersLoaded ? totals.stickers : DASH),
-    tile('evaluaciones survey', totals.surveys),
-    tile('promedio por profesional', totals.avgPerProfessional),
-    tile('sin profesional identificado', totals.unassigned),
-    tile('stickers sin fecha', stickersLoaded ? totals.stickersWithoutDate : DASH),
+    tile('profesionales activos', t.professionals),
+    tile('stickers (F1+F2)', t.stickers),
+    tile('evaluaciones survey', t.surveys),
+    tile('promedio diario por profesional', t.avgStickersPerDayPerProfessional),
+    tile('barrios activos (7 d)', t.barriosActivos),
   ].join('');
 }
 
@@ -1302,7 +1443,7 @@ function rowHtml(r, stickersLoaded, isDegraded) {
     <td>${escapeHtml(formatDateCell(r.lastDate))}</td>
     <td>${r.activeDays}</td>
     <td>${r.avgPerActiveDay}</td>
-    <td><button type="button" class="sticker-action seg-report-btn" data-seg-report="${escapeHtml(r.key)}"${reportBlocked ? ' disabled' : ''} title="${escapeHtml(reportTitle)}">📄 Informe</button></td>
+    <td><button type="button" class="sticker-action seg-report-btn" data-seg-report="${escapeHtml(r.key)}"${reportBlocked ? ' disabled' : ''} title="${escapeHtml(reportTitle)}">📄 Reporte</button></td>
   </tr>`;
 }
 
@@ -1488,12 +1629,15 @@ export function initSeguimiento(root, { getToken, records }) {
   const kpisEl = $('seg-kpis');
   const statusEl = $('seg-status');
   const sinFechaNoteEl = $('seg-sinfecha-note');
+  const unassignedNoteEl = $('seg-unassigned-note');
   const searchEl = $('seg-search');
   const fromEl = $('seg-from');
   const toEl = $('seg-to');
   const chartSelectEl = $('seg-chart-professional');
   const resetFiltersBtn = $('seg-reset-filters');
   const downloadBtn = $('seg-download');
+  const reportSelectedBtn = $('seg-report-selected');
+  const reportMassBtn = $('seg-report-mass');
   const tableEl = $('seg-table');
   const theadRow = tableEl.querySelector('thead tr');
   const tbody = tableEl.querySelector('tbody');
@@ -1528,13 +1672,35 @@ export function initSeguimiento(root, { getToken, records }) {
     return { from: fromEl.value || null, to: toEl.value || null };
   }
 
+  // W7: the three download/report actions (XLSX, per-selection PDF, mass
+  // export) all share the isDegraded||!stickersLoaded block; the PDF button
+  // additionally needs a professional SELECTED (seg-chart-professional), and
+  // the mass-export button stays hard-disabled regardless — W10 implements
+  // the real export, this is just the button shell.
   function updateDownloadAvailability() {
     // Blocked while degraded (identities are redacted, see fetchStickers
     // below) OR before stickers have resolved at all — exporting mid-flight
     // would silently ship a file whose sticker columns are all "unknown".
     const blocked = isDegraded || !stickersLoaded;
+    const loadingTitle = 'Esperando a que carguen los stickers…';
     downloadBtn.disabled = blocked;
-    downloadBtn.title = isDegraded ? DEGRADED_TITLE : (!stickersLoaded ? 'Esperando a que carguen los stickers…' : '');
+    downloadBtn.title = isDegraded ? DEGRADED_TITLE : (!stickersLoaded ? loadingTitle : '');
+
+    const hasSelection = Boolean(chartSelectEl.value);
+    reportSelectedBtn.disabled = blocked || !hasSelection;
+    reportSelectedBtn.title = isDegraded ? DEGRADED_TITLE
+      : !stickersLoaded ? loadingTitle
+        : !hasSelection ? 'Seleccioná un profesional en el filtro "Profesional (gráfico y tabla)" para descargar su informe.'
+          : 'Descargar informe PDF de este profesional';
+
+    // Always disabled — the real mass-export (W10) doesn't exist yet; this
+    // is only the button shell so its place in the toolbar is stable once
+    // W10 lands. The degraded/loading title still takes priority when either
+    // applies, so an admin sees the SAME reason the other two buttons show.
+    reportMassBtn.disabled = true;
+    reportMassBtn.title = isDegraded ? DEGRADED_TITLE
+      : !stickersLoaded ? loadingTitle
+        : 'Disponible en la próxima entrega';
   }
 
   function renderStatusBanner() {
@@ -1542,10 +1708,9 @@ export function initSeguimiento(root, { getToken, records }) {
     // its own dedicated <p role="status"> below the header — NOT the old
     // eval-toolbar-meta span, which is sized for a one-line "actualizado…"
     // caption and overflows the DEGRADED_STICKERS_NOTE's ~250 characters.
-    const text = isDegraded ? DEGRADED_STICKERS_NOTE
-      : stickerFetchErrorMessage ? stickerFetchErrorMessage
-        : !stickersLoaded ? 'Cargando stickers…'
-          : '';
+    const text = degradedStickerNote(isDegraded, stickersLoaded)
+      || stickerFetchErrorMessage
+      || (!stickersLoaded ? 'Cargando stickers…' : '');
     statusEl.hidden = !text;
     statusEl.textContent = text;
   }
@@ -1558,19 +1723,25 @@ export function initSeguimiento(root, { getToken, records }) {
   }
 
   function renderTable(rows) {
-    const q = searchEl.value ? normalize(searchEl.value) : '';
-    visibleRows = q ? rows.filter((r) => normalize(r.name || '').includes(q)) : rows;
+    // W7: seg-chart-professional now ALSO narrows the table (visibleRowsFor's
+    // `professionalKey`), alongside the search box (visibleRowsFor's `query`,
+    // matchesSearch — name OR cédula) — see hasActiveSegFilters' own doc
+    // comment for why this is a genuine contract change from before.
+    visibleRows = visibleRowsFor(rows, { query: searchEl.value, professionalKey: chartSelectEl.value || '' });
     const sorted = sortRows(visibleRows, sortState.column, sortState.dir);
     theadRow.innerHTML = headerRowHtml(sortState);
     tbody.innerHTML = sorted.length
       ? sorted.map((r) => rowHtml(r, stickersLoaded, isDegraded)).join('')
       : `<tr><td colspan="${COLUMNS.length + 1}" class="eval-empty">Ningún profesional coincide con los filtros aplicados.</td></tr>`;
 
-    // Every filter control (search input, Desde/Hasta) re-renders through
-    // render() -> renderTable() (search's own debounce calls renderTable
-    // directly) — updating the reset button's state in this one shared spot
-    // keeps it in sync without a parallel check that could drift.
-    const active = hasActiveSegFilters({ search: searchEl.value, from: fromEl.value || null, to: toEl.value || null });
+    // Every filter control (search input, Desde/Hasta, seg-chart-professional)
+    // re-renders through render() -> renderTable() (search's own debounce
+    // calls renderTable directly) — updating the reset button's state in
+    // this one shared spot keeps it in sync without a parallel check that
+    // could drift.
+    const active = hasActiveSegFilters({
+      search: searchEl.value, from: fromEl.value || null, to: toEl.value || null, professional: chartSelectEl.value || null,
+    });
     resetFiltersBtn.disabled = !active;
     resetFiltersBtn.classList.toggle('is-filter-active', active);
   }
@@ -1637,10 +1808,6 @@ export function initSeguimiento(root, { getToken, records }) {
     currentIdentity = identityCache.get(stickers, surveys, () => buildIdentityIndex({ stickers, surveys }));
     const today = bogotaToday();
     const { from, to } = currentFilters();
-    // `unassigned` (the Sin-profesional bucket, broken down by source) is
-    // not destructured here — the UI only ever surfaces it as one combined
-    // KPI tile (totals.unassigned), rendered by kpisHtml below.
-    //
     // W6: memoized via segCache — a re-render with the SAME stickers/
     // surveys array references and the SAME from/to/today (e.g. a sort-only
     // interaction that still routes through render(), or two consecutive
@@ -1649,8 +1816,13 @@ export function initSeguimiento(root, { getToken, records }) {
     // `professionalKey` is reserved for a future unit that folds
     // buildTimeline's chart-selection filter into this same cached call; it
     // plays no role in buildProfessionalRows itself, so a fixed `null` here
-    // never causes a spurious cache miss.
-    const { rows, stickersWithoutDate, totals } = segCache.get(
+    // never causes a spurious cache miss. seg-chart-professional's own
+    // narrowing (W7) is applied AFTER this — by visibleRowsFor (table) and
+    // buildTimeline's own `professionalKey` param (chart) — so it plays no
+    // role in this cached aggregation pass either.
+    const {
+      rows, stickersWithoutDate, totals, unassigned,
+    } = segCache.get(
       {
         stickers, surveys, from, to, professionalKey: null, today,
       },
@@ -1659,11 +1831,18 @@ export function initSeguimiento(root, { getToken, records }) {
       }),
     );
     currentRows = rows;
-    kpisEl.innerHTML = kpisHtml(totals, stickersLoaded);
+    // KPIs stay GLOBAL (every row, regardless of the search box or the
+    // seg-chart-professional selection) — only stickersLoaded masks them.
+    // Documented here since it's the one place that could look like an
+    // oversight: renderTable below DOES narrow by both.
+    kpisEl.innerHTML = kpisHtml({ rows, totals }, stickersLoaded);
     sinFechaNoteEl.hidden = !stickersLoaded || stickersWithoutDate === 0;
     sinFechaNoteEl.textContent = (stickersLoaded && stickersWithoutDate)
-      ? `${stickersWithoutDate.toLocaleString('es-CO')} stickers sin fecha (la API de atencionsismo aún no expone la fecha por registro); se cuentan en los totales pero no en la curva temporal.`
+      ? `${stickersWithoutDate.toLocaleString('es-CO')} stickers sin fecha resoluble (importados sin evaluación asociada); se cuentan en totales, no en la curva.`
       : '';
+    const unassignedText = stickersLoaded ? unassignedNote(unassigned) : null;
+    unassignedNoteEl.hidden = !unassignedText;
+    unassignedNoteEl.textContent = unassignedText || '';
     renderChartOptions(rows);
     renderTable(rows);
     renderChart();
@@ -1711,22 +1890,60 @@ export function initSeguimiento(root, { getToken, records }) {
 
   fromEl.addEventListener('change', render);
   toEl.addEventListener('change', render);
-  chartSelectEl.addEventListener('change', renderChart);
+  // W7: seg-chart-professional now narrows the TABLE too (visibleRowsFor),
+  // not just which line the chart highlights — so its 'change' handler must
+  // re-run renderTable (not just renderChart), and refresh the per-selection
+  // PDF button's enabled state (it depends on a selection existing).
+  chartSelectEl.addEventListener('change', () => {
+    renderTable(currentRows);
+    renderChart();
+    updateDownloadAvailability();
+  });
 
-  // "Reiniciar filtros": this tab's only real data-narrowing filters are the
-  // professional search box and the Desde/Hasta date range — both read
-  // straight off the DOM (there's no in-memory `filters` object to reset,
-  // unlike evaluaciones.js). `seg-chart-professional` is deliberately left
-  // untouched: it never narrows which professionals appear in the table
-  // (renderTable filters only by search), it only picks which one line the
-  // Ritmo diario chart highlights — a display-mode selection, the same
-  // category as "colorear por", not a filter. Sort order is left alone too.
+  // "Reiniciar filtros": this tab's data-narrowing filters are the
+  // professional search box, the Desde/Hasta date range, AND (W7)
+  // seg-chart-professional — all read straight off the DOM (there's no
+  // in-memory `filters` object to reset, unlike evaluaciones.js).
+  //
+  // CONTRATO CAMBIADO (W7): seg-chart-professional used to be deliberately
+  // left untouched here (it only picked which line the chart highlighted,
+  // never a table filter — a display-mode selection, like "colorear por").
+  // Since it now ALSO narrows the table, "Reiniciar filtros" must clear it
+  // too, or a professional selection would silently survive a reset that
+  // claims to show "every professional" again. Sort order is still left
+  // alone (never a data-narrowing filter).
   resetFiltersBtn.addEventListener('click', () => {
     activeSearchDebounced.cancel();
     searchEl.value = '';
     fromEl.value = '';
     toEl.value = '';
+    chartSelectEl.value = '';
     render();
+  });
+
+  // Per-selection PDF report (W7): same orchestrator as the per-row button
+  // (descargarInformeProfesional), just sourced from seg-chart-professional's
+  // current value instead of a table row's data-seg-report attribute.
+  // Disabled state (no selection / degraded / loading) is enforced by
+  // updateDownloadAvailability — this handler is belt-and-suspenders, same
+  // convention as the XLSX download button below.
+  reportSelectedBtn.addEventListener('click', async () => {
+    const key = chartSelectEl.value;
+    if (!key) return;
+    const row = currentRows.find((r) => r.key === key);
+    if (!row) return;
+    const originalLabel = reportSelectedBtn.textContent;
+    reportSelectedBtn.disabled = true;
+    reportSelectedBtn.textContent = 'Generando…';
+    try {
+      await descargarInformeProfesional(row, { stickers, surveys, identity: currentIdentity });
+    } catch (err) {
+      console.error('seguimiento: fallo al generar el informe PDF (selección)', err);
+      showToast('No se pudo generar el informe PDF.', 'error');
+    } finally {
+      reportSelectedBtn.textContent = originalLabel;
+      updateDownloadAvailability();
+    }
   });
 
   downloadBtn.addEventListener('click', async () => {
