@@ -8,10 +8,10 @@ import {
   buildBarriosActivos, buildBarriosActivosByKey,
   buildProfessionalReportDocDefinition, hasActiveSegFilters,
   createSegCache, createIdentityCache, makeSearchController,
-  DASH, DEGRADED_STICKERS_NOTE,
+  DASH, DEGRADED_STICKERS_NOTE, reportSelectedButtonState,
   kpiTotals, matchesSearch, visibleRowsFor, degradedStickerNote, unassignedNote, kpisHtml,
-  timelineChartConfig, timelineDataKey,
-  COLUMNS_TOTALES, COLUMNS_TEMPORALES, columnsFor, defaultSortFor, formatMinutes, xlsxRowsFor,
+  timelineChartConfig, timelineDataKey, shouldSkipChartRender,
+  COLUMNS_TOTALES, COLUMNS_TEMPORALES, columnsFor, defaultSortFor, formatMinutes, xlsxRowsFor, xlsxFiltersSummary,
   objetivoDiario, visitasUltimos7Dias, reportFilenameSlug, buildMassReportDocDefinition,
 } from './seguimiento.js';
 
@@ -1235,8 +1235,8 @@ console.log('buildProfessionalReportDocDefinition: empty point lists render a pl
 console.log('buildProfessionalReportDocDefinition: roster-sourced caveat included OK');
 
 // ── hasActiveSegFilters: drives "Reiniciar filtros"' enabled/disabled state.
-// Only search + Desde/Hasta narrow the table — seg-chart-professional and
-// sort order are deliberately excluded (see the function's own doc comment). ─
+// Search, Desde/Hasta AND seg-chart-professional all narrow the table (W7) —
+// only sort order stays excluded (never a data-narrowing filter). ──────────
 assert.equal(hasActiveSegFilters(), false, 'no args at all -> nothing active');
 assert.equal(hasActiveSegFilters({}), false, 'an empty object -> nothing active');
 assert.equal(hasActiveSegFilters({ search: '', from: null, to: null }), false, 'the default all-empty/null shape has nothing active');
@@ -1453,10 +1453,18 @@ console.log('makeSearchController: cancel() with nothing pending is a no-op; lat
 console.log('kpiTotals: empty rows OK');
 
 {
-  // stickersLoaded=false masks BOTH sticker-derived tiles (stickers total AND
-  // the per-professional daily-pace average) behind DASH — same reasoning as
-  // the old kpisHtml/rowHtml masking: a real 0 here would claim "confirmed
-  // zero" when the true state is "unknown, still loading/failed".
+  // H3/L7: stickersLoaded=false masks EVERY sticker-derived tile behind DASH
+  // — stickers total, the per-professional daily-pace average, AND (unlike
+  // the old behavior) `professionals`/`barriosActivos` too:
+  //  - `barriosActivos` is derived entirely from stickers (buildBarriosActivos
+  //    reads `row.barriosActivos`, itself built from sticker `barrio`s) — a
+  //    real 0 while stickers are still loading/failed would read as
+  //    "confirmed zero active barrios", not "unknown".
+  //  - `professionals` (= rows.length from buildProfessionalRows) is a MIX of
+  //    professionals identified via stickers AND via Survey-only records — a
+  //    row built while stickers haven't resolved yet only reflects the
+  //    Survey-only subset, a partial count masquerading as the real total.
+  // Only `surveys` is genuinely never sticker-derived and stays unmasked.
   const result = {
     rows: [{ stickersTotal: 4, activeDays: 2, barriosActivos: ['San Antonio'] }],
     totals: { professionals: 1, stickers: 4, surveys: 0 },
@@ -1464,30 +1472,51 @@ console.log('kpiTotals: empty rows OK');
   const t = kpiTotals(result, { stickersLoaded: false });
   assert.equal(t.stickers, DASH);
   assert.equal(t.avgStickersPerDayPerProfessional, DASH);
-  // Survey and professionals count are NOT sticker-derived — never masked.
-  assert.equal(t.professionals, 1);
+  assert.equal(t.barriosActivos, DASH, 'H3: barriosActivos is sticker-derived, must be DASH-masked too');
+  assert.equal(t.professionals, DASH, 'L7: professionals is a partial (sticker-loading-dependent) count while !stickersLoaded, must be DASH-masked too');
+  // Survey count is NOT sticker-derived — never masked.
   assert.equal(t.surveys, 0);
 }
-console.log('kpiTotals: stickersLoaded=false masks sticker-count and pace tiles behind DASH OK');
+console.log('kpiTotals: stickersLoaded=false masks every sticker-derived tile (stickers/pace/barriosActivos/professionals) behind DASH (H3/L7) OK');
 
 {
-  // avgStickersPerDayPerProfessional = mean ACROSS PROFESSIONALS of each
-  // row's own stickersTotal/activeDays (0 when a professional has no active
-  // day) — NOT stickersAssigned / Σ activeDays (a single pooled average would
-  // let one very active professional dominate the tile).
+  // M6: avgStickersPerDayPerProfessional = mean, ACROSS PROFESSIONALS WITH AT
+  // LEAST ONE STICKER-ACTIVE DAY, of each row's own stickersTotal/
+  // stickerActiveDays — NOT stickersAssigned / Σ stickerActiveDays (a single
+  // pooled average would let one very active professional dominate the
+  // tile), and a professional with ZERO sticker-active days is EXCLUDED from
+  // the mean entirely (never folded in as a 0 that drags the average down —
+  // that would understate the pace of everyone who IS actually placing
+  // stickers just because a survey-only colleague exists).
   const result = {
     rows: [
-      { stickersTotal: 10, activeDays: 2, barriosActivos: [] }, // 5/day
-      { stickersTotal: 3, activeDays: 3, barriosActivos: [] }, // 1/day
-      { stickersTotal: 5, activeDays: 0, barriosActivos: [] }, // no active day -> 0, never NaN/Infinity
+      { stickersTotal: 10, stickerActiveDays: 2, barriosActivos: [] }, // 5/day
+      { stickersTotal: 3, stickerActiveDays: 3, barriosActivos: [] }, // 1/day
+      { stickersTotal: 0, stickerActiveDays: 0, barriosActivos: [] }, // no sticker-active day -> excluded, not a 0
     ],
-    totals: { professionals: 3, stickers: 18, surveys: 0 },
+    totals: { professionals: 3, stickers: 13, surveys: 0 },
   };
   const t = kpiTotals(result, { stickersLoaded: true });
-  // (5 + 1 + 0) / 3 = 2
-  assert.equal(t.avgStickersPerDayPerProfessional, 2);
+  // (5 + 1) / 2 = 3 -- the zero-pace professional never enters the mean.
+  assert.equal(t.avgStickersPerDayPerProfessional, 3);
 }
-console.log('kpiTotals: avgStickersPerDayPerProfessional is the mean of each row\'s own pace, zero-activeDays-safe OK');
+console.log('kpiTotals: avgStickersPerDayPerProfessional is the mean over professionals WITH sticker activity only (M6) OK');
+
+{
+  // M6: every professional has zero sticker-active days (survey-only, or
+  // truly zero stickers) -> DASH, never a fake 0 (there IS no sticker pace to
+  // report, distinct from "confirmed zero pace").
+  const result = {
+    rows: [
+      { stickersTotal: 0, stickerActiveDays: 0, barriosActivos: [] },
+      { stickersTotal: 0, stickerActiveDays: 0, barriosActivos: [] },
+    ],
+    totals: { professionals: 2, stickers: 0, surveys: 5 },
+  };
+  const t = kpiTotals(result, { stickersLoaded: true });
+  assert.equal(t.avgStickersPerDayPerProfessional, DASH, 'M6: no professional with any sticker-active day -> DASH, never 0');
+}
+console.log('kpiTotals: avgStickersPerDayPerProfessional is DASH when NO professional has sticker activity (M6) OK');
 
 {
   // barriosActivos (7 d): count of DISTINCT barrios across ALL professionals'
@@ -1597,22 +1626,57 @@ assert.equal(
 );
 console.log('hasActiveSegFilters: professional selection counts as an active filter (W7) OK');
 
+// ── M5: reportSelectedButtonState ─────────────────────────────────────────
+// The pure decision behind "Reporte PDF individual"'s disabled/title state.
+// The regression: renderChartOptions can reset seg-chart-professional back
+// to "" when a Desde/Hasta change narrows the previous selection out of
+// `rows` — the button must read as disabled (no selection) in that state,
+// which requires render() to re-derive it every time, not just on the
+// select's own 'change' handler.
+{
+  const noSelection = reportSelectedButtonState({
+    isDegraded: false, stickersLoaded: true, busy: false, hasSelection: false,
+  });
+  assert.equal(noSelection.disabled, true, 'no selection -> disabled');
+  assert.match(noSelection.title, /seleccion/i, 'no selection -> title explains a selection is required');
+}
+{
+  const selected = reportSelectedButtonState({
+    isDegraded: false, stickersLoaded: true, busy: false, hasSelection: true,
+  });
+  assert.equal(selected.disabled, false, 'selection present + nothing else blocking -> enabled');
+  assert.match(selected.title, /descargar informe/i);
+}
+assert.equal(reportSelectedButtonState({ hasSelection: true, isDegraded: true }).disabled, true, 'degraded blocks even with a selection');
+assert.equal(reportSelectedButtonState({ hasSelection: true, stickersLoaded: false }).disabled, true, 'stickers not loaded yet blocks even with a selection');
+assert.equal(reportSelectedButtonState({ hasSelection: true, busy: true }).disabled, true, 'a mass export in flight blocks even with a selection');
+assert.equal(reportSelectedButtonState().disabled, true, 'no args at all -> disabled (defaults to no selection)');
+console.log('reportSelectedButtonState: disabled/title truth table, "no selection" is the M5 regression case OK');
+
 // ── W7: kpisHtml (5 tiles, HTML string) ──────────────────────────────────
 
 {
   const rowsResult = {
-    rows: [{ stickersTotal: 4, activeDays: 2, barriosActivos: ['San Antonio'] }],
+    rows: [{
+      stickersTotal: 4, activeDays: 2, stickerActiveDays: 2, barriosActivos: ['San Antonio'],
+    }],
     totals: { professionals: 1, stickers: 4, surveys: 2 },
   };
   const html = kpisHtml(rowsResult, true);
   assert.ok(!/sin profesional identificado/i.test(html), 'the removed "sin profesional identificado" tile must not render');
   assert.ok(!/stickers sin fecha/i.test(html), 'the removed "stickers sin fecha" tile must not render');
   assert.ok(/barrios activos/i.test(html), 'the new "barrios activos (7 d)" tile must render');
-  assert.ok(/promedio diario por profesional/i.test(html));
+  // M6: the tile's product semantics changed (mean over sticker-active
+  // professionals only, denominator = stickerActiveDays) — renamed to match,
+  // with a `title` explaining the denominator so it doesn't read as a pooled
+  // stickers+surveys pace.
+  assert.ok(/stickers\/d.a por profesional/i.test(html), 'M6: tile is renamed "stickers/día por profesional"');
+  assert.ok(!/promedio diario por profesional/i.test(html), 'M6: the old, more ambiguous label must be gone');
+  assert.match(html, /title="[^"]*stickers por d.a con actividad de stickers[^"]*"/i, 'M6: a title tooltip explains the denominator (sticker-active days), averaged across professionals');
   const tileCount = (html.match(/kpi-tile/g) || []).length;
   assert.equal(tileCount, 5, 'exactly 5 KPI tiles');
 }
-console.log('kpisHtml: 5 tiles, old ones dropped, new one present OK');
+console.log('kpisHtml: 5 tiles, old ones dropped, new one present, M6 rename + caption OK');
 
 {
   // stickersLoaded=false masks the sticker-derived tiles with DASH in the
@@ -1737,6 +1801,71 @@ console.log('timelineChartConfig: last-point label equals offset + Σ daily OK')
 }
 console.log('timelineDataKey: identical inputs -> identical key, any relevant field changing -> different key OK');
 
+// ── H2: timelineDataKey must not collapse a re-ordered day-by-day series ───
+// The old key only summed each series (Σstickers, Σsurveys) — two timelines
+// with the SAME labels and the SAME totals but a DIFFERENT per-day order
+// ([1,2] vs [2,1], e.g. after switching the professional-select filter to
+// someone whose daily counts happen to sum the same) hashed to the identical
+// key, so renderChart() silently skipped the repaint even though the actual
+// data being plotted had changed.
+{
+  const perm1 = {
+    labels: ['2026-01-01', '2026-01-02'], stickers: [1, 2], surveys: [0, 0],
+    stickersCumulative: [1, 3], surveysCumulative: [0, 0], offsets: { stickers: 0, surveys: 0 },
+  };
+  const perm2 = {
+    labels: ['2026-01-01', '2026-01-02'], stickers: [2, 1], surveys: [0, 0],
+    stickersCumulative: [2, 3], surveysCumulative: [0, 0], offsets: { stickers: 0, surveys: 0 },
+  };
+  assert.notEqual(
+    timelineDataKey(perm1, { from: null, to: null, professionalKey: null }),
+    timelineDataKey(perm2, { from: null, to: null, professionalKey: null }),
+    'H2: same labels + same per-series total but a different day-by-day order must still produce a different key',
+  );
+  // Same reasoning on the surveys series.
+  const survPerm1 = { ...perm1, stickers: [0, 0], surveys: [1, 2] };
+  const survPerm2 = { ...perm1, stickers: [0, 0], surveys: [2, 1] };
+  assert.notEqual(
+    timelineDataKey(survPerm1, {}),
+    timelineDataKey(survPerm2, {}),
+    'H2: same reasoning applies to the surveys series',
+  );
+}
+console.log('timelineDataKey: a re-ordered per-day series (same labels/totals) still changes the key (H2) OK');
+
+// ── B1: shouldSkipChartRender — the actual gate renderChart() uses to decide
+// whether upsertChart() is worth calling again. Gating on the dataKey ALONE
+// broke after a theme change: main.js's 'themechange' listener destroys every
+// registered chart (charts.js's resetCharts()) BEFORE this module's own
+// deferred re-render fires, but the dataKey computed from the SAME
+// stickers/surveys/from/to/professionalKey is unchanged -> the old
+// `dataKey === lastChartDataKey` check alone returned true and skipped the
+// rebuild, leaving the canvas permanently blank. The fix threads whether the
+// chart is STILL actually registered (charts.js's hasChart()) into the
+// decision. ───────────────────────────────────────────────────────────────
+assert.equal(
+  shouldSkipChartRender({ dataKey: 'k1', lastKey: 'k1', hasChart: true }),
+  true,
+  'same key, chart still registered -> safe to skip',
+);
+assert.equal(
+  shouldSkipChartRender({ dataKey: 'k1', lastKey: 'k1', hasChart: false }),
+  false,
+  'B1: same key but the chart was destroyed (e.g. a theme change) -> must NOT skip, must rebuild',
+);
+assert.equal(
+  shouldSkipChartRender({ dataKey: 'k1', lastKey: 'k2', hasChart: true }),
+  false,
+  'different key -> never skip regardless of registration',
+);
+assert.equal(
+  shouldSkipChartRender({ dataKey: 'k1', lastKey: null, hasChart: true }),
+  false,
+  'no previous key (first render / just torn down) -> never skip',
+);
+assert.equal(shouldSkipChartRender(), false, 'no args at all -> never skip');
+console.log('shouldSkipChartRender: gates the upsertChart skip on BOTH key match AND the chart still being registered (B1) OK');
+
 // ── W9: formatMinutes ───────────────────────────────────────────────────────
 assert.equal(formatMinutes(5), '00:05');
 assert.equal(formatMinutes(725), '12:05');
@@ -1790,6 +1919,37 @@ console.log('buildProfessionalRows: avgStickersPerDay + temporal fields merged i
   assert.equal(result.rows[0].avgStickersPerDay, null);
 }
 console.log('buildProfessionalRows: avgStickersPerDay null when activeDays is 0 OK');
+
+// ── M6: avgStickersPerDay is driven by STICKER-only active days, never the
+// pooled `activeDays` (which also counts survey-only days) — "stickers/día
+// por profesional" must reflect only days the professional actually placed a
+// sticker on. ────────────────────────────────────────────────────────────
+{
+  // 10 stickers on ONE day, plus Survey activity on 4 OTHER (sticker-less)
+  // days: activeDays pools all 5 days, but the sticker pace must stay 10 (not
+  // 10/5 = 2, diluted by days that have no sticker at all).
+  const stickerFixture = { inspector: { nombre_completo: 'Mono Pace' }, fecha: '2026-01-01', fase: 1, fuente: 'atencionsismo' };
+  const tenStickers = Array.from({ length: 10 }, () => ({ ...stickerFixture }));
+  const surveys = ['2026-01-02', '2026-01-03', '2026-01-04', '2026-01-05'].map((d) => ({
+    nombre_evaluador: 'Mono Pace', fecha_inspeccion: d,
+  }));
+  const result = buildProfessionalRows({ stickers: tenStickers, surveys });
+  const row = result.rows[0];
+  assert.equal(row.activeDays, 5, 'sticker day + 4 survey-only days = 5 active days total (the OLD, wrong denominator)');
+  assert.equal(row.stickerActiveDays, 1, 'only 1 distinct day actually has a counted sticker');
+  assert.equal(row.avgStickersPerDay, 10, '10 stickers / 1 sticker-active day, never diluted by survey-only days');
+}
+{
+  // A survey-only professional (zero stickers ever) -> stickerActiveDays 0,
+  // avgStickersPerDay null (not 0/NaN) even though activeDays is nonzero.
+  const surveys = [{ nombre_evaluador: 'Solo Survey', fecha_inspeccion: '2026-01-01' }];
+  const result = buildProfessionalRows({ stickers: [], surveys });
+  const row = result.rows[0];
+  assert.equal(row.activeDays, 1);
+  assert.equal(row.stickerActiveDays, 0);
+  assert.equal(row.avgStickersPerDay, null);
+}
+console.log('buildProfessionalRows: avgStickersPerDay uses sticker-only active days, not the pooled activeDays (M6) OK');
 
 // ── W9: xlsxRowsFor ──────────────────────────────────────────────────────────
 {
@@ -1851,6 +2011,44 @@ console.log('xlsxRowsFor: totales/temporales sheets carry the identical key set,
   assert.deepEqual(xlsxRowsFor([], {}), [], 'default subTab (totales) with no rows');
 }
 console.log('xlsxRowsFor: empty/undefined input OK');
+
+// ── N13: xlsxFiltersSummary — the XLSX header's "Filtros:" row, so an export
+// carries which search/range/professional narrowed it, not just a bare
+// "Registros: N" that could otherwise be misread as the WHOLE dataset. ────
+assert.equal(
+  xlsxFiltersSummary({
+    search: '', from: null, to: null, professionalName: '',
+  }),
+  'ninguno',
+  'no active filter at all -> "ninguno", never a blank/misleading cell',
+);
+assert.equal(xlsxFiltersSummary(), 'ninguno', 'no args at all -> "ninguno"');
+assert.equal(
+  xlsxFiltersSummary({ search: 'ana' }),
+  'Búsqueda: "ana"',
+);
+assert.equal(
+  xlsxFiltersSummary({ search: '  ana  ' }),
+  'Búsqueda: "ana"',
+  'search is trimmed before it renders',
+);
+assert.equal(
+  xlsxFiltersSummary({ from: '2026-01-01', to: '2026-01-31' }),
+  'Desde: 2026-01-01; Hasta: 2026-01-31',
+);
+assert.equal(
+  xlsxFiltersSummary({ professionalName: 'Gil Soto' }),
+  'Profesional: Gil Soto',
+  'the professional NAME renders, not the raw ced:/nom: key',
+);
+assert.equal(
+  xlsxFiltersSummary({
+    search: 'ana', from: '2026-01-01', to: null, professionalName: 'Gil Soto',
+  }),
+  'Búsqueda: "ana"; Desde: 2026-01-01; Profesional: Gil Soto',
+  'every active filter joins in a stable order, absent ones simply omitted',
+);
+console.log('xlsxFiltersSummary: "ninguno" when nothing active, otherwise a stable summary of the active filters (N13) OK');
 
 // ── sortRows: temporal (nullable numeric minute) column, per W9 ────────────
 {

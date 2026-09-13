@@ -3,7 +3,7 @@
 // Run: node web/js/charts.test.mjs
 import assert from 'node:assert/strict';
 import {
-  tipologiaDe, tipologiaCounts, colapsoHabCounts, danosEstructuraCounts, baseOptions,
+  tipologiaDe, tipologiaCounts, colapsoHabCounts, danosEstructuraCounts, baseOptions, hasChart,
 } from './charts.js';
 import { themeColor } from './utils.js';
 
@@ -174,8 +174,21 @@ console.log('ok — danosEstructuraCounts "Sin dato" bucket');
   assert.equal(opts2.scales.y.ticks.color, mutedFallback);
 
   // A non-x/non-y scale key (unusual, but must not crash) passes through
-  // without the themed axis defaults (grid/ticks stay whatever the caller gave).
+  // VERBATIM — no themed grid/ticks synthesized at all (L8: the merge used to
+  // inject empty `grid:{}`/`ticks:{}` objects into a key like 'r' even though
+  // the axis-like defaults never applied to it and the caller never asked for
+  // them).
   const opts3 = baseOptions({ scales: { r: { min: 0 } } });
   assert.equal(opts3.scales.r.min, 0);
+  assert.deepEqual(opts3.scales.r, { min: 0 }, 'non-axis-like key must pass through verbatim, no injected grid/ticks keys');
 }
+
+// --- hasChart (B1): registry.has() by canvas id, no DOM lookup needed ------
+// (upsertChart itself is DOM-bound via document.getElementById and can't be
+// exercised from this Node-only self-check — this only covers the "nothing
+// registered" branch; the "registered" branch is covered by the pure
+// shouldSkipChartRender() decision helper in seguimiento.test.mjs, which is
+// what actually gates the B1 regression).
+assert.equal(hasChart('a-canvas-id-nothing-ever-registers'), false, 'an id nothing has registered must read as absent');
+console.log('hasChart: registry.has() passthrough, no DOM required OK');
 console.log('baseOptions: themes every x*/y*-prefixed scale key (W8) OK');

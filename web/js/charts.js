@@ -86,6 +86,20 @@ export function resetCharts() {
   registry.clear();
 }
 
+/** Whether a Chart.js instance is currently registered for `canvasId` (B1).
+ *  main.js's 'themechange' listener calls resetCharts() (destroy + clear the
+ *  WHOLE registry) so every chart re-bakes the new theme's CSS-var colors —
+ *  after that, a caller like seguimiento.js's own deferred 'themechange'
+ *  re-render must be able to tell "the chart I'm about to skip re-rendering
+ *  was actually destroyed out from under me" apart from "nothing changed
+ *  since the last successful render", which its own dataKey memo alone can't
+ *  distinguish (both look like "same key as last time"). No DOM lookup: keyed
+ *  purely by canvasId in this module's registry, so it's safe to call from
+ *  pure/Node-level code without a `document`. */
+export function hasChart(canvasId) {
+  return registry.has(canvasId);
+}
+
 // Exported so other tabs with their own Chart.js instances (e.g. seguimiento.js's
 // timeline) can build on the same themed ticks/grid/legend/tooltip colors
 // instead of hand-rolling a second, drifting copy of this palette.
@@ -129,13 +143,17 @@ export function baseOptions(overrides = {}) {
   const scaleKeys = new Set(['x', 'y', ...Object.keys(scalesOverride || {})]);
   const mergedScales = {};
   for (const key of scaleKeys) {
-    const isAxisLike = /^[xy]/.test(key);
-    const themedDefault = isAxisLike ? {
+    const ov = (scalesOverride && scalesOverride[key]) || {};
+    // L8: a key that isn't x*/y*-prefixed (e.g. a radial 'r' scale) never got
+    // the themed axis defaults in the first place — skip the merge entirely
+    // instead of still synthesizing empty `grid:{}`/`ticks:{}` objects into
+    // it, which used to inject keys the caller never asked for.
+    if (!/^[xy]/.test(key)) { mergedScales[key] = ov; continue; }
+    const themedDefault = {
       ...(key.startsWith('y') ? { beginAtZero: true } : {}),
       grid: { color: border },
       ticks: { color: textMuted, font: { size: 11 } },
-    } : {};
-    const ov = (scalesOverride && scalesOverride[key]) || {};
+    };
     mergedScales[key] = {
       ...themedDefault,
       ...ov,

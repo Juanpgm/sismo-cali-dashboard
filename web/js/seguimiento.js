@@ -14,7 +14,7 @@
 // loader on plain import).
 import { COLORS, escapeHtml, normalize, loadXlsx, downloadStamp, showToast, faseKeyDe, debounce } from './utils.js';
 import {
-  upsertChart, baseOptions, totalDataLabelPlugin, setChartEmpty, clearChartEmpty,
+  upsertChart, baseOptions, totalDataLabelPlugin, setChartEmpty, clearChartEmpty, hasChart,
 } from './charts.js';
 import { fetchEvaluacionesOnce } from './stickers.js';
 import { loadPdfmake } from './report.js';
@@ -434,6 +434,11 @@ export function buildProfessionalRows({
         stickersFase1: 0, stickersFase2: 0, stickersTotal: 0,
         surveyTotal: 0, rosterSourced: 0,
         dates: [],
+        // M6: dates from STICKERS ONLY, kept separate from the pooled
+        // `dates` above (stickers + Survey) -- "stickers/día por profesional"
+        // must divide by days that actually have a sticker, never diluted by
+        // a Survey-only day that happens to fall on the same professional.
+        stickerDates: [],
       };
       rowsByKey.set(key, row);
     }
@@ -468,7 +473,7 @@ export function buildProfessionalRows({
     else row.stickersFase2 += 1;
     row.stickersTotal += 1;
     if (s.inspector_fuente === 'roster') row.rosterSourced += 1;
-    if (dateVal) row.dates.push(dateVal);
+    if (dateVal) { row.dates.push(dateVal); row.stickerDates.push(dateVal); }
   }
 
   for (const sv of surveyList) {
@@ -543,13 +548,21 @@ export function buildProfessionalRows({
     builtRow.prevDayLastMinutes = temporal ? temporal.prevDayLastMinutes : null;
     builtRow.avgFirstMinutes = temporal ? temporal.avgFirstMinutes : null;
     builtRow.avgLastMinutes = temporal ? temporal.avgLastMinutes : null;
-    // "Stickers prom. diario" (W9): stickers-only pace, distinct from the
+    // "Stickers prom. diario" (W9/M6): stickers-only pace, distinct from the
     // existing avgPerActiveDay (which pools stickers+surveys) -- see the
-    // module note above buildProfessionalRows. null (never 0/NaN) when there
-    // are no active days at all: a genuine "no data" case, not a confirmed
-    // zero pace. DASH-masked for display at the table/XLSX layer, same
-    // convention as every other sticker-derived figure in this file.
-    builtRow.avgStickersPerDay = activeDays ? Math.round((row.stickersTotal / activeDays) * 100) / 100 : null;
+    // module note above buildProfessionalRows. M6: divides by
+    // `stickerActiveDays` (distinct days with >=1 counted sticker), NOT the
+    // pooled `activeDays` -- a professional with survey-only days mixed in
+    // would otherwise have their sticker pace diluted by days that have no
+    // sticker at all. null (never 0/NaN) when there are no STICKER-active
+    // days: a genuine "no data" case, not a confirmed zero pace. DASH-masked
+    // for display at the table/XLSX layer, same convention as every other
+    // sticker-derived figure in this file.
+    const stickerActiveDays = new Set(row.stickerDates).size;
+    builtRow.stickerActiveDays = stickerActiveDays;
+    builtRow.avgStickersPerDay = stickerActiveDays
+      ? Math.round((row.stickersTotal / stickerActiveDays) * 100) / 100
+      : null;
     return builtRow;
   });
 
@@ -1349,6 +1362,25 @@ export function xlsxRowsFor(rows, { subTab = 'totales' } = {}) {
   }));
 }
 
+/** N13: one-line summary of the active filters at export time, for the XLSX
+ *  header's "Filtros:" row — without it, an export narrowed by e.g. a
+ *  professional selection or a date range looked identical to a full export
+ *  (only "Registros: N" differed), which could be misread as the WHOLE
+ *  dataset. `professionalName` is the resolved display name (never the raw
+ *  `ced:…`/`nom:…` key), so the cell reads meaningfully in a spreadsheet. */
+export function xlsxFiltersSummary({
+  search = '', from = null, to = null, professionalName = '',
+} = {}) {
+  const parts = [];
+  const q = String(search || '').trim();
+  if (q) parts.push(`Búsqueda: "${q}"`);
+  if (from) parts.push(`Desde: ${from}`);
+  if (to) parts.push(`Hasta: ${to}`);
+  const prof = String(professionalName || '').trim();
+  if (prof) parts.push(`Profesional: ${prof}`);
+  return parts.length ? parts.join('; ') : 'ninguno';
+}
+
 /** Shown while `isDegraded` (the sticker fetch fell back to the redacted LKG
  *  Blob copy). CONTRATO CAMBIADO (W7): the old text promised a "sin
  *  profesional identificado" KPI bucket that W7 removes as its own tile —
@@ -1362,13 +1394,18 @@ export const DEGRADED_STICKERS_NOTE = 'Mostrando una copia de respaldo de los st
  *  the sinfecha note for where those counts still surface, as disclosures
  *  instead of tiles) from a buildProfessionalRows() result.
  *
- *  `avgStickersPerDayPerProfessional` is deliberately NOT
- *  `totals.avgPerProfessional` (which pools stickers+surveys across ALL
- *  professionals into one ratio) — it is the MEAN, across professionals, of
- *  each row's OWN `stickersTotal/activeDays` (0 for a professional with no
- *  active day, never NaN/Infinity) — "promedio diario por profesional"
- *  (plan W7) reads as a per-professional STICKER pace, not a pooled
- *  stickers+surveys ratio one very active professional could dominate.
+ *  `avgStickersPerDayPerProfessional` (displayed as "stickers/día por
+ *  profesional", M6) is deliberately NOT `totals.avgPerProfessional` (which
+ *  pools stickers+surveys across ALL professionals into one ratio) — it is
+ *  the MEAN, across professionals WITH AT LEAST ONE STICKER-ACTIVE DAY, of
+ *  each row's OWN `stickersTotal/stickerActiveDays` (M6: NOT the pooled
+ *  `activeDays`, which also counts survey-only days and would dilute the
+ *  pace). A professional with zero sticker-active days is EXCLUDED from the
+ *  mean entirely (never folded in as a 0, never NaN/Infinity) — "stickers/día
+ *  por profesional" reads as a per-professional STICKER pace, not a pooled
+ *  stickers+surveys ratio one very active professional could dominate, and
+ *  not diluted by colleagues who only ever did surveys. DASH when there ARE
+ *  professionals but none has any sticker-active day at all.
  *
  *  `barriosActivos` is the count of DISTINCT barrios across EVERY
  *  professional's own `row.barriosActivos` (buildBarriosActivosByKey/D1) —
@@ -1376,11 +1413,20 @@ export const DEGRADED_STICKERS_NOTE = 'Mostrando una copia de respaldo de los st
  *  -insensitive), but now ACROSS professionals too (two professionals both
  *  reporting "San Antonio"/"SAN ANTONIO" must still count as one barrio).
  *
- *  `stickersLoaded` masks the two sticker-derived tiles (stickers total, and
- *  the per-professional daily pace) behind DASH — same reasoning as the old
- *  kpisHtml/rowHtml masking: a real 0 would claim "confirmed zero" when the
- *  true state is "unknown, still loading or failed". `professionals`/
- *  `surveys` are never sticker-derived, so never masked. */
+ *  `stickersLoaded` masks EVERY sticker-derived tile behind DASH — same
+ *  reasoning as the old kpisHtml/rowHtml masking: a real 0/count would claim
+ *  "confirmed" when the true state is "unknown, still loading or failed".
+ *  That now includes (H3/L7, fixing a prior gap):
+ *   - `stickers` / `avgStickersPerDayPerProfessional` (as before);
+ *   - `barriosActivos` — entirely derived from sticker `barrio`s (D1), so a
+ *     real 0 while stickers haven't resolved would read as "confirmed zero
+ *     active barrios";
+ *   - `professionals` (= rows.length from buildProfessionalRows) — a MIX of
+ *     professionals resolved via stickers AND via Survey-only records, so
+ *     while stickers are still loading/failed it is only a PARTIAL count
+ *     (the Survey-only subset), never the real total.
+ *  `surveys` is the only tile that is genuinely never sticker-derived, so it
+ *  alone stays unmasked. */
 export function kpiTotals(rowsResult, { stickersLoaded = true } = {}) {
   const rows = (rowsResult && Array.isArray(rowsResult.rows)) ? rowsResult.rows : [];
   const totals = (rowsResult && rowsResult.totals) || {};
@@ -1388,10 +1434,23 @@ export function kpiTotals(rowsResult, { stickersLoaded = true } = {}) {
   const surveys = totals.surveys || 0;
   const stickersRaw = totals.stickers || 0;
 
+  // M6: mean, ACROSS PROFESSIONALS WITH AT LEAST ONE STICKER-ACTIVE DAY, of
+  // each row's own stickersTotal/stickerActiveDays -- a professional with
+  // zero sticker-active days (survey-only, or literally no stickers) is
+  // EXCLUDED from the mean entirely rather than folded in as a 0, which
+  // would understate the pace of everyone who IS placing stickers. When
+  // there ARE professionals but NONE has any sticker activity, there is no
+  // pace to report at all -- DASH, not a lying 0. An empty row set (zero
+  // professionals, period) is the one case that stays a real 0.
   let avgStickersPerDayPerProfessional = 0;
   if (rows.length) {
-    const sum = rows.reduce((acc, r) => acc + (r.activeDays ? r.stickersTotal / r.activeDays : 0), 0);
-    avgStickersPerDayPerProfessional = Math.round((sum / rows.length) * 100) / 100;
+    const paced = rows.filter((r) => (r.stickerActiveDays || 0) > 0);
+    if (!paced.length) {
+      avgStickersPerDayPerProfessional = DASH;
+    } else {
+      const sum = paced.reduce((acc, r) => acc + r.stickersTotal / r.stickerActiveDays, 0);
+      avgStickersPerDayPerProfessional = Math.round((sum / paced.length) * 100) / 100;
+    }
   }
 
   const seenBarrios = new Map(); // normalized -> first-seen spelling (unused, only the count matters)
@@ -1403,11 +1462,11 @@ export function kpiTotals(rowsResult, { stickersLoaded = true } = {}) {
   }
 
   return {
-    professionals,
+    professionals: stickersLoaded ? professionals : DASH,
     stickers: stickersLoaded ? stickersRaw : DASH,
     surveys,
     avgStickersPerDayPerProfessional: stickersLoaded ? avgStickersPerDayPerProfessional : DASH,
-    barriosActivos: seenBarrios.size,
+    barriosActivos: stickersLoaded ? seenBarrios.size : DASH,
   };
 }
 
@@ -1594,6 +1653,29 @@ export function makeSearchController(callback, wait = 250) {
 // string, not a KPI/note value) stays local to the DOM section.
 const DEGRADED_TITLE = 'No disponible: mostrando una copia de respaldo con datos incompletos.';
 
+/** Pure decision behind "Reporte PDF individual"'s disabled/title state (M5)
+ *  — extracted out of updateDownloadAvailability so the "no selection" case
+ *  is directly assertable without a DOM. This is the exact state that used to
+ *  go stale: renderChartOptions can silently reset seg-chart-professional
+ *  back to "" (Todos) when a Desde/Hasta change narrows the previously
+ *  selected professional out of `rows`, but nothing re-derived this state
+ *  until some OTHER interaction happened to call updateDownloadAvailability —
+ *  the button stayed enabled, pointing at a selection that no longer existed.
+ *  Mirrors the XLSX/mass-export buttons' own isDegraded||!stickersLoaded||
+ *  busy block, plus the extra "a professional must be selected" requirement
+ *  unique to this button. */
+export function reportSelectedButtonState({
+  isDegraded = false, stickersLoaded = true, busy = false, hasSelection = false,
+} = {}) {
+  const disabled = Boolean(isDegraded || !stickersLoaded || busy || !hasSelection);
+  const title = isDegraded ? DEGRADED_TITLE
+    : !stickersLoaded ? 'Esperando a que carguen los stickers…'
+      : busy ? 'Generando exportación masiva…'
+        : !hasSelection ? 'Seleccioná un profesional en el filtro "Profesional (gráfico y tabla)" para descargar su informe.'
+          : 'Descargar informe PDF de este profesional';
+  return { disabled, title };
+}
+
 let loadSeq = 0;
 // W6: the hand-rolled clearTimeout/setTimeout pair this used to be is now
 // utils.js's shared debounce() via makeSearchController() — reassigned on
@@ -1662,7 +1744,7 @@ function sectionHtml() {
         <div class="chart-tile" style="height:320px">
           <canvas id="seguimiento-timeline"></canvas>
         </div>
-        <p class="chart-note">Eje izquierdo: acumulado corrido (línea punteada), iniciado en el total previo al rango. Eje derecho: registros del día (línea sólida). Rango: Desde–Hasta.</p>
+        <p class="chart-note">Eje izquierdo: acumulado corrido (línea punteada), iniciado en el total previo al rango. Eje derecho: registros del día (línea sólida). Rango: Desde–Hasta. El cuadro de búsqueda solo acota la tabla; el filtro "Profesional (gráfico y tabla)" acota el gráfico y la tabla a la vez.</p>
       </div>
 
       <div class="card eval-workspace-card">
@@ -1692,8 +1774,8 @@ function sectionHtml() {
 export function kpisHtml(rowsResult, stickersLoaded) {
   const t = kpiTotals(rowsResult, { stickersLoaded });
   const fmt = (v) => (v === DASH ? DASH : Number(v || 0).toLocaleString('es-CO'));
-  const tile = (label, value) => `
-    <div class="kpi-tile is-neutral">
+  const tile = (label, value, title = '') => `
+    <div class="kpi-tile is-neutral"${title ? ` title="${escapeHtml(title)}"` : ''}>
       <span class="kpi-label kpi-label-lower">${escapeHtml(label)}</span>
       <span class="kpi-value">${fmt(value)}</span>
     </div>`;
@@ -1701,7 +1783,17 @@ export function kpisHtml(rowsResult, stickersLoaded) {
     tile('profesionales activos', t.professionals),
     tile('stickers (F1+F2)', t.stickers),
     tile('evaluaciones survey', t.surveys),
-    tile('promedio diario por profesional', t.avgStickersPerDayPerProfessional),
+    // M6: renamed from "promedio diario por profesional" — the OLD label
+    // read as a generic pace, but the tile is (and always was meant to be) a
+    // STICKER-only pace with a specific denominator (days the professional
+    // actually placed a sticker on, averaged across professionals who placed
+    // at least one) — the title spells that out so it doesn't get confused
+    // with a pooled stickers+surveys average.
+    tile(
+      'stickers/día por profesional',
+      t.avgStickersPerDayPerProfessional,
+      'Stickers por día con actividad de stickers, promedio entre profesionales (excluye a quien no tiene ningún día con stickers).',
+    ),
     tile('barrios activos (7 d)', t.barriosActivos),
   ].join('');
 }
@@ -1857,16 +1949,39 @@ export function timelineChartConfig(timeline) {
  *  interaction, which still routes through render()) can skip upsertChart
  *  entirely instead of re-diffing/repainting Chart.js for no visual change.
  *  Deliberately a plain joined string, not a content hash — cheap to compute
- *  and trivially different whenever any input field differs. */
+ *  and trivially different whenever any input field differs.
+ *
+ *  H2: the per-series fields are the FULL day-by-day array (`.join(',')`, at
+ *  most ~365 points), not a sum — two timelines with the same labels and the
+ *  same total (e.g. `[1,2]` vs `[2,1]`, which can genuinely happen switching
+ *  seg-chart-professional between two professionals whose daily counts swap)
+ *  used to hash to the identical key when only the sums were compared, so a
+ *  real change in what's being plotted silently skipped the repaint. */
 export function timelineDataKey(timeline, { from = null, to = null, professionalKey = null } = {}) {
-  const sum = (arr) => (Array.isArray(arr) ? arr.reduce((a, b) => a + b, 0) : 0);
+  const series = (arr) => (Array.isArray(arr) ? arr.join(',') : '');
   const offsets = (timeline && timeline.offsets) || {};
   return [
     (timeline && timeline.labels ? timeline.labels.join(',') : ''),
     from || '', to || '', professionalKey || '',
     offsets.stickers || 0, offsets.surveys || 0,
-    sum(timeline && timeline.stickers), sum(timeline && timeline.surveys),
+    series(timeline && timeline.stickers), series(timeline && timeline.surveys),
   ].join('|');
+}
+
+/** Whether renderChart() may skip re-running upsertChart() for the timeline
+ *  chart (B1). Gating on `dataKey === lastKey` ALONE is unsafe: main.js's
+ *  'themechange' listener destroys EVERY registered Chart.js instance
+ *  (charts.js's resetCharts()) so every chart can re-bake the new theme's
+ *  CSS-variable colors, then this module's own deferred 'themechange'
+ *  listener calls renderChart() again with the exact same stickers/surveys/
+ *  from/to/professionalKey it had before — producing the SAME dataKey even
+ *  though the underlying Chart.js instance no longer exists. The old
+ *  key-only check treated that as "nothing to repaint" and left the canvas
+ *  permanently blank. `hasChart` (charts.js's registry.has(canvasId)) is the
+ *  second, independent signal: only skip when the key is unchanged AND the
+ *  chart is still actually registered. */
+export function shouldSkipChartRender({ dataKey, lastKey, hasChart: chartStillRegistered } = {}) {
+  return Boolean(dataKey != null && lastKey != null && dataKey === lastKey && chartStillRegistered);
 }
 
 // The timeline chart lives in charts.js's shared Chart.js registry, keyed
@@ -2102,12 +2217,11 @@ export function initSeguimiento(root, { getToken, records }) {
     downloadBtn.title = isDegraded ? DEGRADED_TITLE : (!stickersLoaded ? loadingTitle : busy ? busyTitle : '');
 
     const hasSelection = Boolean(chartSelectEl.value);
-    reportSelectedBtn.disabled = allBlocked || !hasSelection;
-    reportSelectedBtn.title = isDegraded ? DEGRADED_TITLE
-      : !stickersLoaded ? loadingTitle
-        : busy ? busyTitle
-          : !hasSelection ? 'Seleccioná un profesional en el filtro "Profesional (gráfico y tabla)" para descargar su informe.'
-            : 'Descargar informe PDF de este profesional';
+    const reportState = reportSelectedButtonState({
+      isDegraded, stickersLoaded, busy, hasSelection,
+    });
+    reportSelectedBtn.disabled = reportState.disabled;
+    reportSelectedBtn.title = reportState.title;
 
     reportMassBtn.disabled = allBlocked;
     reportMassBtn.title = isDegraded ? DEGRADED_TITLE
@@ -2201,7 +2315,12 @@ export function initSeguimiento(root, { getToken, records }) {
       return;
     }
     const dataKey = timelineDataKey(timeline, { from, to, professionalKey });
-    if (dataKey === lastChartDataKey) return; // unchanged since the last render -- nothing to repaint
+    // B1: gate the skip on BOTH the key match AND the chart still actually
+    // being registered — a theme change destroys it (charts.js's
+    // resetCharts()) without touching lastChartDataKey, so the key-only
+    // check used to skip forever after a theme toggle, leaving the canvas
+    // permanently blank. See shouldSkipChartRender's own doc comment.
+    if (shouldSkipChartRender({ dataKey, lastKey: lastChartDataKey, hasChart: hasChart('seguimiento-timeline') })) return;
     try {
       // recreate: true — root.innerHTML is replaced on every open (see the
       // top of this function), which orphans the PREVIOUS open's <canvas>
@@ -2210,8 +2329,13 @@ export function initSeguimiento(root, { getToken, records }) {
       // instance's update() — which repaints the detached old canvas, not
       // the new one actually on screen, so the chart stayed blank from the
       // second open on.
-      upsertChart('seguimiento-timeline', timelineChartConfig(timeline), { recreate: true });
+      // M4: clearChartEmpty BEFORE upsertChart — the canvas is left
+      // `display:none` by a previous empty-range render (setChartEmpty), and
+      // Chart.js measures the canvas's layout box at construction time; if
+      // upsertChart ran first, `new Chart(...)` would initialize against a
+      // hidden (0×0) canvas, right before it gets shown again a line later.
       clearChartEmpty('seguimiento-timeline');
+      upsertChart('seguimiento-timeline', timelineChartConfig(timeline), { recreate: true });
       lastChartDataKey = dataKey;
     } catch (err) {
       console.warn('seguimiento: fallo al renderizar el gráfico de ritmo diario', err);
@@ -2226,6 +2350,13 @@ export function initSeguimiento(root, { getToken, records }) {
   // on, so checking it here needs no separate visibility bookkeeping.
   activeRenderChart = () => {
     if (root.hidden) return;
+    // B1: this wrapper is exactly what the module-level 'themechange'
+    // listener calls, AFTER main.js's own listener has already destroyed
+    // every registered chart via charts.js's resetCharts() — belt-and-
+    // suspenders alongside the hasChart() gate inside renderChart itself:
+    // force the next call to treat this as a fresh render regardless of
+    // whether dataKey happens to still match.
+    lastChartDataKey = null;
     renderChart();
   };
   // Reassigned on every initSeguimiento() call, same idea as
@@ -2294,6 +2425,14 @@ export function initSeguimiento(root, { getToken, records }) {
     renderChartOptions(rows);
     renderTable(rows);
     renderChart();
+    // M5: renderChartOptions can silently reset seg-chart-professional back
+    // to '' when the previously selected professional no longer appears in
+    // `rows` (e.g. a Desde/Hasta change narrows them out) — without this, the
+    // per-selection "Reporte PDF individual" button stayed enabled/pointing
+    // at a selection that no longer exists until some OTHER interaction
+    // happened to call updateDownloadAvailability. Every render() (including
+    // the one "Reiniciar filtros" triggers) must refresh it too.
+    updateDownloadAvailability();
   }
 
   // W9: sub-tab segmented control — preserves sortState across the switch
@@ -2514,6 +2653,23 @@ export function initSeguimiento(root, { getToken, records }) {
       // default order regardless of which sub-tab happens to be showing on
       // screen at click time — an export always carries both views in full.
       const { legible, slug } = downloadStamp();
+      // N13: "Filtros:" row — without it, an export narrowed by e.g. a
+      // professional selection or a date range read identical to a full
+      // export (only "Registros: N" differed), which could be misread as
+      // the whole dataset. Uses the SAME search/Desde/Hasta/professional
+      // state visibleRows itself was narrowed by (renderTable's own
+      // visibleRowsFor call), plus the selected professional's resolved
+      // NAME (never the raw ced:/nom: key) via currentRows.
+      const selectedProfessionalKey = chartSelectEl.value || '';
+      const selectedProfessionalRow = selectedProfessionalKey
+        ? currentRows.find((r) => r.key === selectedProfessionalKey)
+        : null;
+      const filtrosSummary = xlsxFiltersSummary({
+        search: searchEl.value,
+        from: fromEl.value || null,
+        to: toEl.value || null,
+        professionalName: selectedProfessionalRow ? selectedProfessionalRow.name : '',
+      });
       const wb = XLSX.utils.book_new();
       for (const sheetSubTab of ['totales', 'temporales']) {
         const sortSpec = defaultSortFor(sheetSubTab);
@@ -2523,9 +2679,10 @@ export function initSeguimiento(root, { getToken, records }) {
           [`Seguimiento — profesionales (${sheetSubTab})`],
           ['Fecha de generación:', legible],
           ['Registros:', rows.length],
+          ['Filtros:', filtrosSummary],
           [],
         ]);
-        XLSX.utils.sheet_add_json(ws, rows, { origin: 'A5' });
+        XLSX.utils.sheet_add_json(ws, rows, { origin: 'A6' });
         XLSX.utils.book_append_sheet(wb, ws, sheetSubTab);
       }
       XLSX.writeFile(wb, `seguimiento_${slug}.xlsx`);
