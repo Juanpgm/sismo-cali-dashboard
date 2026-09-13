@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import math
 import re
-from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
+from app.services import fechas_es_co
+from app.services.fechas_es_co import BOGOTA
+
 DESCRIPCION_MAX = 240
-BOGOTA = timezone(timedelta(hours=-5))
 # 7+ digits, optionally separated by a single space/dot/dash between each
 # pair of digits — catches both contiguous runs ("3113872391") and the
 # spaced/dashed phone numbers citizens also type ("301 226 3431",
@@ -39,41 +40,22 @@ def mask_pii(texto: str) -> str:
 mask_digit_runs = mask_pii
 
 
-_MESES = {"enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6, "julio": 7,
-          "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12}
-
-# "martes, 18 de agosto de 2026, 06:33 p. m." — weekday optional, NBSP
-# tolerated, "a. m."/"p. m." with or without the inner space/dots.
-_FECHA_RE = re.compile(
-    r"^(?:[a-záéíóúü]+,\s*)?(?P<d>\d{1,2})\s+de\s+(?P<m>[a-záéíóúü]+)\s+de\s+(?P<y>\d{4}),?\s*"
-    r"(?P<h>\d{1,2}):(?P<mi>\d{2})\s*(?P<ap>[ap])\.?\s*m\.?$",
-    re.IGNORECASE,
-)
-
 _STICKER_KEYS = (("numero", "numero"), ("color", "color"), ("colorEtiqueta", "etiqueta"),
                  ("origen", "origen"), ("clasificacion", "clasificacion"))
 
 
+# D8 (plan cozy-wobbling-dragonfly W1): this used to be its own independent
+# regex/month-table parser, duplicated (with a DIFFERENT, contradictory tz)
+# in `planeacion_cruce.parse_fecha_creacion_es`. Both now delegate to the
+# one shared, tz-explicit parser in `app.services.fechas_es_co` — this
+# function keeps its exact own signature and Bogota-offset ISO output,
+# byte-for-byte. NOTE (tracked separately, see the plan's "Fuera de
+# alcance"): this tz may itself be wrong if `informe/json`'s own
+# `fechaCreacion` also renders in UTC like `informe/stickers`'s does —
+# unverified and NOT changed here.
 def parse_fecha_es_co(texto: object) -> str | None:
-    if not isinstance(texto, str):
-        return None
-    # NBSP (U+00A0) shows up before "p. m."/"a. m." in real API responses
-    # (Task 0); normalize it to a regular space before matching/stripping.
-    normalized = texto.replace(" ", " ").strip()
-    m = _FECHA_RE.match(normalized)
-    if not m:
-        return None
-    mes = _MESES.get(m.group("m").lower())
-    if mes is None:
-        return None
-    hora = int(m.group("h")) % 12
-    if m.group("ap").lower() == "p":
-        hora += 12
-    try:
-        dt = datetime(int(m.group("y")), mes, int(m.group("d")), hora, int(m.group("mi")), tzinfo=BOGOTA)
-    except ValueError:
-        return None
-    return dt.isoformat()
+    dt = fechas_es_co.parse_fecha_es_co(texto, tz=BOGOTA)
+    return fechas_es_co.to_iso(dt) if dt is not None else None
 
 
 def _float_or_none(value: object) -> float | None:

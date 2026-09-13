@@ -167,6 +167,7 @@ from app.integracion.coords import haversine_m
 from app.integracion.cruce_gestor import (addr_key, build_addr_index,
                                           match_by_direccion, nearest,
                                           _eval_latlon)
+from app.services import fechas_es_co
 
 REQUIRED_CLIENTS: tuple[str, ...] = ("sismo",)
 
@@ -694,22 +695,15 @@ def write_planeacion_puntos(db, ops: list[tuple[str, dict]]) -> int:
 # atencionsismo's `informe/json` ships `fechaCreacion` as an es-CO locale
 # string ("martes, 18 de agosto de 2026, 06:33 p. m."), NOT ISO-8601 —
 # confirmed by reading `web/data/reportes.json` directly (14,804 live
-# records, 2026-08-26). Parsed with an explicit month-name table rather
-# than the host locale, because a Railway container is not guaranteed
-# es-CO. `peso_antiguedad` above consumes the ISO string this produces
-# (or a bare `datetime`), never the raw Spanish text — keeping the scoring
-# function itself free of locale/parsing concerns.
-_MESES_ES = {
-    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
-    "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10,
-    "noviembre": 11, "diciembre": 12,
-}
-_FECHA_ES_RE = re.compile(
-    r"(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4}),?\s*(\d{1,2}):(\d{2})\s*(a\.?\s*m\.?|p\.?\s*m\.?)",
-    re.IGNORECASE,
-)
-
-
+# records, 2026-08-26). `peso_antiguedad` above consumes the ISO string
+# this produces (or a bare `datetime`), never the raw Spanish text —
+# keeping the scoring function itself free of locale/parsing concerns.
+#
+# D8 (plan cozy-wobbling-dragonfly W1): this used to be its own independent
+# regex/month-table parser, duplicated (with a DIFFERENT, contradictory tz)
+# in `reportes_ciudadanos.parse_fecha_es_co`. Both now delegate to the one
+# shared, tz-explicit parser in `app.services.fechas_es_co` — this function
+# keeps its exact own signature and UTC behavior, byte-for-byte.
 def parse_fecha_creacion_es(raw: str | None) -> datetime | None:
     """Parse the es-CO `fechaCreacion` string into a UTC `datetime`. Returns
     `None` for empty/unparseable input — `load_puntos` stores `None` in
@@ -717,23 +711,7 @@ def parse_fecha_creacion_es(raw: str | None) -> datetime | None:
     raising."""
     if not raw:
         return None
-    m = _FECHA_ES_RE.search(str(raw))
-    if not m:
-        return None
-    day, month_name, year, hour_s, minute_s, ampm = m.groups()
-    month = _MESES_ES.get(month_name.strip().lower())
-    if month is None:
-        return None
-    hour = int(hour_s)
-    ampm_norm = re.sub(r"[.\s]", "", ampm).lower()
-    if ampm_norm == "am":
-        hour = 0 if hour == 12 else hour
-    else:
-        hour = hour if hour == 12 else hour + 12
-    try:
-        return datetime(int(year), month, int(day), hour, int(minute_s), tzinfo=timezone.utc)
-    except ValueError:
-        return None
+    return fechas_es_co.parse_fecha_es_co(raw, tz=timezone.utc)
 
 
 # ── Point loading (ADR-2: reportes.json, two-tier, same as cruce_sticker's
