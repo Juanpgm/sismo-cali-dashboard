@@ -719,3 +719,120 @@ def test_fotos_matched_row_with_empty_firestore_fotos_stays_empty():
         roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": matched_eval},
     )
     assert out["fotos"] == []
+
+
+# ── W2 (plan cozy-wobbling-dragonfly): `fecha`/`fecha_fuente` resolution.
+# Priority: (1) matched Firestore evaluación -> its own `fecha`,
+# "evaluacion" (byte-identical even when None, API's fechaCreacion never
+# consulted); (2) no match, origen "sistema" -> shared es-CO parser (UTC),
+# "api", or None/"sin_fecha" on parse failure; (3) everything else ->
+# None/"no_aplica". ─────────────────────────────────────────────────────
+
+
+def test_fecha_uses_matched_evaluacion_fecha_ignores_api_fechaCreacion():
+    matched_eval = _eval_firestore(fecha="2026-08-20T10:00:00+00:00")
+    out = sa.normalize_sticker(
+        _row(origen="sistema", fechaCreacion="martes, 18 de agosto de 2026, 06:33 p. m."),
+        roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": matched_eval},
+    )
+    assert out["fecha"] == "2026-08-20T10:00:00+00:00"
+    assert out["fecha_fuente"] == "evaluacion"
+
+
+def test_fecha_matched_with_none_fecha_stays_none_fuente_evaluacion():
+    matched_eval = _eval_firestore(fecha=None)
+    out = sa.normalize_sticker(_row(), roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": matched_eval})
+    assert out["fecha"] is None
+    assert out["fecha_fuente"] == "evaluacion"
+
+
+def test_fecha_no_match_sistema_valid_fechaCreacion_is_api_iso():
+    out = sa.normalize_sticker(
+        _row(origen="sistema", fechaCreacion="martes, 18 de agosto de 2026, 06:33 p. m.", numero="Sin código"),
+        roster_by_codigo={}, evaluacion_by_codigo={},
+    )
+    assert out["fecha"] == "2026-08-18T18:33:00+00:00"
+    assert out["fecha_fuente"] == "api"
+
+
+def test_fecha_no_match_firebase_is_no_aplica():
+    out = sa.normalize_sticker(_row(origen="firebase"), roster_by_codigo={}, evaluacion_by_codigo={})
+    assert out["fecha"] is None
+    assert out["fecha_fuente"] == "no_aplica"
+
+
+def test_fecha_match_with_firebase_origin_still_uses_match_fecha():
+    matched_eval = _eval_firestore(fecha="2026-08-20T10:00:00+00:00")
+    out = sa.normalize_sticker(_row(origen="firebase"), roster_by_codigo={},
+                               evaluacion_by_codigo={"76001-1-0040007": matched_eval})
+    assert out["fecha"] == "2026-08-20T10:00:00+00:00"
+    assert out["fecha_fuente"] == "evaluacion"
+
+
+def test_fecha_sistema_origen_with_whitespace_and_case_still_parses():
+    out = sa.normalize_sticker(
+        _row(origen=" Sistema ", fechaCreacion="martes, 18 de agosto de 2026, 06:33 p. m.", numero="Sin código"),
+        roster_by_codigo={}, evaluacion_by_codigo={},
+    )
+    assert out["fecha_fuente"] == "api"
+    assert out["fecha"] == "2026-08-18T18:33:00+00:00"
+
+
+def test_fecha_sistema_malformed_fechaCreacion_is_sin_fecha():
+    out = sa.normalize_sticker(
+        _row(origen="sistema", fechaCreacion="no es una fecha", numero="Sin código"),
+        roster_by_codigo={}, evaluacion_by_codigo={},
+    )
+    assert out["fecha"] is None
+    assert out["fecha_fuente"] == "sin_fecha"
+
+
+def test_fecha_sistema_missing_fechaCreacion_is_sin_fecha():
+    out = sa.normalize_sticker(_row(origen="sistema", numero="Sin código"), roster_by_codigo={}, evaluacion_by_codigo={})
+    assert out["fecha"] is None
+    assert out["fecha_fuente"] == "sin_fecha"
+
+
+def test_fecha_blank_origen_no_match_is_no_aplica():
+    out = sa.normalize_sticker(
+        _row(origen="", fechaCreacion="martes, 18 de agosto de 2026, 06:33 p. m."),
+        roster_by_codigo={}, evaluacion_by_codigo={},
+    )
+    assert out["fecha"] is None
+    assert out["fecha_fuente"] == "no_aplica"
+
+
+def test_build_evaluaciones_sorts_dated_before_undated_with_mixed_fecha_formats():
+    # Mixed formats on purpose: a Firestore `fecha` may already carry a
+    # trailing "Z" (device-written) while ours always emits "+00:00" — the
+    # sort must still put every dated row ahead of every undated one.
+    rows = [
+        _row(id="a", numero="76001-1-0040001", origen="firebase"),  # no match -> no_aplica -> None
+        _row(id="b", numero="76001-1-0040002", origen="sistema",
+             fechaCreacion="martes, 18 de agosto de 2026, 06:33 p. m."),  # api -> "+00:00"
+        _row(id="c", numero="76001-1-0040003", origen="firebase"),
+    ]
+    fs = [_eval_firestore(codigo_edificacion="76001-1-0040003", fecha="2026-09-01T00:00:00Z")]
+    out = sa.build_evaluaciones(rows, roster_by_codigo={}, evaluaciones_firestore=fs)
+    ids = [e["id"] for e in out]
+    assert ids.index("a") > ids.index("b")
+    assert ids.index("a") > ids.index("c")
+    by_id = {e["id"]: e for e in out}
+    assert by_id["a"]["fecha"] is None
+    assert by_id["b"]["fecha"] == "2026-08-18T18:33:00+00:00"
+    assert by_id["c"]["fecha"] == "2026-09-01T00:00:00Z"
+
+
+def test_build_evaluaciones_3000_rows_perf_budget():
+    import time
+
+    rows = [
+        _row(id=str(i), numero=f"76001-1-{i:07d}", origen="sistema" if i % 2 else "firebase",
+             fechaCreacion="martes, 18 de agosto de 2026, 06:33 p. m.")
+        for i in range(3000)
+    ]
+    t0 = time.perf_counter()
+    out = sa.build_evaluaciones(rows, roster_by_codigo={}, evaluaciones_firestore=[])
+    elapsed = time.perf_counter() - t0
+    assert len(out) == 3000
+    assert elapsed < 1.0, f"build_evaluaciones took {elapsed:.3f}s for 3000 rows, budget is 1.0s"

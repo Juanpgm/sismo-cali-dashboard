@@ -94,7 +94,10 @@ design, since they are now two independent signals.
 from __future__ import annotations
 
 import re
+from datetime import timezone
 from typing import Any
+
+from app.services import fechas_es_co
 
 # Our field-form code: 76001-{area}-{inspector 3 digits}{consecutivo 4+ digits}
 # (formulario/js/logic.js buildCodigo). atencionsismo re-exports it verbatim
@@ -340,6 +343,34 @@ def normalize_sticker(
     desc_match = (match or {}).get("descripcion") or {}
     acc_match = (match or {}).get("acciones_posteriores") or {}
 
+    # W2 (plan cozy-wobbling-dragonfly): `fecha`/`fecha_fuente` resolution,
+    # additive to the existing identity/np priority chain above (same
+    # `match`/`origen_value` this function already computed, never
+    # re-derived). Priority: (1) a matched Firestore evaluación is
+    # AUTHORITATIVE for `fecha` — its own value, byte-identical even when
+    # `None` — the API's `fechaCreacion` is never consulted on this path,
+    # same invariant as the inspector identity above; (2) no match and
+    # `origen_value == "sistema"` -> the shared es-CO parser (D8, UTC,
+    # `fechaCreacion` is confirmed rendered in UTC — see the plan's Zona
+    # horaria section) -> `"api"` on success, or `None`/`"sin_fecha"` when
+    # the string is missing or fails to parse (a drift metric, not a
+    # silent failure); (3) everything else (no match, any other origen,
+    # including blank/"firebase") -> `None`/`"no_aplica"`.
+    if match is not None:
+        fecha_value = match.get("fecha")
+        fecha_fuente = "evaluacion"
+    elif origen_value == "sistema":
+        fecha_dt = fechas_es_co.parse_fecha_es_co(row.get("fechaCreacion"), tz=timezone.utc)
+        if fecha_dt is not None:
+            fecha_value = fechas_es_co.to_iso(fecha_dt)
+            fecha_fuente = "api"
+        else:
+            fecha_value = None
+            fecha_fuente = "sin_fecha"
+    else:
+        fecha_value = None
+        fecha_fuente = "no_aplica"
+
     return {
         "id": sticker_id,
         "fuente": "atencionsismo",
@@ -377,7 +408,8 @@ def normalize_sticker(
             if match is not None
             else _fotos_from_fotografias(row.get("fotografias"))
         ),
-        "fecha": (match or {}).get("fecha"),
+        "fecha": fecha_value,
+        "fecha_fuente": fecha_fuente,
         "fase": _fase(row.get("fase")),
     }
 
