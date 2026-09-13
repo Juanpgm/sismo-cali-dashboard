@@ -13,6 +13,8 @@ import {
   timelineChartConfig, timelineDataKey, shouldSkipChartRender,
   COLUMNS_TOTALES, COLUMNS_TEMPORALES, columnsFor, defaultSortFor, formatMinutes, xlsxRowsFor, xlsxFiltersSummary,
   objetivoDiario, visitasUltimos7Dias, reportFilenameSlug, buildMassReportDocDefinition,
+  cellHtml, rowReportButtonsBlocked, canStartMassExport, shouldDeliverExport,
+  professionalRecordsByKey, visitasUltimos7DiasByKey, massExportOverlayText,
 } from './seguimiento.js';
 
 // Small test-local helper: the "no identity/no cédula at all" key shape a
@@ -1876,7 +1878,13 @@ assert.equal(formatMinutes(undefined), DASH);
 assert.equal(formatMinutes(NaN), DASH);
 assert.equal(formatMinutes(-5), DASH, 'out-of-range minute must never throw/produce a bogus time');
 assert.equal(formatMinutes(1440), DASH, 'out-of-range minute (>= 24h) must never throw/produce a bogus time');
-console.log('formatMinutes: HH:MM formatting + DASH for null/invalid OK');
+// L9: a fractional minute must be rounded ONCE, up front, before splitting
+// into hour/minute -- flooring the hour and separately rounding the minute
+// (the old behavior) could carry the minute past 59 (e.g. 719.6 used to
+// yield the bogus "11:60" instead of rolling over into the next hour).
+assert.equal(formatMinutes(719.6), '12:00', 'L9: 719.6 must roll over to 12:00, never the bogus 11:60');
+assert.equal(formatMinutes(59.6), '01:00', 'L9: 59.6 must roll over to 01:00, never 00:60');
+console.log('formatMinutes: HH:MM formatting + DASH for null/invalid + L9 rollover OK');
 
 // ── W9: columnsFor / defaultSortFor / COLUMNS_TOTALES / COLUMNS_TEMPORALES ──
 assert.ok(Array.isArray(COLUMNS_TOTALES) && COLUMNS_TOTALES.length > 0);
@@ -1885,12 +1893,26 @@ assert.deepEqual(columnsFor('totales'), COLUMNS_TOTALES);
 assert.deepEqual(columnsFor('temporales'), COLUMNS_TEMPORALES);
 assert.deepEqual(columnsFor(undefined), COLUMNS_TOTALES, 'default subTab is totales');
 assert.deepEqual(columnsFor('unknown-sub-tab'), COLUMNS_TOTALES, 'an unknown subTab falls back to totales, never throws');
-assert.deepEqual(defaultSortFor('totales'), { column: 'total', dir: 'desc' });
+// M5: 'total' is NOT one of COLUMNS_TOTALES' own keys (see the array above)
+// -- a default sort column that isn't a real header means no header ever
+// shows the sort indicator, and clicking it can't toggle asc/desc (the
+// header-click handler matches on `c.key`). 'stickersFase1' IS a real
+// COLUMNS_TOTALES header.
+assert.deepEqual(defaultSortFor('totales'), { column: 'stickersFase1', dir: 'desc' });
 assert.deepEqual(defaultSortFor('temporales'), { column: 'firstDate', dir: 'desc' });
-assert.deepEqual(defaultSortFor('unknown'), { column: 'total', dir: 'desc' }, 'unknown subTab defaults like totales');
+assert.deepEqual(defaultSortFor('unknown'), { column: 'stickersFase1', dir: 'desc' }, 'unknown subTab defaults like totales');
 assert.ok(COLUMNS_TOTALES.some((c) => c.key === 'np' && c.label === 'Clase (P)'));
 assert.ok(COLUMNS_TOTALES.some((c) => c.key === 'codigo' && c.label === 'Código vigente'));
 assert.ok(COLUMNS_TEMPORALES.some((c) => c.key === 'codigo' && c.label === 'Código'));
+// M5 (generalized): whichever column a sub-tab defaults to must always be
+// one of that SAME sub-tab's own visible headers, for EVERY sub-tab —
+// otherwise the sort indicator (▲/▼) can never render and a header click on
+// that column can never "un-invert" it back to the default.
+for (const subTab of ['totales', 'temporales', 'unknown-sub-tab']) {
+  const sort = defaultSortFor(subTab);
+  const cols = columnsFor(subTab);
+  assert.ok(cols.some((c) => c.key === sort.column), `${subTab}: default sort column "${sort.column}" must exist in its own columnsFor()`);
+}
 console.log('columnsFor/defaultSortFor OK');
 
 // ── W9: buildProfessionalRows now also carries avgStickersPerDay + the batch
@@ -1984,10 +2006,17 @@ console.log('buildProfessionalRows: avgStickersPerDay uses sticker-only active d
   assert.equal(totalesRows[0].profesional, 'Gil Soto');
   assert.equal(totalesRows[0].clase_p, 'P2');
   assert.equal(totalesRows[0].codigo_vigente, 'B1');
-  assert.equal(totalesRows[0].tarjeta_profesional, 'TP-1');
-  assert.equal(totalesRows[0].barrios_activos_7d, 'San Antonio; El Poblado');
+  // H1: the plan's W9 never lists contact fields for the XLSX (only W10's
+  // PDF, which carries its own confidentiality notice) -- an Excel file is
+  // far more likely to be forwarded/copied around than a per-professional
+  // PDF, so tarjeta/celular/correo must never leave the app via this export.
+  assert.ok(!('tarjeta_profesional' in totalesRows[0]), 'H1: tarjeta_profesional must never appear in the XLSX');
+  assert.ok(!('celular' in totalesRows[0]), 'H1: celular must never appear in the XLSX');
+  assert.ok(!('correo' in totalesRows[0]), 'H1: correo must never appear in the XLSX');
+  // Nit: barrios join with ', ' -- same separator the table cell uses
+  // (cellHtml's 'barriosActivos' case), so the two never disagree in style.
+  assert.equal(totalesRows[0].barrios_activos_7d, 'San Antonio, El Poblado');
   assert.equal(totalesRows[0].stickers_promedio_diario, 1);
-  assert.equal(totalesRows[1].tarjeta_profesional, '', 'missing contact data defaults to empty string, never undefined');
   assert.equal(totalesRows[1].barrios_activos_7d, '');
   assert.equal(totalesRows[1].stickers_promedio_diario, '', 'null avgStickersPerDay -> empty string, never the literal null');
 
@@ -2072,6 +2101,12 @@ assert.equal(objetivoDiario({ pendientes: 100, profesionalesActivos: 0, today: '
 assert.equal(objetivoDiario({ pendientes: 100, profesionalesActivos: -1, today: '2026-09-13' }), null, 'negative active professionals -> null');
 assert.equal(objetivoDiario({ pendientes: 100, profesionalesActivos: 10, today: '2026-10-01' }), null, 'today past the deadline -> null');
 assert.equal(objetivoDiario({ pendientes: 100, profesionalesActivos: 10, today: null }), null, 'missing today -> null');
+// M3: a negative `pendientes` (a backlog that has gone negative — a data
+// bug upstream, or a KPI counting the wrong direction) must never produce a
+// negative daily TARGET — that reads as "you may do fewer visits", the
+// opposite of what a target means. `null` (sin dato), same as any other
+// value this function can't turn into a sane target.
+assert.equal(objetivoDiario({ pendientes: -5, profesionalesActivos: 10, today: '2026-09-13' }), null, 'negative pendientes -> null, never a negative target');
 {
   // today === deadline -> days = max(1, 0) = 1, never a division by zero.
   const v = objetivoDiario({
@@ -2080,13 +2115,33 @@ assert.equal(objetivoDiario({ pendientes: 100, profesionalesActivos: 10, today: 
   assert.equal(v, 10, '50/5/1 día = 10.0');
 }
 {
-  // Normal rounding to 1 decimal.
+  // M3: rounding direction is Math.ceil, never Math.round -- a daily TARGET
+  // to hit a fixed deadline must never be UNDER-stated (rounding 3.33 down
+  // to 3.3 would let a professional finish the backlog late while still
+  // hitting "their" rounded number every day).
   const v = objetivoDiario({
     pendientes: 333, profesionalesActivos: 10, today: '2026-09-20', deadline: '2026-09-30',
   });
-  assert.equal(v, 3.3, '333 / 10 profesionales / 10 días = 3.33 -> 3.3');
+  assert.equal(v, 3.4, '333 / 10 profesionales / 10 días = 3.33 -> ceil -> 3.4, never rounded down to 3.3');
 }
-console.log('objetivoDiario: null-cases + normal rounding OK');
+{
+  // M3: exact rounding-direction example from the finding — 3.31 -> 3.4
+  // (ceil(33.1) = 34 -> 3.4), never 3.3.
+  const v = objetivoDiario({
+    pendientes: 331, profesionalesActivos: 100, today: '2026-09-29', deadline: '2026-09-30',
+  });
+  assert.equal(v, 3.4, '331 / 100 profesionales / 1 día = 3.31 -> ceil -> 3.4');
+}
+{
+  // M3: `pendientes: 1, profesionalesActivos: 110` used to floor/round down
+  // to a fabricated 0 (a real backlog silently read as "no target needed").
+  // ceil() guarantees the result is never 0 while `pendientes > 0`.
+  const v = objetivoDiario({
+    pendientes: 1, profesionalesActivos: 110, today: '2026-09-29', deadline: '2026-09-30',
+  });
+  assert.ok(Number.isFinite(v) && v > 0, `a positive pendientes must never round down to a fabricated 0 (got ${v})`);
+}
+console.log('objetivoDiario: null-cases + ceil-rounding (never under-stated, never a fabricated 0) OK');
 
 // ── W10: visitasUltimos7Dias — rolling today-6..today (inclusive), stickers +
 // surveys, SIN_DATO excluded first (D3) ──────────────────────────────────────
@@ -2310,5 +2365,155 @@ console.log('buildMassReportDocDefinition: degraded ctx refuses (throws) OK');
   console.log(`buildMassReportDocDefinition: 110-professional doc-definition size = ${(size / 1024).toFixed(1)} KB`);
 }
 console.log('buildMassReportDocDefinition: 110-professional perf sanity (page breaks + size) — TODO perf gate: manual browser measurement per plan OK');
+
+// ── H2: cellHtml — every sticker-derived column masked behind DASH while
+// !stickersLoaded, same "Degradado/cargando ≠ cero" invariant kpisHtml/
+// rowHtml already apply elsewhere. `np`/`codigo`/`cedula`/`barriosActivos`/
+// `activeDays`/`firstDate`/`lastDate` used to render their real ("Sin dato"
+// or a real value) content even while stickers hadn't resolved yet -- an
+// inconsistency with `daysSinceFirst`, which WAS already masked. ──────────
+{
+  const row = {
+    name: 'Gil Soto', cedula: '123', np: 'P2', codigo: 'B1',
+    stickersFase1: 2, stickersFase2: 1, surveyTotal: 1, activeDays: 3,
+    avgStickersPerDay: 1.5, barriosActivos: ['San Antonio'],
+    firstDate: '2026-01-01', lastDate: '2026-01-05', daysSinceFirst: 8,
+  };
+  const maskedColumns = ['np', 'codigo', 'cedula', 'barriosActivos', 'activeDays', 'firstDate', 'lastDate'];
+  for (const key of maskedColumns) {
+    assert.equal(cellHtml(row, key, false), DASH, `H2: column "${key}" must be DASH-masked while stickersLoaded=false`);
+  }
+  // Same columns, stickersLoaded true -> real values, never DASH.
+  assert.equal(cellHtml(row, 'np', true), 'P2');
+  assert.equal(cellHtml(row, 'codigo', true), 'B1');
+  assert.equal(cellHtml(row, 'cedula', true), '123');
+  assert.equal(cellHtml(row, 'barriosActivos', true), 'San Antonio');
+  assert.equal(cellHtml(row, 'activeDays', true), 3);
+  assert.equal(cellHtml(row, 'firstDate', true), '2026-01-01');
+  assert.equal(cellHtml(row, 'lastDate', true), '2026-01-05');
+  // Already-masked column (daysSinceFirst) stays masked -- no regression.
+  assert.equal(cellHtml(row, 'daysSinceFirst', false), DASH);
+}
+console.log('cellHtml (H2): np/codigo/cedula/barriosActivos/activeDays/firstDate/lastDate all DASH-masked while !stickersLoaded OK');
+
+// ── M4: buildProfessionalReportDocDefinition must use ctx.generatedAt when
+// given, instead of always calling downloadStamp() itself -- a sentinel
+// string that can never come out of a real downloadStamp() call proves the
+// ctx value actually reached the render, not a coincidentally-matching
+// timestamp. ──────────────────────────────────────────────────────────────
+{
+  const row = {
+    name: 'Gil Soto', cedula: '1', codigo: '', entidad: '', np: '', barriosActivos: [],
+    stickersFase1: 0, stickersFase2: 0, surveyTotal: 0, total: 0,
+    firstDate: null, lastDate: null, activeDays: 0, avgPerActiveDay: 0,
+    avgStickersPerDay: null, rosterSourced: 0,
+  };
+  const doc = buildProfessionalReportDocDefinition(row, { stickerPoints: [], surveyPoints: [] }, {
+    generatedAt: 'SENTINEL_TIMESTAMP_2026',
+  });
+  const flatText = JSON.stringify(doc.content);
+  assert.ok(flatText.includes('SENTINEL_TIMESTAMP_2026'), 'M4: ctx.generatedAt must render verbatim, never overridden by downloadStamp()');
+}
+console.log('buildProfessionalReportDocDefinition: ctx.generatedAt (M4) overrides downloadStamp() OK');
+
+// ── L10: buildTemporalMetricsByKey must honor from/to — sibling functions
+// (buildProfessionalRows' stickersTotal/surveyTotal, buildTimeline) already
+// drop out-of-range records; the hour-of-day columns used to silently
+// ignore the active Desde/Hasta filter. ────────────────────────────────────
+{
+  const stickers = [
+    { inspector: { nombre_completo: 'Gil Soto', identificacion: '1' }, fecha: '2026-01-01T09:00:00+00:00', fase: 1, fuente: 'atencionsismo', inspector_fuente: 'evaluacion' },
+    // Outside the [from,to] range below -- must NOT affect prevDay/averages.
+    { inspector: { nombre_completo: 'Gil Soto', identificacion: '1' }, fecha: '2026-01-08T18:00:00+00:00', fase: 1, fuente: 'atencionsismo', inspector_fuente: 'evaluacion' },
+  ];
+  const identity = buildIdentityIndex({ stickers, surveys: [] });
+  const withRange = buildTemporalMetricsByKey({
+    stickers, surveys: [], identity, today: '2026-01-09', from: '2026-01-01', to: '2026-01-02',
+  });
+  const metrics = withRange.get('ced:1');
+  assert.ok(metrics, 'the in-range record must still produce a metrics entry');
+  assert.equal(metrics.prevDay, '2026-01-01', 'L10: the out-of-range 01-08 record must not become prevDay');
+  assert.notEqual(metrics.prevDay, '2026-01-08');
+
+  // Without a range (from/to both null, the existing default): unchanged --
+  // both records count, same as before this fix.
+  const noRange = buildTemporalMetricsByKey({
+    stickers, surveys: [], identity, today: '2026-01-09',
+  });
+  assert.equal(noRange.get('ced:1').prevDay, '2026-01-08', 'L10: no active range -> unchanged behavior (both records count)');
+}
+console.log('buildTemporalMetricsByKey (L10): honors from/to, unchanged when absent OK');
+
+// ── M6: professionalRecordsByKey / visitasUltimos7DiasByKey — ONE batch pass
+// must agree EXACTLY with calling professionalRecords/visitasUltimos7Dias
+// once per row, on a mixed fixture (several professionals, SIN_DATO mixed
+// in, a period filter active). ─────────────────────────────────────────────
+{
+  const stickers = [
+    { inspector: { nombre_completo: 'Gil Soto', identificacion: '1' }, fecha: '2026-01-05T09:00:00+00:00', fase: 1, fuente: 'atencionsismo', inspector_fuente: 'evaluacion', codigo_edificacion: 'C1' },
+    { inspector: { nombre_completo: 'Gil Soto', identificacion: '1' }, fecha: '2026-01-06T14:30:00+00:00', fase: 2, fuente: 'atencionsismo', inspector_fuente: 'evaluacion', codigo_edificacion: 'C2' },
+    { inspector: { nombre_completo: 'Gil Soto', identificacion: '1' }, fecha: '2026-01-05T20:00:00+00:00', fase: null, fuente: 'atencionsismo', inspector_fuente: 'evaluacion', codigo_edificacion: 'C3' }, // SIN_DATO
+    { inspector: { nombre_completo: 'Ana Ruiz', identificacion: '2' }, fecha: '2026-01-07T12:00:00+00:00', fase: 1, fuente: 'atencionsismo', inspector_fuente: 'evaluacion', codigo_edificacion: 'C4' },
+    { inspector: { nombre_completo: 'Beto Ríos', identificacion: '3' }, fecha: '2026-01-20T12:00:00+00:00', fase: 1, fuente: 'atencionsismo', inspector_fuente: 'evaluacion', codigo_edificacion: 'C5' }, // outside period below
+  ];
+  const surveys = [
+    { nombre_evaluador: 'Gil Soto', fecha_inspeccion: '2026-01-08', direccion: 'X' },
+    { nombre_evaluador: 'Ana Ruiz', fecha_inspeccion: '2026-01-08', direccion: 'Y' },
+  ];
+  const identity = buildIdentityIndex({ stickers, surveys });
+  const rows = [{ key: 'ced:1' }, { key: 'ced:2' }, { key: 'ced:3' }, { key: 'nom:nadie' }];
+  const from = '2026-01-01';
+  const to = '2026-01-08';
+  const today = '2026-01-09';
+
+  const byKey = professionalRecordsByKey({
+    stickers, surveys, identity, from, to,
+  });
+  const last7ByKey = visitasUltimos7DiasByKey({
+    stickers, surveys, identity, today,
+  });
+
+  for (const row of rows) {
+    const perRow = professionalRecords(row, {
+      stickers, surveys, identity, from, to,
+    });
+    const batch = byKey.get(row.key) || { stickerPoints: [], surveyPoints: [] };
+    assert.deepEqual(batch, perRow, `M6: batch professionalRecordsByKey must equal per-row professionalRecords for ${row.key}`);
+
+    const perRowLast7 = visitasUltimos7Dias(row, {
+      stickers, surveys, identity, today,
+    });
+    const batchLast7 = last7ByKey.get(row.key) || 0;
+    assert.equal(batchLast7, perRowLast7, `M6: batch visitasUltimos7DiasByKey must equal per-row visitasUltimos7Dias for ${row.key}`);
+  }
+}
+console.log('professionalRecordsByKey / visitasUltimos7DiasByKey (M6): batch equals per-row on a mixed fixture OK');
+
+// ── L7: rowReportButtonsBlocked — per-row "📄 Reporte" buttons must also be
+// blocked while a mass export is `busy`, same as the mass/XLSX buttons
+// (updateDownloadAvailability's own isDegraded||!stickersLoaded block). ────
+assert.equal(rowReportButtonsBlocked(), false, 'defaults: nothing blocks the row buttons');
+assert.equal(rowReportButtonsBlocked({ isDegraded: true }), true);
+assert.equal(rowReportButtonsBlocked({ stickersLoaded: false }), true);
+assert.equal(rowReportButtonsBlocked({ busy: true }), true, 'L7: a mass export in flight must block the per-row report buttons too');
+assert.equal(rowReportButtonsBlocked({ isDegraded: false, stickersLoaded: true, busy: false }), false);
+console.log('rowReportButtonsBlocked (L7) OK');
+
+// ── L8: module-level export guard — canStartMassExport (a second start
+// while one is in flight is a no-op) + shouldDeliverExport (skip the
+// download entirely, never just a "stale" toast after already downloading,
+// when the tab was reloaded mid-build). ────────────────────────────────────
+assert.equal(canStartMassExport(), true, 'nothing in flight -> may start');
+assert.equal(canStartMassExport({ exportInFlight: true }), false, 'L8: a second export must be a no-op while one is already in flight');
+assert.equal(canStartMassExport({ exportInFlight: false }), true);
+assert.equal(shouldDeliverExport({ seq: 3, loadSeq: 3 }), true, 'same generation -> deliver');
+assert.equal(shouldDeliverExport({ seq: 3, loadSeq: 4 }), false, 'L8: the tab reloaded mid-build (loadSeq bumped) -> never deliver the stale build');
+console.log('canStartMassExport / shouldDeliverExport (L8) OK');
+
+// ── M6 (mass export overlay text) ───────────────────────────────────────────
+assert.equal(massExportOverlayText(1), 'Generando 1 reportes… esto puede tardar unos segundos.');
+assert.equal(massExportOverlayText(37), 'Generando 37 reportes… esto puede tardar unos segundos.');
+assert.equal(massExportOverlayText(0), 'Generando 0 reportes… esto puede tardar unos segundos.');
+console.log('massExportOverlayText (M6) OK');
 
 console.log('seguimiento.test.mjs: all assertions passed');

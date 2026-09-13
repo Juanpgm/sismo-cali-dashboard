@@ -1416,18 +1416,50 @@ export function mountCombobox(input, listEl, { options = [], onSelect = () => {}
   };
 }
 
-// xlsx (SheetJS, ~1MB) is only needed by the download buttons — load it on
-// first click instead of blocking every page load with it.
-let xlsxPromise = null;
-export function loadXlsx() {
-  if (!xlsxPromise) {
-    xlsxPromise = new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
-      s.onload = () => resolve(window.XLSX);
-      s.onerror = () => reject(new Error('No se pudo cargar xlsx'));
-      document.head.appendChild(s);
-    });
-  }
-  return xlsxPromise;
+/** Wraps a no-arg async `fn` (typically a CDN script-tag loader) so its
+ *  result is fetched at most once and cached forever — BUT ONLY on success.
+ *  A naive `let promise = null; if (!promise) promise = fn();` caches a
+ *  REJECTED promise just as permanently as a resolved one, so a single
+ *  transient CDN blip (a dropped connection, a momentary 5xx) poisons every
+ *  later call with the exact same stale error for the rest of the session —
+ *  moved here (from report.js, where it first shipped for loadPdfmake) so
+ *  loadXlsx() below can share the identical retry-after-failure policy
+ *  instead of hand-rolling its own copy of the same bug fix; report.js
+ *  re-exports this for backward compatibility (its own tests/imports
+ *  unchanged).
+ *
+ *  Concurrent callers before the promise settles share the SAME in-flight
+ *  call (fn() runs exactly once, not once per caller) — `Promise.resolve()
+ *  .then(fn)` normalizes both a genuine rejection AND fn() throwing
+ *  SYNCHRONOUSLY into the same rejection path, so both are handled by the
+ *  one `.catch()` below identically. On FAILURE, the cached promise is reset
+ *  to null BEFORE rethrowing, so the NEXT call retries fn() from scratch
+ *  instead of replaying the exact same rejection forever. */
+export function memoizeLoader(fn) {
+  let promise = null;
+  return function load(...args) {
+    if (!promise) {
+      promise = Promise.resolve().then(() => fn(...args)).catch((err) => {
+        promise = null;
+        throw err;
+      });
+    }
+    return promise;
+  };
 }
+
+// xlsx (SheetJS, ~1MB) is only needed by the download buttons — load it on
+// first click instead of blocking every page load with it. Memoized
+// (retry-on-failure) via memoizeLoader — see its own doc comment; a failed
+// CDN load used to poison every later export attempt for the rest of the
+// session (the same bug loadPdfmake's own memoizeLoader move already fixed).
+function loadXlsxCore() {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+    s.onload = () => resolve(window.XLSX);
+    s.onerror = () => reject(new Error('No se pudo cargar xlsx'));
+    document.head.appendChild(s);
+  });
+}
+export const loadXlsx = memoizeLoader(loadXlsxCore);

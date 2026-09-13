@@ -497,7 +497,7 @@ export function buildProfessionalRows({
   // by the table, the XLSX temporales sheet and the PDF report), never
   // recomputed per sub-tab switch/export.
   const temporalByKey = buildTemporalMetricsByKey({
-    stickers: stickerList, surveys: surveyList, identity: idx, today: todayStr,
+    stickers: stickerList, surveys: surveyList, identity: idx, today: todayStr, from, to,
   });
 
   const rows = [...rowsByKey.values()].map((row) => {
@@ -682,6 +682,38 @@ export function buildTimeline({
   };
 }
 
+// Shared by professionalRecords AND its M6 batch counterpart
+// (professionalRecordsByKey) below — a single comparator each, so the two
+// can never quietly drift into a different sort order for the same points.
+function compareStickerPoint(a, b) {
+  if (a.fecha === b.fecha) return a.codigo < b.codigo ? -1 : a.codigo > b.codigo ? 1 : 0;
+  if (a.fecha === null) return 1;
+  if (b.fecha === null) return -1;
+  return a.fecha < b.fecha ? -1 : 1;
+}
+function compareSurveyPoint(a, b) {
+  if (a.fecha === b.fecha) return a.direccion < b.direccion ? -1 : a.direccion > b.direccion ? 1 : 0;
+  if (a.fecha === null) return 1;
+  if (b.fecha === null) return -1;
+  return a.fecha < b.fecha ? -1 : 1;
+}
+function toStickerPoint(s) {
+  return {
+    codigo: s.codigo_edificacion || '',
+    direccion: (s.descripcion && s.descripcion.direccion) || '',
+    municipio: s.municipio || '',
+    fecha: dateOnly(s.fecha),
+    faseLabel: FASE_LABELS[faseKeyDe(s)] || FASE_LABELS.SIN_DATO,
+  };
+}
+function toSurveyPoint(sv) {
+  return {
+    direccion: sv.direccion || '',
+    nombreEdificacion: sv.nombre_edificacion || '',
+    fecha: dateOnly(sv.fecha_inspeccion),
+  };
+}
+
 /** The raw stickers/surveys attributed to ONE professional (`row.key`, the
  *  same professionalKeyOf identity buildProfessionalRows/buildTimeline
  *  already use) — "los puntos recogidos", for the per-professional PDF
@@ -691,7 +723,12 @@ export function buildTimeline({
  *  stickerIncluded/surveyIncluded rules used everywhere else (an undated
  *  record then drops out, same as buildProfessionalRows/buildTimeline)
  *  instead of the old "always include undated, sorted last" behavior, which
- *  only still applies when NO period is given at all. */
+ *  only still applies when NO period is given at all.
+ *
+ *  M6: see professionalRecordsByKey below for the ONE-PASS-over-every-
+ *  professional version the mass export loop uses instead of calling this
+ *  once per row (both share the exact same filter/map/sort logic, so they
+ *  can never disagree). */
 export function professionalRecords(row, {
   stickers, surveys, identity, from = null, to = null,
 } = {}) {
@@ -705,35 +742,90 @@ export function professionalRecords(row, {
     // a record whose Fase never resolves never shows up as one of this
     // professional's "puntos recogidos" either.
     .filter((s) => s && faseKeyDe(s) !== 'SIN_DATO' && professionalKeyOf(s, idx) === key && stickerIncluded(s, from, to))
-    .map((s) => ({
-      codigo: s.codigo_edificacion || '',
-      direccion: (s.descripcion && s.descripcion.direccion) || '',
-      municipio: s.municipio || '',
-      fecha: dateOnly(s.fecha),
-      faseLabel: FASE_LABELS[faseKeyDe(s)] || FASE_LABELS.SIN_DATO,
-    }));
-  stickerPoints.sort((a, b) => {
-    if (a.fecha === b.fecha) return a.codigo < b.codigo ? -1 : a.codigo > b.codigo ? 1 : 0;
-    if (a.fecha === null) return 1;
-    if (b.fecha === null) return -1;
-    return a.fecha < b.fecha ? -1 : 1;
-  });
+    .map(toStickerPoint);
+  stickerPoints.sort(compareStickerPoint);
 
   const surveyPoints = surveyList
     .filter((sv) => sv && professionalKeyOf(sv, idx) === key && surveyIncluded(sv, from, to))
-    .map((sv) => ({
-      direccion: sv.direccion || '',
-      nombreEdificacion: sv.nombre_edificacion || '',
-      fecha: dateOnly(sv.fecha_inspeccion),
-    }));
-  surveyPoints.sort((a, b) => {
-    if (a.fecha === b.fecha) return a.direccion < b.direccion ? -1 : a.direccion > b.direccion ? 1 : 0;
-    if (a.fecha === null) return 1;
-    if (b.fecha === null) return -1;
-    return a.fecha < b.fecha ? -1 : 1;
-  });
+    .map(toSurveyPoint);
+  surveyPoints.sort(compareSurveyPoint);
 
   return { stickerPoints, surveyPoints };
+}
+
+/** M6: batch version of professionalRecords — ONE pass over the WHOLE
+ *  stickers/surveys arrays, grouping "puntos recogidos" per professional KEY
+ *  for the given period, instead of the mass export loop calling
+ *  professionalRecords once PER professional (each call re-scanning the
+ *  full arrays — O(rows × records), the same class of quadratic blowup
+ *  B1/M5 already fixed for buildBarriosActivos/buildTemporalMetrics).
+ *  Returns `Map<key, { stickerPoints, surveyPoints }>`; a key with no
+ *  records in the period simply has no entry — callers fall back to
+ *  `{ stickerPoints: [], surveyPoints: [] }` (mirroring professionalRecords'
+ *  own "zero records" shape) via `.get(key) || …`. Shares the exact same
+ *  filter/map/sort logic (toStickerPoint/toSurveyPoint/compareStickerPoint/
+ *  compareSurveyPoint) as professionalRecords, so the two are guaranteed to
+ *  agree for every key — see seguimiento.test.mjs's own batch-vs-per-row
+ *  equality check. */
+export function professionalRecordsByKey({
+  stickers, surveys, identity, from = null, to = null,
+} = {}) {
+  const stickerList = Array.isArray(stickers) ? stickers : [];
+  const surveyList = Array.isArray(surveys) ? surveys : [];
+  const idx = identity || buildIdentityIndex({ stickers: stickerList, surveys: surveyList });
+
+  const stickerByKey = new Map();
+  for (const s of stickerList) {
+    if (!s || faseKeyDe(s) === 'SIN_DATO' || !stickerIncluded(s, from, to)) continue;
+    const key = professionalKeyOf(s, idx);
+    if (!key) continue;
+    let list = stickerByKey.get(key);
+    if (!list) { list = []; stickerByKey.set(key, list); }
+    list.push(toStickerPoint(s));
+  }
+  const surveyByKey = new Map();
+  for (const sv of surveyList) {
+    if (!sv || !surveyIncluded(sv, from, to)) continue;
+    const key = professionalKeyOf(sv, idx);
+    if (!key) continue;
+    let list = surveyByKey.get(key);
+    if (!list) { list = []; surveyByKey.set(key, list); }
+    list.push(toSurveyPoint(sv));
+  }
+  for (const list of stickerByKey.values()) list.sort(compareStickerPoint);
+  for (const list of surveyByKey.values()) list.sort(compareSurveyPoint);
+
+  const keys = new Set([...stickerByKey.keys(), ...surveyByKey.keys()]);
+  const result = new Map();
+  for (const key of keys) {
+    result.set(key, {
+      stickerPoints: stickerByKey.get(key) || [],
+      surveyPoints: surveyByKey.get(key) || [],
+    });
+  }
+  return result;
+}
+
+/** M6: batch version of visitasUltimos7Dias — ONE pass (via
+ *  professionalRecordsByKey over the rolling today-6..today window),
+ *  instead of the mass export loop calling visitasUltimos7Dias (itself a
+ *  professionalRecords call, i.e. a full rescan) once PER professional.
+ *  Returns `Map<key, count>`; a key with zero records in the window has no
+ *  entry — callers fall back to `.get(key) || 0`, same convention as
+ *  professionalRecordsByKey's own "no entry" case. */
+export function visitasUltimos7DiasByKey({
+  stickers, surveys, identity, today,
+} = {}) {
+  const todayStr = today || bogotaToday();
+  const from = shiftDateStr(todayStr, -6);
+  const byKey = professionalRecordsByKey({
+    stickers, surveys, identity, from, to: todayStr,
+  });
+  const result = new Map();
+  for (const [key, points] of byKey) {
+    result.set(key, points.stickerPoints.length + points.surveyPoints.length);
+  }
+  return result;
 }
 
 /** M5/H3: batch version of buildTemporalMetrics — ONE pass over
@@ -762,9 +854,19 @@ export function professionalRecords(row, {
  *  value fails to parse) still counts toward buildProfessionalRows'
  *  `activeDays` (computed there, from `dates`) but contributes NOTHING here
  *  — "día sin hora cuenta en activeDays, no en promedios" (plan edge case):
- *  this function's own day-set only ever contains days with a real time. */
+ *  this function's own day-set only ever contains days with a real time.
+ *
+ *  L10 (bug fix): `from`/`to` (YYYY-MM-DD, either may be null) now filter
+ *  BOTH sources through the SAME stickerIncluded/surveyIncluded rules
+ *  buildProfessionalRows/buildTimeline already apply — sibling columns
+ *  (stickersTotal, the timeline) already dropped out-of-range records, but
+ *  this function silently ignored the active Desde/Hasta filter, so an
+ *  out-of-range record could still set `prevDay`/skew the hour-of-day
+ *  averages the "Análisis temporales" sub-tab shows for the CURRENTLY
+ *  filtered period. No active range (both null, the default) -> unchanged
+ *  behavior, every timed record counts, same as before this fix. */
 export function buildTemporalMetricsByKey({
-  stickers, surveys, identity, today,
+  stickers, surveys, identity, today, from = null, to = null,
 } = {}) {
   const stickerList = Array.isArray(stickers) ? stickers : [];
   const surveyList = Array.isArray(surveys) ? surveys : [];
@@ -785,6 +887,7 @@ export function buildTemporalMetricsByKey({
   for (const s of stickerList) {
     if (!s) continue;
     if (faseKeyDe(s) === 'SIN_DATO') continue;
+    if (!stickerIncluded(s, from, to)) continue;
     const key = professionalKeyOf(s, idx);
     if (!key) continue;
     const parts = bogotaParts(s.fecha);
@@ -793,6 +896,7 @@ export function buildTemporalMetricsByKey({
   }
   for (const sv of surveyList) {
     if (!sv) continue;
+    if (!surveyIncluded(sv, from, to)) continue;
     const key = professionalKeyOf(sv, idx);
     if (!key) continue;
     const parts = bogotaParts(sv.fecha_hora);
@@ -830,9 +934,10 @@ export function buildTemporalMetricsByKey({
  *  which the batch pass above never computes since it has no `row` to read
  *  `firstDate` from. See buildTemporalMetricsByKey's own doc comment for the
  *  full field contract (H3: prevDayFirst/LastMinutes, not firstRecordMinutes/
- *  lastRecordMinutes). */
+ *  lastRecordMinutes; L10: from/to, passed straight through to
+ *  buildTemporalMetricsByKey). */
 export function buildTemporalMetrics(row, {
-  stickers, surveys, today, identity,
+  stickers, surveys, today, identity, from = null, to = null,
 } = {}) {
   const stickerList = Array.isArray(stickers) ? stickers : [];
   const surveyList = Array.isArray(surveys) ? surveys : [];
@@ -843,7 +948,7 @@ export function buildTemporalMetrics(row, {
   const daysSinceFirst = (row && row.firstDate) ? daysBetween(row.firstDate, todayStr) : null;
 
   const map = buildTemporalMetricsByKey({
-    stickers: stickerList, surveys: surveyList, identity: idx, today: todayStr,
+    stickers: stickerList, surveys: surveyList, identity: idx, today: todayStr, from, to,
   });
   const metrics = map.get(key);
   if (!metrics) {
@@ -943,18 +1048,30 @@ export function buildBarriosActivos(row, {
  *  `days` is `max(1, daysBetween(today, deadline))` — `today === deadline`
  *  still yields exactly 1 day (never a division by zero), and any malformed
  *  date daysBetween can't parse also resolves to `null` here (defensive;
- *  today/deadline are both expected to already be validated YYYY-MM-DD). */
+ *  today/deadline are both expected to already be validated YYYY-MM-DD).
+ *
+ *  M3 (bug fix): `pendientes < 0` (a backlog gone negative — an upstream
+ *  data/sign bug) now returns `null` too, same as any other non-finite
+ *  value, rather than silently producing a NEGATIVE daily target (which
+ *  would read as "you may do fewer visits than zero", the opposite of what
+ *  a target means). Rounding is `Math.ceil`, never `Math.round`: a target
+ *  meant to clear a backlog by a FIXED deadline must never be UNDER-stated
+ *  — rounding 3.33 down to 3.3 (or, worse, `{pendientes:1,
+ *  profesionalesActivos:110}`'s 0.009… down to a fabricated 0) would let the
+ *  real backlog slip past the deadline while every professional still hits
+ *  "their" rounded number every day. `Math.ceil` on a positive `pendientes`
+ *  can never round down to 0 (the smallest non-zero result is 0.1). */
 export function objetivoDiario({
   pendientes, profesionalesActivos, today, deadline = '2026-09-30',
 } = {}) {
-  if (!Number.isFinite(pendientes)) return null;
+  if (!Number.isFinite(pendientes) || pendientes < 0) return null;
   if (!Number.isFinite(profesionalesActivos) || profesionalesActivos <= 0) return null;
   if (!today || today > deadline) return null;
   const rawDays = daysBetween(today, deadline);
   if (rawDays === null) return null;
   const days = Math.max(1, rawDays);
   const value = pendientes / profesionalesActivos / days;
-  return Math.round(value * 10) / 10;
+  return Math.ceil(value * 10) / 10;
 }
 
 /** Rolling count of this professional's stickers + Survey records in the
@@ -1100,7 +1217,16 @@ export function buildProfessionalReportDocDefinition(row, { stickerPoints, surve
     content: [
       { text: `Informe de seguimiento — ${row.name || 'Sin dato'}`, style: 'title' },
       { text: `Cédula: ${row.cedula || 'Sin dato'} · Código: ${row.codigo || 'Sin dato'} · Entidad: ${row.entidad || 'Sin dato'}`, style: 'subtitle' },
-      { text: `Fecha de generación: ${downloadStamp().legible}`, style: 'subtitle' },
+      // M4: prefer ctx.generatedAt (set once per render pass by the caller,
+      // buildReportCtx) over calling downloadStamp() again here — the mass
+      // export shares ONE ctx across every professional (buildMassReport
+      // DocDefinition), so without this every professional's own solo-vs-
+      // mass comparison depended on two downloadStamp() calls landing in
+      // the same minute; ctx.generatedAt makes it byte-identical by
+      // construction instead of by (usual) luck. Falls back to downloadStamp()
+      // only when no ctx.generatedAt was given (e.g. calling this directly
+      // in a test, or a future caller that hasn't been updated).
+      { text: `Fecha de generación: ${ctx.generatedAt || downloadStamp().legible}`, style: 'subtitle' },
       { text: REPORT_DISCLAIMER, style: 'disclaimer', margin: [0, 4, 0, 4] },
       { text: REPORT_CONFIDENTIALITY_NOTICE, style: 'disclaimer', margin: [0, 0, 0, 12] },
       ...caveat,
@@ -1262,6 +1388,12 @@ export const COLUMNS_TOTALES = [
   { key: 'barriosActivos', label: 'Barrios activos (7 d)' },
 ];
 
+// L10: the four hour-of-day columns (and daysSinceFirst) below now respect
+// the active Desde/Hasta filter (buildTemporalMetricsByKey), same as every
+// OTHER column in this sub-tab — `title` documents that on the header itself
+// (rendered as the <button>'s title attribute by headerRowHtml) so it's
+// visible on hover, not just in this source comment.
+const RANGE_AWARE_HOUR_TITLE = 'Calculado sobre el rango Desde–Hasta activo (si hay uno seleccionado).';
 export const COLUMNS_TEMPORALES = [
   { key: 'name', label: 'Nombre' },
   { key: 'cedula', label: 'Cédula' },
@@ -1271,10 +1403,10 @@ export const COLUMNS_TEMPORALES = [
   { key: 'lastDate', label: 'Fecha último registro' },
   { key: 'activeDays', label: 'Días activo' },
   { key: 'daysSinceFirst', label: 'Días desde 1ª actividad' },
-  { key: 'prevDayFirstMinutes', label: 'Hora 1er registro (día ant.)' },
-  { key: 'prevDayLastMinutes', label: 'Hora últ. registro (día ant.)' },
-  { key: 'avgFirstMinutes', label: 'Hora prom. 1er registro' },
-  { key: 'avgLastMinutes', label: 'Hora prom. últ. registro' },
+  { key: 'prevDayFirstMinutes', label: 'Hora 1er registro (día ant.)', title: RANGE_AWARE_HOUR_TITLE },
+  { key: 'prevDayLastMinutes', label: 'Hora últ. registro (día ant.)', title: RANGE_AWARE_HOUR_TITLE },
+  { key: 'avgFirstMinutes', label: 'Hora prom. 1er registro', title: RANGE_AWARE_HOUR_TITLE },
+  { key: 'avgLastMinutes', label: 'Hora prom. últ. registro', title: RANGE_AWARE_HOUR_TITLE },
 ];
 
 /** Which column set a sub-tab shows — an unrecognized/missing `subTab` falls
@@ -1286,15 +1418,24 @@ export function columnsFor(subTab) {
 /** The sort state a sub-tab opens with (D4: header-click sorting is
  *  preserved when the CURRENT sort column still exists in the new sub-tab's
  *  columnsFor() — this is only the FALLBACK the DOM layer uses otherwise, or
- *  on first render). 'total' desc (most active professionals first) for
- *  totales — a field still present on every row even though it isn't one of
- *  COLUMNS_TOTALES' own headers; 'firstDate' desc (most recently STARTED
- *  professionals first) for temporales. An unrecognized subTab defaults like
- *  'totales', same fallback as columnsFor. */
+ *  on first render).
+ *
+ *  M5 (bug fix): the default for 'totales' USED to be `{ column: 'total' }`
+ *  — but 'total' is NOT one of COLUMNS_TOTALES' own keys (it's a real field
+ *  on every row, just never a visible header in this sub-tab). headerRowHtml
+ *  only shows the ▲/▼ sort indicator on a `<th>` whose OWN key matches
+ *  `sortState.column`, and the header-click handler only ever toggles by
+ *  clicking a `data-seg-sort` button that carries a COLUMNS_TOTALES key — so
+ *  the default sort silently had NO visible indicator and could never be
+ *  toggled back to via a header click. 'stickersFase1' (most active
+ *  professionals by Fase I count first) IS a real COLUMNS_TOTALES header.
+ *  'firstDate' desc (most recently STARTED professionals first) for
+ *  temporales, unchanged. An unrecognized subTab defaults like 'totales',
+ *  same fallback as columnsFor. */
 export function defaultSortFor(subTab) {
   return subTab === 'temporales'
     ? { column: 'firstDate', dir: 'desc' }
-    : { column: 'total', dir: 'desc' };
+    : { column: 'stickersFase1', dir: 'desc' };
 }
 
 /** A minute-of-day value (0-1439) as 'HH:MM', or DASH for anything that isn't
@@ -1304,8 +1445,14 @@ export function defaultSortFor(subTab) {
  *  present hour-of-day figures identically. */
 export function formatMinutes(min) {
   if (!Number.isFinite(min) || min < 0 || min > 1439) return DASH;
-  const h = Math.floor(min / 60);
-  const m = Math.round(min % 60);
+  // L9: round ONCE, up front, to a whole minute, THEN split into hour/minute
+  // — flooring the hour and separately rounding the leftover minute (the old
+  // order) could round the MINUTE PART past 59 without ever carrying into
+  // the hour (e.g. 719.6 -> floor(719.6/60)=11, round(719.6%60)=round(59.6)
+  // =60 -> the bogus "11:60" instead of rolling over to "12:00").
+  const t = Math.round(min);
+  const h = Math.floor(t / 60);
+  const m = t % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
@@ -1338,15 +1485,17 @@ export function xlsxRowsFor(rows, { subTab = 'totales' } = {}) {
       hora_prom_ult_registro: formatMinutes(r.avgLastMinutes),
     }));
   }
+  // H1: the plan's W9 never lists contact fields (tarjeta_profesional/
+  // celular/correo) for the XLSX -- only W10's per-professional PDF carries
+  // them, alongside its own REPORT_CONFIDENTIALITY_NOTICE. A spreadsheet is
+  // far more likely to be forwarded/copied around unattended than a single
+  // PDF click, so contact data must never leave the app through this export.
   return list.map((r) => ({
     profesional: r.name ?? '',
     cedula: r.cedula ?? '',
     clase_p: r.np ?? '',
     codigo_vigente: r.codigo ?? '',
     entidad: r.entidad ?? '',
-    tarjeta_profesional: r.tarjetaProfesional ?? '',
-    celular: r.celular ?? '',
-    correo: r.correo ?? '',
     stickers_fase1: r.stickersFase1 ?? 0,
     stickers_fase2: r.stickersFase2 ?? 0,
     stickers_total: r.stickersTotal ?? 0,
@@ -1354,10 +1503,22 @@ export function xlsxRowsFor(rows, { subTab = 'totales' } = {}) {
     total: r.total ?? 0,
     primer_registro: r.firstDate ?? '',
     ultimo_registro: r.lastDate ?? '',
+    // Null policy (nit, documented once here): `dias_activos` and
+    // `promedio_por_dia` are never null in buildProfessionalRows' own output
+    // (a row that exists always has a real, if degenerate, 0 for both when
+    // it has zero dated records) -- `?? 0` is a type-safety fallback, not a
+    // "missing data" sentinel. `stickers_promedio_diario` (and, in the
+    // temporales sheet, `dias_desde_primera_actividad`/every hour-of-day
+    // field) DOES use `null` as a genuine "no sticker-active day at all"
+    // sentinel, so those use `?? ''` instead -- the SAME '' every other
+    // "sin dato" cell in this sheet uses, never a bare 0 that would read as
+    // a confirmed zero pace.
     dias_activos: r.activeDays ?? 0,
     promedio_por_dia: r.avgPerActiveDay ?? 0,
     stickers_promedio_diario: r.avgStickersPerDay ?? '',
-    barrios_activos_7d: Array.isArray(r.barriosActivos) && r.barriosActivos.length ? r.barriosActivos.join('; ') : '',
+    // Nit: ', ' — same separator the table cell (cellHtml's 'barriosActivos'
+    // case) already uses, so the table and the XLSX never read differently.
+    barrios_activos_7d: Array.isArray(r.barriosActivos) && r.barriosActivos.length ? r.barriosActivos.join(', ') : '',
     stickers_por_roster: r.rosterSourced ?? 0,
   }));
 }
@@ -1676,7 +1837,65 @@ export function reportSelectedButtonState({
   return { disabled, title };
 }
 
+/** L7: whether every per-row "📄 Reporte" button must be disabled — the SAME
+ *  block condition the mass/XLSX/per-selection buttons already share
+ *  (isDegraded||!stickersLoaded), PLUS `busy` (a mass export in flight):
+ *  without this, a second per-row report could start concurrently while the
+ *  mass export loop is mid-build against its own snapshotted stickers/
+ *  surveys/identity, racing the SAME pdfmake instance (loadPdfmake's shared
+ *  memoized promise) and the (already-degrading) main thread. Exported so a
+ *  self-check can assert the truth table without a DOM. */
+export function rowReportButtonsBlocked({
+  isDegraded = false, stickersLoaded = true, busy = false,
+} = {}) {
+  return Boolean(isDegraded || !stickersLoaded || busy);
+}
+
+/** L8: text for the blocking "generating…" overlay shown from the mass
+ *  export's click until its download() call returns — the pdfmake layout
+ *  phase is effectively synchronous and can run for seconds on 100+
+ *  professionals, so an admin needs to see SOMETHING is happening rather
+ *  than a frozen page. `total` is the professional count about to be
+ *  built. Exported so a self-check can assert the exact copy. */
+export function massExportOverlayText(total) {
+  const n = Number.isFinite(total) ? total : 0;
+  return `Generando ${n} reportes… esto puede tardar unos segundos.`;
+}
+
+/** L8: whether a NEW mass export may start — shared, module-level state
+ *  (`exportInFlight`, read by the DOM section below) rather than the
+ *  per-init `busy` closure variable it augments: re-opening the Seguimiento
+ *  tab mid-export used to reset `busy` to `false` in the FRESH init, so a
+ *  second export could start (and a second pdfMake.createPdf(...).download()
+ *  fire) while the OLD (now-orphaned) export was still mid-build against
+ *  its own stale snapshot. Exported so a self-check can assert the guard
+ *  without a DOM/without touching real module state. */
+export function canStartMassExport({ exportInFlight = false } = {}) {
+  return !exportInFlight;
+}
+
+/** L8: whether an already-built mass export should actually be delivered
+ *  (pdfMake.createPdf(...).download(...)) once its (possibly slow) build
+ *  finishes. `seq` is the module-level `loadSeq` snapshotted at click time;
+ *  `loadSeq` is its CURRENT value, read again right before delivery. A
+ *  mismatch means the tab was re-opened (a fresh sticker fetch bumped
+ *  loadSeq) WHILE this export's build was still running against a snapshot
+ *  of the OLD stickers/surveys/DOM — delivering it would ship a file built
+ *  from stale data and, worse, the export's own `finally` would go on to
+ *  replay a deferred store update against an init that no longer exists.
+ *  Never deliver in that case; the caller shows a cancellation toast
+ *  instead and skips both the download AND the deferred-records replay.
+ *  Exported so a self-check can assert the decision without a DOM. */
+export function shouldDeliverExport({ seq, loadSeq: currentLoadSeq } = {}) {
+  return seq === currentLoadSeq;
+}
+
 let loadSeq = 0;
+// L8: shared across EVERY initSeguimiento() call (never reset per-init, the
+// way the old `busy` closure variable was) — see canStartMassExport's own
+// doc comment for why a per-init flag alone let a re-opened tab start a
+// second, concurrent mass export while an old one was still mid-build.
+let exportInFlight = false;
 // W6: the hand-rolled clearTimeout/setTimeout pair this used to be is now
 // utils.js's shared debounce() via makeSearchController() — reassigned on
 // every initSeguimiento() call (same pattern as activeRenderChart/
@@ -1752,8 +1971,8 @@ function sectionHtml() {
           <span class="eval-toolbar-title">Profesionales</span>
         </div>
         <div class="asignacion-segmented" id="seg-subtabs" role="tablist" aria-label="Vista de la tabla de profesionales">
-          <button type="button" class="asignacion-segment is-active" data-seg-subtab="totales" role="tab" aria-selected="true">Totales</button>
-          <button type="button" class="asignacion-segment" data-seg-subtab="temporales" role="tab" aria-selected="false">Análisis temporales</button>
+          <button type="button" class="asignacion-segment is-active" data-seg-subtab="totales" role="tab" aria-selected="true" tabindex="0">Totales</button>
+          <button type="button" class="asignacion-segment" data-seg-subtab="temporales" role="tab" aria-selected="false" tabindex="-1">Análisis temporales</button>
         </div>
         <div class="table-scroll">
           <table class="tipologia-table" id="seg-table">
@@ -1762,7 +1981,12 @@ function sectionHtml() {
           </table>
         </div>
       </div>
-    </section>`;
+    </section>
+    <div class="seg-export-overlay" id="seg-export-overlay" role="status" aria-live="polite"
+      style="display:none;position:fixed;inset:0;z-index:1100;align-items:center;justify-content:center;background:rgba(2,8,18,0.75);padding:20px;">
+      <p class="seg-export-overlay-text" id="seg-export-overlay-text"
+        style="background:var(--surface,#12294a);color:var(--text-primary,#fff);border-radius:var(--radius-lg,10px);padding:20px 28px;max-width:360px;text-align:center;font-size:0.95rem;margin:0;"></p>
+    </div>`;
 }
 
 /** 5 KPI tiles (W7 — "sin profesional identificado" and "stickers sin fecha"
@@ -1806,7 +2030,8 @@ function headerRowHtml(sortState, columns) {
   const sortable = columns.map((c) => {
     const active = sortState.column === c.key;
     const arrow = active ? (sortState.dir === 'asc' ? ' ▲' : ' ▼') : '';
-    return `<th scope="col"><button type="button" class="seg-sort-btn${active ? ' is-active' : ''}" data-seg-sort="${c.key}">${escapeHtml(c.label)}${arrow}</button></th>`;
+    const title = c.title ? ` title="${escapeHtml(c.title)}"` : '';
+    return `<th scope="col"><button type="button" class="seg-sort-btn${active ? ' is-active' : ''}" data-seg-sort="${c.key}"${title}>${escapeHtml(c.label)}${arrow}</button></th>`;
   }).join('');
   return `${sortable}<th scope="col">Acciones</th>`;
 }
@@ -1818,24 +2043,36 @@ function headerRowHtml(sortState, columns) {
  *  list themselves. `stickersLoaded` masks every sticker/temporal-derived
  *  cell behind DASH (same reasoning as kpisHtml above: these are literally
  *  0/null whenever `stickers` is still `[]` — in flight or failed — and
- *  showing that as a real value would misreport "unknown" as "confirmed"). */
-function cellHtml(r, key, stickersLoaded) {
+ *  showing that as a real value would misreport "unknown" as "confirmed").
+ *
+ *  H2 (bug fix): `np`/`codigo`/`cedula` (only ever populated from a
+ *  STICKER's own `inspector` fields, see buildIdentityIndex's profile-
+ *  building loop — the Survey loop never sets them), `barriosActivos` and
+ *  `activeDays`/`firstDate`/`lastDate` (both pooled from stickers+Survey
+ *  dates, so while stickers haven't resolved they can only ever reflect a
+ *  PARTIAL, Survey-only picture) used to render their real content —
+ *  "Sin dato" or a real value — even while `!stickersLoaded`, inconsistent
+ *  with `daysSinceFirst` right below (which WAS already masked) and with the
+ *  "Degradado/cargando ≠ cero" invariant every other sticker-derived figure
+ *  in this file already follows. All seven now route through `stk()` too.
+ *  Exported so a self-check can assert the masking truth table directly. */
+export function cellHtml(r, key, stickersLoaded) {
   const stk = (v) => (stickersLoaded ? v : DASH);
   switch (key) {
     case 'name': return escapeHtml(r.name || 'Sin dato');
-    case 'cedula': return escapeHtml(r.cedula || 'Sin dato');
-    case 'np': return escapeHtml(r.np || 'Sin dato');
-    case 'codigo': return escapeHtml(r.codigo || 'Sin dato');
+    case 'cedula': return stk(escapeHtml(r.cedula || 'Sin dato'));
+    case 'np': return stk(escapeHtml(r.np || 'Sin dato'));
+    case 'codigo': return stk(escapeHtml(r.codigo || 'Sin dato'));
     case 'stickersFase1': return stk(r.stickersFase1);
     case 'stickersFase2': return stk(r.stickersFase2);
     case 'surveyTotal': return r.surveyTotal;
-    case 'activeDays': return r.activeDays;
+    case 'activeDays': return stk(r.activeDays);
     case 'avgStickersPerDay':
       return stickersLoaded ? (Number.isFinite(r.avgStickersPerDay) ? r.avgStickersPerDay : DASH) : DASH;
     case 'barriosActivos':
-      return escapeHtml((r.barriosActivos && r.barriosActivos.length) ? r.barriosActivos.join(', ') : 'Sin dato');
-    case 'firstDate': return escapeHtml(formatDateCell(r.firstDate));
-    case 'lastDate': return escapeHtml(formatDateCell(r.lastDate));
+      return stk(escapeHtml((r.barriosActivos && r.barriosActivos.length) ? r.barriosActivos.join(', ') : 'Sin dato'));
+    case 'firstDate': return stk(escapeHtml(formatDateCell(r.firstDate)));
+    case 'lastDate': return stk(escapeHtml(formatDateCell(r.lastDate)));
     case 'daysSinceFirst':
       // Mixes stickers+Survey the same way "Total" already does -- masked
       // behind the same flag for consistency rather than a third rule.
@@ -1855,13 +2092,19 @@ function cellHtml(r, key, stickersLoaded) {
  *  The same flags (isDegraded/stickersLoaded) disable the per-row PDF report
  *  button: its "puntos recogidos" section would otherwise ship as an empty/
  *  false list while stickers haven't resolved, or a degraded/redacted one. */
-function rowHtml(r, stickersLoaded, isDegraded, columns) {
+function rowHtml(r, stickersLoaded, isDegraded, columns, busy) {
   const caveat = r.rosterSourced > 0
     ? ` <span class="seg-caveat" title="Identidad por roster, aproximada — ${r.rosterSourced} sticker(s) sin verificar contra esta evaluación.">⚠</span>`
     : '';
-  const reportBlocked = isDegraded || !stickersLoaded;
+  // L7: rowReportButtonsBlocked is the single source of truth for this
+  // condition — updateDownloadAvailability re-applies the SAME rule directly
+  // on the live buttons (via querySelectorAll('[data-seg-report]')) whenever
+  // `busy` changes WITHOUT a full renderTable pass, so the two must never
+  // independently drift.
+  const reportBlocked = rowReportButtonsBlocked({ isDegraded, stickersLoaded, busy });
   const reportTitle = isDegraded ? DEGRADED_TITLE
-    : !stickersLoaded ? 'Esperando a que carguen los stickers…' : 'Descargar informe PDF de este profesional';
+    : !stickersLoaded ? 'Esperando a que carguen los stickers…'
+      : busy ? 'Generando exportación masiva…' : 'Descargar informe PDF de este profesional';
   const cells = columns.map((c, i) => `<td>${cellHtml(r, c.key, stickersLoaded)}${i === 0 ? caveat : ''}</td>`).join('');
   return `<tr>${cells}<td><button type="button" class="sticker-action seg-report-btn" data-seg-report="${escapeHtml(r.key)}"${reportBlocked ? ' disabled' : ''} title="${escapeHtml(reportTitle)}">📄 Reporte</button></td></tr>`;
 }
@@ -2126,6 +2369,11 @@ export function initSeguimiento(root, { getToken, records }) {
   const tableEl = $('seg-table');
   const theadRow = tableEl.querySelector('thead tr');
   const tbody = tableEl.querySelector('tbody');
+  // M6: blocking "generating…" overlay for the mass export — see
+  // generarReportesMasivos below for why it must be shown/painted BEFORE the
+  // (effectively synchronous) pdfmake build starts.
+  const exportOverlayEl = $('seg-export-overlay');
+  const exportOverlayTextEl = $('seg-export-overlay-text');
 
   let stickers = [];
   // `let`, not `const`: updateSeguimientoRecords() (module-level export,
@@ -2201,9 +2449,10 @@ export function initSeguimiento(root, { getToken, records }) {
 
   // W7/W10: the three download/report actions (XLSX, per-selection PDF,
   // mass export) all share the isDegraded||!stickersLoaded block, PLUS
-  // `busy` (a mass export in flight) — a second export/report must never
-  // start while stickers/surveys could be swapped out from under the first
-  // one's already-snapshotted loop. The PDF button additionally needs a
+  // `busy`/`exportInFlight` (L8: a mass export in flight, from THIS init or
+  // an orphaned one) — a second export/report must never start while
+  // stickers/surveys could be swapped out from under the first one's
+  // already-snapshotted loop. The PDF button additionally needs a
   // professional SELECTED (seg-chart-professional).
   function updateDownloadAvailability() {
     // Blocked while degraded (identities are redacted, see fetchStickers
@@ -2212,13 +2461,17 @@ export function initSeguimiento(root, { getToken, records }) {
     const blocked = isDegraded || !stickersLoaded;
     const loadingTitle = 'Esperando a que carguen los stickers…';
     const busyTitle = 'Generando exportación masiva…';
-    const allBlocked = blocked || busy;
+    // L8: an export in flight from an OLD (now-orphaned) init after a
+    // mid-export tab re-open must ALSO block this (fresh) init's own
+    // buttons — `busy` alone (per-init) would miss that case.
+    const exportBusy = busy || exportInFlight;
+    const allBlocked = blocked || exportBusy;
     downloadBtn.disabled = allBlocked;
-    downloadBtn.title = isDegraded ? DEGRADED_TITLE : (!stickersLoaded ? loadingTitle : busy ? busyTitle : '');
+    downloadBtn.title = isDegraded ? DEGRADED_TITLE : (!stickersLoaded ? loadingTitle : exportBusy ? busyTitle : '');
 
     const hasSelection = Boolean(chartSelectEl.value);
     const reportState = reportSelectedButtonState({
-      isDegraded, stickersLoaded, busy, hasSelection,
+      isDegraded, stickersLoaded, busy: exportBusy, hasSelection,
     });
     reportSelectedBtn.disabled = reportState.disabled;
     reportSelectedBtn.title = reportState.title;
@@ -2226,8 +2479,19 @@ export function initSeguimiento(root, { getToken, records }) {
     reportMassBtn.disabled = allBlocked;
     reportMassBtn.title = isDegraded ? DEGRADED_TITLE
       : !stickersLoaded ? loadingTitle
-        : busy ? busyTitle
+        : exportBusy ? busyTitle
           : 'Generar un PDF con el informe de cada profesional visible (según los filtros aplicados)';
+
+    // L7: the per-row "📄 Reporte" buttons must reflect the SAME block
+    // condition (rowReportButtonsBlocked) WITHOUT waiting for the next full
+    // renderTable() pass — updateDownloadAvailability runs on its own (e.g.
+    // right when `busy` flips at the start/end of a mass export), and a
+    // stale, still-enabled row button would let a second export/report start
+    // concurrently against the very data the mass loop already snapshotted.
+    const rowsBlocked = rowReportButtonsBlocked({ isDegraded, stickersLoaded, busy: exportBusy });
+    for (const btn of tbody.querySelectorAll('[data-seg-report]')) {
+      btn.disabled = rowsBlocked;
+    }
   }
 
   function renderStatusBanner() {
@@ -2258,8 +2522,13 @@ export function initSeguimiento(root, { getToken, records }) {
     const sorted = sortRows(visibleRows, sortState.column, sortState.dir);
     const columns = columnsFor(subTab);
     theadRow.innerHTML = headerRowHtml(sortState, columns);
+    // L8: `busy || exportInFlight` — `busy` covers an export THIS init
+    // started; `exportInFlight` (module-level) covers one still running
+    // from an OLD, now-orphaned init after a mid-export tab re-open (see
+    // canStartMassExport's own doc comment).
+    const rowsBusy = busy || exportInFlight;
     tbody.innerHTML = sorted.length
-      ? sorted.map((r) => rowHtml(r, stickersLoaded, isDegraded, columns)).join('')
+      ? sorted.map((r) => rowHtml(r, stickersLoaded, isDegraded, columns, rowsBusy)).join('')
       : `<tr><td colspan="${columns.length + 1}" class="eval-empty">Ningún profesional coincide con los filtros aplicados.</td></tr>`;
 
     // Every filter control (search input, Desde/Hasta, seg-chart-professional)
@@ -2441,18 +2710,40 @@ export function initSeguimiento(root, { getToken, records }) {
   // both); otherwise falls back to that sub-tab's own defaultSortFor. Search/
   // Desde-Hasta/professional-select filters are untouched by a sub-tab
   // switch (they narrow WHICH professionals show, not which columns do).
-  subTabsEl.addEventListener('click', (ev) => {
-    const btn = ev.target.closest('[data-seg-subtab]');
+  function activateSubTab(btn) {
     if (!btn || btn.classList.contains('is-active')) return;
     subTab = btn.dataset.segSubtab;
     for (const b of subTabsEl.querySelectorAll('[data-seg-subtab]')) {
       const active = b === btn;
       b.classList.toggle('is-active', active);
       b.setAttribute('aria-selected', String(active));
+      // Nit: roving tabindex — only the active tab is Tab-reachable; the
+      // other is reached via ArrowLeft/ArrowRight (below), the standard
+      // keyboard pattern for an ARIA tablist.
+      b.tabIndex = active ? 0 : -1;
     }
     const stillSortable = columnsFor(subTab).some((c) => c.key === sortState.column);
     sortState = stillSortable ? sortState : defaultSortFor(subTab);
     renderTable(currentRows);
+  }
+
+  subTabsEl.addEventListener('click', (ev) => {
+    activateSubTab(ev.target.closest('[data-seg-subtab]'));
+  });
+
+  // Nit: ArrowLeft/ArrowRight moves focus AND activates the adjacent tab
+  // (wrapping at either end) — the standard keyboard contract for an ARIA
+  // tablist, alongside the roving tabindex set in activateSubTab above.
+  subTabsEl.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
+    const tabs = [...subTabsEl.querySelectorAll('[data-seg-subtab]')];
+    const currentIndex = tabs.findIndex((b) => b.classList.contains('is-active'));
+    if (currentIndex < 0) return;
+    ev.preventDefault();
+    const delta = ev.key === 'ArrowRight' ? 1 : -1;
+    const next = tabs[(currentIndex + delta + tabs.length) % tabs.length];
+    activateSubTab(next);
+    next.focus();
   });
 
   theadRow.addEventListener('click', (ev) => {
@@ -2559,11 +2850,18 @@ export function initSeguimiento(root, { getToken, records }) {
   // professional (buildMassReportDocDefinition). Snapshots `loadSeq`/
   // `stickers`/`surveys`/`visibleRows` at click time so a store refresh
   // mid-build (deferred via `busy`, see activeUpdateRecords above) can never
-  // shift the data out from under an already-running loop; a toast at the
-  // end tells the admin if the snapshot went stale in the meantime.
+  // shift the data out from under an already-running loop.
+  //
+  // L8: `canStartMassExport`/`shouldDeliverExport` are the module-level
+  // guard — see their own doc comments for why `busy` alone (per-init)
+  // isn't enough once a tab re-open mid-export is possible. A stale build
+  // (tab reloaded before this finished) is never delivered at all, not just
+  // toasted about after already downloading.
   async function generarReportesMasivos() {
-    // Double-click guard (belt-and-suspenders alongside .disabled).
-    if (busy) return;
+    // Double-click guard (belt-and-suspenders alongside .disabled) — now
+    // module-level (L8), so it also blocks a second export launched from a
+    // freshly re-opened tab while an OLD one is still mid-build.
+    if (!canStartMassExport({ exportInFlight })) return;
     if (isDegraded) { showToast('No se puede exportar: mostrando una copia de respaldo con datos incompletos.', 'error'); return; }
     if (!stickersLoaded) { showToast('Esperá a que carguen los stickers antes de exportar.', 'error'); return; }
     const rowsToExport = visibleRows.slice();
@@ -2585,19 +2883,46 @@ export function initSeguimiento(root, { getToken, records }) {
     const svy = surveys;
     const identitySnapshot = currentIdentity;
     const ctx = buildReportCtx();
+    exportInFlight = true;
     busy = true;
     updateDownloadAvailability();
     const originalLabel = reportMassBtn.textContent;
+
+    // M6: show the blocking overlay and let the browser actually PAINT it
+    // (one rAF, or a setTimeout(0) fallback when rAF isn't available — e.g.
+    // this Node self-check has no DOM at all) BEFORE the loop/pdfmake build
+    // below, which is effectively synchronous work on the main thread and
+    // would otherwise freeze the page with no visible feedback at all.
+    // display (not .hidden) — the element's own inline style already sets
+    // `display:none` as its default; toggling `hidden` instead would fight
+    // that SAME inline style's `align-items`/`justify-content` (an inline
+    // style always wins over the `[hidden]` UA rule), leaving it visible
+    // even while "hidden".
+    exportOverlayTextEl.textContent = massExportOverlayText(rowsToExport.length);
+    exportOverlayEl.style.display = 'flex';
+    await new Promise((resolve) => {
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
+      else setTimeout(resolve, 0);
+    });
+
     try {
+      // M6: ONE batch pass per source (professionalRecordsByKey/
+      // visitasUltimos7DiasByKey) instead of calling professionalRecords/
+      // visitasUltimos7Dias once PER professional — each per-row call used to
+      // rescan the FULL stickers/surveys arrays on its own (O(rows ×
+      // records)), the same class of quadratic blowup B1/M5 already fixed
+      // for buildBarriosActivos/buildTemporalMetrics.
+      const recordsByKey = professionalRecordsByKey({
+        stickers: stk, surveys: svy, identity: identitySnapshot, from: ctx.from, to: ctx.to,
+      });
+      const last7ByKey = visitasUltimos7DiasByKey({
+        stickers: stk, surveys: svy, identity: identitySnapshot, today: ctx.today,
+      });
       const rowsWithPoints = [];
       for (let i = 0; i < rowsToExport.length; i += 1) {
         const row = rowsToExport[i];
-        const points = professionalRecords(row, {
-          stickers: stk, surveys: svy, identity: identitySnapshot, from: ctx.from, to: ctx.to,
-        });
-        const last7 = visitasUltimos7Dias(row, {
-          stickers: stk, surveys: svy, identity: identitySnapshot, today: ctx.today,
-        });
+        const points = recordsByKey.get(row.key) || { stickerPoints: [], surveyPoints: [] };
+        const last7 = last7ByKey.get(row.key) || 0;
         rowsWithPoints.push({ row, points, last7 });
         // Yield to the event loop every ~10 professionals (plan's own
         // performance note: no task in the build phase should exceed
@@ -2610,23 +2935,33 @@ export function initSeguimiento(root, { getToken, records }) {
       }
       const def = buildMassReportDocDefinition(rowsWithPoints, ctx);
       const pdfMake = await loadPdfmake();
-      pdfMake.createPdf(def).download(`informes_seguimiento_masivo_${downloadStamp().slug}.pdf`);
-      if (seq !== loadSeq) {
-        showToast('Los datos se actualizaron durante la generación; el archivo corresponde a la carga anterior.', 'error');
-      } else {
+      // L8: never deliver a build whose snapshot has gone stale (the tab was
+      // re-opened mid-build, bumping loadSeq) — downloading it would ship a
+      // file built from data that may no longer be live, and the pending-
+      // records replay below must also be skipped (see the finally block).
+      if (shouldDeliverExport({ seq, loadSeq })) {
+        pdfMake.createPdf(def).download(`informes_seguimiento_masivo_${downloadStamp().slug}.pdf`);
         showToast('Reportes generados.');
+      } else {
+        showToast('La exportación se canceló porque la pestaña se recargó; vuelva a intentarlo.', 'error');
       }
     } catch (err) {
       console.error('seguimiento: fallo la exportación masiva de reportes', err);
       showToast('No se pudo generar la exportación masiva.', 'error');
     } finally {
+      exportInFlight = false;
       busy = false;
+      exportOverlayEl.style.display = 'none';
       reportMassBtn.textContent = originalLabel;
       updateDownloadAvailability();
       // A store refresh that arrived mid-export was deferred (see
       // activeUpdateRecords) — apply it now that this export is done,
-      // exactly once, instead of dropping it silently.
-      if (pendingRecordsDuringExport !== null) {
+      // exactly once, instead of dropping it silently. L8: skipped when the
+      // tab was re-opened mid-build (seq !== loadSeq) — this closure's own
+      // `render()`/tbody/etc. belong to an init that is no longer the live
+      // one (a NEW init's own activeUpdateRecords already took over), so
+      // replaying against them would touch a detached DOM for no benefit.
+      if (seq === loadSeq && pendingRecordsDuringExport !== null) {
         const next = pendingRecordsDuringExport;
         pendingRecordsDuringExport = null;
         surveys = Array.isArray(next) ? next : [];

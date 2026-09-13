@@ -7,7 +7,7 @@ import {
   filterOptionsByLabel, mountCombobox, isTypedAddress, addressDisplay,
   danoGradoColor, DANO_GRADO_ORDER, formatValue, COLORS, sourceLabel, setSourceLabels,
   pointInPolygon, resolveZonaInteres, isInsideCali, faseInspector, faseKeyDe,
-  satelliteTileUrl, debounce, stableStringify, downloadStamp,
+  satelliteTileUrl, debounce, stableStringify, downloadStamp, memoizeLoader,
 } from './utils.js';
 
 // Real variants seen in the dataset for the same building should normalize
@@ -842,3 +842,29 @@ console.log('ok — downloadStamp: a UTC instant just after midnight rolls back 
   assert.match(stamp.slug, /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}$/, 'slug must match the YYYY-MM-DD_HH-MM shape');
 }
 console.log('ok — downloadStamp: no-arg call (real clock) keeps the {legible, slug} shape');
+
+// --- memoizeLoader (moved here from report.js so loadXlsx() can share it) ---
+// CONTRATO CAMBIADO (bug fix): a one-off in-flight-promise cache (the shape
+// loadXlsx() used to hand-roll: `let xlsxPromise = null`) caches a REJECTED
+// promise FOREVER — one transient SheetJS CDN blip would poison every later
+// XLSX export for the rest of the session, same class of bug already fixed
+// for loadPdfmake() (report.js, W10) and evaluaciones.js's geoCache. Testing
+// the generic wrapper directly (not loadXlsx() itself, which needs a real
+// DOM to inject a <script> tag) exercises the exact retry policy loadXlsx()
+// now shares.
+{
+  let calls = 0;
+  const loader = memoizeLoader(() => {
+    calls += 1;
+    return calls === 1 ? Promise.reject(new Error('fail once')) : Promise.resolve('ok');
+  });
+  await assert.rejects(loader(), /fail once/);
+  assert.equal(calls, 1);
+  const retried = await loader();
+  assert.equal(retried, 'ok', 'a rejection must not be cached forever -- the next call must retry fn() from scratch');
+  assert.equal(calls, 2);
+  const cached = await loader();
+  assert.equal(cached, 'ok');
+  assert.equal(calls, 2, 'once resolved, the result is cached forever -- fn() never runs a third time');
+}
+console.log('ok — memoizeLoader: retries after a rejection, then caches the success (loadXlsx now shares this policy)');

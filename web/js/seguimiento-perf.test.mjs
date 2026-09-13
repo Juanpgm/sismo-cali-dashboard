@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict';
 import {
   buildIdentityIndex, buildProfessionalRows, buildTimeline, buildTemporalMetricsByKey,
+  professionalRecordsByKey, visitasUltimos7DiasByKey, buildMassReportDocDefinition,
 } from './seguimiento.js';
 
 // Deterministic seeded PRNG (mulberry32) — NEVER Math.random(): a perf test
@@ -144,5 +145,42 @@ for (let i = 0; i < 3; i++) {
 const timelineMedian = median(timelineRuns);
 console.log(`buildTimeline: [${timelineRuns.map((n) => n.toFixed(1)).join(', ')}] ms -- median ${timelineMedian.toFixed(1)} ms`);
 assert.ok(timelineMedian < 100, `buildTimeline median ${timelineMedian.toFixed(1)} ms must stay under the 100 ms Node tripwire`);
+
+// M6: the mass export's full pipeline — buildProfessionalRows (110 rows) +
+// ONE batch pass each of professionalRecordsByKey/visitasUltimos7DiasByKey
+// (instead of calling professionalRecords/visitasUltimos7Dias once PER row,
+// each a full O(records) rescan on its own) + buildMassReportDocDefinition —
+// over the SAME 3k/1.9k fixture. Node-side tripwire only (the real pdfmake
+// PAGE LAYOUT cannot run outside a browser; the plan's own browser budget —
+// < 20 s / < 700 MB for 110 professionals — must still be measured manually).
+const massRuns = [];
+let lastMassDef;
+for (let i = 0; i < 3; i++) {
+  const { ms, result } = timeIt(() => {
+    const identity = buildIdentityIndex({ stickers, surveys });
+    const { rows } = buildProfessionalRows({
+      stickers, surveys, identity, today: '2026-02-05',
+    });
+    const recordsByKey = professionalRecordsByKey({
+      stickers, surveys, identity, from: '2026-01-01', to: '2026-01-30',
+    });
+    const last7ByKey = visitasUltimos7DiasByKey({
+      stickers, surveys, identity, today: '2026-02-05',
+    });
+    const rowsWithPoints = rows.map((row) => ({
+      row,
+      points: recordsByKey.get(row.key) || { stickerPoints: [], surveyPoints: [] },
+      last7: last7ByKey.get(row.key) || 0,
+    }));
+    return buildMassReportDocDefinition(rowsWithPoints, {
+      from: '2026-01-01', to: '2026-01-30', generatedAt: '2026-02-05', objetivoDiario: 2.5, degraded: false, today: '2026-02-05',
+    });
+  });
+  massRuns.push(ms);
+  lastMassDef = result;
+}
+const massMedian = median(massRuns);
+console.log(`M6 mass export pipeline (buildProfessionalRows + batch records/visitas7d + buildMassReportDocDefinition, ${lastMassDef.content.length} content nodes): [${massRuns.map((n) => n.toFixed(1)).join(', ')}] ms -- median ${massMedian.toFixed(1)} ms`);
+assert.ok(massMedian < 500, `M6 mass export pipeline median ${massMedian.toFixed(1)} ms must stay under the 500 ms Node tripwire`);
 
 console.log('seguimiento-perf.test.mjs: all assertions passed');

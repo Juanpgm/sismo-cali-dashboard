@@ -7,8 +7,14 @@
 import {
   DETAIL_GROUPS, labelForField, formatValue, barrioVeredaDisplay, downloadStamp,
   SURVEY_LAYER_URL, isFirmaAttachment, attachmentUrl, basemapTileUrl,
-  labelForCode, addressDisplay, faseKeyDe,
+  labelForCode, addressDisplay, faseKeyDe, memoizeLoader,
 } from './utils.js';
+
+// memoizeLoader now lives in utils.js (loadXlsx() shares the same
+// retry-after-failure policy) — re-exported here so this module's own
+// import surface/tests (report.test.mjs imports it `from './report.js'`)
+// stay unchanged.
+export { memoizeLoader };
 
 export const MAX_PHOTOS = 12;
 
@@ -276,35 +282,6 @@ export async function buildLocatorMap(record) {
   } catch {
     return { dataURL: null, sourceUrl };
   }
-}
-
-/** Generic "load once, retry on failure" memoizer: the first call invokes
- *  `fn()` and caches its PENDING promise; concurrent calls before it settles
- *  share that SAME promise (fn() never runs twice for one in-flight load).
- *  On success, the resolved promise stays cached forever (fn() never runs
- *  again). On FAILURE (a rejection, or fn() throwing synchronously — both
- *  normalized through `Promise.resolve().then(fn)`), the cached promise is
- *  reset to null BEFORE rethrowing, so the NEXT call retries fn() from
- *  scratch instead of replaying the exact same rejection forever.
- *
- *  Bug fix (W10): loadPdfmake() below used to cache a REJECTED promise
- *  permanently (`pdfmakePromise` was set once, never reset on failure) — one
- *  transient CDN blip poisoned every later report attempt with the same
- *  stale error, same class of bug already fixed in evaluaciones.js's
- *  geoCache (:321-324). Exported/DOM-independent so report.test.mjs can
- *  exercise the retry policy directly — the real loadPdfmake fn (script-tag
- *  injection + onload/onerror) has no DOM to run against under Node. */
-export function memoizeLoader(fn) {
-  let promise = null;
-  return function load(...args) {
-    if (!promise) {
-      promise = Promise.resolve().then(() => fn(...args)).catch((err) => {
-        promise = null;
-        throw err;
-      });
-    }
-    return promise;
-  };
 }
 
 // pdfmake (~450KB incl. vfs_fonts) is only needed once a report is actually
