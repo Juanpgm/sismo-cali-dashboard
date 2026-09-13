@@ -41,44 +41,145 @@ export function normalizeName(raw) {
     .replace(/\s+/g, ' ');
 }
 
-/** Date-only (YYYY-MM-DD) part of a value that may be a plain date string, a
- *  full (possibly UTC-offset-aware) ISO timestamp, malformed text, or
- *  missing entirely. Returns null for anything that doesn't resolve to a
- *  real calendar date — a malformed value must never silently masquerade as
- *  a valid date (e.g. "2026-02-30" rolling over to March in a naive
- *  `new Date()` parse).
- *
- *  A bare "YYYY-MM-DD" string (Survey's own fecha_inspeccion shape) is taken
- *  literally — anchored to the full string, not just its prefix — since it
- *  never carried a time/offset component to convert. Anything else (a full
- *  ISO timestamp, e.g. the atencionsismo API's `fecha`, which is UTC-aware:
- *  "...T02:00:00+00:00", backend/app/routers/stickers.py) resolves to the
- *  LOCAL calendar day (same convention as evaluaciones.js's formatFecha) —
- *  Cali is UTC-5, so reading the UTC date straight off the string would
- *  silently shift an evening record to the wrong day for every KPI/filter/
- *  timeline bucket keyed off it. This was the bug: the old prefix-only regex
- *  matched the leading 10 characters of ANY timestamp, so a full ISO string
- *  was treated exactly like a bare date and never actually converted. */
-function dateOnly(value) {
+// ── Zona horaria: America/Bogota (UTC-5, sin horario de verano) ────────────
+// Regla única del plan (Zona horaria): TODO lo que el usuario ve o se agrupa
+// por día/hora (KPIs, timeline, filtros Desde/Hasta, columnas de hora, "hoy"
+// para días-desde-primera-actividad y la ventana de barrios activos) usa un
+// offset FIJO -05:00 sobre el instante UTC-aware que trae la API (`fecha`,
+// siempre "+00:00"), nunca la zona del navegador/máquina que ejecuta el
+// código -- por eso cada función de esta sección trabaja con aritmética
+// entera sobre milisegundos (Date.UTC / getUTC*) o con regex puro sobre
+// texto, y JAMÁS con `new Date(unaTemplateString)` ni con los getters
+// LOCALES de Date (getFullYear/getMonth/getDate/getHours/getMinutes) -- esos
+// SÍ dependen de la zona del proceso (TZ), que es exactamente lo que este
+// módulo no puede permitirse (ver seguimiento-fechas.test.mjs, que corre
+// bajo TZ=UTC, TZ=America/Bogota y TZ=Europe/Madrid y exige el mismo
+// resultado en los tres).
+//
+// D6 (decisión tomada, plan §Decisiones): dateOnly usaba antes la zona LOCAL
+// de la máquina (`new Date(raw)` + getFullYear/getMonth/getDate) -- un admin
+// en una laptop con otro huso horario veía días distintos para el MISMO
+// sticker que uno en Cali. Ahora delega en bogotaParts(), offset fijo.
+
+/** Offset fijo de Bogotá respecto a UTC, en minutos (America/Bogota no tiene
+ *  horario de verano). Negativo: Bogotá va 5 horas DETRÁS de UTC. */
+export const BOGOTA_UTC_OFFSET_MIN = -300;
+
+const BARE_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const ISO_OFFSET_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(Z|[+-]\d{2}:?\d{2})$/;
+const NAIVE_DATETIME_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/;
+
+/** Whether y-mo-d is a real calendar date (rejects e.g. 2026-02-30, month
+ *  13, day 0) — pure integer arithmetic, no Date involved at all. */
+function isValidYMD(y, mo, d) {
+  if (!Number.isInteger(y) || mo < 1 || mo > 12 || d < 1) return false;
+  const leap = (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0));
+  const daysInMonth = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return d <= daysInMonth[mo - 1];
+}
+
+/** `dateStr` (YYYY-MM-DD) shifted by `deltaDays` (may be negative), via
+ *  Date.UTC + getUTC* only — never a local getter, so the result is
+ *  identical regardless of the running process' own timezone. Returns
+ *  `dateStr` unchanged if it doesn't parse (defensive; callers only ever
+ *  pass an already-validated YYYY-MM-DD here). */
+function shiftDateStr(dateStr, deltaDays) {
+  const m = BARE_DATE_RE.exec(dateStr);
+  if (!m) return dateStr;
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) + deltaDays * 86400000;
+  const d = new Date(ms);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
+/** Whole days between two YYYY-MM-DD strings (`to` minus `from`), or null
+ *  when either is malformed. Pure Date.UTC arithmetic, timezone-independent. */
+function daysBetween(fromStr, toStr) {
+  const a = BARE_DATE_RE.exec(fromStr || '');
+  const b = BARE_DATE_RE.exec(toStr || '');
+  if (!a || !b) return null;
+  const msA = Date.UTC(Number(a[1]), Number(a[2]) - 1, Number(a[3]));
+  const msB = Date.UTC(Number(b[1]), Number(b[2]) - 1, Number(b[3]));
+  return Math.round((msB - msA) / 86400000);
+}
+
+/** The Bogotá calendar day (+ time-of-day, in minutes since midnight, when
+ *  the value carries one) of a value that may be:
+ *   - a tz-aware ISO timestamp (`Z` or an explicit `+HH:MM`/`-HH:MM` offset)
+ *     — the atencionsismo API's/Firestore's own `fecha`, always "+00:00" per
+ *     the data contract, but any explicit offset is honored;
+ *   - a bare `YYYY-MM-DD` (Survey's `fecha_inspeccion`) — taken literally,
+ *     `minutes: null`, since it never carried a time/offset to convert;
+ *   - a naive `YYYY-MM-DDTHH:MM[:SS]` with NO offset (Survey's `fecha_hora`,
+ *     already Bogotá local per the data contract) — parsed as TEXT via
+ *     regex, never `new Date()` on it (handing a naive string to `new
+ *     Date()` parses it in the RUNNING PROCESS' OWN timezone by spec — the
+ *     exact bug this function exists to avoid).
+ *  Anything else (malformed, empty, non-string-coercible, an invalid
+ *  calendar date/time, an out-of-range hour/minute) returns `null`. Never
+ *  throws. */
+export function bogotaParts(value) {
   if (value === null || value === undefined) return null;
   const raw = String(value).trim();
   if (!raw) return null;
-  const bare = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+
+  const bare = BARE_DATE_RE.exec(raw);
   if (bare) {
-    const [, y, mo, d] = bare;
-    const parsed = new Date(`${raw}T00:00:00Z`);
-    if (Number.isNaN(parsed.getTime())) return null;
-    // Reject overflow (e.g. "2026-02-30" -> rolls to March 2): the date
-    // actually parsed must match the digits typed, not a rolled-over one.
-    if (parsed.getUTCFullYear() !== Number(y) || parsed.getUTCMonth() + 1 !== Number(mo) || parsed.getUTCDate() !== Number(d)) return null;
-    return raw;
+    const y = Number(bare[1]); const mo = Number(bare[2]); const d = Number(bare[3]);
+    if (!isValidYMD(y, mo, d)) return null;
+    return { date: raw, minutes: null };
   }
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return null;
-  const y = parsed.getFullYear();
-  const mo = String(parsed.getMonth() + 1).padStart(2, '0');
-  const d = String(parsed.getDate()).padStart(2, '0');
-  return `${y}-${mo}-${d}`;
+
+  const offsetMatch = ISO_OFFSET_RE.exec(raw);
+  if (offsetMatch) {
+    const [, yStr, moStr, dStr, hStr, minStr, secStr, offStr] = offsetMatch;
+    const y = Number(yStr); const mo = Number(moStr); const d = Number(dStr);
+    const h = Number(hStr); const mi = Number(minStr); const sec = secStr ? Number(secStr) : 0;
+    if (!isValidYMD(y, mo, d) || h > 23 || mi > 59 || sec > 59) return null;
+    let offsetMin = 0;
+    if (offStr !== 'Z') {
+      const sign = offStr[0] === '-' ? -1 : 1;
+      const digits = offStr.slice(1).replace(':', '');
+      offsetMin = sign * (Number(digits.slice(0, 2)) * 60 + Number(digits.slice(2, 4)));
+    }
+    // Instante UTC real (ms) del valor, sin depender de la zona del proceso.
+    const utcMs = Date.UTC(y, mo - 1, d, h, mi, sec) - offsetMin * 60000;
+    const bogotaMs = utcMs + BOGOTA_UTC_OFFSET_MIN * 60000;
+    const bd = new Date(bogotaMs);
+    return {
+      date: `${bd.getUTCFullYear()}-${String(bd.getUTCMonth() + 1).padStart(2, '0')}-${String(bd.getUTCDate()).padStart(2, '0')}`,
+      minutes: bd.getUTCHours() * 60 + bd.getUTCMinutes(),
+    };
+  }
+
+  const naive = NAIVE_DATETIME_RE.exec(raw);
+  if (naive) {
+    const [, yStr, moStr, dStr, hStr, minStr] = naive;
+    const y = Number(yStr); const mo = Number(moStr); const d = Number(dStr);
+    const h = Number(hStr); const mi = Number(minStr);
+    if (!isValidYMD(y, mo, d) || h > 23 || mi > 59) return null;
+    return { date: `${yStr}-${moStr}-${dStr}`, minutes: h * 60 + mi };
+  }
+
+  return null;
+}
+
+/** Today's date (YYYY-MM-DD) in America/Bogota, from `now` (epoch ms,
+ *  default the real clock). Date.UTC-safe arithmetic only, so the RUNNING
+ *  PROCESS' timezone never enters the computation — only `now` and the
+ *  fixed Bogotá offset do. */
+export function bogotaToday(now = Date.now()) {
+  const d = new Date(now + BOGOTA_UTC_OFFSET_MIN * 60000);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
+/** Date-only (YYYY-MM-DD) part of a value, in America/Bogota (D6: fixed
+ *  -05:00 offset — see the "Zona horaria" block comment above for why this
+ *  replaced the old browser/machine-local-timezone conversion). Thin
+ *  wrapper over bogotaParts() for the many callers below that only need the
+ *  day, not the time-of-day. */
+function dateOnly(value) {
+  const parts = bogotaParts(value);
+  return parts ? parts.date : null;
 }
 
 /** Whether `dateStr` (YYYY-MM-DD or null) falls within [from, to] inclusive.

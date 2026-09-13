@@ -409,25 +409,22 @@ console.log('buildTimeline: professionalKey filter OK');
 }
 console.log('buildTimeline: date range filter OK');
 
-// ── buildTimeline: UTC-aware timestamp buckets to the LOCAL calendar day ──
-// The atencionsismo API's `fecha` is a UTC-aware ISO timestamp
-// ("...T02:00:00+00:00" — backend/app/routers/stickers.py); Cali is UTC-5,
-// so an evening record can carry a NEXT-DAY UTC date. Reading the UTC date
-// straight off the string (treating its leading YYYY-MM-DD digits as truth)
-// would silently shift such a record to the wrong day for every KPI/filter/
-// timeline bucket keyed off it. The expected day is computed here from the
-// SAME local-timezone conversion the code under test performs (never
-// hardcoded), so this assertion holds regardless of which machine runs it.
-
+// ── buildTimeline: UTC-aware timestamp buckets to the BOGOTÁ calendar day ──
+// CONTRATO CAMBIADO DELIBERADAMENTE (D6, plan §Zona horaria): antes este test
+// comparaba contra la zona LOCAL de la máquina que corre el test (via `new
+// Date(raw).getFullYear()/getMonth()/getDate()`); ahora dateOnly/bogotaParts
+// usan el offset FIJO -05:00 de Bogotá, nunca la zona del proceso -- un admin
+// con laptop en otra zona debe ver el MISMO día que uno en Cali. El valor
+// esperado está escrito a mano (no recalculado con la misma aritmética que
+// el código bajo prueba, para no ser una aserción tautológica): 02:00 UTC
+// menos 5 horas = 21:00 del día ANTERIOR en Bogotá.
 {
   const raw = '2026-01-02T02:00:00+00:00';
-  const d = new Date(raw);
-  const expectedLocalDay = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const stickers = [{ inspector: { nombre_completo: 'Gil Soto' }, fecha: raw, fase: 1, fuente: 'atencionsismo' }];
   const result = buildTimeline({ stickers, surveys: [] });
-  assert.deepEqual(result.labels, [expectedLocalDay]);
+  assert.deepEqual(result.labels, ['2026-01-01'], 'debe ser el día anterior (Bogotá, UTC-5), no el día UTC');
 }
-console.log('buildTimeline: UTC-aware fecha buckets to the local calendar day OK');
+console.log('buildTimeline: UTC-aware fecha buckets to the Bogotá calendar day OK');
 
 {
   // An offset-less, time-less date string ("YYYY-MM-DD" only, Survey's own
