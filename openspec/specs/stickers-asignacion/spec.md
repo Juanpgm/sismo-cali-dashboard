@@ -3,10 +3,16 @@
 ## Purpose
 
 A recurring, persisted process that determines which Panel points already carry a field sticker
-(ATC-20 `evaluaciones`) versus which are still pending, surfaced as a sortable table and a
-blue/red/amber Leaflet map inside the existing Stickers tab, with admin CRUD to group pending
-points into `cuadrillas` (auto-by-proximity or manual) and assign/reassign them to inspectors —
-without ever loading the full Panel dataset in the browser.
+(ATC-20 `evaluaciones`) versus which are still pending, computed by `cruce_sticker.py` and
+persisted as `sticker_matches` documents — without ever loading the full Panel dataset in the
+browser.
+
+This used to also be surfaced as a sortable table and a blue/red/amber Leaflet map inside the
+Stickers tab, with admin CRUD (`api/sticker-asignaciones.js`) to group pending points into
+`cuadrillas` (auto-by-proximity or manual) and assign/reassign them to inspectors. That Stickers-tab
+UI was removed in `stickers-tab-asignacion-removed` (2026-09-13, commit `e063b14`) — the matching
+pipeline below still runs and its admin-SDK-only CRUD endpoint is still deployed, they're just no
+longer mounted anywhere in the frontend.
 
 ## Requirements
 
@@ -218,113 +224,28 @@ The system MUST clear `cuadrilla_id` and `inspector_uid` on every member point b
 - THEN P1 and P2 have `cuadrilla_id:null` and `inspector_uid:null`, and the `cuadrillas/{C}`
   document no longer exists
 
-### Requirement: Table view — sortable, filterable by `estado_asignacion`
-The system MUST render a table of `sticker_matches` points (columns: dirección, zona,
-estado_asignacion, cuadrilla, inspector, tier) inside the Asignación sub-section, sortable by
-clicking a column header, and filterable by `estado_asignacion` via filter chips.
-
-#### Scenario: Sorting by column header
-- GIVEN the table is rendered with unsorted rows
-- WHEN the admin clicks the "dirección" column header
-- THEN rows re-render sorted by `direccion`, ascending
-
-#### Scenario: Filtering to a single estado
-- GIVEN the table contains points in every `estado_asignacion` value
-- WHEN the admin selects the `pendiente` filter chip
-- THEN only rows with `estado_asignacion:'pendiente'` remain visible
-
-### Requirement: Map view — 3-color legend
-The system MUST render a Leaflet map with one circle marker per point, colored blue when
-`tiene_sticker === true`, red when `estado_asignacion === 'pendiente'`, and amber when
-`estado_asignacion` is `'asignado'` or `'en_proceso'`, with a legend identifying the three colors.
-
-#### Scenario: Matched point renders blue
-- GIVEN a point has `tiene_sticker:true`
-- WHEN the map renders
-- THEN that point's marker is blue
-
-#### Scenario: Pending, unassigned point renders red
-- GIVEN a point has `tiene_sticker:false` and `estado_asignacion:'pendiente'`
-- WHEN the map renders
-- THEN that point's marker is red
-
-#### Scenario: Assigned-but-unvisited point renders amber, distinct from pending
-- GIVEN a point has `estado_asignacion:'asignado'`
-- WHEN the map renders
-- THEN that point's marker is amber, not red, so it is visually distinguishable from untouched
-  pending points
-
-### Requirement: CRUD affordances in the frontend
-The system MUST provide an "Auto-agrupar" button that calls `autoAgrupar`, a manual multi-select
-(table or map) with a "Crear cuadrilla" action that calls `crearCuadrilla`, and an
-assign/reassign inspector control — populated by fetching the `inspectores` roster itself via the
-existing `callStickersApi`/`getInspectores` client, since the Roster segment that used to preload
-it no longer lives in the Stickers tab — that calls `asignarInspector` or `reasignarPunto`.
-
-#### Scenario: Auto-agrupar button triggers clustering
-- GIVEN the admin is viewing the Asignación sub-section
-- WHEN the admin clicks "Auto-agrupar"
-- THEN `autoAgrupar` is called and the table/map refresh to show the new cuadrillas
-
-#### Scenario: Manual multi-select creates a cuadrilla
-- GIVEN the admin selects several pending points via checkboxes
-- WHEN the admin triggers "Crear cuadrilla" from the selection
-- THEN `crearCuadrilla` is called with the selected point ids
-
-#### Scenario: Inspector dropdown fetches its own roster copy
-- GIVEN the Stickers tab no longer has a Roster segment
-- WHEN the Asignación sub-section renders an inspector `<select>`
-- THEN it fetches the `inspectores` roster itself via `callStickersApi` and populates the select
-  from that response
-
-### Requirement: Mounted as a sub-section of the existing Stickers tab
-The system MUST mount the Asignación view as a sub-section inside `#view-stickers` (a 2-way
-segmented control: Evaluaciones and Asignación — the Roster segment has moved to Planeación), and
-MUST NOT add a new top-level `.view-tabs` entry. The sub-section's frontend module MUST
-lazy-initialize on the first time the Asignación segment is opened, not on Stickers-tab open.
-
-#### Scenario: No new top-level tab appears
-- GIVEN the dashboard's top-level view tabs
-- WHEN the Asignación feature ships
-- THEN the top-level tab list is unchanged; Asignación is reachable only via a segment inside the
-  Stickers tab
-
-#### Scenario: Lazy init on first Asignación open
-- GIVEN an admin opens the Stickers tab and stays on the Evaluaciones segment
-- WHEN the admin has not yet opened the Asignación segment
-- THEN `initStickersAsignacion` has not run and no `listPuntos`/`listCuadrillas` calls have been
-  made
-
-#### Scenario: Init runs once on first Asignación open
-- GIVEN an admin opens the Asignación segment for the first time in a session
-- WHEN the segment becomes visible
-- THEN `initStickersAsignacion` runs exactly once, fetching `listPuntos` and `listCuadrillas`;
-  subsequent segment re-opens in the same session call `reload()` instead of re-initializing
-
-#### Scenario: Segmented control is 2-way, not 3-way
-- GIVEN an admin opens the Stickers tab
-- WHEN the segmented control renders
-- THEN it offers exactly Evaluaciones and Asignación, with no Roster option
-
 ### Requirement: Scope boundaries
 The system MUST NOT write to the `evaluaciones` collection from any part of this change (read-only
-access). The system MUST NOT add inspector-roster CRUD inside the Stickers tab — the Roster
-segment has moved to Planeación (see `usuarios-personas-unificadas`), and the Asignación
-sub-section only reads the existing `inspectores` roster (fetched itself, per CRUD affordances) to
-populate assignment controls. The system MUST NOT open a public Firestore read rule for
-`sticker_matches` or `cuadrillas` — both collections are reachable only through
-`api/sticker-asignaciones.js` (admin-SDK), never via a client-direct Firestore read.
+access). The system MUST NOT open a public Firestore read rule for `sticker_matches` or
+`cuadrillas` — both collections are reachable only through `api/sticker-asignaciones.js`
+(admin-SDK), never via a client-direct Firestore read. No frontend currently calls this endpoint —
+the Stickers tab's Asignación UI was removed entirely (`stickers-tab-asignacion-removed`), and
+Planeación's own auto-agrupar/crearCuadrilla/asignarInspector affordances (`web/js/planeacion.js`)
+are a structurally similar but functionally separate CRUD surface: they call the
+`planeacionAsignaciones` endpoint against the Survey Cali/EDAN domain, not `sticker_matches`/
+`cuadrillas`.
 
 #### Scenario: Evaluaciones collection is never written
 - GIVEN any action in `api/sticker-asignaciones.js` or `cruce_sticker.py`
 - WHEN that action executes
 - THEN no write operation targets the `evaluaciones` collection
 
-#### Scenario: No inspector CRUD surface remains in Stickers
-- GIVEN the Stickers tab's Asignación sub-section
-- WHEN the admin looks for a way to create, edit, or delete an inspector account
-- THEN no such control exists anywhere in the Stickers tab; inspector CRUD now lives exclusively
-  in Planeación's roster segment
+#### Scenario: No Asignación CRUD surface remains anywhere in the frontend
+- GIVEN the Stickers tab
+- WHEN an admin looks for any cuadrilla/assignment control (auto-agrupar, crear cuadrilla,
+  assign/reassign inspector)
+- THEN none exists anywhere in the app's frontend; `api/sticker-asignaciones.js` remains deployed
+  but has no caller
 
 #### Scenario: Direct client Firestore read is rejected
 - GIVEN a browser client attempts to read `sticker_matches` or `cuadrillas` directly via the
