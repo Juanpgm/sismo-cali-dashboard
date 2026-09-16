@@ -1,7 +1,10 @@
 // KPI tile row — recomputed from the currently filtered record set.
 // Habitability uses the granular criterio_habitabilidad scale (H · R1 · R2 ·
 // I1 · I2 · I3): green for H, yellow shades for R, red shades for I.
-import { COLORS, isNoHabitableBinary, habCode, labelForCode, splitMultiValue, escapeHtml, normalize } from './utils.js';
+import {
+  COLORS, isNoHabitableBinary, habCode, labelForCode, splitMultiValue, escapeHtml, normalize,
+  CONCEPTO_CIERRE_ORDER, conceptoCierreColor, conceptoCierreCounts,
+} from './utils.js';
 
 function sumField(records, field) {
   let total = 0;
@@ -157,6 +160,29 @@ function usoTilesHtml(records, total) {
   `).join('');
 }
 
+/** Compact mini-tile block for `concepto_cierre` (survey123-new-fields,
+ *  2026-09-15): one small tile per code (count only), severity order.
+ *  Hidden ENTIRELY when no filtered record carries a concepto_cierre yet --
+ *  most don't (it's only asked after a formal closing decision), so an
+ *  all-zero block would be noise on every default view. */
+function conceptoCierreTilesHtml(records) {
+  const counts = conceptoCierreCounts(records);
+  const total = [...counts.values()].reduce((a, b) => a + b, 0);
+  if (total === 0) return '';
+  const tiles = CONCEPTO_CIERRE_ORDER.map((code) => `
+    <div class="kpi-tile" style="--kpi-accent:${conceptoCierreColor(code)}">
+      <span class="kpi-label">${escapeHtml(labelForCode(code))}</span>
+      <span class="kpi-value">${counts.get(code)}</span>
+    </div>
+  `).join('');
+  // No wrapper div: #kpi-row is itself `repeat(auto-fit, minmax(150px,1fr))`
+  // (styles.css) -- a `.kpi-secondary-grid` wrapper here (no grid-column
+  // rule of its own) collapsed all 4 tiles into a single narrow column
+  // instead of laying out alongside the other kpi-tile elements. Bare
+  // `.kpi-tile` elements after the section title, same as usoTilesHtml above.
+  return `<h3 class="kpi-section-title">Conceptos de cierre</h3>${tiles}`;
+}
+
 /** @param {HTMLElement} container @param {object[]} filteredRecords @param {object[]} allRecords
  *  @param {{recolectados?: number}} [raw] - inspecciones sin agrupar bajo el
  *  mismo filtro que `filteredRecords`, para contrastar contra la tarjeta
@@ -232,7 +258,8 @@ export function renderKpis(container, filteredRecords, allRecords, raw = {}) {
     + sectionTitle('Por unidades habitacionales (viviendas)', 'Aquí se suman VIVIENDAS (n_residenciales), un aproximado según cada inspección — no inspecciones. Sirve para dimensionar cuántos hogares hay detrás de cada estado de habitabilidad.')
     + tilesFor('residenciales')
     + sectionTitle('Por uso de la edificación', 'Cuántas inspecciones por uso (residencial, comercial, etc.). Un registro con varios usos cuenta en cada uno, así que pueden sumar más que el total.')
-    + usoTilesHtml(filteredRecords, total);
+    + usoTilesHtml(filteredRecords, total)
+    + conceptoCierreTilesHtml(filteredRecords);
   const secondaryHtml = TILE_DEFS.filter((d) => d.group === 'secondary').map(tileHtml).join('');
 
   const dist = habDistribution(filteredRecords);

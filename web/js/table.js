@@ -8,7 +8,8 @@ import { generarInformePdf } from './report.js';
 
 const CANONICAL_ORDER = [
   'ObjectID', 'GlobalID', 'fecha_inspeccion', 'hora', 'fecha_hora', 'nombre_evaluador', 'id_grupo',
-  'entidad', 'tipo_evento', 'nombre_edificacion', 'municipio', 'barrio_vereda_resuelto', 'barrio_vereda',
+  'entidad', 'tipo_evento', 'nombre_edificacion', 'municipio', 'barrio_vereda_resuelto',
+  'barrio_vereda_lista', 'barrio_vereda',
   'direccion', 'direccion_norm',
   'tipo_propiedad', 'relacion_edificacion', 'otro', 'epoca_construccion', 'n_pisos', 'n_sotanos',
   'n_ocupantes', 'frente', 'fondo', 'n_residenciales', 'n_comerciales', 'n_no_habitadas',
@@ -23,17 +24,18 @@ const CANONICAL_ORDER = [
   'danos_contrapiso_entrepiso_muroscont', 'danos_muro_div', 'danos_cubierta', 'cielos_instalaciones',
   'alc_exterior', 'alc_interior', 'matriz_ref', 'afectacion_planta', 'afectacion_planta_calc',
   'severidad_danos', 'severidad_danos_calc', 'nivel_dano', 'riesgo_ab', 'riesgo_ac',
-  'habitabilidad_calc', 'criterio_habitabilidad', 'suspension_servicios', 'sticker', 'justificacion_criterio',
+  'habitabilidad_calc', 'criterio_habitabilidad', 'concepto_cierre', 'recomendacion_evaluacion_detallada',
+  'suspension_servicios', 'sticker', 'justificacion_criterio',
   'requiere_evaluacion_adicional', 'eval_estructural', 'eval_geotecnica', 'eval_otra',
   'recomendaciones', 'aislamiento', 'intervencion_entades', 'observaciones_generales',
   'evento_id', 'gps_precision_m', 'CreationDate', 'Creator', 'EditDate', 'Editor', 'x', 'y',
-  'comuna', 'zona_interes', 'barrio_geo', 'barrio_vereda_fuente',
+  'comuna', 'comuna_formulario', 'zona_interes', 'barrio_geo', 'barrio_vereda_fuente',
 ];
 
 const DEFAULT_VISIBLE = [
   'fecha_inspeccion', 'nombre_edificacion', 'barrio_vereda_resuelto', 'direccion', 'uso_edificacion',
-  'nivel_dano', 'danos_estructura', 'criterio_habitabilidad', 'suspension_servicios', 'sticker',
-  'justificacion_criterio', 'observaciones_generales', 'recomendaciones',
+  'nivel_dano', 'danos_estructura', 'criterio_habitabilidad', 'concepto_cierre', 'suspension_servicios',
+  'sticker', 'justificacion_criterio', 'observaciones_generales', 'recomendaciones',
 ];
 
 // 'direccion' is intentionally NOT here -- it gets its own unclamped render

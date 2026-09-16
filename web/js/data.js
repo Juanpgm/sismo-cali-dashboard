@@ -2,7 +2,7 @@
 import {
   normalizeAddressText, buildSearchIndex, splitMultiValue, labelForField,
   bucketNpisos, suspensionServicios, colapsoResuelto, colapsoResueltoFields, bustParams, AFECTACION_ORDER, DANO_GRADO_ORDER, resolveBarrioVereda,
-  resolveZonaInteres, isInsideCali,
+  resolveZonaInteres, isInsideCali, CONCEPTO_CIERRE_ORDER,
 } from './utils.js';
 import { fetchIsraelRecords } from './israel-source.js';
 import { apiUrl } from './api-config.js';
@@ -109,6 +109,11 @@ export const FILTER_FIELDS = [
   // aparecen en producción aunque no en la muestra local de 1000 registros.
   { field: 'danos_estructura', label: labelForField('danos_estructura'), group: 'severidad', order: DANO_GRADO_ORDER, emptyLabel: 'Sin dato' },
   { field: 'criterio_habitabilidad', label: 'Habitabilidad', group: 'severidad' },
+  // survey123-new-fields (2026-09-15): coded domain, decoded client-side (see
+  // conceptoCierreColor/labelForCode in utils.js). Most records have no
+  // concepto_cierre yet (asked only after a formal closing decision), hence
+  // emptyLabel.
+  { field: 'concepto_cierre', label: labelForField('concepto_cierre'), group: 'severidad', order: CONCEPTO_CIERRE_ORDER, emptyLabel: 'Sin concepto' },
   // Derived field (see suspensionServicios): not in inspections.json.
   { field: 'suspension_servicios', label: 'Suspensión de servicios', group: 'severidad' },
   // Filter on colapso_{total,parcial}_resuelto (see colapsoResueltoFields),

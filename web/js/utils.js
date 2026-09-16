@@ -55,6 +55,17 @@ export const COLORS = {
   // Sequential ramp for choropleth (dark navy -> yellow), 5 discrete classes.
   choropleth: ['#12294a', '#2c4468', '#6b6142', '#c99a1a', '#FFC400'],
   unknown: '#475569',
+  // concepto_cierre (survey123-new-fields, 2026-09-15) — coded domain, stays
+  // coded server-side (see fetch_survey_raw() in refresh_data.py) and is
+  // decoded to a short label CLIENT-SIDE only, consistent with habitabilidad/
+  // nivel_dano. Severity-ordered, same warm-ramp convention as `damage`:
+  // demolicion (worst) -> sticker_verde (best, "ya tiene sticker verde").
+  concepto_cierre: {
+    demolicion: '#b91c1c',
+    fase3: '#f97316',
+    arreglos_locativos: '#eab308',
+    sticker_verde: '#22c55e',
+  },
 };
 
 /* ------------------------------------------------------------------ */
@@ -102,6 +113,16 @@ const KNOWN_LABELS = {
   geo: 'Geográfico (basemap)',
   reportado: 'Reportado (inspector)',
   sin_dato: 'Sin dato',
+  // barrio_vereda_fuente — new value added alongside 'geo'/'reportado' above
+  // when barrio_vereda_lista (picklist answer) resolves the field.
+  lista: 'Lista (formulario)',
+  // concepto_cierre (survey123-new-fields, 2026-09-15) — none of these 4
+  // codes collide with any key above, so the global map is safe to use here
+  // (verified against every KNOWN_LABELS entry before adding).
+  demolicion: 'Demolición',
+  fase3: 'Fase 3 (evaluación de ingeniería)',
+  arreglos_locativos: 'Arreglos locativos',
+  sticker_verde: 'Sticker verde',
 };
 
 /** Strip accents + lowercase, for case/accent-insensitive matching. */
@@ -293,6 +314,14 @@ const FIELD_LABELS = {
   direccion_norm: 'Dirección (IGAC)',
   comuna: 'Comuna / corregimiento',
   barrio_geo: 'Barrio / vereda (geo)',
+  // survey123-new-fields (2026-09-15): free-typed "comuna" question, DIFFERENT
+  // from `comuna` above (the spatial-join result feeding the choropleth) --
+  // see clean_comuna_formulario() in refresh_data.py for why they never merge.
+  comuna_formulario: 'Comuna (formulario)',
+  // Picklist ("lista") answer to "Barrio/vereda", decoded from its coded
+  // domain server-side (fetch_survey_raw()) -- see resolve_barrio_vereda()'s
+  // geo -> lista -> reportado precedence.
+  barrio_vereda_lista: 'Barrio / vereda (lista)',
   // Point-in-polygon membership against the zonas_interes basemap (Centro
   // Histórico / Avenida 6ta) — see resolve_zona_interes in refresh_data.py /
   // resolveZonaInteres in this file. Also drawn by mapview.js as an
@@ -369,6 +398,11 @@ const FIELD_LABELS = {
   eval_geotecnica: 'Evaluación geotécnica',
   eval_otra: 'Otra evaluación',
   recomendaciones: 'Recomendaciones',
+  // survey123-new-fields (2026-09-15): "Concepto de cierre y recomendación
+  // técnica" (coded, decoded via conceptoCierreColor/labelForCode) + its
+  // free-text detail.
+  concepto_cierre: 'Concepto de cierre',
+  recomendacion_evaluacion_detallada: 'Recomendaciones de evaluación detallada',
   aislamiento: 'Aislamiento',
   intervencion_entades: 'Intervención de entidades',
   observaciones_generales: 'Observaciones generales',
@@ -395,7 +429,8 @@ export const DETAIL_GROUPS = {
   'Identificación': [
     'ObjectID', 'GlobalID', 'evento_id', 'tipo_evento', 'entidad', 'nombre_evaluador', 'id_grupo',
     'fecha_inspeccion', 'hora', 'fecha_hora', 'nombre_edificacion', 'municipio', 'comuna',
-    'barrio_vereda_resuelto', 'barrio_vereda', 'barrio_geo', 'barrio_vereda_fuente',
+    'comuna_formulario',
+    'barrio_vereda_resuelto', 'barrio_vereda', 'barrio_vereda_lista', 'barrio_geo', 'barrio_vereda_fuente',
     'direccion', 'direccion_norm', 'tipo_propiedad', 'relacion_edificacion', 'otro',
     'x', 'y', 'gps_precision_m', 'CreationDate', 'Creator', 'EditDate', 'Editor',
   ],
@@ -422,7 +457,7 @@ export const DETAIL_GROUPS = {
     'riesgo_ab', 'riesgo_ac', 'habitabilidad_calc', 'criterio_habitabilidad', 'suspension_servicios',
     'sticker', 'justificacion_criterio',
     'requiere_evaluacion_adicional', 'eval_estructural', 'eval_geotecnica', 'eval_otra',
-    'intervencion_entades',
+    'intervencion_entades', 'concepto_cierre', 'recomendacion_evaluacion_detallada',
   ],
   'Observaciones': [
     'observaciones', 'recomendaciones', 'observaciones_generales',
@@ -430,7 +465,7 @@ export const DETAIL_GROUPS = {
 };
 
 /** Fields we render as badges (colored by known category maps). */
-export const BADGE_FIELDS = new Set(['criterio_habitabilidad', 'habitabilidad_calc', 'nivel_dano']);
+export const BADGE_FIELDS = new Set(['criterio_habitabilidad', 'habitabilidad_calc', 'nivel_dano', 'concepto_cierre']);
 
 /* ------------------------------------------------------------------ */
 /* Formatting helpers                                                  */
@@ -468,7 +503,7 @@ export function formatValue(field, value) {
   // vocabulary with the fixed fields above -- leaving them raw next to a
   // mapped column would read as a bug (e.g. "sin_dano" next to "Sin daño").
   if (['criterio_habitabilidad', 'habitabilidad_calc', 'nivel_dano', 'severidad_danos', 'severidad_danos_calc', 'afectacion_planta', 'afectacion_planta_calc', 'sticker', 'barrio_vereda_fuente',
-    'danos_estructura', 'danos_contrapiso_entrepiso_muroscont', 'danos_muro_div', 'danos_cubierta', 'cielos_instalaciones']
+    'danos_estructura', 'danos_contrapiso_entrepiso_muroscont', 'danos_muro_div', 'danos_cubierta', 'cielos_instalaciones', 'concepto_cierre']
     .includes(field)) return labelForCode(value);
   if (typeof value === 'string' && /^(si|sí|no)$/i.test(value.trim())) return labelForCode(value);
   return String(value);
@@ -852,6 +887,38 @@ const DANO_GRADO_COLORS = {
 /** Color for a danos_* grade code (ordinal, same warm ramp as severidad/afectacion). */
 export function danoGradoColor(code) {
   return DANO_GRADO_COLORS[normalize(code)] || COLORS.unknown;
+}
+
+// concepto_cierre (survey123-new-fields, 2026-09-15): "Concepto de cierre y
+// recomendación técnica", a 4-code coded domain from the EDE_v1 layer. Kept
+// coded server-side (see fetch_survey_raw()/normalize() in refresh_data.py);
+// this is the ONLY decoding, client-side, consistent with habitabilidad/
+// nivel_dano. Severity-ordered: demolicion (worst) -> sticker_verde (best).
+export const CONCEPTO_CIERRE_ORDER = ['demolicion', 'fase3', 'arreglos_locativos', 'sticker_verde'];
+
+/** Color for a concepto_cierre code (severity-ordered, same convention as
+ *  damageColor/danoGradoColor). Case-insensitive/accent-insensitive via
+ *  normalize() -- the layer itself ships one code with an unusual capital
+ *  ("Sticker_verde"), so this must not require an exact-case match. */
+export function conceptoCierreColor(code) {
+  return COLORS.concepto_cierre[normalize(code)] || COLORS.unknown;
+}
+
+/** Counts of `concepto_cierre` per CONCEPTO_CIERRE_ORDER code. Blank values
+ *  AND unrecognized/legacy codes (the 1700+ pre-2026-09-13 rows never carry
+ *  this field at all) count toward NOTHING -- there is no "sin dato" bucket
+ *  here, unlike danosEstructuraCounts, because most records legitimately have
+ *  no concepto_cierre yet (it is asked only after a formal closing decision),
+ *  so a "sin dato" bar would dwarf every real bucket and be meaningless noise.
+ *  Backs both the "Conceptos de cierre" chart (charts.js) and KPI tiles
+ *  (kpi.js) from a single source of truth. */
+export function conceptoCierreCounts(records) {
+  const counts = new Map(CONCEPTO_CIERRE_ORDER.map((k) => [k, 0]));
+  for (const r of records) {
+    const key = normalize(r.concepto_cierre);
+    if (counts.has(key)) counts.set(key, counts.get(key) + 1);
+  }
+  return counts;
 }
 
 /** Ordinal level 0..4 of an afectacion_planta range; null when blank/unknown.

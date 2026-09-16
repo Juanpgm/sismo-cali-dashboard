@@ -4,6 +4,7 @@ import {
   interpolateRamp, labelForCode, labelForField, formatValue, escapeHtml, normalize,
   isNoHabitableBinary, basemapTileUrl, afectacionColor, afectacionLevel, AFECTACION_ORDER,
   barrioVeredaDisplay, danoGradoColor, DANO_GRADO_ORDER, createBasemapToggle,
+  CONCEPTO_CIERRE_ORDER, conceptoCierreColor,
 } from './utils.js';
 
 const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
@@ -155,6 +156,10 @@ function pointColor(record) {
       return afectacionColor(record.afectacion_planta);
     case 'danos_estructura':
       return danoGradoColor(record.danos_estructura);
+    case 'concepto_cierre':
+      // No concepto_cierre yet (most records) -> the same neutral/"sin dato"
+      // color every other categorical mode falls back to, not a 5th color.
+      return record.concepto_cierre ? conceptoCierreColor(record.concepto_cierre) : COLORS.unknown;
     case 'tipologia':
       return tipologiaColor(record);
     case 'uso_edificacion':
@@ -213,6 +218,11 @@ function radiusFor(record, bounds) {
 function popupHtml(r) {
   const title = escapeHtml(r.nombre_edificacion || r.direccion || 'Sin nombre');
   const hab = r.criterio_habitabilidad || r.habitabilidad_calc;
+  // Most records have no concepto_cierre yet (asked only after a formal
+  // closing decision) -- only add the row when there is one to show.
+  const conceptoCierreRow = r.concepto_cierre
+    ? `<dt>Concepto de cierre</dt><dd>${escapeHtml(labelForCode(r.concepto_cierre))}</dd>`
+    : '';
   return `
     <div class="map-popup">
       <h4>${title}</h4>
@@ -221,6 +231,7 @@ function popupHtml(r) {
         <dt>Fecha</dt><dd>${escapeHtml(formatValue('fecha_inspeccion', r.fecha_inspeccion))}</dd>
         <dt>Habitabilidad</dt><dd>${escapeHtml(labelForCode(hab))}</dd>
         <dt>Nivel de daño</dt><dd>${escapeHtml(labelForCode(r.nivel_dano))}</dd>
+        ${conceptoCierreRow}
         <dt>Muertos / heridos</dt><dd>${Number(r.n_muertos) || 0} / ${Number(r.n_heridos) || 0}</dd>
         <dt>Habitantes / pisos / sótanos</dt><dd>${Number(r.n_ocupantes) || 0} / ${Number(r.n_pisos) || 0} / ${Number(r.n_sotanos) || 0}</dd>
       </dl>
@@ -283,6 +294,10 @@ function renderPointsLegend(records) {
     title = labelForField('danos_estructura');
     entries = DANO_GRADO_ORDER.map((code) => ({ label: labelForCode(code), color: danoGradoColor(code) }));
     entries.push({ label: 'Sin dato', color: COLORS.unknown });
+  } else if (state.colorBy === 'concepto_cierre') {
+    title = labelForField('concepto_cierre');
+    entries = CONCEPTO_CIERRE_ORDER.map((code) => ({ label: labelForCode(code), color: conceptoCierreColor(code) }));
+    entries.push({ label: 'Sin concepto', color: COLORS.unknown });
   } else if (state.colorBy === 'tipologia') {
     title = 'Tipología (Casa / Edificación)';
     entries = Object.entries(TIPOLOGIA_COLORS).map(([code, color]) => ({ label: TIPOLOGIA_LABELS[code], color }));

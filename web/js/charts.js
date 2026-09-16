@@ -3,6 +3,7 @@
 import {
   COLORS, themeColor, labelForCode, labelForField, splitMultiValue, habCode, habBinary, normalize, formatDate,
   buildCategoricalScale, interpolateRamp, colapsoResuelto, danoGradoColor, DANO_GRADO_ORDER,
+  CONCEPTO_CIERRE_ORDER, conceptoCierreColor, conceptoCierreCounts,
 } from './utils.js';
 
 /** Colores de un set de valores por INTENSIDAD de un mismo hue (el acento):
@@ -225,6 +226,31 @@ function renderByNivelDano(records) {
         label: 'Inspecciones',
         data: DANO_ORDER.map((k) => counts.get(k)),
         backgroundColor: DANO_ORDER.map((k) => COLORS.damage[k]),
+        borderRadius: 4,
+        maxBarThickness: 40,
+      }],
+    },
+    options: baseOptions(),
+  });
+}
+
+/** Bar: `concepto_cierre` (survey123-new-fields, 2026-09-15), one bar per
+ *  CONCEPTO_CIERRE_ORDER code. Only non-empty, recognized codes are counted
+ *  (conceptoCierreCounts) -- most records have no concepto_cierre yet, so
+ *  unlike renderDanosEstructura there is no "Sin dato" bar (it would dwarf
+ *  every real bucket). When every count is 0 this still renders (all-zero
+ *  bars), the same empty state Chart.js already gives every other chart here
+ *  when the filtered set is empty -- no special-cased "no data" message. */
+function renderByConceptoCierre(records) {
+  const counts = conceptoCierreCounts(records);
+  upsertChart('chart-concepto-cierre', {
+    type: 'bar',
+    data: {
+      labels: CONCEPTO_CIERRE_ORDER.map(labelForCode),
+      datasets: [{
+        label: 'Inspecciones',
+        data: CONCEPTO_CIERRE_ORDER.map((k) => counts.get(k)),
+        backgroundColor: CONCEPTO_CIERRE_ORDER.map((k) => conceptoCierreColor(k)),
         borderRadius: 4,
         maxBarThickness: 40,
       }],
@@ -960,6 +986,7 @@ export function renderStatistics(records, allRecords, reportados = null) {
   }
   renderByComuna(records);
   renderByNivelDano(records);
+  renderByConceptoCierre(records);
   renderByUso(records);
   renderByEpoca(records);
   renderHabByComuna(records);

@@ -8,6 +8,8 @@ import {
   danoGradoColor, DANO_GRADO_ORDER, formatValue, COLORS, sourceLabel, setSourceLabels,
   pointInPolygon, resolveZonaInteres, isInsideCali, faseInspector, faseKeyDe,
   satelliteTileUrl, debounce, stableStringify, downloadStamp, memoizeLoader,
+  CONCEPTO_CIERRE_ORDER, conceptoCierreColor, conceptoCierreCounts, DETAIL_GROUPS, BADGE_FIELDS,
+  labelForCode,
 } from './utils.js';
 
 // Real variants seen in the dataset for the same building should normalize
@@ -868,3 +870,114 @@ console.log('ok — downloadStamp: no-arg call (real clock) keeps the {legible, 
   assert.equal(calls, 2, 'once resolved, the result is cached forever -- fn() never runs a third time');
 }
 console.log('ok — memoizeLoader: retries after a rejection, then caches the success (loadXlsx now shares this policy)');
+
+// --- concepto_cierre: new EDE_v1 coded-domain field (survey123-new-fields, ---
+// 2026-09-15). Stays coded server-side (fetch_survey_raw()); decoded to a
+// short Spanish label CLIENT-SIDE only, consistent with habitabilidad/nivel_dano.
+
+// Exact contents/order: severity-ordered (demolicion worst -> sticker_verde
+// best), same convention as DANO_GRADO_ORDER above — filters/legend/chart all
+// depend on this exact order.
+assert.deepEqual(CONCEPTO_CIERRE_ORDER, ['demolicion', 'fase3', 'arreglos_locativos', 'sticker_verde']);
+
+// labelForCode: short Spanish UI labels, not the layer's full legal-sounding domain text.
+assert.equal(labelForCode('demolicion'), 'Demolición');
+assert.equal(labelForCode('fase3'), 'Fase 3 (evaluación de ingeniería)');
+assert.equal(labelForCode('arreglos_locativos'), 'Arreglos locativos');
+// The layer serves this one code with an unusual capital S ("Sticker_verde") --
+// labelForCode normalizes (lowercases) before lookup, so both the raw-cased
+// code AND its lowercase form must resolve to the same label.
+assert.equal(labelForCode('Sticker_verde'), 'Sticker verde');
+assert.equal(labelForCode('sticker_verde'), 'Sticker verde');
+
+// conceptoCierreColor: 4 distinct hexes, severity-ordered (worst = darkest/red,
+// best = green), none colliding with COLORS.unknown.
+const demolicionColor = conceptoCierreColor('demolicion');
+const fase3Color = conceptoCierreColor('fase3');
+const arreglosColor = conceptoCierreColor('arreglos_locativos');
+const stickerVerdeColor = conceptoCierreColor('Sticker_verde');
+const conceptoColors = [demolicionColor, fase3Color, arreglosColor, stickerVerdeColor];
+assert.equal(new Set(conceptoColors).size, 4, 'each of the 4 concepts must map to a distinct color');
+for (const c of conceptoColors) assert.match(c, /^#[0-9a-f]{6}$/i);
+assert.equal(new Set([...conceptoColors, COLORS.unknown]).size, 5);
+// Mixed-case / accent / whitespace input normalizes the same as the canonical code.
+assert.equal(conceptoCierreColor('DEMOLICION'), demolicionColor);
+assert.equal(conceptoCierreColor('  Fase3  '), fase3Color);
+assert.equal(conceptoCierreColor('sticker_verde'), stickerVerdeColor);
+// Blank / unknown codes fall back to COLORS.unknown, never crash.
+assert.equal(conceptoCierreColor(null), COLORS.unknown);
+assert.equal(conceptoCierreColor(undefined), COLORS.unknown);
+assert.equal(conceptoCierreColor(''), COLORS.unknown);
+assert.equal(conceptoCierreColor('codigo_no_documentado'), COLORS.unknown);
+
+console.log('ok — conceptoCierreColor + CONCEPTO_CIERRE_ORDER + labelForCode (Concepto de cierre)');
+
+// --- conceptoCierreCounts: only non-empty, RECOGNIZED codes are counted -----
+// (the chart/KPI tiles must never invent a phantom 5th bucket for garbage data).
+{
+  const toObj = (m) => Object.fromEntries(m);
+
+  // Empty input: every known code at zero.
+  assert.deepEqual(
+    toObj(conceptoCierreCounts([])),
+    { demolicion: 0, fase3: 0, arreglos_locativos: 0, sticker_verde: 0 },
+  );
+
+  // One of each canonical code, mixed case for the Sticker_verde one.
+  assert.deepEqual(
+    toObj(conceptoCierreCounts([
+      { concepto_cierre: 'demolicion' }, { concepto_cierre: 'fase3' },
+      { concepto_cierre: 'arreglos_locativos' }, { concepto_cierre: 'Sticker_verde' },
+    ])),
+    { demolicion: 1, fase3: 1, arreglos_locativos: 1, sticker_verde: 1 },
+  );
+
+  // Blank shapes (null, undefined, '', missing key) and an unrecognized/legacy
+  // code (the 1700+ pre-2026-09-13 rows have no concepto_cierre at all) count
+  // toward NOTHING -- not even a "sin dato" bucket, per spec (only non-empty,
+  // known codes are counted).
+  assert.deepEqual(
+    toObj(conceptoCierreCounts([
+      { concepto_cierre: null }, { concepto_cierre: undefined },
+      { concepto_cierre: '' }, {}, { concepto_cierre: 'codigo_no_documentado' },
+    ])),
+    { demolicion: 0, fase3: 0, arreglos_locativos: 0, sticker_verde: 0 },
+  );
+
+  // Every record with a KNOWN code is counted exactly once.
+  const mixed = [
+    { concepto_cierre: 'demolicion' }, { concepto_cierre: 'demolicion' },
+    { concepto_cierre: 'fase3' }, { concepto_cierre: null }, {},
+  ];
+  const m = conceptoCierreCounts(mixed);
+  assert.equal([...m.values()].reduce((a, b) => a + b, 0), 3);
+  assert.deepEqual(toObj(m), { demolicion: 2, fase3: 1, arreglos_locativos: 0, sticker_verde: 0 });
+}
+console.log('ok — conceptoCierreCounts: only non-empty known codes counted');
+
+// --- FIELD_LABELS / BADGE_FIELDS / DETAIL_GROUPS: the 4 new survey123 fields -
+assert.equal(labelForField('concepto_cierre'), 'Concepto de cierre');
+assert.equal(labelForField('recomendacion_evaluacion_detallada'), 'Recomendaciones de evaluación detallada');
+assert.equal(labelForField('comuna_formulario'), 'Comuna (formulario)');
+assert.equal(labelForField('barrio_vereda_lista'), 'Barrio / vereda (lista)');
+
+assert.ok(BADGE_FIELDS.has('concepto_cierre'), 'concepto_cierre must render as a badge like nivel_dano/criterio_habitabilidad');
+
+const allGroupedFields = Object.values(DETAIL_GROUPS).flat();
+for (const f of ['concepto_cierre', 'recomendacion_evaluacion_detallada', 'comuna_formulario', 'barrio_vereda_lista']) {
+  assert.ok(allGroupedFields.includes(f), `${f} must appear in some DETAIL_GROUPS section`);
+}
+// comuna_formulario/barrio_vereda_lista are provenance detail, grouped with
+// their respective existing location fields (Identificación section).
+assert.ok(DETAIL_GROUPS['Identificación'].includes('comuna_formulario'));
+assert.ok(DETAIL_GROUPS['Identificación'].includes('barrio_vereda_lista'));
+// concepto_cierre / recomendacion_evaluacion_detallada sit with the other
+// cierre/evaluación fields.
+assert.ok(DETAIL_GROUPS['Evaluación'].includes('concepto_cierre'));
+assert.ok(DETAIL_GROUPS['Evaluación'].includes('recomendacion_evaluacion_detallada'));
+
+// formatValue routes concepto_cierre through labelForCode, same as nivel_dano.
+assert.equal(formatValue('concepto_cierre', 'demolicion'), 'Demolición');
+assert.equal(formatValue('concepto_cierre', null), 'Sin dato');
+
+console.log('ok — FIELD_LABELS/BADGE_FIELDS/DETAIL_GROUPS/formatValue for the 4 new survey123 fields');
