@@ -1796,6 +1796,10 @@ export const DASH = '—';
 export const COLUMNS_TOTALES = [
   { key: 'name', label: 'Nombre' },
   { key: 'cedula', label: 'Cédula' },
+  // W-TP (user request, 2026-09-15): tarjeta profesional is now shown
+  // inline in the Seguimiento tab itself, not just in the per-professional
+  // PDF report — see xlsxRowsFor's totales mapping and cellHtml below.
+  { key: 'tarjetaProfesional', label: 'Tarjeta profesional' },
   { key: 'np', label: 'Clase (P)' },
   { key: 'codigo', label: 'Código vigente' },
   { key: 'stickersFase1', label: 'Sticker F1' },
@@ -1903,14 +1907,19 @@ export function xlsxRowsFor(rows, { subTab = 'totales' } = {}) {
       hora_prom_ult_registro: formatMinutes(r.avgLastMinutes),
     }));
   }
-  // H1: the plan's W9 never lists contact fields (tarjeta_profesional/
-  // celular/correo) for the XLSX -- only W10's per-professional PDF carries
-  // them, alongside its own REPORT_CONFIDENTIALITY_NOTICE. A spreadsheet is
-  // far more likely to be forwarded/copied around unattended than a single
-  // PDF click, so contact data must never leave the app through this export.
+  // H1 (superseded for TP, W-TP, 2026-09-15): the plan's W9 originally never
+  // listed ANY contact field (tarjeta_profesional/celular/correo) for the
+  // XLSX -- only W10's per-professional PDF carried them, alongside its own
+  // REPORT_CONFIDENTIALITY_NOTICE. The user has since explicitly asked for
+  // tarjeta profesional to be visible in the Seguimiento tab itself (see
+  // COLUMNS_TOTALES above), so it is now included here too. `celular`/
+  // `correo` stay PDF-only: H1's original reasoning still applies to those
+  // two — a spreadsheet is far more likely to be forwarded/copied around
+  // unattended than a single PDF click.
   return list.map((r) => ({
     profesional: r.name ?? '',
     cedula: r.cedula ?? '',
+    tarjeta_profesional: r.tarjetaProfesional ?? '',
     clase_p: r.np ?? '',
     codigo_vigente: r.codigo ?? '',
     entidad: r.entidad ?? '',
@@ -2051,8 +2060,11 @@ export function kpiTotals(rowsResult, { stickersLoaded = true } = {}) {
 
 /** Whether `row` matches the free-text search box: a query with >=3 digits
  *  (after stripping every non-digit character) is treated as a CÉDULA search
- *  — `cedulaKey(row.cedula)` must CONTAIN that digit run — else it's a NAME
- *  search — `normalize(row.name)` must contain `normalize(query)`. A short
+ *  — `cedulaKey(row.cedula)` OR `cedulaKey(row.tarjetaProfesional)` must
+ *  CONTAIN that digit run — else it's a NAME search — `normalize(row.name)`
+ *  OR `normalize(row.tarjetaProfesional)` must contain `normalize(query)`
+ *  (W-TP, 2026-09-15: tarjeta profesional is also searchable, same two
+ *  paths as cédula/name, added rather than a third branch). A short
  *  numeric query like "123" therefore never falls back to matching a name
  *  (it stays on the cédula path, which correctly fails against a blank/
  *  non-matching cedula) — the query is either "clearly a cédula fragment" or
@@ -2063,9 +2075,11 @@ export function matchesSearch(row, query) {
   if (!q) return true;
   const digits = cedulaKey(q);
   if (digits.length >= 3) {
-    return cedulaKey(row && row.cedula).includes(digits);
+    return cedulaKey(row && row.cedula).includes(digits)
+      || cedulaKey(row && row.tarjetaProfesional).includes(digits);
   }
-  return normalize((row && row.name) || '').includes(normalize(q));
+  return normalize((row && row.name) || '').includes(normalize(q))
+    || normalize((row && row.tarjetaProfesional) || '').includes(normalize(q));
 }
 
 /** The professional rows currently shown in the table: `rows` narrowed by
@@ -2479,6 +2493,7 @@ export function cellHtml(r, key, stickersLoaded) {
   switch (key) {
     case 'name': return escapeHtml(r.name || 'Sin dato');
     case 'cedula': return stk(escapeHtml(r.cedula || 'Sin dato'));
+    case 'tarjetaProfesional': return stk(escapeHtml(r.tarjetaProfesional || 'Sin dato'));
     case 'np': return stk(escapeHtml(r.np || 'Sin dato'));
     case 'codigo': return stk(escapeHtml(r.codigo || 'Sin dato'));
     case 'stickersFase1': return stk(r.stickersFase1);
@@ -2934,8 +2949,10 @@ export function initSeguimiento(root, { getToken, records }) {
   function renderTable(rows) {
     // W7: seg-chart-professional now ALSO narrows the table (visibleRowsFor's
     // `professionalKey`), alongside the search box (visibleRowsFor's `query`,
-    // matchesSearch — name OR cédula) — see hasActiveSegFilters' own doc
-    // comment for why this is a genuine contract change from before.
+    // matchesSearch — a >=3-digit query matches cédula OR tarjeta profesional
+    // digits, otherwise name OR tarjeta profesional text, W-TP) — see
+    // hasActiveSegFilters' own doc comment for why this is a genuine
+    // contract change from before.
     visibleRows = visibleRowsFor(rows, { query: searchEl.value, professionalKey: chartSelectEl.value || '' });
     const sorted = sortRows(visibleRows, sortState.column, sortState.dir);
     const columns = columnsFor(subTab);

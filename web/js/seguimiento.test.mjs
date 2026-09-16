@@ -166,6 +166,22 @@ console.log('professionalKeyOf: homonyms with different cédulas separate into 3
 }
 console.log('buildIdentityIndex: profiles merge display fields (most-frequent name, first-non-blank contact) OK');
 
+{
+  // W-TP: "first non-blank wins" is order-driven, not inspector_fuente-
+  // driven -- an `evaluacion`-sourced sticker with no TP followed by an
+  // `api`-sourced one that DOES carry a TP must still backfill the
+  // profile's tarjetaProfesional from whichever record has it first.
+  const stickers = [
+    { inspector: { nombre_completo: 'Ana Ruiz', identificacion: '9', tarjeta_profesional: '' }, inspector_fuente: 'evaluacion' },
+    { inspector: { nombre_completo: 'Ana Ruiz', identificacion: '9', tarjeta_profesional: 'TP-API-1' }, inspector_fuente: 'api' },
+  ];
+  const identity = buildIdentityIndex({ stickers, surveys: [] });
+  const key = professionalKeyOf(stickers[0], identity);
+  const profile = identity.profiles.get(key);
+  assert.equal(profile.tarjetaProfesional, 'TP-API-1', 'TP backfilled from the later api-sourced record when the earlier evaluacion one left it blank');
+}
+console.log('buildIdentityIndex: tarjetaProfesional first-non-blank works across mixed inspector_fuente rows OK');
+
 // ── buildIdentityIndex: SIN_DATO stickers must never drive identity (H2) ───
 // A record whose Fase never resolves (faseKeyDe -> 'SIN_DATO') is dropped
 // from buildProfessionalRows entirely (#29) -- but buildIdentityIndex used to
@@ -1895,6 +1911,13 @@ assert.equal(matchesSearch({ name: '99', cedula: '1234567' }, '99'), true, '2-di
 assert.equal(matchesSearch({ name: 'Ana', cedula: '' }, '234'), false, '3-digit query with a blank cedula never falls back to the name path');
 console.log('matchesSearch: cedula path (>=3 digits) vs name path OK');
 
+// ── W-TP: the search box also matches tarjeta profesional ─────────────────
+assert.equal(matchesSearch({ name: 'Ana', cedula: '', tarjetaProfesional: 'TP-778899' }, '7788'), true, '4-digit query matches a TP digit substring when cedula does not');
+assert.equal(matchesSearch({ name: 'Ana', cedula: '1234567', tarjetaProfesional: '' }, '7788'), false, 'no match when neither cedula nor TP contains the digit run');
+assert.equal(matchesSearch({ name: 'Xyz', cedula: '', tarjetaProfesional: 'TP-778899' }, 'tp-77'), true, 'short alphanumeric query matches TP via the name-path substring check');
+assert.equal(matchesSearch({ name: 'Xyz', cedula: '', tarjetaProfesional: '' }, 'tp-77'), false, 'no TP and no matching name -> no match');
+console.log('matchesSearch: tarjetaProfesional also matched (digits via cedula-path, text via name-path) OK');
+
 // ── W7: visibleRowsFor ──────────────────────────────────────────────────
 
 {
@@ -2233,6 +2256,16 @@ assert.deepEqual(defaultSortFor('unknown'), { column: 'stickersFase1', dir: 'des
 assert.ok(COLUMNS_TOTALES.some((c) => c.key === 'np' && c.label === 'Clase (P)'));
 assert.ok(COLUMNS_TOTALES.some((c) => c.key === 'codigo' && c.label === 'Código vigente'));
 assert.ok(COLUMNS_TEMPORALES.some((c) => c.key === 'codigo' && c.label === 'Código'));
+// W-TP (user request 2026-09-15): tarjeta profesional is now shown inline in
+// the Seguimiento totales table (previously PDF-only) -- right after cedula,
+// never in the temporales sub-tab.
+{
+  const cedulaIdx = COLUMNS_TOTALES.findIndex((c) => c.key === 'cedula');
+  const tpIdx = COLUMNS_TOTALES.findIndex((c) => c.key === 'tarjetaProfesional');
+  assert.ok(cedulaIdx >= 0 && tpIdx === cedulaIdx + 1, 'tarjetaProfesional must sit right after cedula in COLUMNS_TOTALES');
+  assert.equal(COLUMNS_TOTALES[tpIdx].label, 'Tarjeta profesional');
+  assert.ok(!COLUMNS_TEMPORALES.some((c) => c.key === 'tarjetaProfesional'), 'tarjetaProfesional must NOT be a temporales column');
+}
 // M5 (generalized): whichever column a sub-tab defaults to must always be
 // one of that SAME sub-tab's own visible headers, for EVERY sub-tab —
 // otherwise the sort indicator (▲/▼) can never render and a header click on
@@ -2335,11 +2368,15 @@ console.log('buildProfessionalRows: avgStickersPerDay uses sticker-only active d
   assert.equal(totalesRows[0].profesional, 'Gil Soto');
   assert.equal(totalesRows[0].clase_p, 'P2');
   assert.equal(totalesRows[0].codigo_vigente, 'B1');
-  // H1: the plan's W9 never lists contact fields for the XLSX (only W10's
-  // PDF, which carries its own confidentiality notice) -- an Excel file is
+  // H1 (superseded for TP, W-TP, user request 2026-09-15): tarjeta
+  // profesional is now visible in the Seguimiento tab itself, so it is
+  // ALSO included in the totales XLSX; celular/correo stay PDF-only
+  // (H1's original reasoning still applies to those two: an Excel file is
   // far more likely to be forwarded/copied around than a per-professional
-  // PDF, so tarjeta/celular/correo must never leave the app via this export.
-  assert.ok(!('tarjeta_profesional' in totalesRows[0]), 'H1: tarjeta_profesional must never appear in the XLSX');
+  // PDF).
+  assert.ok('tarjeta_profesional' in totalesRows[0], 'W-TP: tarjeta_profesional must now appear in the totales XLSX');
+  assert.equal(totalesRows[0].tarjeta_profesional, 'TP-1');
+  assert.equal(totalesRows[1].tarjeta_profesional, '', 'missing TP defaults to empty string, never undefined/null');
   assert.ok(!('celular' in totalesRows[0]), 'H1: celular must never appear in the XLSX');
   assert.ok(!('correo' in totalesRows[0]), 'H1: correo must never appear in the XLSX');
   // Nit: barrios join with ', ' -- same separator the table cell uses
@@ -2763,12 +2800,12 @@ console.log('buildMassReportDocDefinition: 110-professional perf sanity (page br
 // inconsistency with `daysSinceFirst`, which WAS already masked. ──────────
 {
   const row = {
-    name: 'Gil Soto', cedula: '123', np: 'P2', codigo: 'B1',
+    name: 'Gil Soto', cedula: '123', np: 'P2', codigo: 'B1', tarjetaProfesional: 'TP-9988',
     stickersFase1: 2, stickersFase2: 1, surveyTotal: 1, activeDays: 3,
     avgStickersPerDay: 1.5, barriosActivos: ['San Antonio'],
     firstDate: '2026-01-01', lastDate: '2026-01-05', daysSinceFirst: 8,
   };
-  const maskedColumns = ['np', 'codigo', 'cedula', 'barriosActivos', 'activeDays', 'firstDate', 'lastDate'];
+  const maskedColumns = ['np', 'codigo', 'cedula', 'tarjetaProfesional', 'barriosActivos', 'activeDays', 'firstDate', 'lastDate'];
   for (const key of maskedColumns) {
     assert.equal(cellHtml(row, key, false), DASH, `H2: column "${key}" must be DASH-masked while stickersLoaded=false`);
   }
@@ -2776,6 +2813,7 @@ console.log('buildMassReportDocDefinition: 110-professional perf sanity (page br
   assert.equal(cellHtml(row, 'np', true), 'P2');
   assert.equal(cellHtml(row, 'codigo', true), 'B1');
   assert.equal(cellHtml(row, 'cedula', true), '123');
+  assert.equal(cellHtml(row, 'tarjetaProfesional', true), 'TP-9988');
   assert.equal(cellHtml(row, 'barriosActivos', true), 'San Antonio');
   assert.equal(cellHtml(row, 'activeDays', true), 3);
   assert.equal(cellHtml(row, 'firstDate', true), '2026-01-01');
@@ -2783,7 +2821,18 @@ console.log('buildMassReportDocDefinition: 110-professional perf sanity (page br
   // Already-masked column (daysSinceFirst) stays masked -- no regression.
   assert.equal(cellHtml(row, 'daysSinceFirst', false), DASH);
 }
-console.log('cellHtml (H2): np/codigo/cedula/barriosActivos/activeDays/firstDate/lastDate all DASH-masked while !stickersLoaded OK');
+console.log('cellHtml (H2): np/codigo/cedula/tarjetaProfesional/barriosActivos/activeDays/firstDate/lastDate all DASH-masked while !stickersLoaded OK');
+
+// ── W-TP: cellHtml renders tarjetaProfesional like cedula/codigo (blank ->
+// "Sin dato", same masking rule) ────────────────────────────────────────
+{
+  const rowWithTp = { tarjetaProfesional: 'TP-123' };
+  const rowBlankTp = { tarjetaProfesional: '' };
+  assert.equal(cellHtml(rowWithTp, 'tarjetaProfesional', true), 'TP-123');
+  assert.equal(cellHtml(rowBlankTp, 'tarjetaProfesional', true), 'Sin dato');
+  assert.equal(cellHtml(rowWithTp, 'tarjetaProfesional', false), DASH);
+}
+console.log('cellHtml: tarjetaProfesional renders real value / "Sin dato" / DASH-masked, same rule as cedula/codigo OK');
 
 // ── M4: buildProfessionalReportDocDefinition must use ctx.generatedAt when
 // given, instead of always calling downloadStamp() itself -- a sentinel
