@@ -469,12 +469,25 @@ def inspector_profiles(db: Any) -> tuple[dict[str, dict[str, str]], dict[str, di
     by_identificacion: dict[str, dict[str, str]] = {}
     for snap in db.collection(INSPECTORES_COLLECTION).get():
         d = snap.to_dict() or {}
+        raw_codigo = str(d.get("codigo") or "").strip()
         profile = {
             "uid": snap.id,
             "nombre_completo": str(d.get("nombre_completo") or "").strip(),
             "identificacion": str(d.get("identificacion") or "").strip(),
             "entidad": str(d.get("entidad") or "").strip(),
             "np": str(d.get("NP") or "").strip(),
+            # Bug fix (Phase 3 apply pass, 2026-09-16, found while wiring
+            # `inspectores_depuracion`): `codigo` was computed into
+            # `raw_codigo` above ONLY to key `by_codigo`, never actually
+            # stored as a field on `profile` itself — so
+            # `stickers_atencionsismo.normalize_sticker`'s Rule A
+            # (`roster_cedula_match.get("codigo")`, this file's own
+            # `by_identificacion` map) always read "" in production; only
+            # unit tests exercised that branch, via hand-built
+            # `roster_by_cedula` fixtures that set "codigo" directly. Purely
+            # additive (a new dict key) — no existing consumer reads
+            # dict-equality against the full profile shape.
+            "codigo": raw_codigo,
             # W3 (plan cozy-wobbling-dragonfly): projected from the SAME
             # scan, no second Firestore read. `tarjeta_profesional` has no
             # backing Firestore field yet (plumbing kept ready for when one
@@ -484,7 +497,6 @@ def inspector_profiles(db: Any) -> tuple[dict[str, dict[str, str]], dict[str, di
             "num_telefono": str(d.get("num_telefono") or "").strip(),
             "correo_contacto": str(d.get("correo_contacto") or "").strip(),
         }
-        raw_codigo = str(d.get("codigo") or "").strip()
         if raw_codigo:
             by_codigo[raw_codigo.zfill(3)] = dict(profile)
         identificacion_key = cedula_key(profile["identificacion"])

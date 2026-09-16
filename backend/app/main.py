@@ -147,6 +147,13 @@ def create_app() -> FastAPI:
     # (31-ago-2026 quota-outage follow-up: this action had no cache at all).
     app.state.stickers_inspectores_cache = InspectoresCache()
 
+    # seguimiento-inspectores-depurado (design D4/D6): derived cache for the
+    # `depuracion` block GET /stickers-atencionsismo optionally attaches,
+    # gated by SEGUIMIENTO_DEPURACION. Own TTL for the (private) reference
+    # bundle read plus a keyed-by-object-identity cache for `depurar()`'s
+    # own output — see `DepuracionCache`'s docstring.
+    app.state.depuracion_cache = stickers_atencionsismo.DepuracionCache()
+
     # Same convention, `planeacion_asignaciones.py`'s own `resumen`/
     # `metricasProgreso` aggregate cache (speed follow-up, 2026-08-27).
     app.state.planeacion_aggregates_cache = PlaneacionAggregatesCache()

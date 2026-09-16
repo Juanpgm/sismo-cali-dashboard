@@ -145,9 +145,18 @@ def _token_available() -> bool:
     return bool(os.environ.get("BLOB_READ_WRITE_TOKEN", "").strip())
 
 
-def cargar_referencia(*, load_json=blob_lkg.load_json, ahora=None) -> ReferenciaBundle:
+def cargar_referencia(*, load_json=blob_lkg.load_json_private, ahora=None) -> ReferenciaBundle:
     """The I/O seam. NEVER raises (D5) — every failure mode degrades to
     `ReferenciaBundle.vacia(motivo=...)`:
+
+    Phase 3 fix (router-wiring apply pass, 2026-09-16): the default was
+    `blob_lkg.load_json` (an UNAUTHENTICATED GET to the public CDN host),
+    which cannot actually read an `access:'private'` blob — D8 explicitly
+    requires "lectura autenticada con BLOB_READ_WRITE_TOKEN". Switched to
+    `blob_lkg.load_json_private` (sends the Bearer token on the GET). Every
+    Phase 1 test injects its own `load_json` fake, so this default-only
+    change breaks nothing; production behavior changes from "always
+    degrades to sin_blob against a private bundle" to "actually reads it".
     - `sin_token`: `BLOB_READ_WRITE_TOKEN` unset, checked before calling
       `load_json` since `blob_lkg.load_json` itself doesn't distinguish WHY
       it returned `None`.

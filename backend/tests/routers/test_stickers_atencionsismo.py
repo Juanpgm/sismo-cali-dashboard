@@ -10,13 +10,18 @@ instead of creating a second fake."""
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import time
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+
+from app.services import blob_lkg
+from app.services.inspectores_depuracion import Depuracion
+from app.services.inspectores_referencia import EntradaReferencia, ReferenciaBundle
 
 from app.auth.deps import current_claims
 from app.main import create_app
@@ -857,3 +862,315 @@ def test_both_upstream_and_firestore_succeed_builds_payload_as_before(monkeypatc
     by_id = {e["id"]: e for e in payload}
     assert by_id["ev-1"]["inspector"]["np"] == "P4"
     assert cache.calls == 1
+
+
+# ── DepuracionCache: object-identity + hoy + generado_en recompute signal
+# (design D4/D6, task 3.6) ──────────────────────────────────────────────
+
+
+def _fake_depuracion(referencia: ReferenciaBundle) -> Depuracion:
+    return Depuracion(
+        activa=referencia.activa, motivo=referencia.motivo,
+        referencia_generada_en=referencia.generado_en,
+        inspectores=(), grupo_externos=None, alias_nombres={}, revision_manual=(),
+    )
+
+
+def test_depuracion_cache_same_object_no_recompute(monkeypatch):
+    clock = {"t": 0.0}
+    monkeypatch.setattr(router_mod.time, "monotonic", lambda: clock["t"])
+
+    bundle = ReferenciaBundle.vacia()
+    calls = {"compute": 0}
+
+    def _compute(referencia):
+        calls["compute"] += 1
+        return _fake_depuracion(referencia)
+
+    cache = router_mod.DepuracionCache(cargar_referencia=lambda: bundle)
+    evaluaciones = [{"id": "1"}]
+    hoy = date(2026, 9, 16)
+
+    r1 = cache.get_or_compute(evaluaciones=evaluaciones, hoy=hoy, compute=_compute)
+    r2 = cache.get_or_compute(evaluaciones=evaluaciones, hoy=hoy, compute=_compute)
+    assert r1 is r2
+    assert calls["compute"] == 1
+
+
+def test_depuracion_cache_new_object_recomputes():
+    bundle = ReferenciaBundle.vacia()
+    calls = {"compute": 0}
+
+    def _compute(referencia):
+        calls["compute"] += 1
+        return _fake_depuracion(referencia)
+
+    cache = router_mod.DepuracionCache(cargar_referencia=lambda: bundle)
+    hoy = date(2026, 9, 16)
+
+    cache.get_or_compute(evaluaciones=[{"id": "1"}], hoy=hoy, compute=_compute)
+    # SAME content, DIFFERENT object identity — the exact D4 signal.
+    cache.get_or_compute(evaluaciones=[{"id": "1"}], hoy=hoy, compute=_compute)
+    assert calls["compute"] == 2
+
+
+def test_depuracion_cache_new_hoy_recomputes():
+    bundle = ReferenciaBundle.vacia()
+    calls = {"compute": 0}
+
+    def _compute(referencia):
+        calls["compute"] += 1
+        return _fake_depuracion(referencia)
+
+    cache = router_mod.DepuracionCache(cargar_referencia=lambda: bundle)
+    evaluaciones = [{"id": "1"}]
+
+    cache.get_or_compute(evaluaciones=evaluaciones, hoy=date(2026, 9, 16), compute=_compute)
+    cache.get_or_compute(evaluaciones=evaluaciones, hoy=date(2026, 9, 17), compute=_compute)
+    assert calls["compute"] == 2
+
+
+def test_depuracion_cache_new_generado_en_recomputes(monkeypatch):
+    clock = {"t": 0.0}
+    monkeypatch.setattr(router_mod.time, "monotonic", lambda: clock["t"])
+
+    referencias = {"bundle": ReferenciaBundle.vacia(motivo="sin_blob")}
+    calls = {"compute": 0}
+
+    def _compute(referencia):
+        calls["compute"] += 1
+        return _fake_depuracion(referencia)
+
+    cache = router_mod.DepuracionCache(cargar_referencia=lambda: referencias["bundle"])
+    evaluaciones = [{"id": "1"}]
+    hoy = date(2026, 9, 16)
+
+    cache.get_or_compute(evaluaciones=evaluaciones, hoy=hoy, compute=_compute)
+    assert calls["compute"] == 1
+
+    # Force the referencia TTL boundary so `_referencia_actual()` re-reads
+    # it, then change WHAT it returns — `generado_en`/`activa` alone (not
+    # the TTL expiry) is what must trigger the depuración recompute.
+    clock["t"] += router_mod.REFERENCIA_CACHE_TTL_SECONDS + 1
+    referencias["bundle"] = ReferenciaBundle(
+        vercel=(), fase2=(), main=(), generado_en="2026-09-16", activa=True, motivo="", codigos_duplicados=(),
+    )
+    cache.get_or_compute(evaluaciones=evaluaciones, hoy=hoy, compute=_compute)
+    assert calls["compute"] == 2
+
+
+def test_depuracion_cache_referencia_ttl_not_yet_expired_reuses_bundle(monkeypatch):
+    """`_referencia_actual()` itself must not re-read the Blob every call —
+    the whole point of the 30-min TTL (Data Flow diagram)."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(router_mod.time, "monotonic", lambda: clock["t"])
+    calls = {"cargar": 0}
+
+    def _cargar_referencia():
+        calls["cargar"] += 1
+        return ReferenciaBundle.vacia()
+
+    cache = router_mod.DepuracionCache(cargar_referencia=_cargar_referencia)
+    cache.get_or_compute(evaluaciones=[{"id": "1"}], hoy=date(2026, 9, 16), compute=_fake_depuracion)
+    clock["t"] += router_mod.REFERENCIA_CACHE_TTL_SECONDS - 1
+    cache.get_or_compute(evaluaciones=[{"id": "1"}], hoy=date(2026, 9, 16), compute=_fake_depuracion)
+    assert calls["cargar"] == 1
+
+
+# ── GET /stickers-atencionsismo: `depuracion` block (design D1-D8, tasks.md
+# 3.10-3.14) ────────────────────────────────────────────────────────────
+
+
+def test_flag_off_response_omits_depuracion_key(client, monkeypatch):
+    monkeypatch.delenv(router_mod.SEGUIMIENTO_DEPURACION_ENV, raising=False)
+    body = client.get("/stickers-atencionsismo").json()
+    assert "depuracion" not in body
+
+
+def test_flag_zero_response_omits_depuracion_key(client, monkeypatch):
+    monkeypatch.setenv(router_mod.SEGUIMIENTO_DEPURACION_ENV, "0")
+    body = client.get("/stickers-atencionsismo").json()
+    assert "depuracion" not in body
+
+
+def test_flag_on_referencia_missing_degrades_gracefully_still_200(monkeypatch):
+    monkeypatch.setenv(router_mod.SEGUIMIENTO_DEPURACION_ENV, "1")
+    monkeypatch.setattr(atencionsismo, "credentials_from_env", lambda: ("u", "p"))
+
+    async def fake_fetch(client, user, password, **kw):
+        return list(ROWS)
+
+    monkeypatch.setattr(atencionsismo, "fetch_stickers", fake_fetch)
+    fake_auth = _FakeAuth()
+    stores = {"inspectores": {}, "evaluaciones": {}, "survey_cali": {}}
+    app = _app(monkeypatch, fake_auth, stores)
+    app.dependency_overrides[current_claims] = lambda: FAKE_CLAIMS_ADMIN
+    app.state.depuracion_cache = router_mod.DepuracionCache(
+        cargar_referencia=lambda: ReferenciaBundle.vacia(motivo="sin_blob")
+    )
+
+    resp = TestClient(app).get("/stickers-atencionsismo")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["depuracion"]["activa"] is False
+    assert body["depuracion"]["motivo"] == "sin_blob"
+    assert body["depuracion"]["inspectores"] == []
+
+
+def test_flag_on_referencia_presente_popula_inspectores_activa_true(monkeypatch):
+    monkeypatch.setenv(router_mod.SEGUIMIENTO_DEPURACION_ENV, "1")
+    monkeypatch.setattr(atencionsismo, "credentials_from_env", lambda: ("u", "p"))
+
+    async def fake_fetch(client, user, password, **kw):
+        return list(ROWS)
+
+    monkeypatch.setattr(atencionsismo, "fetch_stickers", fake_fetch)
+    fake_auth = _FakeAuth()
+    stores = {
+        "inspectores": {
+            "u1": {"codigo": "004", "NP": "P4", "nombre_completo": "Ana Gomez",
+                   "identificacion": "123", "entidad": "Curaduria 1"},
+        },
+        "evaluaciones": {},
+        "survey_cali": {},
+    }
+    app = _app(monkeypatch, fake_auth, stores)
+    app.dependency_overrides[current_claims] = lambda: FAKE_CLAIMS_ADMIN
+
+    referencia = ReferenciaBundle(
+        vercel=(EntradaReferencia(cedula_key="123", nombre_norm="ana gomez", np="P3",
+                                   entidad="DAGRD", codigo="", pasos=(), no_persona=False),),
+        fase2=(), main=(), generado_en="2026-09-12", activa=True, motivo="", codigos_duplicados=(),
+    )
+    app.state.depuracion_cache = router_mod.DepuracionCache(cargar_referencia=lambda: referencia)
+
+    body = TestClient(app).get("/stickers-atencionsismo").json()
+    dep = body["depuracion"]
+    assert dep["activa"] is True
+    assert dep["referencia_generada_en"] == "2026-09-12"
+    assert len(dep["inspectores"]) == 1
+    inspector = dep["inspectores"][0]
+    assert inspector["identidad_key"] == "123"
+    assert inspector["np"] == "P3"
+    assert inspector["np_fuente"] == "vercel"
+    assert inspector["estado_sugerido"] == "activo"  # roster's own codigo="004"
+    assert "revision_manual" in dep and "alias_nombres" in dep
+
+
+def test_flag_on_degraded_stickers_payload_still_returns_200(client, monkeypatch):
+    """Task 3.13: a Blob-restored (degraded) stickers payload — identity
+    fields already blanked by `redact_for_blob` — must never turn into an
+    error once SEGUIMIENTO_DEPURACION is on. `depuracion` is computed from
+    the (unrelated, non-degraded) Firestore roster regardless — a blank
+    sticker `identificacion` simply attributes zero stickers to every
+    profile (`fusionar_identidad` skips unattributable stickers, never
+    raises) — the sticker response itself stays 200 with `depuracion`
+    present and `activa` reflecting the injected reference bundle."""
+    monkeypatch.setenv(router_mod.SEGUIMIENTO_DEPURACION_ENV, "1")
+    client.app.state.depuracion_cache = router_mod.DepuracionCache(
+        cargar_referencia=lambda: ReferenciaBundle.vacia(motivo="sin_blob")
+    )
+    _degrade_evaluaciones_cache(client)
+    old_row = {"id": "old", "fuente": "atencionsismo", "origen": "firebase", "color_etiqueta": "",
+               "codigo_edificacion": "c", "consecutivo": 1, "municipio": "76001", "area": "1",
+               "area_nombre": "", "clasificacion": "", "alcance": "", "coords": None,
+               "restricciones": "", "acciones_posteriores": {"barricadas": False, "evaluacion_detallada": False},
+               "fecha": None, "fecha_fuente": "no_aplica", "barrio_reportado": "", "comuna_reportada": "",
+               "descripcion": {"nombre": "", "direccion": ""},
+               "inspector": {"uid": "", "codigo": "", "nombre_completo": "", "identificacion": "",
+                             "entidad": "", "np": "", "tarjeta_profesional": "", "num_telefono": "",
+                             "correo_contacto": ""},
+               "comentarios": "", "fotos": []}
+
+    def fake_load(pathname, expected_type):
+        if pathname == router_mod.STICKERS_LKG_BLOB:
+            return [old_row]
+        return None
+
+    monkeypatch.setattr(stickers.blob_lkg, "load_json", fake_load)
+
+    resp = client.get("/stickers-atencionsismo")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["degraded"] is True
+    assert body["depuracion"]["activa"] is False
+    assert body["depuracion"]["motivo"] == "sin_blob"
+
+
+def test_flag_on_depuracion_computation_failure_never_breaks_response(client, monkeypatch):
+    """Advisory-only invariant (spec): a depuración computation bug must
+    degrade to an OMITTED `depuracion` key, never an error response."""
+    monkeypatch.setenv(router_mod.SEGUIMIENTO_DEPURACION_ENV, "1")
+
+    def _boom():
+        raise RuntimeError("referencia boom")
+
+    client.app.state.depuracion_cache = router_mod.DepuracionCache(cargar_referencia=_boom)
+
+    resp = client.get("/stickers-atencionsismo")
+
+    assert resp.status_code == 200
+    assert "depuracion" not in resp.json()
+
+
+def test_depuracion_pii_never_reaches_blob_persisted_evaluaciones(monkeypatch):
+    """Task 3.14 (D3, PII isolation): `depuracion`'s nombres/cédulas/
+    teléfonos/correos must NEVER appear in the payload
+    `EvaluacionesCache._persist_last_good` writes to the PUBLIC
+    `stickers_atencionsismo` Blob — structurally guaranteed by `depuracion`
+    being assembled into `body`, entirely OUTSIDE `payload` (the object
+    `cache.get_or_fetch` already persisted, redacted, BEFORE `depuracion` is
+    even computed). This proves the guarantee end-to-end, not just by code
+    inspection."""
+    monkeypatch.setenv(router_mod.SEGUIMIENTO_DEPURACION_ENV, "1")
+    monkeypatch.setattr(atencionsismo, "credentials_from_env", lambda: ("u", "p"))
+
+    async def fake_fetch(client, user, password, **kw):
+        return list(ROWS)
+
+    monkeypatch.setattr(atencionsismo, "fetch_stickers", fake_fetch)
+    fake_auth = _FakeAuth()
+    nombre_secreto = "Ana Maria Gomez Secreta"
+    stores = {
+        "inspectores": {
+            "u1": {"codigo": "004", "NP": "P4", "nombre_completo": nombre_secreto,
+                   "identificacion": "123456789", "entidad": "Curaduria 1",
+                   "correo_contacto": "ana.secreta@example.com", "num_telefono": "3000000000"},
+        },
+        "evaluaciones": {},
+        "survey_cali": {},
+    }
+    app = _app(monkeypatch, fake_auth, stores)
+    app.dependency_overrides[current_claims] = lambda: FAKE_CLAIMS_ADMIN
+
+    referencia = ReferenciaBundle(
+        vercel=(EntradaReferencia(cedula_key="123456789", nombre_norm="ana maria gomez secreta", np="P3",
+                                   entidad="DAGRD", codigo="", pasos=(), no_persona=False),),
+        fase2=(), main=(), generado_en="2026-09-12", activa=True, motivo="", codigos_duplicados=(),
+    )
+    app.state.depuracion_cache = router_mod.DepuracionCache(cargar_referencia=lambda: referencia)
+
+    saves: list[tuple[str, Any]] = []
+    monkeypatch.setattr(blob_lkg, "save_json", lambda pathname, payload: saves.append((pathname, payload)) or True)
+
+    body = TestClient(app).get("/stickers-atencionsismo").json()
+
+    # Sanity: depuración actually ran and carries the secret identity —
+    # otherwise this test would trivially pass for the wrong reason.
+    assert body["depuracion"]["activa"] is True
+    assert any(i["nombre_completo"] == nombre_secreto for i in body["depuracion"]["inspectores"])
+
+    upload_cache = app.state.stickers_atencionsismo_cache
+    if upload_cache._persist_thread is not None:
+        upload_cache._persist_thread.join()
+
+    stickers_saves = [payload for pathname, payload in saves if pathname == router_mod.STICKERS_LKG_BLOB]
+    assert len(stickers_saves) == 1
+    serialized = json.dumps(stickers_saves[0], ensure_ascii=False, default=str)
+    assert "depuracion" not in serialized
+    assert nombre_secreto not in serialized
+    assert "123456789" not in serialized
+    assert "ana.secreta@example.com" not in serialized
+    assert "3000000000" not in serialized

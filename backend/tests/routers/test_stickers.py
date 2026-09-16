@@ -1004,6 +1004,7 @@ def test_inspector_profile_by_codigo_returns_full_profile():
             "identificacion": "123",
             "entidad": "Curaduria 1",
             "np": "P4",
+            "codigo": "004",
             "tarjeta_profesional": "",
             "num_telefono": "",
             "correo_contacto": "",
@@ -1037,7 +1038,7 @@ def test_inspector_profile_by_codigo_defaults_missing_fields_to_empty_string():
     db = _FakeFirestore({"inspectores": {"u1": {"codigo": "004"}}})
     assert stickers.inspector_profile_by_codigo(db) == {
         "004": {"uid": "u1", "nombre_completo": "", "identificacion": "", "entidad": "", "np": "",
-                "tarjeta_profesional": "", "num_telefono": "", "correo_contacto": ""}
+                "codigo": "004", "tarjeta_profesional": "", "num_telefono": "", "correo_contacto": ""}
     }
 
 
@@ -1075,6 +1076,7 @@ def test_inspector_profile_by_identificacion_returns_full_profile():
             "identificacion": "123",
             "entidad": "Curaduria 1",
             "np": "P4",
+            "codigo": "004",
             "tarjeta_profesional": "",
             "num_telefono": "",
             "correo_contacto": "",
@@ -1108,7 +1110,7 @@ def test_inspector_profile_by_identificacion_strips_whitespace():
     db = _FakeFirestore({"inspectores": {"u1": {"identificacion": "  123  ", "nombre_completo": "Ana"}}})
     assert stickers.inspector_profile_by_identificacion(db) == {
         "123": {"uid": "u1", "nombre_completo": "Ana", "identificacion": "123", "entidad": "", "np": "",
-                "tarjeta_profesional": "", "num_telefono": "", "correo_contacto": ""}
+                "codigo": "", "tarjeta_profesional": "", "num_telefono": "", "correo_contacto": ""}
     }
 
 
@@ -1182,6 +1184,28 @@ def test_inspector_profiles_contact_fields_default_to_empty_string_when_absent()
     assert by_codigo["004"]["tarjeta_profesional"] == ""
     assert by_codigo["004"]["num_telefono"] == ""
     assert by_codigo["004"]["correo_contacto"] == ""
+
+
+# ── Bug fix (Phase 3 apply pass, 2026-09-16): `codigo` was computed for the
+# `by_codigo` dict KEY but never stored as a field on either map's profile
+# VALUE, so `stickers_atencionsismo.normalize_sticker`'s Rule A
+# (`roster_cedula_match.get("codigo")`) always read "" against a REAL
+# roster — only hand-built test fixtures ever exercised that branch. ──────
+
+
+def test_inspector_profiles_projects_codigo_field_from_one_scan():
+    db = _FakeFirestore({
+        "inspectores": {"u1": {"codigo": "004", "identificacion": "123", "nombre_completo": "Ana"}},
+    })
+    by_codigo, by_identificacion = stickers.inspector_profiles(db)
+    assert by_codigo["004"]["codigo"] == "004"
+    assert by_identificacion["123"]["codigo"] == "004"
+
+
+def test_inspector_profiles_codigo_defaults_to_empty_string_when_absent():
+    db = _FakeFirestore({"inspectores": {"u1": {"identificacion": "123", "nombre_completo": "Ana"}}})
+    _, by_identificacion = stickers.inspector_profiles(db)
+    assert by_identificacion["123"]["codigo"] == ""
 
 
 # ── EvaluacionesCache: parametrized Blob pathname + redaction ────────────
