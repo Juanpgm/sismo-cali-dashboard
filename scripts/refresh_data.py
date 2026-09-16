@@ -1008,35 +1008,131 @@ def _clean_barrio_value(v):
     return s or None
 
 
-def resolve_barrio_vereda(df: pd.DataFrame) -> pd.DataFrame:
-    """Derive `barrio_vereda_resuelto` / `barrio_vereda_fuente`: the
-    geographic intersection against the basemaps (`barrio_geo`, from
-    `spatial_join`) wins over the inspector's free-typed value
-    (`barrio_vereda`) whenever both exist -- measured on inspections.json,
-    the polygon is more precise in ~44.5% of the records that carry both
-    ('Napoles' -> 'Alto Napoles'; one typed value was 'Suba 1', a Bogota
-    neighbourhood, not even in Cali). Falls back to the typed value when the
-    point falls outside every polygon (~1.2% of records) so those rows never
-    go blank, tagged 'reportado' so downstream consumers know it is NOT
-    geographic. Neither present -> `None` / 'sin_dato', never a crash.
+# Free-typed junk answers to `comuna_formulario` that don't name any comuna
+# and aren't meaningful free text either (case-insensitive match).
+_COMUNA_JUNK_VALUES = {"xxx", "no se sabe"}
 
-    Neither `barrio_geo` nor `barrio_vereda` is mutated or removed -- both
-    stay in the output, unchanged, for provenance/inspection. Pure function
-    of those two columns: safe to call once, after every `spatial_join()`
-    (including the corrected/reverted re-joins inside `apply_photo_coords`/
-    `validate_photo_coords`) has settled."""
+
+def clean_comuna_formulario(value) -> str | None:
+    """Normalize the new, free-typed `comuna` Survey123 answer (final column
+    `comuna_formulario`) into the geo format ("COMUNA 02", zero-padded to 2
+    digits) whenever it clearly names a comuna number ("19", "19 ",
+    "Comuna 19", "COMUNA 19", "Comuna19..."); a number outside 1-22 or a
+    "comuna"-shaped-but-unparseable answer ("Comuna 25", "Comuna ll",
+    "Comuna") is dropped as junk (`None`), same as other known junk phrases
+    ("xxx", "no se sabe"). Anything else (a corregimiento name, "Zona
+    Rural") is genuine free text and passes through trimmed, unchanged.
+
+    `comuna_formulario` is a PROVENANCE/detail column ONLY -- it must never
+    be merged into the existing `comuna` column (the spatial-join result
+    against comunas.geojson that feeds the choropleth and every comuna-based
+    filter/chart); merging risks a typed value that doesn't match a real
+    polygon name breaking those consumers. See normalize()'s call site.
+
+    Numeric input (an int, or a whole-number float -- a plausible dtype for
+    a column that is sometimes all-numeric, e.g. pandas reading "19" as
+    19.0) is converted to its int value BEFORE string conversion, so it is
+    recognized the same as the equivalent typed string ("19")."""
+    if isinstance(value, float) and not pd.isna(value) and value.is_integer():
+        value = int(value)
+    v = _clean_barrio_value(value)
+    if v is None:
+        return None
+    if v.lower() in _COMUNA_JUNK_VALUES:
+        return None
+
+    # (?!\d) instead of a trailing \b: `\b` never matches between a digit and
+    # a glued-on letter (both are "word" characters to `\b`, so there is no
+    # boundary there) -- that silently dropped "Comuna19administra"/
+    # "COMUNA19ADMINISTRATIVA" all the way through to the free-text branch
+    # instead of recognizing comuna 19. (?!\d) only rules out a THIRD digit
+    # extending the number (so "Comuna196" still correctly fails to parse as
+    # a 1-22 comuna), while allowing any non-digit (letter, end-of-string) right after.
+    m = re.match(r"(?i)^comuna\s*0*([0-9]{1,2})(?!\d)", v)
+    if not m:
+        m = re.fullmatch(r"0*([0-9]{1,2})", v)
+    if m:
+        num = int(m.group(1))
+        return f"COMUNA {num:02d}" if 1 <= num <= 22 else None
+    # No trailing \b here either, for the same reason as above -- "comuna"
+    # itself is unambiguous as a junk/unparseable prefix regardless of what
+    # (if anything, even non-word characters) immediately follows it.
+    if re.match(r"(?i)^comuna", v):
+        # Starts with "comuna" but no valid 1-22 number found (e.g.
+        # "Comuna ll", "Comuna", "Comuna 25"/"Comuna196" already handled above).
+        return None
+    return v
+
+
+def clean_concepto_cierre_code(value) -> str | None:
+    """Lowercase + strip a `concepto_cierre` coded-domain answer SERVER-SIDE.
+
+    The layer ships one code with an unusual capital ('Sticker_verde') --
+    left as-is, a mixed-case record and a lowercase one would read as two
+    DIFFERENT values to every consumer that ranks/groups by the raw string
+    (e.g. web/js/data.js's computeOptions building filter options), even
+    though utils.js's client-side normalize() already makes them look
+    identical everywhere else (color, label). Normalizing once here, at the
+    source, closes that gap for every downstream consumer (filters, table,
+    xlsx export) at once. The client-side normalize() stays in place too --
+    this is defense in depth, not a replacement for it (a `concepto_cierre`
+    value predating this fix could still be sitting in an already-published
+    inspections.json). None/NaN/blank -> None."""
+    v = _clean_barrio_value(value)
+    return v.lower() if v is not None else None
+
+
+def resolve_barrio_vereda(df: pd.DataFrame) -> pd.DataFrame:
+    """Derive `barrio_vereda_resuelto` / `barrio_vereda_fuente`, precedence
+    geo -> lista -> reportado -> sin_dato:
+
+    1. `barrio_geo` (geographic intersection against the basemaps, from
+       `spatial_join`) wins whenever present -- measured on inspections.json,
+       the polygon is more precise in ~44.5% of the records that carry both
+       it and the typed value ('Napoles' -> 'Alto Napoles'; one typed value
+       was 'Suba 1', a Bogota neighbourhood, not even in Cali).
+    2. `barrio_vereda_lista` (the new EDE_v1 layer field: a coded-domain
+       "pick from ~420 Cali barrios" question, already decoded to a label by
+       fetch_survey_raw()) is the next best source when the point falls
+       outside every polygon -- tagged 'lista' so downstream consumers know
+       it is a picklist answer, not a geometric join.
+    3. `barrio_vereda` (the inspector's free-typed value, the legacy
+       question) is the last fallback, tagged 'reportado' so downstream
+       consumers know it is NOT geographic and NOT from the picklist.
+    4. None of the three present -> `None` / 'sin_dato', never a crash.
+
+    `barrio_vereda_lista` may be ABSENT entirely (raw frames predating the
+    2026-09-15 EDE_v1 schema change) -- that must resolve exactly like
+    before this precedence was added, so a missing column defaults to an
+    all-None series, same as `barrio_geo`/`barrio_vereda` always have.
+
+    None of `barrio_geo`, `barrio_vereda_lista` or `barrio_vereda` is
+    mutated or removed -- all three stay in the output, unchanged, for
+    provenance/inspection. Pure function of those columns: safe to call
+    once, after every `spatial_join()` (including the corrected/reverted
+    re-joins inside `apply_photo_coords`/`validate_photo_coords`) has
+    settled."""
     n = len(df)
-    geo_col = df["barrio_geo"] if "barrio_geo" in df.columns else pd.Series([None] * n, index=df.index)
-    tipeado_col = df["barrio_vereda"] if "barrio_vereda" in df.columns else pd.Series([None] * n, index=df.index)
+
+    def _col(name: str) -> pd.Series:
+        return df[name] if name in df.columns else pd.Series([None] * n, index=df.index)
+
+    geo_col = _col("barrio_geo")
+    lista_col = _col("barrio_vereda_lista")
+    tipeado_col = _col("barrio_vereda")
 
     resuelto = []
     fuente = []
-    for g_raw, t_raw in zip(geo_col, tipeado_col):
+    for g_raw, l_raw, t_raw in zip(geo_col, lista_col, tipeado_col):
         g = _clean_barrio_value(g_raw)
+        lista = _clean_barrio_value(l_raw)
         t = _clean_barrio_value(t_raw)
         if g is not None:
             resuelto.append(g)
             fuente.append("geo")
+        elif lista is not None:
+            resuelto.append(lista)
+            fuente.append("lista")
         elif t is not None:
             resuelto.append(t)
             fuente.append("reportado")
@@ -1251,7 +1347,74 @@ LAYER_TO_RAW = {
     # unlike every other entry this field has no historical Survey123
     # xlsx-export header to preserve.
     "codigoapp": "codigoapp",
+    # 2026-09-15 EDE_v1 schema change added 9 layer fields; only these 4 are
+    # real survey answers worth shipping. Like `codigoapp`, none of them has
+    # a historical Survey123 xlsx-export header, so the raw label IS the
+    # final normalized name (none appear in RENAME_MAP below). Collision
+    # note: the layer's `comuna` and `barrio_vereda` ArcGIS field names are
+    # DIFFERENT questions from the already-normalized `comuna` (spatial join
+    # against comunas.geojson) and `barrio_vereda` (legacy typed value, this
+    # allowlist's "barrio" -> "Barrio/vereda:" entry above) columns — hence
+    # the distinct raw labels/final names here, so neither existing column's
+    # meaning changes.
+    "concepto_cierre": "concepto_cierre",  # coded domain, decoded client-side (like nivel_dano)
+    "recomendacio_evaluacion": "recomendacion_evaluacion_detallada",  # free text
+    "comuna": "comuna_formulario",  # free-typed comuna answer; provenance only, see clean_comuna_formulario()
+    "barrio_vereda": "barrio_vereda_lista",  # coded domain (~420 Cali barrios), decoded in fetch_survey_raw()
+    # Intentionally EXCLUDED (QA-validator scratch columns / empty note
+    # fields, not survey answers): nota_habilitacion_demolicion,
+    # coinciden_barrio, objectid_amva, Barrio_validador, Barrio_prueba.
 }
+
+
+def fetch_layer_domains(layer_url: str) -> dict[str, dict[str, str]]:
+    """GET the layer's schema (`?f=pjson`) and return
+    `{field_name: {code: label}}` for every field that has a coded-value
+    domain (ArcGIS field name, i.e. BEFORE LAYER_TO_RAW's rename).
+
+    Purely cosmetic labels (e.g. decoding `barrio_vereda_lista`'s ~420 Cali
+    barrio codes) — unlike fetch_survey_raw()'s /query call, which raises on
+    failure by design, a schema-fetch failure here must never fail the
+    refresh. Any exception (network, HTTP status, malformed JSON) is logged
+    as a warning and swallowed; callers get an empty dict and simply keep
+    raw codes."""
+    try:
+        resp = requests.get(layer_url, params={"f": "pjson"}, timeout=30)
+        resp.raise_for_status()
+        payload = resp.json()
+        domains: dict[str, dict[str, str]] = {}
+        for field in payload.get("fields", []):
+            coded_values = (field.get("domain") or {}).get("codedValues")
+            if not coded_values:
+                continue
+            domains[field["name"]] = {cv["code"]: cv["name"] for cv in coded_values}
+        return domains
+    except Exception as exc:  # noqa: BLE001 - domains are cosmetic, never fail the refresh
+        log.warning("Could not fetch layer domains from %s: %s", layer_url, exc)
+        return {}
+
+
+def decode_domain_codes(series: pd.Series, mapping: dict[str, str]) -> pd.Series:
+    """Map a coded-domain column's raw codes to their human labels via
+    `mapping` (code -> label, from fetch_layer_domains()). Pure: does not
+    mutate `series`. An unknown code (not in `mapping`, including when
+    `mapping` is `{}` because the domain fetch failed) passes through
+    UNCHANGED — exact match only, no case-folding: `mapping`'s keys are
+    exactly the codes ArcGIS's own domain reports (fetch_layer_domains()),
+    so this trusts that casing as authoritative rather than guessing a
+    normalization that could silently merge two distinct codes. (Note:
+    concepto_cierre's mixed-case code, `Sticker_verde`, never reaches this
+    function -- that field stays coded/decoded client-side and is separately
+    lowercased server-side by clean_concepto_cierre_code() in normalize();
+    this function only ever decodes `barrio_vereda_lista`.) None/NaN/blank
+    all map to `None` (same guard as `_clean_barrio_value`)."""
+    def _decode(v):
+        cleaned = _clean_barrio_value(v)
+        if cleaned is None:
+            return None
+        return mapping.get(cleaned, cleaned)
+
+    return series.map(_decode)
 
 
 def fetch_survey_raw() -> pd.DataFrame:
@@ -1315,6 +1478,19 @@ def fetch_survey_raw() -> pd.DataFrame:
     # (planeacion-asignaciones, design.md ADR-7); check LAYER_TO_RAW first.
     # Same column order as the xlsx export: survey order, then x/y.
     df = df[list(LAYER_TO_RAW.values()) + ["x", "y"]]
+
+    # Decode barrio_vereda_lista's coded domain (~420 Cali barrio codes) here,
+    # right after the raw_data-contract columns are finalized — NOT in
+    # normalize(), because the domain is keyed by the ArcGIS field name
+    # ("barrio_vereda", from fetch_layer_domains()), which only fetch_survey_raw()
+    # knows about; normalize() only ever sees the already-renamed raw_data
+    # column names. concepto_cierre deliberately stays coded (decoded
+    # client-side, consistent with habitabilidad/nivel_dano).
+    domains = fetch_layer_domains(SURVEY_LAYER_URL)
+    barrio_domain = domains.get("barrio_vereda")
+    if barrio_domain and "barrio_vereda_lista" in df.columns:
+        df["barrio_vereda_lista"] = decode_domain_codes(df["barrio_vereda_lista"], barrio_domain)
+
     log.info("Fetched %d record(s) from the Survey123 layer.", len(df))
     return df
 
@@ -1796,6 +1972,16 @@ def normalize(rows_raw: pd.DataFrame) -> pd.DataFrame:
     df = df.rename(columns=RENAME_MAP)
     if "municipio" in df.columns:
         df["municipio"] = normalize_municipio(df["municipio"])
+    if "comuna_formulario" in df.columns:
+        # Provenance/detail column only -- deliberately NOT merged into
+        # `comuna` (set below by spatial_join(), from x/y against
+        # comunas.geojson); see clean_comuna_formulario()'s docstring.
+        df["comuna_formulario"] = df["comuna_formulario"].map(clean_comuna_formulario)
+    if "concepto_cierre" in df.columns:
+        # See clean_concepto_cierre_code()'s docstring: the layer's one
+        # mixed-case code ('Sticker_verde') must not split into two filter
+        # options downstream.
+        df["concepto_cierre"] = df["concepto_cierre"].map(clean_concepto_cierre_code)
     df = add_date_fields(df)
     df = coerce_numeric(df)
     df = drop_pii(df)
