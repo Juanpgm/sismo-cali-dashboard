@@ -21,23 +21,46 @@ against the golden row for each identity.
    instead — this is the ONE divergence the task explicitly permits.
 
 2. **Second divergence found, NOT part of D7, flagged for a follow-up spec
-   correction** — Mario Fernando Rosas Martinez (13068447): golden
-   `estado_sugerido="revisar"` despite being absent from BOTH the Vercel
-   and Fase 2 reference sources (confirmed by name AND cédula search
-   against the raw source files — no match). `spec.md`'s "Estado Sugerido
-   Precedence" requirement conditions `"revisar"` vs
-   `"candidato_desactivacion"` ONLY on Fase 2/Vercel membership; it says
-   nothing about the base CSV's own `activo` flag. ALL THREE `"revisar"`
-   rows in the golden 373-row sheet share this exact profile (`np_fuente=
-   "main"`, base CSV `activo="true"`, absent from Fase 2/Vercel) — strongly
-   suggesting the notebook's real `ids_revision` set also considered the
-   base record's own `activo` flag, a signal `explore.md`'s own citation
-   (Q3) never mentioned and `spec.md` never adopted. This engine follows
-   `spec.md` literally (the approved, literal contract for this phase) and
-   therefore returns `"candidato_desactivacion"` here instead of
-   `"revisar"` — documented for a future spec correction pass, not silently
-   worked around with an undocumented input this phase was never asked to
-   model.
+   correction (root cause corrected 2026-09-16, see below)** — Mario
+   Fernando Rosas Martinez (13068447): golden `estado_sugerido="revisar"`
+   despite being absent from BOTH the Vercel and Fase 2 reference sources
+   (confirmed by name AND cédula search against the raw source files — no
+   match), AND `n_stickers=0`/`tiene_sticker_valido=False` (confirmed
+   directly from the golden xlsx row) — so the raw `tiene_sticker` fix
+   (`n_stickers > 0`, see the "Sticker history..." spec scenario) does NOT
+   explain or resolve this divergence for this person; his raw
+   `tiene_sticker` is also `False`.
+   Root cause, verified directly against `outputs/accion_remap_codigos.csv`
+   and the notebook's own cell order (`analisis_calidad_inspectores.ipynb`):
+   the notebook computes its `desactivar`/`revision` id sets (the cell at
+   json line ~5290-5330) from `df_inspectores["codigo_inspector"]`
+   **BEFORE** the code-remap step runs (a later cell, "8.1 Construir la
+   tabla base", part 2). All 3 of the golden sheet's stray `"revisar"` rows
+   (Mario/058, Rafael Marin Valencia 7552410/061, Juan Camilo Haya Castaño
+   1024591312/101 — confirmed via `accion_remap_codigos.csv`) originally
+   HELD a `codigo_inspector` that rightfully belonged to a different
+   Vercel-registered person, so `codigo_inspector == ""` was FALSE for them
+   at desactivar/revision-set-construction time — excluding them from BOTH
+   sets. By the time the final per-row `estado_sugerido` loop runs (same
+   cell, after remap has already stripped their code away), their `codigo`
+   is empty and `tiene_sticker_valido` is `False`, so `elif r.codigo or
+   r.tiene_sticker_valido: "activo"` is `False` too, and they fall through
+   to the trailing `else: "revisar"` — a pipeline-ordering artifact of the
+   notebook (stale pre-remap classification-set snapshot), NOT the base
+   CSV's own `activo` flag (that was a correlation, not the cause — all 3
+   happen to also have `activo="true"`, but that column is never read by
+   the classification logic). This engine's single-pass design (remap runs
+   in stage 2, `estado_sugerido` in stage 5, both against the SAME current
+   state) has no equivalent "stale pre-remap codigo" concept to replicate,
+   and `spec.md`'s literal "Estado Sugerido Precedence" (as corrected)
+   conditions `"revisar"` vs `"candidato_desactivacion"` only on
+   `tiene_sticker`/`código`/Fase2/Vercel — not on "had a código that was
+   later remapped away". This engine therefore still returns
+   `"candidato_desactivacion"` here instead of `"revisar"`, per spec's
+   literal contract; documented for a future spec correction pass (should
+   "código stripped by remap" also route to `"revisar"`? — a genuine
+   product decision, not something to silently port as an undocumented
+   pipeline-ordering quirk).
 
 3. **Faber Albeiro Gaviria Salazar (9728480) intentionally excluded from
    this fixture** — his golden `identificacion` (9728480, from Fase2/

@@ -42,19 +42,27 @@ The system MUST compute `fase` by matching `np` against `^P?\s*(\d+)`; a capture
 
 ### Requirement: Estado Sugerido Precedence (Advisory Only)
 The system MUST classify each inspector into exactly one `estado_sugerido`, in this order:
-(1) `"no_persona"` if the non-person heuristic fires; (2) `"candidato_desactivacion"` if no
-código, no valid sticker, and absent from Fase 2 and Vercel; (3) `"revisar"` if no código, no
-valid sticker, but present in Fase 2 or Vercel; (4) `"activo"` if a código is present;
-(5) `"revisar"` as fallback. `tiene_sticker_valido` (post-20-Aug activity) is NEVER a trigger for
-`"activo"` — per the user's explicit decision, recent-activity status must not drive the
-classification. It is surfaced only as an informational field (alongside `dias_inactivo`) on the
-same record. This classification is advisory only — the system MUST NOT perform any automatic
-deactivation, deletion, or write to the live inspector record as a side effect (resolves the D6
-contradiction: the 20-Aug cutoff feeds only the `tiene_sticker_valido`/`dias_inactivo` informational
-fields, it never drives `estado_sugerido` or a person-level deactivation write).
+(1) `"no_persona"` if the non-person heuristic fires; (2) `"candidato_desactivacion"` if the
+inspector has NEVER had any sticker (`tiene_sticker=false`, the raw all-time flag — NOT
+`tiene_sticker_valido`, the post-20-Aug-informational one), no código, and is absent from both
+Fase 2 and Vercel; (3) `"revisar"` if the inspector has never had any sticker, no código, but is
+present in Fase 2 or Vercel; (4) `"activo"` if, and only if, a código is present —
+`tiene_sticker_valido` is NEVER a trigger for `"activo"`, per the user's explicit decision that
+recent-activity status must not drive the classification; (5) `"revisar"` as the fallback for
+everyone else — in practice this is anyone with no código who HAS had at least one sticker at some
+point (`tiene_sticker=true`) but isn't currently código-holding, regardless of whether that history
+includes a post-20-Aug-valid sticker and regardless of Fase 2/Vercel membership (both are already
+exhausted by branches 2-3, which require `tiene_sticker=false`).
 
-#### Scenario: No reference match → candidate for deactivation
-- GIVEN an inspector has no código, `tiene_sticker_valido=false`, and is absent from Fase 2/Vercel
+`tiene_sticker_valido`/`dias_inactivo` (post-20-Aug activity) are surfaced only as informational
+fields on the record and never participate in this precedence at all. This classification is
+advisory only — the system MUST NOT perform any automatic deactivation, deletion, or write to the
+live inspector record as a side effect (resolves the D6 contradiction: the 20-Aug cutoff feeds only
+the `tiene_sticker_valido`/`dias_inactivo` informational fields, it never drives `estado_sugerido`
+or a person-level deactivation write).
+
+#### Scenario: Never had any sticker, no reference match → candidate for deactivation
+- GIVEN an inspector has `tiene_sticker=false`, no código, and is absent from Fase 2/Vercel
 - WHEN classification runs
 - THEN `estado_sugerido="candidato_desactivacion"`
 
@@ -63,12 +71,18 @@ fields, it never drives `estado_sugerido` or a person-level deactivation write).
 - WHEN classification runs
 - THEN `estado_sugerido="revisar"`
 
-#### Scenario: Recent sticker activity alone never yields "activo"
-- GIVEN an inspector has no código, `tiene_sticker_valido=true` (a valid post-20-Aug sticker), and
-  is absent from Fase 2/Vercel
+#### Scenario: Código alone yields "activo", sticker recency is irrelevant
+- GIVEN an inspector has a non-empty código and `tiene_sticker_valido=false`
 - WHEN classification runs
-- THEN `estado_sugerido="candidato_desactivacion"`, NOT `"activo"` — recent activity is informational
-  only and never substitutes for having a real código assigned
+- THEN `estado_sugerido="activo"` — a real código is sufficient regardless of recent activity
+
+#### Scenario: Sticker history without a current código falls to the review fallback
+- GIVEN an inspector has `tiene_sticker=true` (some sticker, ever) but `tiene_sticker_valido=false`
+  (none of them post-20-Aug), no código, and is absent from BOTH Fase 2 and Vercel
+- WHEN classification runs
+- THEN `estado_sugerido="revisar"` via the fallback branch, NOT `"candidato_desactivacion"` —
+  having ever done field work takes the inspector out of the "clean deactivation candidate" bucket
+  even without a Fase 2/Vercel match
 
 #### Scenario: Classification never writes to the inspector record
 - GIVEN any inspector is classified as `candidato_desactivacion`

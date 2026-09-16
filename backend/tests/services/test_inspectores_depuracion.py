@@ -477,8 +477,41 @@ def test_estado_sugerido_activo_needs_codigo():
 
 
 def test_estado_sugerido_sticker_activity_alone_never_activo():
+    # tiene_sticker_valido=True alone, with n_stickers left at its default 0
+    # (raw tiene_sticker=False) -> still candidato_desactivacion. Guards the
+    # invariant that tiene_sticker_valido is NEVER read by estado_sugerido
+    # for anything, not even to escape candidato_desactivacion.
     p = _perfil("A", "x", tiene_sticker_valido=True)
     assert dep.estado_sugerido(p) == "candidato_desactivacion"
+
+
+def test_estado_sugerido_sticker_history_without_codigo_falls_to_revisar():
+    # Spec scenario: "Sticker history without a current código falls to the
+    # review fallback". Real bug this guards: the notebook's own
+    # `desactivar`/`revision` id sets key off `tiene_sticker` = the RAW
+    # all-time flag (`n_stickers > 0`), never `tiene_sticker_valido` (the
+    # post-20-Aug-informational one). An inspector who has had at least one
+    # sticker ever, but none of them post-20-Aug, no código, and absent from
+    # BOTH Fase 2 and Vercel must land in "revisar" (fallback), not
+    # "candidato_desactivacion".
+    p = _perfil("A", "x", n_stickers=2, tiene_sticker_valido=False)
+    assert dep.estado_sugerido(p) == "revisar"
+
+
+def test_estado_sugerido_sticker_history_with_valido_and_no_codigo_still_revisar():
+    # Same fallback applies even when the sticker history DOES include a
+    # post-20-Aug-valid one — tiene_sticker_valido is still never a trigger
+    # for "activo" (D7), it just isn't why this lands in "revisar" either.
+    p = _perfil("A", "x", n_stickers=1, tiene_sticker_valido=True)
+    assert dep.estado_sugerido(p) == "revisar"
+
+
+def test_estado_sugerido_no_sticker_ever_and_in_referencia_still_revisar():
+    # Branch 3: tiene_sticker=False (n_stickers=0), no código, but present in
+    # Fase 2 or Vercel -> revisar (unaffected by the raw-vs-valido fix,
+    # regression guard for the pre-existing branch).
+    p = _perfil("A", "x", n_stickers=0, en_vercel=True)
+    assert dep.estado_sugerido(p) == "revisar"
 
 
 def test_estado_sugerido_cedula_sospechosa_alone_not_forced_to_no_persona():
@@ -591,3 +624,21 @@ def test_depurar_full_pipeline_estado_activo_via_remap():
     assert inspector["np"] == "P3"
     assert inspector["fase"] == "Fase II"
     assert inspector["estado_sugerido"] == "activo"
+
+
+def test_depurar_full_pipeline_sticker_history_falls_to_revisar_not_desactivacion():
+    # End-to-end guard (not just the isolated estado_sugerido unit test):
+    # a real pre-20-Aug sticker, attributed through fusionar_identidad, must
+    # survive the whole pipeline and still land the inspector in "revisar",
+    # never "candidato_desactivacion", even with no código and no Fase2/
+    # Vercel membership.
+    roster = {"1234567": _roster_entry("1234567", "Juan Perez")}
+    stickers = [_sticker("1234567", fecha_creacion="2026-07-01T00:00:00Z")]  # pre-cutoff -> not "valido"
+    resultado = dep.depurar(
+        stickers=stickers, roster_by_cedula=roster, nombres_survey=[],
+        referencia=EMPTY_REF, hoy=date(2026, 9, 1),
+    )
+    inspector = resultado.inspectores[0]
+    assert inspector["codigo"] == ""
+    assert inspector["tiene_sticker_valido"] is False
+    assert inspector["estado_sugerido"] == "revisar"

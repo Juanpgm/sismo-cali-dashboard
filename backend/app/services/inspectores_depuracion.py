@@ -563,19 +563,30 @@ def estado_sugerido(perfil: Perfil) -> str:
     as a separate field on the same record. `cedula_sospechosa` is also
     deliberately NEVER read here (spec: "Priority Heuristics Are Not
     Auto-Disqualifying") — only `es_cuenta_no_persona` drives the dedicated
-    `no_persona` branch."""
+    `no_persona` branch.
+
+    `tiene_sticker` here is the RAW all-time flag (`n_stickers > 0`), NEVER
+    `tiene_sticker_valido` (the post-20-Aug-informational one) — the
+    notebook's own `desactivar`/`revision` id sets key off
+    `df_inspectores["tiene_sticker"]` (`n_stickers > 0`), confirmed against
+    the notebook source (`analisis_calidad_inspectores.ipynb`, the
+    `accion_desactivar.csv`/`revision_manual.csv` construction cell), never
+    the cutoff-filtered flag. Spec scenario: "Sticker history without a
+    current código falls to the review fallback"."""
     if perfil.es_cuenta_no_persona:
         return "no_persona"
     tiene_codigo = bool(perfil.codigo)
+    tiene_sticker = perfil.n_stickers > 0
     en_referencia = perfil.en_vercel or perfil.en_fase2
-    if not tiene_codigo and not en_referencia:
+    if not tiene_sticker and not tiene_codigo and not en_referencia:
         return "candidato_desactivacion"
-    if not tiene_codigo and en_referencia:
+    if not tiene_sticker and not tiene_codigo and en_referencia:
         return "revisar"
     if tiene_codigo:
         return "activo"
-    return "revisar"  # unreachable given the branches above; kept for
-    # literal fidelity to the spec's 5-step precedence list.
+    return "revisar"  # fallback: has had a sticker at some point (tiene_sticker
+    # =True) with no código — branches above already exhausted every
+    # tiene_sticker=False case, so this is reachable, not dead code.
 
 
 # ── Stage 6: alias_nombres ───────────────────────────────────────────────────
