@@ -197,6 +197,19 @@ ALLOWED_MODULES_SURVEY_CALI = {
     # naming a sibling collection isn't a write path" reasoning as the
     # `services/__init__.py`/`main.py` entries above.
     APP_ROOT / "routers" / "integracion.py",  # docstring mention only, no Firestore access
+    # `seguimiento-inspectores-depurado` change, Phase 2 (2026-09-16):
+    # DOCSTRING/COMMENT MENTIONS ONLY. `services/inspectores_depuracion.py`
+    # is a zero-I/O pure module (design.md: "Deep module, zero I/O") whose
+    # `nombres_survey: Iterable[str]` parameter and `alias_nombres()` seam
+    # dedupe non-person aggregate counts against survey field-visit data
+    # (spec: "Non-Person Counts Deduped Against survey_cali") — it takes a
+    # plain list of names, never a Firestore handle, and never imports
+    # `app.credentials`/`google.cloud.firestore` (see that module's own
+    # `test_depurar_estado_sugerido_never_writes_no_firestore_handle_param`
+    # invariant test). Verified by reading the file in full — same "doc
+    # comment naming a sibling collection isn't a write path" reasoning as
+    # the other entries above.
+    APP_ROOT / "services" / "inspectores_depuracion.py",  # docstring mention only, no Firestore access
 }
 
 
