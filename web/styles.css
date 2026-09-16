@@ -2116,6 +2116,12 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="sti
 }
 .seg-sort-btn.is-active { color: var(--accent); }
 .seg-caveat { cursor: help; color: var(--accent); }
+/* GRUPO-EXTERNOS row (Task 4.4/4.5): its <td> otherwise inherits
+   .tipologia-table td's right-align/nowrap (meant for numeric columns),
+   which right-aligns the toggle label and disconnects each detail <li>'s
+   bullet from its (far-right, unwrapped) text. This is free text, not a
+   numeric cell — read left-to-right, wrap like normal prose. */
+.seg-grupo-externos-row td { text-align: left; white-space: normal; }
 
 /* ============================================================
    ASIGNACIÓN — sub-section inside the Stickers tab (design.md
