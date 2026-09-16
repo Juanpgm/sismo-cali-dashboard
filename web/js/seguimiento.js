@@ -290,6 +290,67 @@ export function professionalKeyOf(record, identity = EMPTY_IDENTITY) {
   return nameKey ? `nom:${nameKey}` : '';
 }
 
+/** seguimiento-inspectores-depurado, Fase 4 (design "Frontend Changes
+ *  (minimal)"): builds the depuracion-derived branch of buildIdentityIndex
+ *  below — profiles come DIRECTLY from `depuracion.inspectores`, never from
+ *  the raw sticker/Survey "primer no vacío gana" merge (spec: "Frontend
+ *  Consumes Backend-Resolved NP"). `eligibleCedulas`/`nameToCedula` still
+ *  exist in the SAME shape as the non-depurado branch (built from
+ *  `depuracion.inspectores`' own `identidad_key` and `depuracion.
+ *  alias_nombres` respectively) so professionalKeyOf keeps routing raw
+ *  sticker/Survey records into the exact SAME `ced:<cedula>` keys these
+ *  profiles are stored under — buildProfessionalRows' per-record loop is
+ *  untouched, only WHERE the profile's own fields come from changes. */
+function buildIdentityIndexFromDepuracion(depuracion, depMeta) {
+  const eligibleCedulas = new Set();
+  const nameToCedula = new Map();
+  const profiles = new Map();
+
+  const inspectores = Array.isArray(depuracion.inspectores) ? depuracion.inspectores : [];
+  for (const insp of inspectores) {
+    if (!insp) continue;
+    const ced = cedulaKey(insp.identidad_key || insp.identificacion);
+    if (!ced) continue;
+    eligibleCedulas.add(ced);
+    profiles.set(`ced:${ced}`, {
+      nameCounts: new Map(insp.nombre_completo ? [[insp.nombre_completo, 1]] : []),
+      name: insp.nombre_completo || '',
+      cedula: insp.identificacion || '',
+      codigo: insp.codigo || '',
+      entidad: insp.entidad || '',
+      np: insp.np || '',
+      npFuente: insp.np_fuente || 'ninguno',
+      fase: insp.fase || '',
+      faseNpFaltante: Boolean(insp.fase_np_faltante),
+      estadoSugerido: insp.estado_sugerido || '',
+      fuenteDato: insp.fuente_dato || '',
+      tarjetaProfesional: insp.tarjeta_profesional || '',
+      celular: insp.num_telefono || '',
+      correo: insp.correo_contacto || '',
+      noPersona: Boolean(insp.no_persona),
+      ambiguous: false,
+    });
+  }
+
+  // depuracion.alias_nombres: normalizedName -> identidad_key (backend's own
+  // survey-name dedupe, spec: "a survey name that maps to a real person's
+  // key never lands in GRUPO-EXTERNOS") — the exact same role nameToCedula
+  // plays in the non-depurado branch, just sourced from the backend instead
+  // of re-derived from raw stickers.
+  for (const [nombreNorm, identidadKey] of Object.entries(depuracion.alias_nombres || {})) {
+    const ced = cedulaKey(identidadKey);
+    if (nombreNorm && ced) nameToCedula.set(nombreNorm, ced);
+  }
+
+  const resolverCore = { eligibleCedulas, nameToCedula };
+  const keyForSticker = (record) => professionalKeyOf(record, resolverCore);
+  const keyForSurvey = (record) => professionalKeyOf(record, resolverCore);
+
+  return {
+    eligibleCedulas, nameToCedula, ambiguousNames: new Set(), profiles, keyForSticker, keyForSurvey, ...depMeta,
+  };
+}
+
 /** Builds the identity index every other pure function in this module
  *  resolves through (via professionalKeyOf): which cédulas are eligible
  *  merge keys, which normalized names unify to exactly one of them, AND the
@@ -301,8 +362,28 @@ export function professionalKeyOf(record, identity = EMPTY_IDENTITY) {
  *  Built from the FULL, unfiltered {stickers, surveys} — identity is a
  *  property of the whole dataset, never of a date-filtered slice (a `from`/
  *  `to` range must not change WHO a cédula/name resolves to, only which of
- *  their records count toward a KPI). */
-export function buildIdentityIndex({ stickers = [], surveys = [] } = {}) {
+ *  their records count toward a KPI).
+ *
+ *  `depuracion` (seguimiento-inspectores-depurado, Fase 4, optional): the
+ *  backend's `GET /stickers-atencionsismo` `depuracion` block. `depMeta`
+ *  (activa/motivo/referenciaGeneradaEn/grupoExternos/revisionManual) is
+ *  ALWAYS present on the returned index regardless of branch, so the
+ *  badge/manual-review UI never needs to null-check which path ran — its
+ *  defaults (false/''/''/null/[]) match the "no depuracion at all"
+ *  cold-start/flag-off case exactly. `depuracion` absent or `activa:false`
+ *  falls through to the pre-existing code path below, BYTE-IDENTICAL (this
+ *  is also the Blob-restored cold-start path and the feature-flag-off
+ *  path — design D5/"Frontend Changes (minimal)"). */
+export function buildIdentityIndex({ stickers = [], surveys = [], depuracion = null } = {}) {
+  const depMeta = {
+    depuracionActiva: Boolean(depuracion && depuracion.activa),
+    depuracionMotivo: (depuracion && depuracion.motivo) || '',
+    referenciaGeneradaEn: (depuracion && depuracion.referencia_generada_en) || '',
+    grupoExternos: (depuracion && depuracion.grupo_externos) || null,
+    revisionManual: Array.isArray(depuracion && depuracion.revision_manual) ? depuracion.revision_manual : [],
+  };
+  if (depMeta.depuracionActiva) return buildIdentityIndexFromDepuracion(depuracion, depMeta);
+
   const stickerList = Array.isArray(stickers) ? stickers : [];
   const surveyList = Array.isArray(surveys) ? surveys : [];
 
@@ -397,7 +478,9 @@ export function buildIdentityIndex({ stickers = [], surveys = [] } = {}) {
     p.name = bestName;
   }
 
-  return { eligibleCedulas, nameToCedula, ambiguousNames, profiles, keyForSticker, keyForSurvey };
+  return {
+    eligibleCedulas, nameToCedula, ambiguousNames, profiles, keyForSticker, keyForSurvey, ...depMeta,
+  };
 }
 
 /** Per-professional rows joining stickers + Survey by identity
@@ -519,6 +602,17 @@ export function buildProfessionalRows({
       celular: profile.celular || '',
       correo: profile.correo || '',
       ambiguous: Boolean(profile.ambiguous),
+      // Task 4.1/4.9 (seguimiento-inspectores-depurado, Fase 4): only ever
+      // populated when `depuracion` was active for THIS identity — '' in
+      // every other case, same "no data" convention as the fields above.
+      // xlsxRowsFor/matchesSearch/cellHtml read these straight off `row`,
+      // never re-deriving them (spec: "Table And Export Reflect Depurado
+      // Fields Consistently").
+      npFuente: profile.npFuente || '',
+      fase: profile.fase || '',
+      estadoSugerido: profile.estadoSugerido || '',
+      fuenteDato: profile.fuenteDato || '',
+      noPersona: Boolean(profile.noPersona),
       stickersFase1: row.stickersFase1,
       stickersFase2: row.stickersFase2,
       stickersTotal: row.stickersTotal,
@@ -1947,6 +2041,14 @@ export function xlsxRowsFor(rows, { subTab = 'totales' } = {}) {
     // case) already uses, so the table and the XLSX never read differently.
     barrios_activos_7d: Array.isArray(r.barriosActivos) && r.barriosActivos.length ? r.barriosActivos.join(', ') : '',
     stickers_por_roster: r.rosterSourced ?? 0,
+    // Task 4.9 (seguimiento-inspectores-depurado, Fase 4; spec: "Table And
+    // Export Reflect Depurado Fields Consistently") -- read straight off
+    // `r`, the SAME backend-resolved fields the table/matchesSearch use;
+    // '' (never a client re-derivation) whenever depuracion wasn't active
+    // for this row, same "no data" convention as clase_p/codigo_vigente.
+    fase: r.fase ?? '',
+    estado_sugerido: r.estadoSugerido ?? '',
+    fuente_dato: r.fuenteDato ?? '',
   }));
 }
 
@@ -2062,14 +2164,17 @@ export function kpiTotals(rowsResult, { stickersLoaded = true } = {}) {
  *  (after stripping every non-digit character) is treated as a CÉDULA search
  *  — `cedulaKey(row.cedula)` OR `cedulaKey(row.tarjetaProfesional)` must
  *  CONTAIN that digit run — else it's a NAME search — `normalize(row.name)`
- *  OR `normalize(row.tarjetaProfesional)` must contain `normalize(query)`
- *  (W-TP, 2026-09-15: tarjeta profesional is also searchable, same two
- *  paths as cédula/name, added rather than a third branch). A short
- *  numeric query like "123" therefore never falls back to matching a name
- *  (it stays on the cédula path, which correctly fails against a blank/
- *  non-matching cedula) — the query is either "clearly a cédula fragment" or
- *  "clearly a name fragment", never ambiguously both. Blank/whitespace-only
- *  query matches every row (no filter active). */
+ *  OR `normalize(row.tarjetaProfesional)` OR `normalize(row.np)` must
+ *  contain `normalize(query)` (W-TP, 2026-09-15: tarjeta profesional is also
+ *  searchable, same path as name; task 4.9/4.10, seguimiento-inspectores-
+ *  depurado: `np` too — spec "Search matches the resolved np, not a stale
+ *  client value" — `row.np` is already the backend-resolved value
+ *  buildProfessionalRows carries, never re-derived here). A short numeric
+ *  query like "123" therefore never falls back to matching a name (it stays
+ *  on the cédula path, which correctly fails against a blank/non-matching
+ *  cedula) — the query is either "clearly a cédula fragment" or "clearly a
+ *  name/np fragment", never ambiguously both. Blank/whitespace-only query
+ *  matches every row (no filter active). */
 export function matchesSearch(row, query) {
   const q = String(query === null || query === undefined ? '' : query).trim();
   if (!q) return true;
@@ -2079,7 +2184,8 @@ export function matchesSearch(row, query) {
       || cedulaKey(row && row.tarjetaProfesional).includes(digits);
   }
   return normalize((row && row.name) || '').includes(normalize(q))
-    || normalize((row && row.tarjetaProfesional) || '').includes(normalize(q));
+    || normalize((row && row.tarjetaProfesional) || '').includes(normalize(q))
+    || normalize((row && row.np) || '').includes(normalize(q));
 }
 
 /** The professional rows currently shown in the table: `rows` narrowed by
@@ -2120,6 +2226,85 @@ export function unassignedNote(unassigned) {
   if (!n) return null;
   return `${n.toLocaleString('es-CO')} stickers sin profesional atribuible (sin nombre de inspector resolvible en el sticker); `
     + 'se cuentan en el KPI de stickers pero no aparecen en ninguna fila de la tabla.';
+}
+
+/** Task 4.8 (seguimiento-inspectores-depurado, Fase 4): freshness/degraded
+ *  indicator for the identity source — `identity` is a buildIdentityIndex()
+ *  result (reads its `depuracionActiva`/`depuracionMotivo`/
+ *  `referenciaGeneradaEn` fields, always present regardless of branch — see
+ *  buildIdentityIndex's own doc comment). Plain text (assigned via
+ *  `.textContent`, same convention as degradedStickerNote/unassignedNote
+ *  above — never HTML, never escaped here). `null` when there is nothing to
+ *  disclose: no identity at all, OR `depuracion` was never even present in
+ *  the payload (cold start / `SEGUIMIENTO_DEPURACION` flag off) — the SAME
+ *  "byte-identical, no new UI" contract buildIdentityIndex's non-depurado
+ *  branch already guarantees. */
+export function depuracionBadgeHtml(identity) {
+  if (!identity) return null;
+  if (identity.depuracionActiva) {
+    return `Identidad depurada · referencia generada el ${identity.referenciaGeneradaEn || 'fecha desconocida'}.`;
+  }
+  if (identity.depuracionMotivo) {
+    return `Identidad sin depurar (${identity.depuracionMotivo}) — mostrando datos crudos de la API.`;
+  }
+  return null;
+}
+
+/** Task 4.4/4.5 (seguimiento-inspectores-depurado, Fase 4; spec: "Non-Person
+ *  Group Row Is Expandable"): the GRUPO-EXTERNOS aggregate as ONE extra
+ *  `<tr>`, appended after the sortable professional rows (never one of
+ *  them — `depuracion.grupo_externos` carries no per-professional sticker/
+ *  Survey stats to sort/export/PDF-report against, only the aggregate count
+ *  + the collapsed detail). Collapsed by default: the detail `<ul>` ships
+ *  with the `hidden` attribute; initSeguimiento's delegated tbody click
+ *  handler removes it on `#seg-externos-toggle` (this function never
+ *  toggles anything itself — it only has to make sure the content EXISTS to
+ *  reveal, which is what "expanding shows the individual entries" tests
+ *  against). `colspan` must match the CURRENT sub-tab's column count + 1
+ *  (Acciones), same as the "no rows match" placeholder row in renderTable.
+ *  `null`/missing `grupoExternos` (no non-person accounts were collapsed
+ *  this pass, or depuracion inactive) -> `''`, no stray row. */
+export function grupoExternosRowHtml(grupoExternos, colspan = 1) {
+  if (!grupoExternos) return '';
+  const detalle = Array.isArray(grupoExternos.detalle) ? grupoExternos.detalle : [];
+  const items = detalle.map((d) => {
+    const nombre = escapeHtml((d && d.nombre_completo) || 'Sin dato');
+    const identificacion = escapeHtml((d && d.identificacion) || 'Sin dato');
+    const motivo = escapeHtml((d && d.motivo) || 'sin motivo');
+    const ultimo = d && d.ultimo_sticker ? `, últ. sticker ${escapeHtml(d.ultimo_sticker)}` : '';
+    return `<li>${nombre} — cédula ${identificacion} (${motivo}${ultimo})</li>`;
+  }).join('');
+  const n = grupoExternos.n_colapsados ?? detalle.length;
+  const fuente = escapeHtml(grupoExternos.fuente_dato || '');
+  return `<tr class="seg-grupo-externos-row"><td colspan="${colspan}">`
+    + `<button type="button" class="seg-sort-btn" id="seg-externos-toggle" data-seg-externos-toggle aria-expanded="false">`
+    + `▸ Externos agrupados (${n})${fuente ? ` — ${fuente}` : ''}</button>`
+    + `<ul class="seg-externos-detail" id="seg-externos-detail" hidden>${items}</ul>`
+    + '</td></tr>';
+}
+
+/** Task 4.6/4.7 (seguimiento-inspectores-depurado, Fase 4; spec: "Manual
+ *  Review Section Surfaces Unresolved Depuration Cases"): renders
+ *  `depuracion.revision_manual` — código remaps in conflict
+ *  (`codigo_remap_candidato`), Vercel-internal duplicate códigos
+ *  (`codigo_vercel_duplicado`), or any other case
+ *  `inspectores_depuracion.py` could not resolve automatically. An empty
+ *  list renders an EXPLICIT "nothing pending" state — this section must
+ *  never look hidden/broken just because there is currently nothing to
+ *  review (the spec scenario this literally guards). */
+export function revisionManualHtml(list) {
+  const items = Array.isArray(list) ? list : [];
+  if (!items.length) {
+    return '<p class="sticker-note" id="seg-revision-manual-empty">Sin pendientes de revisión manual.</p>';
+  }
+  const rows = items.map((it) => {
+    const motivo = escapeHtml((it && it.motivo) || 'sin motivo');
+    const codigo = it && it.codigo ? ` · código ${escapeHtml(it.codigo)}` : '';
+    const candidato = it && it.identidad_key_candidato ? ` · candidato ${escapeHtml(it.identidad_key_candidato)}` : '';
+    const score = Number.isFinite(it && it.score) ? ` · score ${it.score}` : '';
+    return `<li>${motivo}${codigo}${candidato}${score}</li>`;
+  }).join('');
+  return `<ul class="seg-revision-manual-list">${rows}</ul>`;
 }
 
 // ── createSegCache: single-entry memo (W6) ──────────────────────────────────
@@ -2361,6 +2546,7 @@ function sectionHtml() {
       <p class="sticker-note">Cruce aproximado por nombre: Stickers usa inspector.nombre_completo, Survey usa nombre_evaluador.</p>
       <p class="sticker-note" id="seg-sinfecha-note" hidden></p>
       <p class="sticker-note" id="seg-unassigned-note" hidden></p>
+      <p class="sticker-note" id="seg-depuracion-badge" hidden></p>
 
       <div class="eval-filters" id="seg-filters">
         <div class="asignacion-search">
@@ -2412,6 +2598,13 @@ function sectionHtml() {
             <tbody></tbody>
           </table>
         </div>
+      </div>
+
+      <div class="card eval-workspace-card">
+        <div class="card-toolbar">
+          <span class="eval-toolbar-title">Revisión manual</span>
+        </div>
+        <div id="seg-revision-manual"></div>
       </div>
     </section>
     <div class="seg-export-overlay" id="seg-export-overlay" role="status" aria-live="polite"
@@ -2790,6 +2983,8 @@ export function initSeguimiento(root, { getToken, records }) {
   const statusEl = $('seg-status');
   const sinFechaNoteEl = $('seg-sinfecha-note');
   const unassignedNoteEl = $('seg-unassigned-note');
+  const depuracionBadgeEl = $('seg-depuracion-badge');
+  const revisionManualEl = $('seg-revision-manual');
   const searchEl = $('seg-search');
   const fromEl = $('seg-from');
   const toEl = $('seg-to');
@@ -2809,6 +3004,14 @@ export function initSeguimiento(root, { getToken, records }) {
   const exportOverlayTextEl = $('seg-export-overlay-text');
 
   let stickers = [];
+  // seguimiento-inspectores-depurado, Fase 4: the backend's `depuracion`
+  // block (stickers.js's tagFuente now passes it through, defaulting to
+  // `null`) — always reassigned together with `stickers` (same fetch, same
+  // synchronous block below), so identityCache's own stickers/surveys-only
+  // key (M4) still invalidates correctly whenever this changes; see
+  // buildIdentityIndex's own doc comment for the `null`/`activa:false`
+  // fallback contract.
+  let depuracion = null;
   // `let`, not `const`: updateSeguimientoRecords() (module-level export,
   // called by main.js's onStoreChange) reassigns this in place on a store
   // refresh instead of tearing down and re-initializing the whole tab — see
@@ -2844,7 +3047,7 @@ export function initSeguimiento(root, { getToken, records }) {
   // surveys — recomputed once per render() (not once per pure-function
   // call) so buildProfessionalRows/buildTimeline/the per-row PDF report all
   // resolve identity through the exact SAME index for a given render pass.
-  let currentIdentity = buildIdentityIndex({ stickers, surveys });
+  let currentIdentity = buildIdentityIndex({ stickers, surveys, depuracion });
   // W10: reportes_agg.json's kpis.pendientes, fetched once per init
   // (fetchPendientes — fail-soft, null on any failure/shape mismatch) and
   // reused by every report/export click during this session; never blocks
@@ -2965,6 +3168,12 @@ export function initSeguimiento(root, { getToken, records }) {
     tbody.innerHTML = sorted.length
       ? sorted.map((r) => rowHtml(r, stickersLoaded, isDegraded, columns, rowsBusy)).join('')
       : `<tr><td colspan="${columns.length + 1}" class="eval-empty">Ningún profesional coincide con los filtros aplicados.</td></tr>`;
+    // Task 4.4/4.5: GRUPO-EXTERNOS is NEVER one of `rows` (see
+    // grupoExternosRowHtml's own doc comment) — appended as its own trailing
+    // row, in EVERY sub-tab, regardless of search/professional filters (it
+    // is a whole-dataset aggregate, not a per-professional record those
+    // filters narrow).
+    tbody.insertAdjacentHTML('beforeend', grupoExternosRowHtml(currentIdentity.grupoExternos, columns.length + 1));
 
     // Every filter control (search input, Desde/Hasta, seg-chart-professional)
     // re-renders through render() -> renderTable() (search's own debounce
@@ -3088,7 +3297,7 @@ export function initSeguimiento(root, { getToken, records }) {
     // instead of rebuilding it unconditionally before segCache's own memo
     // check even ran (7.6 ms every render, regardless of whether segCache
     // itself would hit).
-    currentIdentity = identityCache.get(stickers, surveys, () => buildIdentityIndex({ stickers, surveys }));
+    currentIdentity = identityCache.get(stickers, surveys, () => buildIdentityIndex({ stickers, surveys, depuracion }));
     const today = bogotaToday();
     const { from, to } = currentFilters();
     // W6: memoized via segCache — a re-render with the SAME stickers/
@@ -3126,6 +3335,15 @@ export function initSeguimiento(root, { getToken, records }) {
     const unassignedText = stickersLoaded ? unassignedNote(unassigned) : null;
     unassignedNoteEl.hidden = !unassignedText;
     unassignedNoteEl.textContent = unassignedText || '';
+    // seguimiento-inspectores-depurado, Fase 4 (tasks 4.6/4.7/4.8): freshness/
+    // degraded badge + the "Revisión manual" section, both driven straight
+    // off currentIdentity (always present, see buildIdentityIndex's own doc
+    // comment) — recomputed every render() pass, same as every other
+    // identity-derived note above.
+    const depuracionBadgeText = depuracionBadgeHtml(currentIdentity);
+    depuracionBadgeEl.hidden = !depuracionBadgeText;
+    depuracionBadgeEl.textContent = depuracionBadgeText || '';
+    revisionManualEl.innerHTML = revisionManualHtml(currentIdentity.revisionManual);
     renderChartOptions(rows);
     renderTable(rows);
     renderChart();
@@ -3189,6 +3407,22 @@ export function initSeguimiento(root, { getToken, records }) {
       ? { column: col, dir: sortState.dir === 'asc' ? 'desc' : 'asc' }
       : { column: col, dir: 'desc' };
     renderTable(currentRows);
+  });
+
+  // Task 4.4/4.5: GRUPO-EXTERNOS expand/collapse toggle — same delegated-on-
+  // tbody pattern as the per-row report buttons below (tbody is rebuilt on
+  // every renderTable call, so this listener must be delegated, never
+  // attached to the button itself). Pure DOM state (the `hidden` attribute
+  // + aria-expanded) — grupoExternosRowHtml itself never re-renders on
+  // toggle, it only has to make sure the detail content EXISTS to reveal.
+  tbody.addEventListener('click', (ev) => {
+    const toggleBtn = ev.target.closest('[data-seg-externos-toggle]');
+    if (!toggleBtn) return;
+    const detail = tbody.querySelector('#seg-externos-detail');
+    if (!detail) return;
+    const nextExpanded = detail.hidden;
+    detail.hidden = !nextExpanded;
+    toggleBtn.setAttribute('aria-expanded', String(nextExpanded));
   });
 
   // Delegated on tbody (rebuilt on every renderTable call) rather than one
@@ -3480,12 +3714,17 @@ export function initSeguimiento(root, { getToken, records }) {
   (async () => {
     const seq = ++loadSeq;
     try {
-      const { evaluaciones, degraded } = await fetchStickersWithRetry(getToken);
+      const { evaluaciones, degraded, depuracion: depuracionResp } = await fetchStickersWithRetry(getToken);
       if (seq !== loadSeq) return;
       stickers = evaluaciones;
       stickersLoaded = true;
       isDegraded = degraded;
       stickerFetchErrorMessage = '';
+      // seguimiento-inspectores-depurado, Fase 4: reassigned in the SAME
+      // synchronous block as `stickers` above -- identityCache's own
+      // stickers/surveys-only key (M4) still invalidates correctly (see
+      // the `let depuracion` declaration's own doc comment).
+      depuracion = depuracionResp;
     } catch (err) {
       if (seq !== loadSeq) return;
       // Survey half stays fully rendered (see the synchronous render() call

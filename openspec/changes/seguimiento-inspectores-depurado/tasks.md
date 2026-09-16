@@ -107,16 +107,18 @@ Separately (also verified 2026-09-16, same session): `estado_sugerido()` had a R
 
 ## Phase 4: Frontend (PR 4)
 
-- [ ] 4.1 Modify `web/js/seguimiento.js`: `buildIdentityIndex({stickers, surveys, depuracion})` — when `depuracion.activa`, skip "first non-empty wins" loop (lines ~341-378), build `profiles` from `depuracion.inspectores` directly.
-- [ ] 4.2 RED+GREEN: `web/js/seguimiento.test.mjs::test_buildIdentityIndex_backend_np_not_overwritten` — backend `np="P3"` not overwritten by raw `profesional.rango="P1"` (spec scenario).
-- [ ] 4.3 RED+GREEN: `test_buildIdentityIndex_depuracion_absent_byte_identical` — no `depuracion` or `activa:false` → current code path unchanged.
-- [ ] 4.4 Add expandable GRUPO-EXTERNOS row rendering `grupo_externos.detalle`; collapsed by default (spec scenarios).
-- [ ] 4.5 RED+GREEN: `test_grupo_externos_row_collapsed_by_default` and `test_grupo_externos_expand_shows_detail`.
-- [ ] 4.6 Add "Revisión manual" section/tab rendering `depuracion.revision_manual`; explicit empty state when list is empty (spec scenarios).
-- [ ] 4.7 RED+GREEN: `test_revision_manual_section_renders_entries` and `test_revision_manual_empty_state`.
-- [ ] 4.8 Add freshness badge: `activa:false` badge, `referencia_generada_en` shown when `true`.
-- [ ] 4.9 Update XLSX export and search to read `np`/`fase`/`estado_sugerido`/`fuente_dato` from the same resolved fields as the table (spec: Table And Export Reflect Depurado Fields Consistently).
-- [ ] 4.10 RED+GREEN: `test_export_matches_onscreen_np` and `test_search_matches_resolved_np_not_rango`.
+- [x] 4.1 Modify `web/js/seguimiento.js`: `buildIdentityIndex({stickers, surveys, depuracion})` — when `depuracion.activa`, skip "first non-empty wins" loop (lines ~341-378), build `profiles` from `depuracion.inspectores` directly.
+- [x] 4.2 RED+GREEN: `web/js/seguimiento.test.mjs::test_buildIdentityIndex_backend_np_not_overwritten` — backend `np="P3"` not overwritten by raw `profesional.rango="P1"` (spec scenario).
+- [x] 4.3 RED+GREEN: `test_buildIdentityIndex_depuracion_absent_byte_identical` — no `depuracion` or `activa:false` → current code path unchanged.
+- [x] 4.4 Add expandable GRUPO-EXTERNOS row rendering `grupo_externos.detalle`; collapsed by default (spec scenarios).
+- [x] 4.5 RED+GREEN: `test_grupo_externos_row_collapsed_by_default` and `test_grupo_externos_expand_shows_detail`.
+- [x] 4.6 Add "Revisión manual" section/tab rendering `depuracion.revision_manual`; explicit empty state when list is empty (spec scenarios).
+- [x] 4.7 RED+GREEN: `test_revision_manual_section_renders_entries` and `test_revision_manual_empty_state`.
+- [x] 4.8 Add freshness badge: `activa:false` badge, `referencia_generada_en` shown when `true`.
+- [x] 4.9 Update XLSX export and search to read `np`/`fase`/`estado_sugerido`/`fuente_dato` from the same resolved fields as the table (spec: Table And Export Reflect Depurado Fields Consistently).
+- [x] 4.10 RED+GREEN: `test_export_matches_onscreen_np` and `test_search_matches_resolved_np_not_rango`.
+
+**Found/fixed during this pass (beyond the literal task list)**: design's File Changes table only listed `web/js/seguimiento.js` for the frontend, but the ACTUAL wiring gap was one level below it — `web/js/stickers.js`'s `tagFuente()` (the shared fetch-normalization helper both `initStickers` and `seguimiento.js`'s `fetchEvaluacionesOnce` reuse) dropped the response's top-level `depuracion` key entirely before `buildIdentityIndex` ever saw it. Without this fix, `depuracion` would never reach the frontend in a real browser regardless of how correct `buildIdentityIndex` itself is — only unit tests that construct the `depuracion` argument by hand would ever exercise the new code path. Fixed with a minimal, backward-compatible passthrough (`depuracion: (data && data.depuracion) || null`); `initStickers`'s own endpoint never sends this field, so its behavior is unchanged (verified: `stickers.test.mjs` still green, 2 existing full-object assertions updated to include the new key, malformed/absent-input edge cases added).
 
 ## Phase 5: Migration / Rollout Verification
 
