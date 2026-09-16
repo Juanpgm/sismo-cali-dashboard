@@ -18,6 +18,9 @@ import {
   // W11: report visual redesign — colored classification badges, KPI stat
   // cards, section-header rule, and the new activity sparkline.
   badgeStyleFor, badgeCell, statCard, statCardsRow, sectionHeaderNode, buildActivitySparkline,
+  // Fase 4 (seguimiento-inspectores-depurado): GRUPO-EXTERNOS expandable
+  // row, the "Revisión manual" section, and the depuracion freshness badge.
+  grupoExternosRowHtml, revisionManualHtml, depuracionBadgeHtml,
 } from './seguimiento.js';
 import { COLORS } from './utils.js';
 
@@ -226,6 +229,141 @@ console.log('buildIdentityIndex: SIN_DATO stickers never drive the display name 
   assert.equal(result.rows[0].ambiguous, false);
 }
 console.log('buildIdentityIndex: SIN_DATO cédula never fragments a single-professional merge (b) OK');
+
+// ── buildIdentityIndex: `depuracion` (seguimiento-inspectores-depurado, Fase 4) ──
+// Task 4.1/design "Frontend Changes (minimal)": `depuracion.activa=true` ->
+// profiles are built DIRECTLY from `depuracion.inspectores`; the "primer no
+// vacío gana" loop above (buildIdentityIndex's own sticker/Survey passes) is
+// skipped ENTIRELY, so a raw sticker's own `profesional.rango`/`insp.np` can
+// never backfill or overwrite the backend-resolved `np` (spec: "Frontend
+// Consumes Backend-Resolved NP").
+
+{
+  const depuracion = {
+    activa: true,
+    motivo: '',
+    referencia_generada_en: '2026-09-12',
+    inspectores: [{
+      identidad_key: '123', identificacion: '123', nombre_completo: 'Juan Perez',
+      codigo: '041', entidad: 'DAGRD', np: 'P3', np_fuente: 'fase2', fase: 'Fase II',
+      fase_np_faltante: false, estado_sugerido: 'activo', fuente_dato: 'main+fase2',
+      tarjeta_profesional: 'TP-1', num_telefono: '3000000000', correo_contacto: 'juan@example.com',
+      no_persona: false,
+    }],
+    grupo_externos: null,
+    alias_nombres: {},
+    revision_manual: [],
+  };
+  // The live API's raw record for the SAME person still carries the OLD
+  // profesional.rango (here modeled as the sticker's own `insp.np`) -- it
+  // must never win over the backend's np.
+  const stickers = [{ inspector: { identificacion: '123', nombre_completo: 'Juan Perez', np: 'P1' } }];
+  const identity = buildIdentityIndex({ stickers, surveys: [], depuracion });
+  const key = professionalKeyOf(stickers[0], identity);
+  assert.equal(key, 'ced:123');
+  const profile = identity.profiles.get(key);
+  assert.equal(profile.np, 'P3', 'backend np must not be overwritten by the raw sticker np');
+  assert.equal(profile.npFuente, 'fase2');
+  assert.equal(profile.estadoSugerido, 'activo');
+  assert.equal(profile.fuenteDato, 'main+fase2');
+  assert.equal(profile.fase, 'Fase II');
+  assert.equal(identity.depuracionActiva, true);
+  assert.equal(identity.referenciaGeneradaEn, '2026-09-12');
+}
+console.log('buildIdentityIndex: depuracion.activa=true -> backend np/estado/fuente win over the raw sticker np OK');
+
+{
+  // Same fields, one level up: buildProfessionalRows' own row output must
+  // forward fase/estadoSugerido/fuenteDato from the profile untouched (task
+  // 4.9's "same resolved fields as the table" -- these are the fields
+  // xlsxRowsFor/matchesSearch/cellHtml read from `row`, never re-derived).
+  const depuracion = {
+    activa: true, motivo: '', referencia_generada_en: '2026-09-12',
+    inspectores: [{
+      identidad_key: '77', identificacion: '77', nombre_completo: 'Rita Diaz',
+      codigo: '', entidad: '', np: 'P4', np_fuente: 'fase2', fase: 'Fase II',
+      fase_np_faltante: false, estado_sugerido: 'candidato_desactivacion', fuente_dato: 'fase2',
+      tarjeta_profesional: '', num_telefono: '', correo_contacto: '', no_persona: false,
+    }],
+    grupo_externos: null, alias_nombres: {}, revision_manual: [],
+  };
+  const stickers = [{ inspector: { identificacion: '77', nombre_completo: 'Rita Diaz' } }];
+  const identity = buildIdentityIndex({ stickers, surveys: [], depuracion });
+  const result = buildProfessionalRows({ stickers, surveys: [], identity });
+  const row = result.rows[0];
+  assert.equal(row.fase, 'Fase II');
+  assert.equal(row.estadoSugerido, 'candidato_desactivacion');
+  assert.equal(row.fuenteDato, 'fase2');
+  assert.equal(row.npFuente, 'fase2');
+}
+console.log('buildProfessionalRows: forwards fase/estadoSugerido/fuenteDato from the profile untouched OK');
+
+{
+  // Grouping: multiple raw sticker records for the SAME backend identity
+  // still merge into ONE row via the resolved cédula (eligibleCedulas built
+  // from depuracion.inspectores), never a client-side "first non-empty
+  // wins" recompute over the raw records (spec: "Grouping by identity uses
+  // resolved np, not a client-side merge").
+  const depuracion = {
+    activa: true,
+    motivo: '',
+    referencia_generada_en: '2026-09-12',
+    inspectores: [{
+      identidad_key: '9', identificacion: '9', nombre_completo: 'Ana Ruiz',
+      codigo: '', entidad: '', np: 'P2', np_fuente: 'vercel', fase: 'Fase I',
+      fase_np_faltante: false, estado_sugerido: 'activo', fuente_dato: 'vercel',
+      tarjeta_profesional: '', num_telefono: '', correo_contacto: '', no_persona: false,
+    }],
+    grupo_externos: null,
+    alias_nombres: {},
+    revision_manual: [],
+  };
+  const stickers = [
+    { inspector: { identificacion: '9', nombre_completo: 'Ana Ruiz' } },
+    { inspector: { identificacion: '9', nombre_completo: 'ANA RUIZ' } },
+  ];
+  const identity = buildIdentityIndex({ stickers, surveys: [], depuracion });
+  const result = buildProfessionalRows({ stickers, surveys: [], identity });
+  assert.equal(result.rows.length, 1, 'both raw records for identidad_key 9 must merge into ONE row');
+  assert.equal(result.rows[0].np, 'P2');
+}
+console.log('buildIdentityIndex: depuracion grouping uses the resolved cédula, not a client re-merge OK');
+
+// Task 4.3: `depuracion` absent, or `activa:false`, must be BYTE-IDENTICAL
+// to the pre-existing "primer no vacío gana" code path (cold start / feature
+// flag off / reference Blob down) -- same profile.np result as calling
+// buildIdentityIndex WITHOUT a depuracion argument at all.
+{
+  const stickers = [{ inspector: { identificacion: '55', nombre_completo: 'Luis Gomez', np: 'P1' } }];
+  const withoutDepuracion = buildIdentityIndex({ stickers, surveys: [] });
+  const inactiveDepuracion = buildIdentityIndex({
+    stickers,
+    surveys: [],
+    depuracion: {
+      activa: false, motivo: 'sin_blob', referencia_generada_en: '',
+      inspectores: [], grupo_externos: null, alias_nombres: {}, revision_manual: [],
+    },
+  });
+  const keyA = professionalKeyOf(stickers[0], withoutDepuracion);
+  const keyB = professionalKeyOf(stickers[0], inactiveDepuracion);
+  assert.equal(keyA, keyB);
+  assert.deepEqual(
+    withoutDepuracion.profiles.get(keyA),
+    inactiveDepuracion.profiles.get(keyB),
+    'activa:false must fall through to the exact same profile the no-depuracion call produces',
+  );
+  assert.equal(inactiveDepuracion.depuracionActiva, false);
+  assert.equal(inactiveDepuracion.depuracionMotivo, 'sin_blob');
+  // A completely absent `depuracion` (cold start / feature-flag-off
+  // payload, tagFuente's own `depuracion: null` default) must degrade the
+  // same way -- never throw, never report `activa: true`.
+  const noDepuracionAtAll = buildIdentityIndex({ stickers, surveys: [], depuracion: null });
+  assert.equal(noDepuracionAtAll.depuracionActiva, false);
+  assert.equal(noDepuracionAtAll.depuracionMotivo, '');
+  assert.equal(noDepuracionAtAll.grupoExternos, null);
+  assert.deepEqual(noDepuracionAtAll.revisionManual, []);
+}
+console.log('buildIdentityIndex: depuracion absent/activa:false -> byte-identical to the current code path OK');
 
 // ── buildProfessionalRows: empty inputs ────────────────────────────────────
 
@@ -1918,6 +2056,16 @@ assert.equal(matchesSearch({ name: 'Xyz', cedula: '', tarjetaProfesional: 'TP-77
 assert.equal(matchesSearch({ name: 'Xyz', cedula: '', tarjetaProfesional: '' }, 'tp-77'), false, 'no TP and no matching name -> no match');
 console.log('matchesSearch: tarjetaProfesional also matched (digits via cedula-path, text via name-path) OK');
 
+// ── Task 4.9/4.10: matchesSearch also matches the backend-resolved `np` ────
+// (spec: "Search matches the resolved np, not a stale client value") -- a
+// short alphanumeric query like "P3" has <3 digits (cedulaKey('P3') === '3',
+// length 1), so it takes the name-path branch; `np` is now checked there
+// alongside name/tarjetaProfesional.
+assert.equal(matchesSearch({ name: 'Ana', cedula: '', np: 'P3' }, 'p3'), true, 'query matches the resolved np field, case-insensitive');
+assert.equal(matchesSearch({ name: 'Ana', cedula: '', np: '' }, 'p3'), false, 'no np and no matching name -> no match');
+assert.equal(matchesSearch({ name: 'Xyz', cedula: '', tarjetaProfesional: '', np: 'P1' }, 'p3'), false, 'a DIFFERENT np must not match');
+console.log('matchesSearch: also matches the backend-resolved np (task 4.9/4.10) OK');
+
 // ── W7: visibleRowsFor ──────────────────────────────────────────────────
 
 {
@@ -2345,6 +2493,10 @@ console.log('buildProfessionalRows: avgStickersPerDay uses sticker-only active d
     avgStickersPerDay: 1, rosterSourced: 0, barriosActivos: ['San Antonio', 'El Poblado'],
     daysSinceFirst: 8, prevDay: '2026-01-08', prevDayFirstMinutes: 480, prevDayLastMinutes: 600,
     avgFirstMinutes: 500, avgLastMinutes: 620,
+    // Task 4.9 (spec: "Table And Export Reflect Depurado Fields
+    // Consistently") -- backend-resolved fields, present on the row exactly
+    // like np/codigo already are.
+    fase: 'Fase II', estadoSugerido: 'activo', fuenteDato: 'main+fase2',
   };
   // Row missing contact/temporal data entirely (only the bare minimum a
   // buildProfessionalRows result can produce for an untimed professional) --
@@ -2358,6 +2510,7 @@ console.log('buildProfessionalRows: avgStickersPerDay uses sticker-only active d
     avgStickersPerDay: null, rosterSourced: 0, barriosActivos: [],
     daysSinceFirst: null, prevDay: null, prevDayFirstMinutes: null, prevDayLastMinutes: null,
     avgFirstMinutes: null, avgLastMinutes: null,
+    fase: '', estadoSugerido: '', fuenteDato: '',
   };
 
   const totalesRows = xlsxRowsFor([rowFull, rowSparse], { subTab: 'totales' });
@@ -2385,6 +2538,15 @@ console.log('buildProfessionalRows: avgStickersPerDay uses sticker-only active d
   assert.equal(totalesRows[0].stickers_promedio_diario, 1);
   assert.equal(totalesRows[1].barrios_activos_7d, '');
   assert.equal(totalesRows[1].stickers_promedio_diario, '', 'null avgStickersPerDay -> empty string, never the literal null');
+  // Task 4.9: fase/estado_sugerido/fuente_dato read straight off the row,
+  // same field the on-screen table would read -- never a separately
+  // client-derived value.
+  assert.equal(totalesRows[0].fase, 'Fase II');
+  assert.equal(totalesRows[0].estado_sugerido, 'activo');
+  assert.equal(totalesRows[0].fuente_dato, 'main+fase2');
+  assert.equal(totalesRows[1].fase, '', 'missing fase defaults to empty string, never undefined/null');
+  assert.equal(totalesRows[1].estado_sugerido, '');
+  assert.equal(totalesRows[1].fuente_dato, '');
 
   const temporalesRows = xlsxRowsFor([rowFull, rowSparse], { subTab: 'temporales' });
   assert.equal(temporalesRows.length, 2);
@@ -2406,6 +2568,25 @@ console.log('xlsxRowsFor: totales/temporales sheets carry the identical key set,
   assert.deepEqual(xlsxRowsFor([], {}), [], 'default subTab (totales) with no rows');
 }
 console.log('xlsxRowsFor: empty/undefined input OK');
+
+// ── Task 4.10: exported XLSX np matches the on-screen (cellHtml) np ────────
+// (spec: "Exported XLSX matches on-screen np") -- both read `row.np`
+// directly, never a separately-derived client value.
+{
+  const row = {
+    name: 'Gil Soto', np: 'P3', cedula: '123', codigo: 'B1', entidad: 'DAGRD',
+    tarjetaProfesional: '', celular: '', correo: '',
+    stickersFase1: 0, stickersFase2: 0, stickersTotal: 0, surveyTotal: 0, total: 0,
+    firstDate: null, lastDate: null, activeDays: 0, avgStickersPerDay: null,
+    barriosActivos: [], fase: '', estadoSugerido: '', fuenteDato: '',
+  };
+  const onScreenNp = cellHtml(row, 'np', true);
+  const exportedNp = xlsxRowsFor([row], { subTab: 'totales' })[0].clase_p;
+  assert.equal(onScreenNp, 'P3');
+  assert.equal(exportedNp, 'P3');
+  assert.equal(onScreenNp, exportedNp, 'the table cell and the XLSX export must read the identical resolved np');
+}
+console.log('xlsxRowsFor/cellHtml: exported np matches the on-screen np (task 4.10) OK');
 
 // ── N13: xlsxFiltersSummary — the XLSX header's "Filtros:" row, so an export
 // carries which search/range/professional narrowed it, not just a bare
@@ -2953,5 +3134,105 @@ assert.equal(massExportOverlayText(1), 'Generando 1 reportes… esto puede tarda
 assert.equal(massExportOverlayText(37), 'Generando 37 reportes… esto puede tardar unos segundos.');
 assert.equal(massExportOverlayText(0), 'Generando 0 reportes… esto puede tardar unos segundos.');
 console.log('massExportOverlayText (M6) OK');
+
+// ── Task 4.4/4.5: grupoExternosRowHtml — GRUPO-EXTERNOS renders as ONE row,
+// collapsed by default, with a toggle that reveals grupo_externos.detalle
+// inline (spec: "Non-Person Group Row Is Expandable"). ─────────────────────
+
+{
+  // No grupo_externos at all (depuracion inactive, or every non-person
+  // record was exempted via alias_nombres) -> no row, never a stray empty tr.
+  assert.equal(grupoExternosRowHtml(null), '');
+  assert.equal(grupoExternosRowHtml(undefined), '');
+}
+console.log('grupoExternosRowHtml: null/undefined -> no row rendered OK');
+
+{
+  const grupoExternos = {
+    identidad_key: 'GRUPO-EXTERNOS',
+    n_colapsados: 2,
+    estado_sugerido: 'grupo_externos_agrupado',
+    fuente_dato: 'grupo_agregado (main, 2 registros colapsados)',
+    detalle: [
+      { nombre_completo: 'Juan Sospechoso', identificacion: '999', motivo: 'cedula_sospechosa', ultimo_sticker: '2026-08-30' },
+      { nombre_completo: 'Cuenta Generica', identificacion: '888', motivo: 'cuenta_no_persona', ultimo_sticker: null },
+    ],
+  };
+  const html = grupoExternosRowHtml(grupoExternos, 5);
+  // Scenario: "Collapsed by default" -- the detail block ships with the
+  // `hidden` attribute; a click handler (wired in initSeguimiento) removes
+  // it, it is never removed/rebuilt by this pure function itself.
+  assert.match(html, /seg-externos-detail[^>]*hidden/, 'the detail block must be collapsed (hidden) by default');
+  assert.match(html, /colspan="5"/);
+  assert.match(html, /2/, 'the aggregate count (n_colapsados) must be visible on the collapsed row itself');
+  // Scenario: "Expanding the aggregate row shows individual entries" -- the
+  // 2 individual entries are already present in the markup (toggling
+  // `hidden` in the DOM is what "expanding" means; the pure function's job
+  // is making sure the content EXISTS to reveal).
+  assert.match(html, /Juan Sospechoso/);
+  assert.match(html, /Cuenta Generica/);
+  assert.match(html, /cedula_sospechosa/);
+  assert.match(html, /cuenta_no_persona/);
+}
+console.log('grupoExternosRowHtml: collapsed by default, detail entries present for expansion OK');
+
+{
+  // Escaping: a detalle entry's own fields must never inject raw HTML.
+  const grupoExternos = {
+    n_colapsados: 1, fuente_dato: '', estado_sugerido: '',
+    detalle: [{ nombre_completo: '<img src=x onerror=alert(1)>', identificacion: '1', motivo: 'cedula_sospechosa', ultimo_sticker: null }],
+  };
+  const html = grupoExternosRowHtml(grupoExternos, 3);
+  assert.ok(!html.includes('<img src=x'), 'a malicious nombre_completo must be HTML-escaped');
+}
+console.log('grupoExternosRowHtml: detail fields are HTML-escaped OK');
+
+// ── Task 4.6/4.7: revisionManualHtml — depuracion.revision_manual, with an
+// EXPLICIT empty state (spec: "Manual Review Section Surfaces Unresolved
+// Depuration Cases"). ──────────────────────────────────────────────────────
+
+{
+  const html = revisionManualHtml([]);
+  assert.match(html, /[Ss]in pendientes/, 'an empty list must render an explicit "nothing pending" state, never a blank/hidden section');
+}
+console.log('revisionManualHtml: empty list -> explicit "nothing pending" state, not a hidden section OK');
+
+{
+  assert.equal(revisionManualHtml(null), revisionManualHtml([]), 'malformed input degrades to the same empty state, never throws');
+  assert.equal(revisionManualHtml(undefined), revisionManualHtml([]));
+}
+console.log('revisionManualHtml: malformed input tolerated, same empty state OK');
+
+{
+  const list = [
+    { motivo: 'codigo_vercel_duplicado', codigo: '097' },
+    { motivo: 'codigo_remap_candidato', codigo: '041', nombre_vercel: 'juan perez', identidad_key_candidato: '123', score: 92.5 },
+  ];
+  const html = revisionManualHtml(list);
+  assert.match(html, /codigo_vercel_duplicado/);
+  assert.match(html, /097/);
+  assert.match(html, /codigo_remap_candidato/);
+  assert.match(html, /123/, 'the candidate identidad_key must be visible without opening the notebook');
+  assert.match(html, /92\.5/);
+}
+console.log('revisionManualHtml: renders every entry (remap conflict + Vercel duplicate) without needing an external file OK');
+
+// ── Task 4.8: depuracionBadgeHtml — freshness/degraded indicator ──────────
+
+assert.equal(depuracionBadgeHtml(null), null, 'no identity at all -> no badge');
+assert.equal(
+  depuracionBadgeHtml({ depuracionActiva: false, depuracionMotivo: '' }),
+  null,
+  'depuracion entirely absent (flag off / cold start with no motivo) -> no badge, byte-identical UI',
+);
+{
+  const badge = depuracionBadgeHtml({ depuracionActiva: false, depuracionMotivo: 'sin_blob' });
+  assert.match(badge, /sin_blob/, 'activa:false must surface the degraded motivo');
+}
+{
+  const badge = depuracionBadgeHtml({ depuracionActiva: true, referenciaGeneradaEn: '2026-09-12' });
+  assert.match(badge, /2026-09-12/, 'activa:true must surface referencia_generada_en so the user knows how fresh it is');
+}
+console.log('depuracionBadgeHtml: activa:false surfaces the motivo, activa:true surfaces the freshness date OK');
 
 console.log('seguimiento.test.mjs: all assertions passed');

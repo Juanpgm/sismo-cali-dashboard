@@ -43,12 +43,22 @@ const ENDPOINT = 'stickersAtencionsismo';
 // still wins (object-spread order below), this is only the fallback for
 // records that don't carry one. Exported: pure, so a self-check can exercise
 // it without a fetch/DOM stub.
+//
+// `depuracion` (seguimiento-inspectores-depurado, Fase 4): passed through
+// AS-IS, never interpreted here — the only consumer that reads its shape is
+// seguimiento.js's buildIdentityIndex. This is the ONE shared read path
+// between initStickers (this file's own tab, whose endpoint never sends the
+// field) and seguimiento.js's fetchEvaluacionesOnce reuse, so a plain
+// passthrough with a `null` default (never `undefined`, matching every other
+// field's fixed-shape contract) keeps initStickers byte-identical while
+// finally letting the field reach seguimiento.js at all.
 export function tagFuente(data) {
   const fuenteRespuesta = (data && data.fuente) || 'firestore';
   const list = Array.isArray(data && data.evaluaciones) ? data.evaluaciones : [];
   return {
     evaluaciones: list.map((e) => ({ fuente: fuenteRespuesta, ...e })),
     degraded: Boolean(data && data.degraded),
+    depuracion: (data && data.depuracion) || null,
   };
 }
 
