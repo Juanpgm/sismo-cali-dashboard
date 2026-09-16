@@ -129,6 +129,49 @@ Separately (also verified 2026-09-16, same session): `estado_sugerido()` had a R
 - [ ] 5.5 Ship PR 4 (frontend) once backend parity is confirmed in production logs.
 - [ ] 5.6 Confirm with user whether `correo_contacto` is in scope for this delivery (open item from design's Open Questions) before shipping 4.1.
 
+## Phase 5b: Mobile Overflow Fix (PR 5)
+
+Not part of the original plan — found during visual verification (Playwright,
+375px viewport, full-page screenshot) of PR 4's frontend, after Phase 4 was
+already merged into this chain's base branch. `#view-seguimiento` (the
+Seguimiento tab's real markup, including the 12-column `.tipologia-table`,
+the GRUPO-EXTERNOS row, and the Revisión manual card) was forced to ~1180px
+wide on a 375px viewport: it is a flex item of `.main-column`
+(flex-direction:column) that also carries `margin: 0 auto` for desktop
+centering under `max-width: 1180px`. A flex item with an auto margin on the
+cross axis is sized by shrink-to-fit (its own content's preferred width,
+clamped only by max-width) instead of stretching to the container's
+available width — so on mobile the section held its full desktop width
+regardless of viewport, and since `html, body { overflow-x: clip }`
+suppresses the page-level horizontal scrollbar, that excess content was
+genuinely unreachable, not just "needs a scroll". `.main-column`,
+`.eval-section`, and `.card` are shared by every other tab (Reportes
+ciudadanos, Asignación/Stickers, Usuarios, etc. — confirmed via grep before
+touching anything), so the fix is scoped to the `#view-seguimiento` selector
+only.
+
+- [x] 5b.1 Add `width: 100%` (fixes the shrink-to-fit sizing) alongside the
+      existing `max-width: 1180px; margin: 0 auto;` and a new `min-width: 0`
+      (belt-and-suspenders against the flex item's content-based auto
+      minimum) on `#view-seguimiento` in `web/styles.css`. No other selector
+      touched.
+- [x] 5b.2 Verify with Playwright at 375px and 1440px, before/after the fix,
+      using a static harness that reuses the real `sectionHtml()` markup
+      shape (see `web/js/seguimiento.js`): `#view-seguimiento`'s own
+      geometry goes from clientWidth 1180 (mobile) / 1180 overflowing its
+      1092px-available desktop column, to clientWidth 351 (mobile) / 1092
+      (desktop, no longer clipped) — `.table-scroll` inside it still scrolls
+      horizontally as designed for the remaining table overflow.
+- [x] 5b.3 Verify no collateral effect: same harness includes proxy sections
+      for Reportes ciudadanos (real `sectionHtml()` from
+      `reportes-ciudadanos.js`) and Asignación/Stickers (`.card` +
+      `.table-scroll` shape from `planeacion.js`), sharing `.eval-section`/
+      `.card`. Geometry (scrollWidth/clientWidth/offsetWidth/rect) for both
+      is byte-identical before vs after the CSS change at both viewports —
+      confirmed no leakage outside the `#view-seguimiento` ID selector.
+- [x] 5b.4 Run `node --test "web/js/*.test.mjs"` — unaffected (CSS-only
+      change): 18/18 passing, 0 failures.
+
 ## Full Test Suite Gate
 
 - [ ] 6.1 Run `python -m pytest backend/tests/ -q` — all 1442+ existing tests plus new ones green.
