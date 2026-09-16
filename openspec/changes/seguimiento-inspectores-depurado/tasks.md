@@ -25,9 +25,9 @@ Chain strategy: feature-branch-chain
 | 3 | Router wiring (`DepuracionCache`, flag, `main.py`), `publicar_referencia_inspectores.py`, `requirements.txt` | PR 3 | Base = PR 2 branch. Ships with flag OFF. |
 | 4 | Frontend `seguimiento.js` (identity index, GRUPO-EXTERNOS row, manual-review section) + `seguimiento.test.mjs` | PR 4 | Base = PR 3 branch. Ships after backend parity verified in logs. |
 
-## Known spec/design conflict (resolve before Phase 2)
+## Spec/design conflict — RESOLVED
 
-`specs/datos-referencia-blob/spec.md` requires **three independently-published/fetched blobs**; `design.md` (D8, File Changes, Blob reference bundle) specifies **one `bundle.json`** with `access:'private'`. Tasks below follow **design.md** (single private bundle) since it is the latest confirmed decision; the spec text needs a follow-up correction pass. Flagged as a risk below — confirm with user before PR 1 merges.
+`specs/datos-referencia-blob/spec.md` was reconciled to match `design.md` (D8): one atomic private `bundle.json`, not three independent blobs. The spec's "Three Named Reference Artifacts" requirement was rewritten to "Three Reference Sources In A Single Atomic Bundle" before Phase 1 started. No remaining discrepancy — verified by `sdd-verify` against the implementation.
 
 ## Phase 1: Referencia I/O Seam (PR 1)
 
@@ -127,7 +127,7 @@ Separately (also verified 2026-09-16, same session): `estado_sugerido()` had a R
 - [ ] 5.3 Verify parity in logs (compare computed `depuracion` against expectation without exposing it to the front yet).
 - [ ] 5.4 Flip `SEGUIMIENTO_DEPURACION=1`; confirm `depuracion` block appears.
 - [ ] 5.5 Ship PR 4 (frontend) once backend parity is confirmed in production logs.
-- [ ] 5.6 Confirm with user whether `correo_contacto` is in scope for this delivery (open item from design's Open Questions) before shipping 4.1.
+- [x] 5.6 Confirmed with user 2026-09-16: `correo_contacto` IS in scope for this delivery (private bundle removes the exposure risk; already wired into the individual PDF report from Phase 4).
 
 ## Phase 5b: Mobile Overflow Fix (PR 5)
 
