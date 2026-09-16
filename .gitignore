@@ -53,3 +53,6 @@ node_modules/
 
 # Local WhatsApp Web browser profile (session credentials) — never commit
 .whatsapp_session/
+
+# Salidas del notebook de cruces (contienen PII de RUFE)
+outputs/
