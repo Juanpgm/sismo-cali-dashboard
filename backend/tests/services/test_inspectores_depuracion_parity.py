@@ -20,8 +20,7 @@ against the golden row for each identity.
    classification, so it correctly returns `"candidato_desactivacion"`
    instead — this is the ONE divergence the task explicitly permits.
 
-2. **Second divergence found, NOT part of D7, flagged for a follow-up spec
-   correction (root cause corrected 2026-09-16, see below)** — Mario
+2. **D-REMAP fix (permitted; user-confirmed 2026-09-16, no longer open)** — Mario
    Fernando Rosas Martinez (13068447): golden `estado_sugerido="revisar"`
    despite being absent from BOTH the Vercel and Fase 2 reference sources
    (confirmed by name AND cédula search against the raw source files — no
@@ -55,12 +54,12 @@ against the golden row for each identity.
    and `spec.md`'s literal "Estado Sugerido Precedence" (as corrected)
    conditions `"revisar"` vs `"candidato_desactivacion"` only on
    `tiene_sticker`/`código`/Fase2/Vercel — not on "had a código that was
-   later remapped away". This engine therefore still returns
+   later remapped away". This engine therefore returns
    `"candidato_desactivacion"` here instead of `"revisar"`, per spec's
-   literal contract; documented for a future spec correction pass (should
-   "código stripped by remap" also route to `"revisar"`? — a genuine
-   product decision, not something to silently port as an undocumented
-   pipeline-ordering quirk).
+   literal contract. The user confirmed 2026-09-16 this is the DESIRED
+   behavior (a código correctly stripped by remap must not keep shielding
+   someone from the deactivation-candidate bucket) — this divergence is
+   permitted and intentional, same category as D7, not an open question.
 
 3. **Faber Albeiro Gaviria Salazar (9728480) intentionally excluded from
    this fixture** — his golden `identificacion` (9728480, from Fase2/
@@ -170,13 +169,16 @@ GOLDEN = {
     "16934168": ("P1", "fase2", "Fase I", False, "098", "main+fase2+vercel", "activo"),
     "16735029": ("P1", "fase2", "Fase I", False, "046", "main+fase2+vercel", "activo"),
     "94532806": ("", "ninguno", "Fase I", True, "", "main", "candidato_desactivacion"),
-    "13068447": ("P1", "main", "Fase I", False, "", "main", None),  # activo-flag divergence
+    "13068447": ("P1", "main", "Fase I", False, "", "main", None),  # remap-timing divergence (D-REMAP)
     "6320222994": ("", "ninguno", "Fase I", True, "", "main", "no_persona"),
 }
 
 DIVERGENCES = {
     "66826632": "candidato_desactivacion",  # D7 fix — golden had "activo" via tiene_sticker_valido bug
-    "13068447": "candidato_desactivacion",  # golden had "revisar" via an undocumented activo-flag signal
+    "13068447": "candidato_desactivacion",  # D-REMAP (user-confirmed 2026-09-16): golden had "revisar"
+    # via a pipeline-ordering artifact — the notebook computed desactivar/revision membership from a
+    # stale pre-remap codigo snapshot. This engine classifies off the current post-remap codigo,
+    # which the user confirmed is the desired behavior, not a bug to replicate.
 }
 
 
