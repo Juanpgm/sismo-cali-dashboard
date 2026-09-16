@@ -642,3 +642,34 @@ def test_depurar_full_pipeline_sticker_history_falls_to_revisar_not_desactivacio
     assert inspector["codigo"] == ""
     assert inspector["tiene_sticker_valido"] is False
     assert inspector["estado_sugerido"] == "revisar"
+
+
+def test_depurar_exact_name_merge_exposes_cedulas_unificadas_on_survivor():
+    # CRITICAL fix (adversarial review): `_perfil_a_dict` must serialize
+    # `Perfil.cedulas_unificadas` -- without it, the frontend has no way to
+    # know a raw sticker carrying the LOSING cédula belongs to this same
+    # survivor row (see seguimiento.js's buildIdentityIndexFromDepuracion).
+    # 7-digit cédulas (like the rest of this file's fixtures) so
+    # `cedula_sospechosa` is False and colapsar_externos never collapses
+    # this pair away — otherwise the merge would never reach `inspectores`.
+    roster = {
+        "1111111": _roster_entry("1111111", "Juan Perez"),
+        "2222222": _roster_entry("2222222", "Juan Perez"),
+    }
+    resultado = dep.depurar(
+        stickers=[], roster_by_cedula=roster, nombres_survey=[],
+        referencia=EMPTY_REF, hoy=date(2026, 9, 1),
+    )
+    assert len(resultado.inspectores) == 1
+    survivor = resultado.inspectores[0]
+    assert "cedulas_unificadas" in survivor
+    assert set(survivor["cedulas_unificadas"]) | {survivor["identificacion"]} == {"1111111", "2222222"}
+
+
+def test_depurar_no_merge_cedulas_unificadas_is_empty_list():
+    roster = {"1234567": _roster_entry("1234567", "Juan Perez")}
+    resultado = dep.depurar(
+        stickers=[], roster_by_cedula=roster, nombres_survey=[],
+        referencia=EMPTY_REF, hoy=date(2026, 9, 1),
+    )
+    assert resultado.inspectores[0]["cedulas_unificadas"] == []

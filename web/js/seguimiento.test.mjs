@@ -329,6 +329,48 @@ console.log('buildProfessionalRows: forwards fase/estadoSugerido/fuenteDato from
 }
 console.log('buildIdentityIndex: depuracion grouping uses the resolved cédula, not a client re-merge OK');
 
+{
+  // CRITICAL fix (adversarial review): when the backend merges two
+  // identities by exact name (_unificar_por_nombre), the LOSING cédula is
+  // now serialized on the survivor's own `cedulas_unificadas` (backend
+  // fix, _perfil_a_dict). A raw sticker still carrying that losing cédula
+  // in `inspector.identificacion` must resolve into the SAME row as the
+  // survivor's own cédula, never an orphan `nom:` bucket — spec: "Grouping
+  // by identity uses resolved np, not a client-side merge".
+  const depuracion = {
+    activa: true,
+    motivo: '',
+    referencia_generada_en: '2026-09-12',
+    inspectores: [{
+      identidad_key: '111', identificacion: '111', nombre_completo: 'Juan Perez',
+      cedulas_unificadas: ['222'],
+      codigo: '', entidad: '', np: 'P2', np_fuente: 'vercel', fase: 'Fase I',
+      fase_np_faltante: false, estado_sugerido: 'activo', fuente_dato: 'vercel',
+      tarjeta_profesional: '', num_telefono: '', correo_contacto: '', no_persona: false,
+    }],
+    grupo_externos: null,
+    alias_nombres: {},
+    revision_manual: [],
+  };
+  const stickers = [
+    { inspector: { identificacion: '111', nombre_completo: 'Juan Perez' } },
+    // Same person, but the sticker still carries the LOSING cédula ('222')
+    // that got merged away on the backend.
+    { inspector: { identificacion: '222', nombre_completo: 'Juan Perez' } },
+  ];
+  const identity = buildIdentityIndex({ stickers, surveys: [], depuracion });
+  assert.equal(professionalKeyOf(stickers[0], identity), 'ced:111');
+  assert.equal(
+    professionalKeyOf(stickers[1], identity), 'ced:111',
+    'a merged-away cédula must resolve to the survivor row, never its own ced:222 or an orphan nom: bucket',
+  );
+  const result = buildProfessionalRows({ stickers, surveys: [], identity });
+  assert.equal(result.rows.length, 1, 'both raw records must merge into ONE row, not an orphan row for the losing cédula');
+  assert.equal(result.rows[0].stickersTotal, 2);
+  assert.equal(result.rows[0].np, 'P2');
+}
+console.log('buildIdentityIndex: a merged-away cédula (cedulas_unificadas) groups into the survivor row, not an orphan OK');
+
 // Task 4.3: `depuracion` absent, or `activa:false`, must be BYTE-IDENTICAL
 // to the pre-existing "primer no vacío gana" code path (cold start / feature
 // flag off / reference Blob down) -- same profile.np result as calling

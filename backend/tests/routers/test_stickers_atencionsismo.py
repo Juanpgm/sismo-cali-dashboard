@@ -1115,6 +1115,67 @@ def test_flag_on_depuracion_computation_failure_never_breaks_response(client, mo
     assert "depuracion" not in resp.json()
 
 
+# ── CRITICAL (adversarial review): `depuracion` is admin-only PII, never
+# viewer-readable, even though require_role("admin", "viewer") lets both
+# roles through for the rest of the payload ──────────────────────────────
+
+
+def test_depuracion_block_present_for_admin_absent_for_viewer_same_flag(client, monkeypatch):
+    """`depuracion` carries full PII (cédula/tarjeta_profesional/
+    num_telefono/correo_contacto/no_persona) -- `require_role("admin",
+    "viewer")` on this route lets ANY authenticated @cali.gov.co account
+    through as "viewer" (app.auth.roles.role_from_claims: any google.com +
+    @cali.gov.co account, not a curated admin allowlist), so the block must
+    be gated separately, INSIDE the handler."""
+    monkeypatch.setenv(router_mod.SEGUIMIENTO_DEPURACION_ENV, "1")
+
+    admin_body = client.get("/stickers-atencionsismo").json()
+    assert "depuracion" in admin_body
+
+    client.app.dependency_overrides[current_claims] = lambda: FAKE_CLAIMS_INSTITUCIONAL
+    viewer_body = client.get("/stickers-atencionsismo").json()
+    assert "depuracion" not in viewer_body
+
+
+def test_depuracion_absent_for_viewer_even_when_referencia_activa_true(monkeypatch):
+    # Same guard, with a REAL (activa=True) reference bundle -- proves the
+    # gate is role-based, not just "viewer happens to see an empty/degraded
+    # depuracion", which would trivially (and wrongly) pass the test above
+    # even without the fix.
+    monkeypatch.setenv(router_mod.SEGUIMIENTO_DEPURACION_ENV, "1")
+    monkeypatch.setattr(atencionsismo, "credentials_from_env", lambda: ("u", "p"))
+
+    async def fake_fetch(client, user, password, **kw):
+        return list(ROWS)
+
+    monkeypatch.setattr(atencionsismo, "fetch_stickers", fake_fetch)
+    fake_auth = _FakeAuth()
+    stores = {
+        "inspectores": {
+            "u1": {"codigo": "004", "NP": "P4", "nombre_completo": "Ana Gomez",
+                   "identificacion": "123", "entidad": "Curaduria 1"},
+        },
+        "evaluaciones": {},
+        "survey_cali": {},
+    }
+    app = _app(monkeypatch, fake_auth, stores)
+    referencia = ReferenciaBundle(
+        vercel=(EntradaReferencia(cedula_key="123", nombre_norm="ana gomez", np="P3",
+                                   entidad="DAGRD", codigo="", pasos=(), no_persona=False),),
+        fase2=(), main=(), generado_en="2026-09-12", activa=True, motivo="", codigos_duplicados=(),
+    )
+    app.state.depuracion_cache = router_mod.DepuracionCache(cargar_referencia=lambda: referencia)
+
+    app.dependency_overrides[current_claims] = lambda: FAKE_CLAIMS_ADMIN
+    admin_body = TestClient(app).get("/stickers-atencionsismo").json()
+    assert admin_body["depuracion"]["activa"] is True
+    assert len(admin_body["depuracion"]["inspectores"]) == 1
+
+    app.dependency_overrides[current_claims] = lambda: FAKE_CLAIMS_INSTITUCIONAL
+    viewer_body = TestClient(app).get("/stickers-atencionsismo").json()
+    assert "depuracion" not in viewer_body
+
+
 def test_depuracion_pii_never_reaches_blob_persisted_evaluaciones(monkeypatch):
     """Task 3.14 (D3, PII isolation): `depuracion`'s nombres/cédulas/
     teléfonos/correos must NEVER appear in the payload
@@ -1174,3 +1235,251 @@ def test_depuracion_pii_never_reaches_blob_persisted_evaluaciones(monkeypatch):
     assert "123456789" not in serialized
     assert "ana.secreta@example.com" not in serialized
     assert "3000000000" not in serialized
+
+
+# ── WARNING (adversarial review): DepuracionCache._referencia_actual must
+# serve the last-known-good reference bundle across a TRANSIENT degrade,
+# never silently recompute depuracion against an empty reference ─────────
+
+
+def test_referencia_transient_failure_keeps_last_known_good_result(monkeypatch):
+    """`cargar_referencia()` never raises (D5) — a transient failure (Blob
+    network blip) degrades to `ReferenciaBundle.vacia()` (`activa=False`).
+    Once a GOOD bundle (`activa=True`) is cached, a later TTL-triggered
+    reload that comes back degraded must NOT replace it — spec:
+    "Unavailable reference source degrades to last-good cache". Without the
+    fix, `_referencia_actual()` unconditionally swaps in the empty bundle,
+    `get_or_compute` sees `activa` changed and recomputes against it,
+    discarding the previously-good `depuracion` result."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(router_mod.time, "monotonic", lambda: clock["t"])
+
+    buena = ReferenciaBundle(
+        vercel=(), fase2=(), main=(), generado_en="2026-09-12", activa=True, motivo="", codigos_duplicados=(),
+    )
+    referencias = {"bundle": buena}
+    calls = {"compute": 0}
+
+    def _compute(referencia):
+        calls["compute"] += 1
+        return _fake_depuracion(referencia)
+
+    cache = router_mod.DepuracionCache(cargar_referencia=lambda: referencias["bundle"])
+    evaluaciones = [{"id": "1"}]
+    hoy = date(2026, 9, 16)
+
+    r1 = cache.get_or_compute(evaluaciones=evaluaciones, hoy=hoy, compute=_compute)
+    assert r1.activa is True
+    assert calls["compute"] == 1
+
+    # TTL expires; the reload blips and degrades to an empty bundle.
+    clock["t"] += router_mod.REFERENCIA_CACHE_TTL_SECONDS + 1
+    referencias["bundle"] = ReferenciaBundle.vacia(motivo="blob caido")
+
+    r2 = cache.get_or_compute(evaluaciones=evaluaciones, hoy=hoy, compute=_compute)
+    assert r2 is r1  # last-known-good result served verbatim, not recomputed
+    assert r2.activa is True
+    assert calls["compute"] == 1  # never recomputed against the degraded referencia
+
+
+def test_referencia_never_had_a_good_bundle_adopts_the_degraded_one(monkeypatch):
+    """The fallback is ONLY for a PREVIOUSLY-good bundle -- a cold cache
+    that has never seen a good referencia must still adopt (and compute
+    against) a degraded one, exactly like before this fix."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(router_mod.time, "monotonic", lambda: clock["t"])
+
+    referencias = {"bundle": ReferenciaBundle.vacia(motivo="sin_blob")}
+    calls = {"compute": 0}
+
+    def _compute(referencia):
+        calls["compute"] += 1
+        return _fake_depuracion(referencia)
+
+    cache = router_mod.DepuracionCache(cargar_referencia=lambda: referencias["bundle"])
+    hoy = date(2026, 9, 16)
+
+    r1 = cache.get_or_compute(evaluaciones=[{"id": "1"}], hoy=hoy, compute=_compute)
+    assert r1.activa is False
+    assert r1.motivo == "sin_blob"
+    assert calls["compute"] == 1
+
+
+def test_referencia_recovers_after_a_transient_degrade(monkeypatch):
+    """Once the SOURCE actually recovers (a later reload returns
+    `activa=True` again), the fallback must not get stuck forever serving
+    the old bundle."""
+    clock = {"t": 0.0}
+    monkeypatch.setattr(router_mod.time, "monotonic", lambda: clock["t"])
+
+    buena_vieja = ReferenciaBundle(
+        vercel=(), fase2=(), main=(), generado_en="2026-09-12", activa=True, motivo="", codigos_duplicados=(),
+    )
+    referencias = {"bundle": buena_vieja}
+    calls = {"compute": 0}
+
+    def _compute(referencia):
+        calls["compute"] += 1
+        return _fake_depuracion(referencia)
+
+    cache = router_mod.DepuracionCache(cargar_referencia=lambda: referencias["bundle"])
+    hoy = date(2026, 9, 16)
+    # SAME list object reused across every call: `get_or_compute`'s
+    # `unchanged` check also requires `self._src is evaluaciones` (design
+    # D4/D6's object-identity recompute signal) — a fresh literal on each
+    # call would trigger a recompute on its own, independent of the
+    # referencia fallback this test actually exercises.
+    evaluaciones = [{"id": "1"}]
+    cache.get_or_compute(evaluaciones=evaluaciones, hoy=hoy, compute=_compute)
+
+    clock["t"] += router_mod.REFERENCIA_CACHE_TTL_SECONDS + 1
+    referencias["bundle"] = ReferenciaBundle.vacia(motivo="blip")
+    cache.get_or_compute(evaluaciones=evaluaciones, hoy=hoy, compute=_compute)
+    assert calls["compute"] == 1  # last-known-good served, no recompute
+
+    clock["t"] += router_mod.REFERENCIA_CACHE_TTL_SECONDS + 1
+    buena_nueva = ReferenciaBundle(
+        vercel=(), fase2=(), main=(), generado_en="2026-09-16", activa=True, motivo="", codigos_duplicados=(),
+    )
+    referencias["bundle"] = buena_nueva
+    r3 = cache.get_or_compute(evaluaciones=evaluaciones, hoy=hoy, compute=_compute)
+    assert r3.referencia_generada_en == "2026-09-16"
+    assert calls["compute"] == 2
+
+
+# ── WARNING (adversarial review): a single shared lock must not stay held
+# during compute()'s own Firestore scans/rapidfuzz loop, and _compute must
+# reuse the roster build_payload already scanned instead of re-scanning ──
+
+
+def test_depuracion_cache_compute_runs_outside_the_lock(monkeypatch):
+    """A slow `compute(...)` (simulating the real Firestore roster/survey
+    scans + rapidfuzz loop) must never hold `self._lock` — otherwise a
+    concurrent call that would hit the cheap `unchanged` fast path (same
+    evaluaciones/hoy/referencia as an already-cached result) blocks behind
+    it. Proven with a real background thread: the slow compute blocks on an
+    Event this test only releases AFTER the concurrent fast-path call
+    already returned — if compute() still held the lock, that call would
+    hang until the Event is released, and `fast_result is first` would
+    never get the chance to run before the timeout."""
+    bundle = ReferenciaBundle.vacia()
+    entered_compute = threading.Event()
+    release_compute = threading.Event()
+
+    def slow_compute(referencia):
+        entered_compute.set()
+        assert release_compute.wait(timeout=3), "test setup: fast path never ran concurrently"
+        return _fake_depuracion(referencia)
+
+    cache = router_mod.DepuracionCache(cargar_referencia=lambda: bundle)
+    hoy = date(2026, 9, 16)
+    evaluaciones = [{"id": "1"}]
+
+    first = cache.get_or_compute(evaluaciones=evaluaciones, hoy=hoy, compute=lambda r: _fake_depuracion(r))
+
+    slow_thread = threading.Thread(
+        target=cache.get_or_compute,
+        kwargs={"evaluaciones": [{"id": "2"}], "hoy": hoy, "compute": slow_compute},
+    )
+    slow_thread.start()
+    try:
+        assert entered_compute.wait(timeout=3)
+
+        def _must_not_recompute(referencia):
+            raise AssertionError("unchanged fast path must not call compute again")
+
+        fast_result = cache.get_or_compute(evaluaciones=evaluaciones, hoy=hoy, compute=_must_not_recompute)
+        assert fast_result is first
+    finally:
+        release_compute.set()
+        slow_thread.join(timeout=3)
+
+
+def test_depuracion_compute_reuses_roster_from_build_payload_no_duplicate_scan(monkeypatch):
+    """`_compute` must reuse the `roster_by_cedula` `build_payload` already
+    scanned THIS request instead of calling `stickers.inspector_profiles`
+    (a full `inspectores` collection scan) a second time."""
+    monkeypatch.setenv(router_mod.SEGUIMIENTO_DEPURACION_ENV, "1")
+    monkeypatch.setattr(atencionsismo, "credentials_from_env", lambda: ("u", "p"))
+
+    async def fake_fetch(client, user, password, **kw):
+        return list(ROWS)
+
+    monkeypatch.setattr(atencionsismo, "fetch_stickers", fake_fetch)
+    fake_auth = _FakeAuth()
+    stores = {
+        "inspectores": {
+            "u1": {"codigo": "004", "NP": "P4", "nombre_completo": "Ana Gomez",
+                   "identificacion": "123", "entidad": "Curaduria 1"},
+        },
+        "evaluaciones": {},
+        "survey_cali": {},
+    }
+    app = _app(monkeypatch, fake_auth, stores)
+    app.dependency_overrides[current_claims] = lambda: FAKE_CLAIMS_ADMIN
+
+    referencia = ReferenciaBundle(
+        vercel=(EntradaReferencia(cedula_key="123", nombre_norm="ana gomez", np="P3",
+                                   entidad="DAGRD", codigo="", pasos=(), no_persona=False),),
+        fase2=(), main=(), generado_en="2026-09-12", activa=True, motivo="", codigos_duplicados=(),
+    )
+    app.state.depuracion_cache = router_mod.DepuracionCache(cargar_referencia=lambda: referencia)
+
+    calls = {"n": 0}
+    real_inspector_profiles = stickers.inspector_profiles
+
+    def counting_inspector_profiles(db):
+        calls["n"] += 1
+        return real_inspector_profiles(db)
+
+    monkeypatch.setattr(stickers, "inspector_profiles", counting_inspector_profiles)
+
+    body = TestClient(app).get("/stickers-atencionsismo").json()
+
+    assert body["depuracion"]["activa"] is True
+    assert len(body["depuracion"]["inspectores"]) == 1
+    assert calls["n"] == 1  # build_payload's own scan reused by _compute — no second scan
+
+
+def test_depuracion_compute_falls_back_to_a_fresh_scan_when_no_roster_was_passed(client, monkeypatch):
+    """`_compute`'s fallback path (no fresh `build_payload` roster available
+    THIS request — the sticker payload cache is still warm, but the
+    referencia TTL just forced a recompute) must still scan and compute
+    correctly end-to-end, not silently hand `roster_by_cedula=None` through
+    to `depuracion_svc.depurar`."""
+    monkeypatch.setenv(router_mod.SEGUIMIENTO_DEPURACION_ENV, "1")
+    clock = {"t": 0.0}
+    monkeypatch.setattr(router_mod.time, "monotonic", lambda: clock["t"])
+
+    referencias = {"bundle": ReferenciaBundle(
+        vercel=(), fase2=(), main=(), generado_en="2026-09-12", activa=True, motivo="", codigos_duplicados=(),
+    )}
+    client.app.state.depuracion_cache = router_mod.DepuracionCache(cargar_referencia=lambda: referencias["bundle"])
+
+    calls = {"n": 0}
+    real_inspector_profiles = stickers.inspector_profiles
+
+    def counting_inspector_profiles(db):
+        calls["n"] += 1
+        return real_inspector_profiles(db)
+
+    monkeypatch.setattr(stickers, "inspector_profiles", counting_inspector_profiles)
+
+    first = client.get("/stickers-atencionsismo").json()
+    assert first["depuracion"]["activa"] is True
+    assert calls["n"] == 1  # build_payload's own scan, reused by _compute
+
+    # Force the referencia TTL boundary WITHOUT expiring the sticker
+    # payload cache's own (shorter) TTL -- keep it "just fetched" so
+    # `build_payload` does NOT run again this request, and
+    # `roster_by_cedula_holder` stays empty for `_compute` to fall back on.
+    clock["t"] += router_mod.REFERENCIA_CACHE_TTL_SECONDS + 1
+    client.app.state.stickers_atencionsismo_cache._at = clock["t"]
+    referencias["bundle"] = ReferenciaBundle(
+        vercel=(), fase2=(), main=(), generado_en="2026-09-16", activa=True, motivo="", codigos_duplicados=(),
+    )
+
+    second = client.get("/stickers-atencionsismo").json()
+    assert second["depuracion"]["referencia_generada_en"] == "2026-09-16"
+    assert len(second["depuracion"]["inspectores"]) == 1  # fallback scan still found the roster
+    assert calls["n"] == 2  # exactly one fallback scan -- not zero (broken), not duplicated

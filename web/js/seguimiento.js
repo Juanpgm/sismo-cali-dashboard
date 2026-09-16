@@ -284,7 +284,15 @@ export function professionalKeyOf(record, identity = EMPTY_IDENTITY) {
   }
   const insp = record.inspector || {};
   const ownCedula = cedulaKey(insp.identificacion);
-  if (ownCedula && idx.eligibleCedulas.has(ownCedula)) return `ced:${ownCedula}`;
+  if (ownCedula && idx.eligibleCedulas.has(ownCedula)) {
+    // seguimiento-inspectores-depurado (CRITICAL fix): a cédula that lost a
+    // backend exact-name merge (Perfil.cedulas_unificadas) is eligible but
+    // must resolve into the SURVIVING identity's row, never its own —
+    // see buildIdentityIndexFromDepuracion's cedulaFusionadaACedulaSurvivor.
+    const survivorCedula = (idx.cedulaFusionadaACedulaSurvivor
+      && idx.cedulaFusionadaACedulaSurvivor.get(ownCedula)) || ownCedula;
+    return `ced:${survivorCedula}`;
+  }
   const nameKey = normalizeName(insp.nombre_completo || '');
   if (nameKey && idx.nameToCedula.has(nameKey)) return `ced:${idx.nameToCedula.get(nameKey)}`;
   return nameKey ? `nom:${nameKey}` : '';
@@ -305,6 +313,12 @@ function buildIdentityIndexFromDepuracion(depuracion, depMeta) {
   const eligibleCedulas = new Set();
   const nameToCedula = new Map();
   const profiles = new Map();
+  // CRITICAL fix: a merged-away identity's own cédula (backend's
+  // Perfil.cedulas_unificadas, now serialized by _perfil_a_dict) must route
+  // a raw sticker into the SAME row as the survivor instead of falling into
+  // its own orphan `nom:` bucket. Keyed by the LOSING cédula, valued by the
+  // survivor's own cédula.
+  const cedulaFusionadaACedulaSurvivor = new Map();
 
   const inspectores = Array.isArray(depuracion.inspectores) ? depuracion.inspectores : [];
   for (const insp of inspectores) {
@@ -312,6 +326,13 @@ function buildIdentityIndexFromDepuracion(depuracion, depMeta) {
     const ced = cedulaKey(insp.identidad_key || insp.identificacion);
     if (!ced) continue;
     eligibleCedulas.add(ced);
+    const fusionadas = Array.isArray(insp.cedulas_unificadas) ? insp.cedulas_unificadas : [];
+    for (const fusionadaRaw of fusionadas) {
+      const cedFusionada = cedulaKey(fusionadaRaw);
+      if (!cedFusionada || cedFusionada === ced) continue;
+      eligibleCedulas.add(cedFusionada);
+      cedulaFusionadaACedulaSurvivor.set(cedFusionada, ced);
+    }
     profiles.set(`ced:${ced}`, {
       nameCounts: new Map(insp.nombre_completo ? [[insp.nombre_completo, 1]] : []),
       name: insp.nombre_completo || '',
@@ -342,12 +363,13 @@ function buildIdentityIndexFromDepuracion(depuracion, depMeta) {
     if (nombreNorm && ced) nameToCedula.set(nombreNorm, ced);
   }
 
-  const resolverCore = { eligibleCedulas, nameToCedula };
+  const resolverCore = { eligibleCedulas, nameToCedula, cedulaFusionadaACedulaSurvivor };
   const keyForSticker = (record) => professionalKeyOf(record, resolverCore);
   const keyForSurvey = (record) => professionalKeyOf(record, resolverCore);
 
   return {
-    eligibleCedulas, nameToCedula, ambiguousNames: new Set(), profiles, keyForSticker, keyForSurvey, ...depMeta,
+    eligibleCedulas, nameToCedula, ambiguousNames: new Set(), profiles, keyForSticker, keyForSurvey,
+    cedulaFusionadaACedulaSurvivor, ...depMeta,
   };
 }
 
