@@ -22,6 +22,9 @@ import { buildMiniMap, resolveBarrioComuna, prefetchGeo } from './mapview.js';
 import { openLightbox } from './table.js';
 import { renderMultiSelect } from './multiselect.js';
 import { generarInformeEvaluacion } from './report.js';
+import {
+  upsertChart, baseOptions, totalDataLabelPlugin, setChartEmpty, clearChartEmpty,
+} from './charts.js';
 
 const TILE_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
 const CALI_CENTER = [3.42, -76.53];
@@ -498,6 +501,17 @@ export function sectionHtml() {
         </div>
       </div>
 
+      <div class="card eval-workspace-card">
+        <div class="card-toolbar">
+          <span class="eval-toolbar-title">Serie de tiempo</span>
+          <div class="segmented" role="tablist" aria-label="Serie de tiempo por" data-eval-timeline-mode-group>${timelineModeSegmentedHtml()}</div>
+        </div>
+        <div class="chart-tile" style="height:320px">
+          <canvas id="eval-timeline"></canvas>
+        </div>
+        <p class="chart-note" id="eval-timeline-note">${TIMELINE_NOTES[timelineMode]}</p>
+      </div>
+
       <div class="modal" id="eval-modal" aria-hidden="true" role="dialog" aria-modal="true" aria-labelledby="eval-modal-title">
         <div class="modal-backdrop" data-eval-close></div>
         <div class="modal-panel">
@@ -823,6 +837,283 @@ function renderMap(containerId, evaluaciones, onDetail) {
   return conCoords.length;
 }
 
+// ---- Timeline chart (serie de tiempo por clasificación / por fase) -----------
+//
+// Mirrors seguimiento.js's own "Ritmo diario" chart (buildTimeline +
+// timelineChartConfig, upsertChart('seguimiento-timeline', ...)) almost
+// exactly: same dual-linear-axis shape (cumulative left / daily right), same
+// gap-filling-with-zero-days, same totalDataLabelPlugin end-of-line labels.
+// Not imported from seguimiento.js: stickers.js imports evaluaciones.js
+// (initEvaluaciones), and seguimiento.js imports fetchEvaluacionesOnce from
+// stickers.js — an import from seguimiento.js here would close that into a
+// cycle. So the day-bucketing helpers below are a small, self-contained
+// analog instead of a cross-module reuse: seguimiento.js's dateOnly handles
+// THREE input shapes (tz-aware ISO, bare YYYY-MM-DD, naive local datetime,
+// see its own "Zona horaria" module comment) because Survey123 records carry
+// all three; evaluaciones only ever carries one (`.fecha`, a tz-aware ISO
+// timestamp per the API contract), so only that branch is needed here — same
+// technique (fixed America/Bogota -05:00 offset, UTC-safe Date arithmetic,
+// never a process-local getter) applied to the one shape that matters.
+//
+// This chart has its OWN "por Clasificación / por Fase" toggle
+// (TIMELINE_MODES/timelineMode below) — separate from the map's "Colorear
+// por" toggle (COLOR_MODES/colorMode above): the map's shape is
+// {label, colorOf, entries} (drives a marker's fillColor), this one is
+// {label, entries, keyOf, excludedKey} (drives which series buildEvalTimeline
+// groups by), so reusing COLOR_MODES itself here would be the wrong contract,
+// not a shortcut.
+const TIMELINE_MODES = {
+  clase: { label: 'Clasificación', entries: CLASES, keyOf: (e) => claseDe(e).key, excludedKey: SIN_CLASE.key },
+  fase: { label: 'Fase', entries: FASES, keyOf: (e) => faseDe(e).key, excludedKey: FASE_SIN_DATO.key },
+};
+let timelineMode = 'clase';
+
+function timelineModeSegmentedHtml() {
+  return Object.entries(TIMELINE_MODES).map(([key, def]) => `
+    <button type="button" class="segmented-btn${key === timelineMode ? ' is-active' : ''}"
+      data-eval-timeline-mode="${key}" role="tab" aria-selected="${key === timelineMode}">${escapeHtml(def.label)}</button>`).join('');
+}
+
+// Per-mode wording for the chart card's note (id="eval-timeline-note",
+// refreshed on every renderEvalTimelineChart call so a mode toggle updates it
+// even though sectionHtml() only prints the INITIAL mode's text once).
+const TIMELINE_NOTES = {
+  clase: 'Eje izquierdo: acumulado corrido por clasificación (línea punteada). Eje derecho: evaluaciones del día (línea sólida). Colores del semáforo ATC-20: verde = inspeccionada, amarillo = uso restringido, rojo = inseguro. Los registros sin clasificación o sin fecha no se grafican.',
+  // COLORS.accent ('#FFC400', dorado/acento) y COLORS.unknown ('#475569', gris
+  // pizarra) son los mismos tokens que FASES[].color ya usa — nunca un color
+  // nuevo, solo la descripción en palabras.
+  fase: 'Eje izquierdo: acumulado corrido por fase (línea punteada). Eje derecho: evaluaciones del día (línea sólida). Colores: fase II (dorado, color de acento) vs fase I (gris pizarra). Los registros sin fase resuelta o sin fecha no se grafican.',
+};
+
+const EVAL_TIMELINE_BOGOTA_OFFSET_MIN = -300;
+
+/** Bogotá calendar day (YYYY-MM-DD) of an evaluación's `.fecha`, or null when
+ *  missing/unparseable — never throws. `new Date(fecha)` is safe here (unlike
+ *  seguimiento.js's own naive-datetime branch) because `.fecha` always
+ *  carries an explicit offset/Z, which the Date constructor parses per spec
+ *  regardless of the running process' own timezone; only the DAY EXTRACTION
+ *  afterwards needs the fixed Bogotá shift, so a record filed at 23:30
+ *  Bogotá never reads as "the next day" just because the raw instant is UTC.
+ *  Mode-agnostic: shared by both the Clasificación and Fase series. */
+function evalDateOnly(fecha) {
+  if (!fecha) return null;
+  const d = new Date(fecha);
+  if (Number.isNaN(d.getTime())) return null;
+  const bogota = new Date(d.getTime() + EVAL_TIMELINE_BOGOTA_OFFSET_MIN * 60000);
+  return `${bogota.getUTCFullYear()}-${String(bogota.getUTCMonth() + 1).padStart(2, '0')}-${String(bogota.getUTCDate()).padStart(2, '0')}`;
+}
+
+/** `dateStr` (YYYY-MM-DD) shifted by `deltaDays`, via Date.UTC + getUTC* only
+ *  — same gap-filling primitive as seguimiento.js's own shiftDateStr.
+ *  Returns `dateStr` unchanged if it doesn't parse (defensive; the only
+ *  caller below always passes an already-validated label). Mode-agnostic:
+ *  shared by both the Clasificación and Fase series. */
+function evalShiftDateStr(dateStr, deltaDays) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+  if (!m) return dateStr;
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) + deltaDays * 86400000;
+  const d = new Date(ms);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
+/** Daily + running-cumulative counts per series entry (TIMELINE_MODES[mode]'s
+ *  own `entries[].key`, e.g. CLASES for 'clase' or FASES for 'fase'), over the
+ *  ALREADY-FILTERED `evaluaciones` list — no from/to/professional params,
+ *  this only ever consumes what renderFiltered() already narrowed down (see
+ *  the module-level note on why: staying on the exact same `filtered` array
+ *  every other KPI/map/list piece reads keeps this in lockstep with every
+ *  filter change and silent poll, never a second, independently-filtered
+ *  render path). Records whose `keyOf(e)` resolves to that mode's
+ *  `excludedKey` (SIN_DATO for either mode) and records with a missing/
+ *  unparseable `.fecha` are excluded from every series entirely — the same
+ *  "never counted, never crashes" contract claseDe/faseDe/evalDateOnly
+ *  already give. Gap-filled with explicit zero-count days from the earliest
+ *  to the latest resolvable date (a missing day would misread as "no data
+ *  yet" the same way as "no activity") — same as buildTimeline. Empty/
+ *  all-excluded input -> empty labels and all-empty per-key series, never a
+ *  throw. Exported: pure, so a self-check can assert every case without
+ *  Chart.js or the DOM. */
+export function buildEvalTimeline(evaluaciones, mode = 'clase') {
+  const { entries, keyOf, excludedKey } = TIMELINE_MODES[mode];
+  const list = Array.isArray(evaluaciones) ? evaluaciones : [];
+  const countsByKey = new Map(entries.map((c) => [c.key, new Map()]));
+
+  for (const e of list) {
+    if (!e) continue;
+    const key = keyOf(e);
+    if (key === excludedKey) continue; // sin dato -> nunca entra a la serie
+    const d = evalDateOnly(e.fecha);
+    if (!d) continue; // sin fecha resoluble -> nunca entra a la serie
+    const byDate = countsByKey.get(key);
+    if (!byDate) continue; // defensive: keyOf returning something outside `entries` never crashes
+    byDate.set(d, (byDate.get(d) || 0) + 1);
+  }
+
+  const emptySeries = Object.fromEntries(entries.map((c) => [c.key, []]));
+  const allDates = [...new Set([...countsByKey.values()].flatMap((byDate) => [...byDate.keys()]))].sort();
+  if (!allDates.length) {
+    return { labels: [], daily: emptySeries, cumulative: { ...emptySeries } };
+  }
+
+  const labels = [];
+  let cursor = allDates[0];
+  const endLabel = allDates[allDates.length - 1];
+  while (cursor <= endLabel) {
+    labels.push(cursor);
+    cursor = evalShiftDateStr(cursor, 1);
+  }
+
+  const daily = {};
+  const cumulative = {};
+  for (const c of entries) {
+    const byDate = countsByKey.get(c.key);
+    const series = labels.map((d) => byDate.get(d) || 0);
+    daily[c.key] = series;
+    let running = 0;
+    cumulative[c.key] = series.map((n) => (running += n));
+  }
+
+  return { labels, daily, cumulative };
+}
+
+const fmtEvalCount = (n) => Math.round(n || 0).toLocaleString('es-CO');
+// Stagger for the cumulative lines' end-of-line labels (totalDataLabelPlugin's
+// `_labelOffsetY`), generalized from the fixed 3-entry [-5,-18,-31] array the
+// clase-only chart used to hardcode: -5 for the first line, -13 more per line
+// after that — reproduces that exact triple for 3 entries (clase mode), and
+// yields 2 staggered values for 2 entries (fase mode).
+const evalLabelOffsets = (n) => Array.from({ length: n }, (_, i) => -5 - i * 13);
+
+/** Chart.js config for buildEvalTimeline's output — same dual-linear-axis
+ *  shape as seguimiento.js's timelineChartConfig (cumulative on the left `y`,
+ *  beginAtZero, dashed; daily on the right `y1`, solid, no shared gridlines),
+ *  built on charts.js's baseOptions/totalDataLabelPlugin the same way.
+ *  2×`entries.length` datasets total (daily + cumulative pairs — 6 for
+ *  'clase', 4 for 'fase'), each pair colored with that entry's own
+ *  TIMELINE_MODES[mode].entries[].color — never a new palette — and labeled
+ *  with its `.label`. Legend always visible: colour alone is never a
+ *  sufficient encoding for the ATC-20 red/amber/green convention (nor for the
+ *  fase gold/gray one). A single-label timeline (`timeline.labels.length ===
+ *  1`) forces the cumulative lines' `pointRadius` to 3 instead of 0 — a
+ *  1-point dashed line at radius 0 draws nothing at all. Exported: pure, so a
+ *  self-check can assert the dataset shape without Chart.js. */
+export function evalTimelineChartConfig(timeline, mode = 'clase') {
+  const { entries } = TIMELINE_MODES[mode];
+  const singleLabel = timeline.labels.length === 1;
+  const labelOffsets = evalLabelOffsets(entries.length);
+  const dailyDatasets = entries.map((c) => ({
+    label: c.label,
+    data: timeline.daily[c.key],
+    borderColor: c.color,
+    backgroundColor: 'transparent',
+    tension: 0.15,
+    pointRadius: 3,
+    borderWidth: 3,
+    yAxisID: 'y1',
+  }));
+  const cumulativeDatasets = entries.map((c, i) => {
+    const series = timeline.cumulative[c.key];
+    return {
+      label: `${c.label} (acum.)`,
+      data: series,
+      borderColor: c.color,
+      backgroundColor: 'transparent',
+      tension: 0.15,
+      pointRadius: singleLabel ? 3 : 0,
+      borderWidth: 2,
+      borderDash: [6, 4],
+      yAxisID: 'y',
+      _totalLabel: fmtEvalCount(series[series.length - 1]),
+      _labelOffsetY: labelOffsets[i],
+    };
+  });
+  return {
+    type: 'line',
+    data: { labels: timeline.labels, datasets: [...dailyDatasets, ...cumulativeDatasets] },
+    plugins: [totalDataLabelPlugin],
+    options: baseOptions({
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        y: {
+          type: 'linear', position: 'left', beginAtZero: true, title: { display: true, text: 'Acumulado' },
+        },
+        y1: {
+          type: 'linear', position: 'right', beginAtZero: true, grid: { drawOnChartArea: false }, title: { display: true, text: 'Diario' },
+        },
+      },
+      plugins: { legend: { display: true }, tooltip: { mode: 'index', intersect: false } },
+    }),
+  };
+}
+
+/** DOM-layer wiring for the chart above — same empty-state convention as
+ *  seguimiento.js's own renderChart: `Chart` missing (CDN failed) and "zero
+ *  resolvable dates" both route through charts.js's setChartEmpty instead of
+ *  upsertChart, and clearChartEmpty runs BEFORE upsertChart on a successful
+ *  render (Chart.js measures the canvas at construction time; a canvas left
+ *  `display:none` by a previous empty render must be shown again first).
+ *  Reads the module-level `timelineMode` directly (same convention renderMap
+ *  already uses for `colorMode`) — no mode param here, this is DOM-layer
+ *  state, not a pure function. Also refreshes #eval-timeline-note's text for
+ *  the active mode on every call, so a mode toggle (which re-renders through
+ *  renderFiltered() same as any other filter change) keeps the note in sync
+ *  without a separate DOM write in the toggle's own click handler. */
+function renderEvalTimelineChart(evaluaciones) {
+  const noteEl = document.getElementById('eval-timeline-note');
+  if (noteEl) noteEl.textContent = TIMELINE_NOTES[timelineMode];
+
+  if (typeof Chart === 'undefined') {
+    setChartEmpty('eval-timeline', 'Gráfico no disponible (no se pudo cargar Chart.js).');
+    return;
+  }
+  const timeline = buildEvalTimeline(evaluaciones, timelineMode);
+  if (!timeline.labels.length) {
+    setChartEmpty('eval-timeline', 'Sin evaluaciones con fecha en el rango filtrado.');
+    return;
+  }
+  try {
+    clearChartEmpty('eval-timeline');
+    upsertChart('eval-timeline', evalTimelineChartConfig(timeline, timelineMode), { recreate: true });
+  } catch (err) {
+    console.warn('evaluaciones: fallo al renderizar el gráfico de la serie de tiempo', err);
+    setChartEmpty('eval-timeline', 'Gráfico no disponible (error al renderizar).');
+  }
+}
+
+// 'eval-timeline' lives in charts.js's shared Chart.js registry, keyed only by
+// canvas id. main.js's own 'themechange' listener calls charts.js's
+// resetCharts() (destroy EVERY registered chart) so each one can re-bake the
+// new theme's CSS-variable colors at construction time — but that leaves
+// 'eval-timeline' destroyed with nothing left to rebuild it unless this
+// module reacts to the same event. `activeRenderEvalTimeline` always points
+// at the MOST RECENT initEvaluaciones() call's own render closure (same idea
+// as debouncedRenderFilteredRef above) so a stale closure from a previous
+// tab open never fires after a fresh one has taken over.
+//
+// Deferred via setTimeout(...,0): this listener is registered at module load
+// (when main.js imports this file), which happens BEFORE main.js's own
+// document.addEventListener('themechange', ...) call executes further down
+// its file — so without the deferral, THIS listener would run first, rebuild
+// the chart, and then main.js's resetCharts() would immediately destroy it
+// again a moment later, leaving nothing on screen. Pushing the rebuild to a
+// macrotask guarantees it runs after every synchronous 'themechange'
+// listener (main.js's resetCharts() included) regardless of registration
+// order. Guarded (like the map's own themechange listener above) so the
+// pure-logic self-check can import this module under Node.
+let activeRenderEvalTimeline = null;
+if (typeof document !== 'undefined') {
+  document.addEventListener('themechange', () => {
+    if (!activeRenderEvalTimeline) return;
+    setTimeout(() => {
+      try {
+        activeRenderEvalTimeline();
+      } catch (err) {
+        console.warn('evaluaciones: fallo al re-renderizar el gráfico tras cambio de tema', err);
+      }
+    }, 0);
+  });
+}
+
 // ---- Record list -------------------------------------------------------------
 
 // The aside is a narrow column, so the row stacks instead of laying its parts
@@ -983,6 +1274,7 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   const faseChipsEl = section.querySelector('#eval-fase-chips');
   const faseFuenteNoteEl = section.querySelector('#eval-fase-fuente-note');
   const colorGroupEl = section.querySelector('[data-eval-color-group]');
+  const timelineModeGroupEl = section.querySelector('[data-eval-timeline-mode-group]');
   const comunaFilterRoot = section.querySelector('#eval-comuna-filter');
   const barrioFilterRoot = section.querySelector('#eval-barrio-filter');
   const resetFiltersBtn = section.querySelector('#eval-reset-filters');
@@ -1158,7 +1450,21 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
     mapMeta.textContent = sinCoords
       ? `${conCoords} en el mapa · ${sinCoords} sin coordenadas`
       : `${conCoords} en el mapa`;
+
+    renderEvalTimelineChart(filtered);
   }
+  // Wrapped, not the bare closure: `section` stays in the DOM (just hidden
+  // inside main.js's tab panel) after the user switches away from Stickers,
+  // and a later 'themechange' must not rebuild a chart nobody can see (see
+  // the module-level listener above). `section` here is the inner
+  // `.eval-section`, not the outer `#view-stickers` panel main.js toggles
+  // `[hidden]` on — so the check climbs to it via closest(), the same test
+  // this file's own auto-refresh timer already uses (see `section.closest
+  // ('[hidden]')` above).
+  activeRenderEvalTimeline = () => {
+    if (section.closest('[hidden]')) return;
+    renderEvalTimelineChart(applyFilters(allEvaluaciones, filters));
+  };
 
   // Drops any selected barrio that no longer belongs to ANY currently
   // selected comuna — called after every comuna toggle and after each
@@ -1385,6 +1691,22 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
     if (!btn) return;
     colorMode = btn.dataset.evalColor;
     colorGroupEl.querySelectorAll('[data-eval-color]').forEach((b) => {
+      const active = b === btn;
+      b.classList.toggle('is-active', active);
+      b.setAttribute('aria-selected', String(active));
+    });
+    renderFiltered();
+  });
+
+  // "Serie de tiempo por" — same wiring shape as colorGroupEl's own handler
+  // above, over TIMELINE_MODES instead of COLOR_MODES; a distinct
+  // data-eval-timeline-mode(-group) attribute pair so it never collides with
+  // the map's own data-eval-color(-group).
+  timelineModeGroupEl.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-eval-timeline-mode]');
+    if (!btn) return;
+    timelineMode = btn.dataset.evalTimelineMode;
+    timelineModeGroupEl.querySelectorAll('[data-eval-timeline-mode]').forEach((b) => {
       const active = b === btn;
       b.classList.toggle('is-active', active);
       b.setAttribute('aria-selected', String(active));

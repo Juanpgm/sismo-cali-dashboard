@@ -7,6 +7,7 @@ import {
   comunaOptionsFrom, barrioOptionsFrom, pruneToValid, pruneInvalidBarrios, toggleSetValue,
   barrioDisabledFor, defaultEvalFilters, hasActiveEvalFilters,
   diffMarkerIds, evaluacionRenderKey, fingerprintEvaluaciones, resolveGeoFor,
+  buildEvalTimeline, evalTimelineChartConfig,
 } from './evaluaciones.js';
 
 // The three ATC-20 placard states, in escalating severity.
@@ -877,3 +878,256 @@ console.log('evaluaciones.test.mjs: fingerprint covers restricciones + fotos URL
   assert.deepStrictEqual(ok, { _comuna: 'Comuna OK', _barrio: 'Barrio OK' });
 }
 console.log('evaluaciones.test.mjs: resolveGeoFor geoCache does-not-memoize-failure (F3) OK');
+
+// ── buildEvalTimeline / evalTimelineChartConfig (serie de tiempo por
+// clasificación, Stickers tab — mirrors seguimiento.js's own buildTimeline/
+// timelineChartConfig pattern) ───────────────────────────────────────────────
+
+// Happy path: mixed verde/amarillo/rojo across several distinct days ->
+// correct daily counts AND correct running cumulative per class.
+{
+  const evals = [
+    { clasificacion: 'INSPECCIONADA', fecha: '2026-05-01T15:00:00Z' },
+    { clasificacion: 'INSPECCIONADA', fecha: '2026-05-01T16:00:00Z' },
+    { clasificacion: 'USO_RESTRINGIDO', fecha: '2026-05-01T17:00:00Z' },
+    { clasificacion: 'INSEGURO', fecha: '2026-05-02T15:00:00Z' },
+    { clasificacion: 'INSPECCIONADA', fecha: '2026-05-03T15:00:00Z' },
+    { clasificacion: 'USO_RESTRINGIDO', fecha: '2026-05-03T15:00:00Z' },
+    { clasificacion: 'USO_RESTRINGIDO', fecha: '2026-05-03T16:00:00Z' },
+  ];
+  const t = buildEvalTimeline(evals);
+  assert.deepStrictEqual(t.labels, ['2026-05-01', '2026-05-02', '2026-05-03']);
+  assert.deepStrictEqual(t.daily.INSPECCIONADA, [2, 0, 1]);
+  assert.deepStrictEqual(t.daily.USO_RESTRINGIDO, [1, 0, 2]);
+  assert.deepStrictEqual(t.daily.INSEGURO, [0, 1, 0]);
+  assert.deepStrictEqual(t.cumulative.INSPECCIONADA, [2, 2, 3]);
+  assert.deepStrictEqual(t.cumulative.USO_RESTRINGIDO, [1, 1, 3]);
+  assert.deepStrictEqual(t.cumulative.INSEGURO, [0, 1, 1]);
+}
+console.log('evaluaciones.test.mjs: buildEvalTimeline happy path (daily + cumulative) OK');
+
+// Empty array input -> empty labels, all-empty per-class series, no throw.
+{
+  const t = buildEvalTimeline([]);
+  assert.deepStrictEqual(t.labels, []);
+  assert.deepStrictEqual(t.daily, { INSPECCIONADA: [], USO_RESTRINGIDO: [], INSEGURO: [] });
+  assert.deepStrictEqual(t.cumulative, { INSPECCIONADA: [], USO_RESTRINGIDO: [], INSEGURO: [] });
+}
+console.log('evaluaciones.test.mjs: buildEvalTimeline empty input OK');
+
+// Every record SIN_DATO (empty/garbage/missing clasificacion) -> excluded
+// from every series entirely, same all-empty shape as empty input — never a
+// throw.
+{
+  const t = buildEvalTimeline([
+    { clasificacion: '', fecha: '2026-05-01T15:00:00Z' },
+    { clasificacion: 'OTRA_COSA', fecha: '2026-05-02T15:00:00Z' },
+    { fecha: '2026-05-03T15:00:00Z' },
+  ]);
+  assert.deepStrictEqual(t.labels, []);
+  assert.deepStrictEqual(t.daily, { INSPECCIONADA: [], USO_RESTRINGIDO: [], INSEGURO: [] });
+  assert.deepStrictEqual(t.cumulative, { INSPECCIONADA: [], USO_RESTRINGIDO: [], INSEGURO: [] });
+}
+console.log('evaluaciones.test.mjs: buildEvalTimeline all-SIN_DATO OK');
+
+// Missing/unparseable fecha -> excluded from the timeline (not counted as a
+// day, never crashes) — a sibling record with the SAME clasificacion and a
+// valid fecha still counts normally.
+{
+  const t = buildEvalTimeline([
+    { clasificacion: 'INSEGURO', fecha: '2026-05-01T15:00:00Z' },
+    { clasificacion: 'INSEGURO' }, // fecha missing entirely
+    { clasificacion: 'INSEGURO', fecha: '' },
+    { clasificacion: 'INSEGURO', fecha: 'no-es-una-fecha' },
+    { clasificacion: 'INSEGURO', fecha: null },
+  ]);
+  assert.deepStrictEqual(t.labels, ['2026-05-01']);
+  assert.deepStrictEqual(t.daily.INSEGURO, [1]);
+  assert.deepStrictEqual(t.cumulative.INSEGURO, [1]);
+}
+console.log('evaluaciones.test.mjs: buildEvalTimeline missing/unparseable fecha excluded OK');
+
+// Single distinct date across all records -> single-label timeline; the
+// resulting CHART CONFIG's cumulative datasets get pointRadius 3, not 0 (a
+// 1-point dashed line at radius 0 renders nothing at all).
+{
+  const t = buildEvalTimeline([
+    { clasificacion: 'INSPECCIONADA', fecha: '2026-05-01T15:00:00Z' },
+    { clasificacion: 'USO_RESTRINGIDO', fecha: '2026-05-01T16:00:00Z' },
+  ]);
+  assert.strictEqual(t.labels.length, 1);
+  const cfg = evalTimelineChartConfig(t);
+  const cumulativeDatasets = cfg.data.datasets.filter((ds) => ds.yAxisID === 'y');
+  assert.strictEqual(cumulativeDatasets.length, 3);
+  for (const ds of cumulativeDatasets) assert.strictEqual(ds.pointRadius, 3);
+}
+console.log('evaluaciones.test.mjs: buildEvalTimeline single-label -> pointRadius 3 OK');
+
+// Gap-filling: two dated records 5+ days apart -> every day in between shows
+// up as an explicit zero-count day for all three classes — the single most
+// important behavior here (a naive implementation would skip the gap).
+{
+  const t = buildEvalTimeline([
+    { clasificacion: 'INSPECCIONADA', fecha: '2026-06-01T15:00:00Z' },
+    { clasificacion: 'INSEGURO', fecha: '2026-06-07T15:00:00Z' },
+  ]);
+  assert.deepStrictEqual(t.labels, [
+    '2026-06-01', '2026-06-02', '2026-06-03', '2026-06-04', '2026-06-05', '2026-06-06', '2026-06-07',
+  ]);
+  assert.deepStrictEqual(t.daily.INSPECCIONADA, [1, 0, 0, 0, 0, 0, 0]);
+  assert.deepStrictEqual(t.daily.USO_RESTRINGIDO, [0, 0, 0, 0, 0, 0, 0]);
+  assert.deepStrictEqual(t.daily.INSEGURO, [0, 0, 0, 0, 0, 0, 1]);
+  assert.deepStrictEqual(t.cumulative.INSPECCIONADA, [1, 1, 1, 1, 1, 1, 1]);
+  assert.deepStrictEqual(t.cumulative.INSEGURO, [0, 0, 0, 0, 0, 0, 1]);
+}
+console.log('evaluaciones.test.mjs: buildEvalTimeline gap-filling with zero-count days OK');
+
+// Mix of valid + malformed clasificacion strings -> only the malformed one is
+// excluded/SIN_DATO; the valid ones still count correctly, same case/spacing
+// tolerance as claseDe itself.
+{
+  const t = buildEvalTimeline([
+    { clasificacion: ' uso restringido ', fecha: '2026-05-10T15:00:00Z' }, // tolerado -> USO_RESTRINGIDO
+    { clasificacion: 'Inseguro', fecha: '2026-05-10T16:00:00Z' }, // tolerado -> INSEGURO
+    { clasificacion: 'algo-invalido', fecha: '2026-05-10T17:00:00Z' }, // SIN_DATO -> excluido
+  ]);
+  assert.deepStrictEqual(t.labels, ['2026-05-10']);
+  assert.deepStrictEqual(t.daily.USO_RESTRINGIDO, [1]);
+  assert.deepStrictEqual(t.daily.INSEGURO, [1]);
+  assert.deepStrictEqual(t.daily.INSPECCIONADA, [0]);
+}
+console.log('evaluaciones.test.mjs: buildEvalTimeline case/spacing tolerance + malformed exclusion OK');
+
+// evalTimelineChartConfig: dataset shape — exactly 6 datasets (3 daily + 3
+// cumulative), correct axis IDs, each pair colored with CLASES[].color, and
+// every cumulative dataset carries a _totalLabel matching its series' last
+// value.
+{
+  const t = buildEvalTimeline([
+    { clasificacion: 'INSPECCIONADA', fecha: '2026-05-01T15:00:00Z' },
+    { clasificacion: 'USO_RESTRINGIDO', fecha: '2026-05-02T15:00:00Z' },
+    { clasificacion: 'INSEGURO', fecha: '2026-05-03T15:00:00Z' },
+  ]);
+  const cfg = evalTimelineChartConfig(t);
+  assert.strictEqual(cfg.data.datasets.length, 6, 'exactly 6 datasets: 3 daily + 3 cumulative');
+
+  const dailyDatasets = cfg.data.datasets.filter((ds) => ds.yAxisID === 'y1');
+  const cumulativeDatasets = cfg.data.datasets.filter((ds) => ds.yAxisID === 'y');
+  assert.strictEqual(dailyDatasets.length, 3, 'daily datasets live on y1');
+  assert.strictEqual(cumulativeDatasets.length, 3, 'cumulative datasets live on y');
+
+  // Regression guard: the generalized offset-generator (shared with 'fase'
+  // mode below) must still reproduce the EXACT pre-generalization clase-mode
+  // stagger, in CLASES order (INSPECCIONADA, USO_RESTRINGIDO, INSEGURO).
+  const expectedOffsets = [-5, -18, -31];
+  CLASES.forEach((c, i) => {
+    const daily = dailyDatasets.find((ds) => ds.borderColor === c.color);
+    assert.ok(daily, `daily dataset colored ${c.color} (${c.key}) is present`);
+    const cumulative = cumulativeDatasets.find((ds) => ds.borderColor === c.color);
+    assert.ok(cumulative, `cumulative dataset colored ${c.color} (${c.key}) is present`);
+    const series = t.cumulative[c.key];
+    assert.strictEqual(cumulative._totalLabel, Math.round(series[series.length - 1]).toLocaleString('es-CO'));
+    assert.strictEqual(cumulative._labelOffsetY, expectedOffsets[i],
+      `clase mode _labelOffsetY for ${c.key} matches the pre-generalization value`);
+  });
+}
+console.log('evaluaciones.test.mjs: evalTimelineChartConfig dataset shape (6 datasets, colors, axes, _totalLabel) OK');
+
+// ── buildEvalTimeline / evalTimelineChartConfig — mode: 'fase' (same pure
+// functions, now parameterized by TIMELINE_MODES instead of hardcoded CLASES)
+
+// Happy path: mixed FASE_I/FASE_II records across several days -> correct
+// daily counts AND correct running cumulative per fase key.
+{
+  const evalsFase = [
+    { fuente: 'atencionsismo', inspector: { np: 'P4' }, fecha: '2026-05-01T15:00:00Z' }, // FASE_II
+    { fuente: 'atencionsismo', inspector: { np: 'P1' }, fecha: '2026-05-01T16:00:00Z' }, // FASE_I
+    { fuente: 'atencionsismo', inspector: { np: 'P4' }, fecha: '2026-05-02T15:00:00Z' }, // FASE_II
+    { fuente: 'atencionsismo', inspector: { np: 'P1' }, fecha: '2026-05-03T15:00:00Z' }, // FASE_I
+    { fuente: 'atencionsismo', inspector: { np: 'P1' }, fecha: '2026-05-03T16:00:00Z' }, // FASE_I
+  ];
+  const tf = buildEvalTimeline(evalsFase, 'fase');
+  assert.deepStrictEqual(tf.labels, ['2026-05-01', '2026-05-02', '2026-05-03']);
+  assert.deepStrictEqual(tf.daily.FASE_II, [1, 1, 0]);
+  assert.deepStrictEqual(tf.daily.FASE_I, [1, 0, 2]);
+  assert.deepStrictEqual(tf.cumulative.FASE_II, [1, 2, 2]);
+  assert.deepStrictEqual(tf.cumulative.FASE_I, [1, 1, 3]);
+  console.log('evaluaciones.test.mjs: buildEvalTimeline fase mode happy path (daily + cumulative) OK');
+
+  // evalTimelineChartConfig('fase'): dataset count is exactly 4 (2 daily + 2
+  // cumulative, not 6), colors match FASES[].color, and the label-offset
+  // stagger produces 2 distinct values (not the 3-entry clase array).
+  const cfgFase = evalTimelineChartConfig(tf, 'fase');
+  assert.strictEqual(cfgFase.data.datasets.length, 4, 'exactly 4 datasets: 2 daily + 2 cumulative');
+  const dailyFase = cfgFase.data.datasets.filter((ds) => ds.yAxisID === 'y1');
+  const cumulativeFase = cfgFase.data.datasets.filter((ds) => ds.yAxisID === 'y');
+  assert.strictEqual(dailyFase.length, 2, 'daily datasets live on y1');
+  assert.strictEqual(cumulativeFase.length, 2, 'cumulative datasets live on y');
+  for (const f of FASES) {
+    const daily = dailyFase.find((ds) => ds.borderColor === f.color);
+    assert.ok(daily, `daily dataset colored ${f.color} (${f.key}) is present`);
+    const cumulative = cumulativeFase.find((ds) => ds.borderColor === f.color);
+    assert.ok(cumulative, `cumulative dataset colored ${f.color} (${f.key}) is present`);
+  }
+  const offsets = cumulativeFase.map((ds) => ds._labelOffsetY);
+  assert.strictEqual(new Set(offsets).size, 2, 'fase mode produces 2 DISTINCT label offsets, never the 3-entry clase stagger');
+  assert.deepStrictEqual(
+    [...offsets].sort((a, b) => b - a), [-5, -18],
+    'fase offsets are the first two entries of the same stagger sequence clase mode uses',
+  );
+  console.log('evaluaciones.test.mjs: evalTimelineChartConfig fase mode dataset shape (4 datasets, colors, 2 offsets) OK');
+}
+
+// All records SIN_DATO fase (atencionsismo source with no resolvable NP) ->
+// both series all-zero, no crash.
+{
+  const tf = buildEvalTimeline([
+    { fuente: 'atencionsismo', inspector: { np: '' }, fecha: '2026-05-01T15:00:00Z' },
+    { fuente: 'atencionsismo', inspector: {}, fecha: '2026-05-02T15:00:00Z' },
+    { fuente: 'atencionsismo', inspector: { np: '  ' } }, // also missing fecha, doubly excluded
+  ], 'fase');
+  assert.deepStrictEqual(tf.labels, []);
+  assert.deepStrictEqual(tf.daily, { FASE_II: [], FASE_I: [] });
+  assert.deepStrictEqual(tf.cumulative, { FASE_II: [], FASE_I: [] });
+}
+console.log('evaluaciones.test.mjs: buildEvalTimeline fase mode all-SIN_DATO OK');
+
+// Gap-filling still works in fase mode: two dated records 5+ days apart ->
+// every day in between shows up as an explicit zero-count day for both fases
+// (same style as the clase-mode gap-filling test above).
+{
+  const tf = buildEvalTimeline([
+    { fuente: 'atencionsismo', inspector: { np: 'P4' }, fecha: '2026-06-01T15:00:00Z' }, // FASE_II
+    { fuente: 'atencionsismo', inspector: { np: 'P1' }, fecha: '2026-06-07T15:00:00Z' }, // FASE_I
+  ], 'fase');
+  assert.deepStrictEqual(tf.labels, [
+    '2026-06-01', '2026-06-02', '2026-06-03', '2026-06-04', '2026-06-05', '2026-06-06', '2026-06-07',
+  ]);
+  assert.deepStrictEqual(tf.daily.FASE_II, [1, 0, 0, 0, 0, 0, 0]);
+  assert.deepStrictEqual(tf.daily.FASE_I, [0, 0, 0, 0, 0, 0, 1]);
+  assert.deepStrictEqual(tf.cumulative.FASE_II, [1, 1, 1, 1, 1, 1, 1]);
+  assert.deepStrictEqual(tf.cumulative.FASE_I, [0, 0, 0, 0, 0, 0, 1]);
+}
+console.log('evaluaciones.test.mjs: buildEvalTimeline fase mode gap-filling with zero-count days OK');
+
+// Mode-independence: gap-filling and missing/unparseable-fecha exclusion are
+// governed by the SAME shared code path (evalDateOnly/evalShiftDateStr) for
+// both modes — one test parameterized over ['clase', 'fase'] instead of
+// duplicating the clase-only version above.
+for (const mode of ['clase', 'fase']) {
+  const recordFor = mode === 'clase'
+    ? (fecha) => ({ clasificacion: 'INSEGURO', fecha })
+    : (fecha) => ({ fuente: 'atencionsismo', inspector: { np: 'P4' }, fecha });
+  const t = buildEvalTimeline([
+    recordFor('2026-05-01T15:00:00Z'),
+    recordFor(undefined),
+    recordFor(''),
+    recordFor('no-es-una-fecha'),
+    recordFor(null),
+  ], mode);
+  assert.deepStrictEqual(
+    t.labels, ['2026-05-01'],
+    `mode ${mode}: missing/unparseable fecha excluded, sibling with a valid fecha still counts`,
+  );
+}
+console.log('evaluaciones.test.mjs: buildEvalTimeline mode-independent gap-filling/malformed-fecha handling OK');
