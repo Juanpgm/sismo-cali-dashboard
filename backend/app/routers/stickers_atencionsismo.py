@@ -19,7 +19,11 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
-from typing import Any
+import os
+import threading
+import time
+from datetime import date, datetime
+from typing import Any, Callable
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -28,13 +32,25 @@ from fastapi.responses import JSONResponse
 from app.auth.deps import require_role
 from app.credentials import clients as credentials
 from app.routers import stickers
-from app.services import atencionsismo
+from app.services import atencionsismo, fechas_es_co
+from app.services import inspectores_depuracion as depuracion_svc
+from app.services import inspectores_referencia as referencia_svc
+from app.services import survey_cali as survey_cali_svc
 from app.services.stickers_atencionsismo import build_evaluaciones
 
 router = APIRouter()
 REQUIRED_CLIENTS: tuple[str, ...] = ("sismo",)
 
 STICKERS_LKG_BLOB = "data/stickers_atencionsismo_last_good.json"
+
+# design.md's Data Flow diagram: "cargar_referencia (30 min)" — how often
+# `DepuracionCache` re-reads the (private) reference bundle from Blob,
+# independent of the sticker payload's own 5-min TTL.
+REFERENCIA_CACHE_TTL_SECONDS = 30 * 60
+
+# Rollback switch (design's Migration/Rollout): unset or "0" -> the response
+# omits `depuracion` entirely, byte-identical to the pre-Phase-3 payload.
+SEGUIMIENTO_DEPURACION_ENV = "SEGUIMIENTO_DEPURACION"
 
 # Dedicated executor for the two Firestore reads in `build_payload`'s
 # concurrent gather (fail-fast fix, adversarial review 2026-09-10) — this
@@ -116,6 +132,168 @@ def redact_for_blob(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "fotos": [],
         })
     return out
+
+
+# ── Depuración wiring (design.md D1-D8, tasks.md Phase 3) ──────────────────
+#
+# `depuracion` is assembled by the ROUTE HANDLER, entirely OUTSIDE
+# `redact_for_blob`/`payload` above (D3, PII isolation): nothing in this
+# section ever touches `payload` (the cached, Blob-persisted evaluaciones
+# list) or `redact_for_blob`'s allowlist. See
+# `get_stickers_atencionsismo`'s own body for the actual assembly order.
+
+
+def _depuracion_habilitada() -> bool:
+    """Unset or "0" -> disabled (byte-identical current payload, design's
+    Migration/Rollout rollback switch); any other value -> enabled."""
+    return os.environ.get(SEGUIMIENTO_DEPURACION_ENV, "0").strip() not in ("", "0")
+
+
+def _stickers_para_depuracion(evaluaciones: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Adapts the cached `evaluaciones[]` shape
+    (`stickers_atencionsismo.normalize_sticker`) into
+    `inspectores_depuracion.depurar()`'s `stickers` contract.
+
+    KNOWN GAP (documented on `inspectores_depuracion.py`'s own module
+    docstring, confirmed while wiring this): `fecha` is the MATCHED
+    Firestore evaluación's own date when one exists, not always
+    byte-identical to the sticker's raw `fechaCreacion` — `normalize_sticker`
+    never preserves the raw value once a match overrides it. This proxy is
+    the best available signal without threading a new raw-timestamp field
+    through `normalize_sticker` (a Phase 2 file, out of this PR's assigned
+    scope) — a real follow-up, not a silent shortcut. Impact: `perfil.
+    tiene_sticker_valido`/`dias_inactivo` may be marginally stale for the
+    subset of stickers with a Firestore-matched evaluación."""
+    out: list[dict[str, Any]] = []
+    for evaluacion in evaluaciones:
+        insp = evaluacion.get("inspector") or {}
+        out.append({
+            "origen": evaluacion.get("origen"),
+            "fecha_creacion": evaluacion.get("fecha"),
+            "inspector": {
+                "identificacion": insp.get("identificacion"),
+                "codigo": insp.get("codigo"),
+                "nombre_completo": insp.get("nombre_completo"),
+            },
+        })
+    return out
+
+
+def _roster_para_depuracion(roster_by_cedula: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+    """Adapts `stickers.inspector_profiles()`'s `roster_by_cedula` shape
+    into `depurar()`'s expected roster contract.
+
+    `correo`: `inspectores` Firestore docs carry no dedicated `correo`
+    field (only `correo_contacto`, W3) — used here as a best-effort proxy;
+    documented gap, not a silent guess (both feed the SAME
+    `es_cuenta_no_persona` heuristic, which is priority-only, never an
+    auto-disqualifier by itself). `creado_en`: no backing Firestore field
+    either — left blank; `_elegir_survivor`'s tie-break already degrades to
+    insertion order when every tied candidate's `creado_en` is blank."""
+    out: dict[str, dict[str, str]] = {}
+    for cedula_key, perfil in (roster_by_cedula or {}).items():
+        correo_contacto = perfil.get("correo_contacto", "")
+        out[cedula_key] = {
+            "identificacion": perfil.get("identificacion", ""),
+            "nombre_completo": perfil.get("nombre_completo", ""),
+            "correo": correo_contacto,
+            "codigo": perfil.get("codigo", ""),
+            "entidad": perfil.get("entidad", ""),
+            "tarjeta_profesional": perfil.get("tarjeta_profesional", ""),
+            "num_telefono": perfil.get("num_telefono", ""),
+            "correo_contacto": correo_contacto,
+            "creado_en": "",
+        }
+    return out
+
+
+def _nombres_survey(db: Any) -> list[str]:
+    """`survey_cali` docs' evaluator name field — `nombre_evaluador`
+    (`scripts/refresh_data.py`'s own RENAME_MAP: "Nombre Evaluador:" ->
+    "nombre_evaluador"). Spec: "Non-Person Counts Deduped Against
+    survey_cali"."""
+    nombres: list[str] = []
+    for snap in db.collection(survey_cali_svc.SURVEY_CALI_COLLECTION).get():
+        data = snap.to_dict() or {}
+        nombre = data.get("nombre_evaluador")
+        if nombre:
+            nombres.append(str(nombre))
+    return nombres
+
+
+def _depuracion_a_dict(resultado: depuracion_svc.Depuracion) -> dict[str, Any]:
+    return {
+        "activa": resultado.activa,
+        "motivo": resultado.motivo,
+        "referencia_generada_en": resultado.referencia_generada_en,
+        "inspectores": list(resultado.inspectores),
+        "grupo_externos": resultado.grupo_externos,
+        "alias_nombres": resultado.alias_nombres,
+        "revision_manual": list(resultado.revision_manual),
+    }
+
+
+class DepuracionCache:
+    """Design D4/D6: owns BOTH the reference bundle's own 30-min TTL read
+    (Data Flow diagram's "cargar_referencia (30 min)") AND the derived
+    `depurar()` result, keyed by the sticker payload's OBJECT IDENTITY plus
+    Bogotá `hoy` plus the reference bundle's own `generado_en` — no separate
+    TTL of its own for the derived result. `stickers.EvaluacionesCache`
+    returns the SAME list object until it refetches, so `self._src is
+    evaluaciones` is an O(1), exact recompute signal (same idea that
+    class's own docstring documents). One shared lock guards both the
+    referencia TTL check and the compare-and-recompute, mirroring
+    `EvaluacionesCache`'s own concurrency story."""
+
+    def __init__(self, *, cargar_referencia: Callable[[], referencia_svc.ReferenciaBundle] = referencia_svc.cargar_referencia) -> None:
+        self._cargar_referencia = cargar_referencia
+        self._referencia_at: float | None = None
+        self._referencia: referencia_svc.ReferenciaBundle | None = None
+        self._src: list[dict[str, Any]] | None = None
+        self._hoy: date | None = None
+        self._result: depuracion_svc.Depuracion | None = None
+        self._lock = threading.Lock()
+
+    def _referencia_actual(self) -> referencia_svc.ReferenciaBundle:
+        now = time.monotonic()
+        stale = (
+            self._referencia is None
+            or self._referencia_at is None
+            or (now - self._referencia_at) > REFERENCIA_CACHE_TTL_SECONDS
+        )
+        if stale:
+            self._referencia = self._cargar_referencia()
+            self._referencia_at = now
+        assert self._referencia is not None
+        return self._referencia
+
+    def get_or_compute(
+        self,
+        *,
+        evaluaciones: list[dict[str, Any]],
+        hoy: date,
+        compute: Callable[[referencia_svc.ReferenciaBundle], depuracion_svc.Depuracion],
+    ) -> depuracion_svc.Depuracion:
+        """`compute(referencia)` builds a fresh `Depuracion` from the
+        CURRENT reference bundle — invoked only when the sticker payload's
+        identity, `hoy`, or `referencia.generado_en`/`activa` changed since
+        the last call."""
+        with self._lock:
+            referencia = self._referencia_actual()
+            unchanged = (
+                self._result is not None
+                and self._src is evaluaciones
+                and self._hoy == hoy
+                and self._result.referencia_generada_en == referencia.generado_en
+                and self._result.activa == referencia.activa
+            )
+            if unchanged:
+                assert self._result is not None
+                return self._result
+            self._result = compute(referencia)
+            self._src = evaluaciones
+            self._hoy = hoy
+            return self._result
 
 
 def build_payload(db: Any, evaluaciones_cache: stickers.EvaluacionesCache) -> list[dict[str, Any]]:
@@ -268,4 +446,43 @@ def get_stickers_atencionsismo(
     except Exception as exc:  # pragma: no cover - same CORS-preserving catch-all as GET /evaluaciones
         logging.exception("stickers-atencionsismo: fallo no clasificado")
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return JSONResponse({"ok": True, "fuente": "atencionsismo", "evaluaciones": payload, "degraded": cache.degraded})
+
+    # `body` — never `payload` itself — is where `depuracion` gets added
+    # below (D3, PII isolation): `payload` is the exact list object
+    # `stickers_atencionsismo_cache` already persisted (redacted) to the
+    # PUBLIC Blob inside `cache.get_or_fetch` above, before this line ever
+    # runs. Nothing past this point may mutate `payload`.
+    body: dict[str, Any] = {
+        "ok": True, "fuente": "atencionsismo", "evaluaciones": payload, "degraded": cache.degraded,
+    }
+
+    if _depuracion_habilitada():
+        depuracion_cache: DepuracionCache = request.app.state.depuracion_cache
+        hoy = datetime.now(fechas_es_co.BOGOTA).date()
+
+        def _compute(referencia: referencia_svc.ReferenciaBundle) -> depuracion_svc.Depuracion:
+            _, roster_by_cedula = stickers.inspector_profiles(db)
+            return depuracion_svc.depurar(
+                stickers=_stickers_para_depuracion(payload),
+                roster_by_cedula=_roster_para_depuracion(roster_by_cedula),
+                nombres_survey=_nombres_survey(db),
+                referencia=referencia,
+                hoy=hoy,
+            )
+
+        try:
+            resultado = depuracion_cache.get_or_compute(evaluaciones=payload, hoy=hoy, compute=_compute)
+            body["depuracion"] = _depuracion_a_dict(resultado)
+        except Exception:
+            # Advisory-only feature (spec: "Classification never writes to
+            # the inspector record"): a depuración failure must never turn
+            # an otherwise-healthy sticker response into an error. Omitting
+            # the key entirely (not a half-filled `depuracion`) keeps the
+            # frontend's existing "`depuracion` absent -> current code path"
+            # branch (design's Frontend Changes) as the fallback, same as
+            # the flag-off case.
+            logging.exception(
+                "stickers-atencionsismo: fallo calculando depuracion; se omite el bloque (advisory-only)"
+            )
+
+    return JSONResponse(body)

@@ -20,6 +20,12 @@ numpy>=1.26                # app/integracion/normalization.py's address vector (
 pandas>=2.2
 shapely>=2.0
 openpyxl>=3.1              # optional in refresh_data.py (xlsx export); degrades gracefully if absent, kept for parity
+
+# app/services/inspectores_depuracion.py's fuzzy código-remap surface (task
+# 2.4/design.md rapidfuzz note) — publishes manylinux cp312 wheels, no
+# compiler needed under python:3.12-slim (verify on the first Railway build
+# per that note; this repo has no test that exercises the real image).
+rapidfuzz>=3.9
 # google-api-python-client / google-auth deliberately NOT added: refresh_data.py's
 # only use of them is the Drive/Sheets service-account xlsx fallback (design.md
 # ADR-4), dead code here — never wired to an env var, always falls through to the

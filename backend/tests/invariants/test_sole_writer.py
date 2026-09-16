@@ -210,6 +210,16 @@ ALLOWED_MODULES_SURVEY_CALI = {
     # comment naming a sibling collection isn't a write path" reasoning as
     # the other entries above.
     APP_ROOT / "services" / "inspectores_depuracion.py",  # docstring mention only, no Firestore access
+    # `seguimiento-inspectores-depurado` change, Phase 3 (2026-09-16):
+    # READ-ONLY — `routers/stickers_atencionsismo.py`'s `_nombres_survey(db)`
+    # scans `survey_cali_svc.SURVEY_CALI_COLLECTION` (never a re-literaled
+    # string) for each doc's `nombre_evaluador` field, feeding
+    # `inspectores_depuracion.depurar()`'s `nombres_survey` seam (spec:
+    # "Non-Person Counts Deduped Against survey_cali") — it never calls
+    # `apply_mutation`/`.set()`/`.update()` on this collection. Same
+    # "legitimate new reader, flagged rather than hidden" precedent
+    # `jobs/planeacion_cruce.py` already established above.
+    APP_ROOT / "routers" / "stickers_atencionsismo.py",
 }
 
 

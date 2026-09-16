@@ -9,11 +9,11 @@
 | Chained PRs recommended | Yes |
 | Suggested split | PR 1 (referencia I/O) → PR 2 (depuración engine + parity) → PR 3 (router wiring + CLI) → PR 4 (frontend) |
 | Delivery strategy | ask-on-risk |
-| Chain strategy | pending |
+| Chain strategy | feature-branch-chain (resolved 2026-09-16 — PR3 targets PR2's branch, per the PR3 apply run's Chain Context) |
 
-Decision needed before apply: Yes
+Decision needed before apply: No (resolved — feature-branch-chain, PR3 = Router wiring, CLI, dependency, base = PR2 branch)
 Chained PRs recommended: Yes
-Chain strategy: pending
+Chain strategy: feature-branch-chain
 400-line budget risk: High
 
 ### Suggested Work Units
@@ -83,20 +83,27 @@ Separately (also verified 2026-09-16, same session): `estado_sugerido()` had a R
 
 ## Phase 3: Router Wiring, CLI, Dependency (PR 3)
 
-- [ ] 3.1 Add `rapidfuzz>=3.9` to `backend/requirements.txt`.
-- [ ] 3.2 Build/deploy check: confirm `rapidfuzz` installs cleanly under `python:3.12-slim` (manylinux wheel, no compiler) per design's rapidfuzz note; record result.
-- [ ] 3.3 Create `scripts/publicar_referencia_inspectores.py`: one-shot CLI, CSV/xlsx → normalized JSON → upload to `referencia/inspectores/bundle.json` with `access:'private'` via existing Blob credential pattern.
-- [ ] 3.4 Test: `backend/tests/test_publicar_referencia_inspectores.py` — CLI produces schema-valid JSON matching `parse_bundle` expectations from a small fixture CSV/xlsx.
-- [ ] 3.5 Modify `backend/app/routers/stickers_atencionsismo.py`: add `DepuracionCache` keyed by sticker-payload object identity + `hoy` + `generado_en` (D4/D6).
-- [ ] 3.6 RED+GREEN: `backend/tests/services/test_stickers_atencionsismo.py::test_depuracion_cache_recompute_signal` — same list object → no recompute; new object/new `hoy`/new `generado_en` → recompute.
-- [ ] 3.7 Assemble `depuracion` block in `get_stickers_atencionsismo` per design's Data Flow (outside the cached, Blob-persisted `evaluaciones` list — D3, PII isolation).
-- [ ] 3.8 Add `SEGUIMIENTO_DEPURACION` env flag; when unset/`0`, response omits `depuracion` (byte-identical current payload).
-- [ ] 3.9 Wire `app.state.depuracion_cache` in `backend/app/main.py`.
-- [ ] 3.10 Integration test: flag off → no `depuracion` key in response.
-- [ ] 3.11 Integration test: reference missing → `depuracion.activa=false`, `motivo` set, response still 200.
-- [ ] 3.12 Integration test: reference present → `depuracion.inspectores` populated, `activa=true`.
-- [ ] 3.13 Integration test: degraded payload (last-good cache serves when a live source fails) — assert no error response.
-- [ ] 3.14 Security test: assert `depuracion` block (nombres, cédulas, teléfonos, correos) never appears in the payload written to the public `blob_lkg` copy of `evaluaciones`.
+- [x] 3.1 Add `rapidfuzz>=3.9` to `backend/requirements.txt`.
+- [x] 3.2 Build/deploy check: confirm `rapidfuzz` installs cleanly under `python:3.12-slim` (manylinux wheel, no compiler) per design's rapidfuzz note; record result. **Verified 2026-09-16**: `pip download rapidfuzz>=3.9 --python-version 312 --platform manylinux2014_x86_64 --only-binary=:all:` resolves `rapidfuzz-3.13.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl` — no compiler needed.
+- [x] 3.3 Create `scripts/publicar_referencia_inspectores.py`: one-shot CLI, CSV/xlsx → normalized JSON → upload to `referencia/inspectores/bundle.json` with `access:'private'` via existing Blob credential pattern.
+- [x] 3.4 Test: `backend/tests/test_publicar_referencia_inspectores.py` — CLI produces schema-valid JSON matching `parse_bundle` expectations from a small fixture CSV/xlsx.
+- [x] 3.5 Modify `backend/app/routers/stickers_atencionsismo.py`: add `DepuracionCache` keyed by sticker-payload object identity + `hoy` + `generado_en` (D4/D6).
+- [x] 3.6 RED+GREEN: `backend/tests/routers/test_stickers_atencionsismo.py::test_depuracion_cache_*` — same list object → no recompute; new object/new `hoy`/new `generado_en` → recompute (plus a referencia-TTL-not-expired coverage test).
+- [x] 3.7 Assemble `depuracion` block in `get_stickers_atencionsismo` per design's Data Flow (outside the cached, Blob-persisted `evaluaciones` list — D3, PII isolation).
+- [x] 3.8 Add `SEGUIMIENTO_DEPURACION` env flag; when unset/`0`, response omits `depuracion` (byte-identical current payload).
+- [x] 3.9 Wire `app.state.depuracion_cache` in `backend/app/main.py`.
+- [x] 3.10 Integration test: flag off → no `depuracion` key in response.
+- [x] 3.11 Integration test: reference missing → `depuracion.activa=false`, `motivo` set, response still 200.
+- [x] 3.12 Integration test: reference present → `depuracion.inspectores` populated, `activa=true`.
+- [x] 3.13 Integration test: degraded payload (last-good cache serves when a live source fails) — assert no error response.
+- [x] 3.14 Security test: assert `depuracion` block (nombres, cédulas, teléfonos, correos) never appears in the payload written to the public `blob_lkg` copy of `evaluaciones`.
+
+**Found/fixed during this pass (beyond the literal task list)**:
+- `stickers.inspector_profiles()` computed `codigo` into a local var only used as the `by_codigo` dict KEY — never stored as a field on either map's profile VALUE, so `stickers_atencionsismo.normalize_sticker`'s Rule A (`roster_cedula_match.get("codigo")`) always read `""` against a REAL roster; only hand-built test fixtures ever exercised that branch. Fixed (additive field), with new regression tests and updated 4 pre-existing exact-equality tests in `test_stickers.py`.
+- `inspectores_referencia.cargar_referencia`'s default `load_json=blob_lkg.load_json` read via an UNAUTHENTICATED GET to the public CDN host — incompatible with D8's `access:'private'` bundle. Added `blob_lkg.load_json_private` (+ `blob_sync.download_authenticated`, + an `access` param on `blob_sync.upload`) and switched the default to `load_json_private`. Every Phase 1 test injects its own `load_json`, so this default-only change broke nothing.
+- `_nombres_survey(db)` reads `survey_cali`'s `nombre_evaluador` field directly (per `scripts/refresh_data.py`'s own RENAME_MAP) — added `routers/stickers_atencionsismo.py` to `backend/tests/invariants/test_sole_writer.py`'s `ALLOWED_MODULES_SURVEY_CALI` (read-only, same precedent as `jobs/planeacion_cruce.py`).
+
+**Documented gap, not fixed (out of this PR's scope)**: `_stickers_para_depuracion` uses the cached `evaluaciones[]`'s own `fecha` field as a proxy for `depurar()`'s `fecha_creacion` input — `fecha` is the MATCHED Firestore evaluación's own date when one exists, not always byte-identical to the sticker's raw `fechaCreacion` (which `normalize_sticker`, a Phase 2 file, never preserves once a match overrides it). Impact: `tiene_sticker_valido`/`dias_inactivo` may be marginally stale for the subset of stickers with a Firestore-matched evaluación. A real fix threads a new raw-timestamp field through `normalize_sticker` — flagged as a follow-up, not implemented here to keep this PR's diff to the assigned router-wiring/CLI/dependency scope.
 
 ## Phase 4: Frontend (PR 4)
 

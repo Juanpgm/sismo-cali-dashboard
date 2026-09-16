@@ -53,7 +53,7 @@ def _store_id(token: str) -> str:
 
 
 def upload(local_path: str, pathname: str, max_age: int, content_type: str | None,
-           timeout: int = 120) -> str:
+           timeout: int = 120, access: str = "public") -> str:
     token = _token()
     with open(local_path, "rb") as fh:
         body = fh.read()
@@ -65,7 +65,11 @@ def upload(local_path: str, pathname: str, max_age: int, content_type: str | Non
         headers={
             "authorization": f"Bearer {token}",
             "x-api-version": BLOB_API_VERSION,
-            "x-vercel-blob-access": "public",
+            # `access` defaults to "public" (every existing caller, unchanged)
+            # — `access="private"` is used by
+            # `scripts/publicar_referencia_inspectores.py` (design.md D8):
+            # the reference bundle must never get a public URL.
+            "x-vercel-blob-access": access,
             "x-content-type": ctype,
             "x-content-length": str(len(body)),
             "x-add-random-suffix": "0",       # stable pathname, no suffix
@@ -79,7 +83,9 @@ def upload(local_path: str, pathname: str, max_age: int, content_type: str | Non
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")[:500]
         sys.exit(f"Blob upload {e.code} para {pathname}: {detail}")
-    # The API returns the canonical public URL; fall back to constructing it.
+    # The API returns the canonical URL; fall back to constructing it. For a
+    # private blob this URL is NOT publicly fetchable (see
+    # `download_authenticated` below) — it still requires the Bearer token.
     return payload.get("url") or PUBLIC_HOST_TMPL.format(store=_store_id(token), pathname=pathname)
 
 
@@ -92,6 +98,30 @@ def download(pathname: str, local_path: str, timeout: int = 120) -> bool:
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return False  # first run — nothing to seed yet
+        sys.exit(f"Blob download {e.code} para {pathname}")
+    os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
+    with open(local_path, "wb") as fh:
+        fh.write(data)
+    return True
+
+
+def download_authenticated(pathname: str, local_path: str, timeout: int = 120) -> bool:
+    """Same contract as `download`, but sends the Bearer token on the GET —
+    required for `access:'private'` blobs (design.md D8: the
+    `inspectores-depurado` reference bundle is the only private blob this
+    repo publishes today). Deliberately NOT folded into `download` itself:
+    every OTHER caller in this repo (`blob_lkg.load_json`,
+    `dashboard_refresh.py`, `planeacion_cruce.py`) reads a PUBLIC blob and
+    must keep using the unauthenticated path unchanged."""
+    token = _token()
+    url = PUBLIC_HOST_TMPL.format(store=_store_id(token), pathname=pathname)
+    req = urllib.request.Request(url, headers={"authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as res:
+            data = res.read()
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return False  # nothing published yet
         sys.exit(f"Blob download {e.code} para {pathname}")
     os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
     with open(local_path, "wb") as fh:
