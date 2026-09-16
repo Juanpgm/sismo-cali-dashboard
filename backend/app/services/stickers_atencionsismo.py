@@ -2,23 +2,11 @@
 dashboard's evaluaciones shape (design D1/D2 in
 docs/superpowers/specs/2026-09-08-atencionsismo-reportes-ciudadanos-stickers-design.md).
 
-Pure functions, no I/O. Fase I/II input (`inspector.np`) is derived in
-priority order: matched Firestore evaluación -> roster NP by the 3-digit
-inspector code embedded in our sticker code -> "" (the UI renders "sin
-dato" for this source when np is empty; see web/js/evaluaciones.js faseDe).
-
-Extensión (2026-09-08): the same no-match fallback also completes
-`inspector.nombre_completo`, `identificacion`, `entidad` and `uid` from the
-matching `roster_by_codigo` entry — not just `np`. This ONLY applies when
-there is no matching Firestore evaluación; a matched evaluación's own
-`inspector` sub-object stays fully authoritative (never mixed field-by-field
-with the roster), for the same reason `np` already worked this way: brigade
-codes are reused after an inspector is deleted, so mixing sources within a
-matched record could attach a different inspector's identity to an old
-evaluación.
+Pure functions, no I/O. Fase I/II input (`inspector.np`) is derived from
+the identity priority chain below (Rule A / Rule B).
 
 `inspector_fuente` (2026-09-08): a top-level `"evaluacion" | "roster" | "api"
-| ""` flag on every returned record, added because the roster fallback above
+| ""` flag on every returned record, added because the roster fallback below
 is a real misattribution risk — brigade codes are reused once an inspector
 is deleted, so an old sticker can end up displaying the CURRENT holder's
 real name and cédula (a specific, named, uninvolved person), not just a
@@ -26,53 +14,81 @@ wrong Fase. Callers use this flag to caveat/relabel a roster-sourced
 identity instead of presenting it with the same confidence as a verified
 match.
 
-Contrato v3 (2026-09-08): the atencionsismo API now also returns `fase`,
-`profesional` ({cedula, nombre, rango}) and `fotografias` per row. Priority
-for identity/NP on the no-match path is now:
+Contrato v3 (2026-09-08) + Rule A/B precedence (2026-09-15 — supersedes the
+old "a matched evaluación always wins identity" contract below): the
+atencionsismo API's `profesional` ({cedula, nombre, rango,
+tarjetaProfesional}) is documented as `evaluacion.tecnico`
+(context/mejoras_seguimiento/uploads/api-informe-json.md L278, L416) — the
+technician tied to THIS evaluation, for every sticker, not an unverified
+side channel. A live sample (2026-09-15, 2561 stickers) found `profesional`
+fully populated (cedula + nombre + tarjetaProfesional, rango on all but 4)
+on 1121/1125 `origen == "sistema"` rows AND on 990/1436 `origen ==
+"firebase"` rows (only 446 firebase rows have an empty `profesional`) — the
+old "`profesional` is only reliable for `origen == 'sistema'`" restriction
+below was verified FALSE and has been removed: `profesional` is now
+consulted regardless of `origen`. The Survey/Firestore-evaluación-match
+identity path is now legacy: it is a FALLBACK (Rule B), not the default.
+Priority is:
 
-1. Matching Firestore evaluación by code (unchanged, fully authoritative;
-   `inspector_fuente = "evaluacion"`. `profesional` is IGNORED on this
-   path — never mixed with a matched evaluación's own inspector data,
-   regardless of `origen`).
-2. No match, `row.origen` (stripped, lower-cased) is `"sistema"`, and
-   `profesional` names a person (non-blank `cedula` or `nombre`): identity
-   comes from `profesional` (`identificacion = cedula`, verbatim/stripped,
-   NOT the join key below; `nombre_completo = nombre`; `np = rango`,
-   verbatim, not parsed). `roster_by_cedula` is joined by `cedula_key`
-   (digits only, both sides — F7), so a formatted cédula like
-   "1.234.567" still matches a roster doc stored as "1234567"; this join
-   carries none of the brigade-code reuse risk since a cédula is unique
-   per person. The roster only fills `uid`/`entidad`, and backfills
-   `np`/`nombre_completo` when the API left them blank — the API always
-   wins on conflict. `inspector_fuente = "api"`.
-3. No match, `origen == "sistema"`, `profesional` has no person but a
-   non-blank `rango`: an NP with nobody named has nobody to attribute, so
-   sources are never mixed field-by-field (same invariant as step 1) — if
-   the brigade-code roster already names a person, its OWN `np` is kept
-   and the API's `rango` is ignored entirely (`inspector_fuente =
-   "roster"`); only when the roster has NO identity at all (no entry, or
-   an np-only entry) does the bare `rango` become `np`, and
-   `inspector_fuente` stays `""` (still nobody to attribute).
-4. No match, and EITHER `origen != "sistema"` OR `profesional` has no
-   usable data at all: the roster-by-brigade-code fallback, unchanged
-   since before `profesional` existed — `profesional` is ignored entirely
-   for non-"sistema" origins (see below), not merged with the roster.
+Rule A — `profesional` names a person (non-blank `cedula` OR non-blank
+`nombre`, after `_profesional_fields` cleaning): identity comes from the
+API UNCONDITIONALLY — regardless of `origen`, and regardless of whether a
+Firestore evaluación also matched by code (`identificacion = cedula`,
+verbatim/stripped, NOT the join key below; `nombre_completo = nombre`;
+`np = rango`, verbatim, not parsed; `tarjeta_profesional =
+tarjetaProfesional`, cleaned). `roster_by_cedula` is joined by
+`cedula_key` (digits only, both sides — F7), so a formatted cédula like
+"1.234.567" still matches a roster doc stored as "1234567"; this join
+carries none of the brigade-code reuse risk since a cédula is unique per
+person. The roster only fills `uid`/`entidad`/`num_telefono`/
+`correo_contacto`, and backfills `np`/`nombre_completo`/
+`tarjeta_profesional` when the API left them blank — the API always wins
+on conflict. `inspector_fuente = "api"`.
 
-"Names a person" (steps 3 and 4 above) means a non-blank
+A matched evaluación's OWN `inspector` sub-object (`insp_match`) is
+CONSULTED on this path ONLY for one narrow same-person backfill (fresh
+review, 2026-09-15): if `np`/`entidad`/`uid` are still blank after the API
+and `roster_by_cedula` above, AND `insp_match.identificacion` equals the
+API's `cedula` after digits-only normalization (`cedula_key` — the SAME
+person, confirmed, not a guess), that field is filled from `insp_match`.
+Different cédula, either side blank, or no match at all -> never touched,
+stays "". `identificacion`/`nombre_completo` are NEVER part of this
+backfill (the API already owns them outright above), and neither is
+`codigo`: a matched evaluación's brigade `codigo` is NEVER used on this
+path (a different sticker's/person's brigade code, not this one's) — only
+`roster_by_cedula`'s own `codigo` (if the cédula is in the roster) or the
+code parsed straight from THIS sticker's own `numero` are legitimate
+`codigo` sources here. Everything else the match still drives
+(`fecha`/`fecha_fuente`, `fotos`, `clasificacion`, `alcance`, `coords`,
+`descripcion`, `restricciones`, `acciones_posteriores`, `comentarios`) is
+UNAFFECTED by this rule and keeps coming from the match exactly as before.
+
+Rule B — `profesional` does not name a person (fallback chain, unchanged
+in substance since before Rule A existed):
+
+1. Matching Firestore evaluación by code: its own `inspector` fields (np,
+   nombre_completo, identificacion, entidad, uid) are AUTHORITATIVE even
+   when empty (`inspector_fuente = "evaluacion"`) — brigade codes are
+   reused once an inspector is deleted, so falling back to the roster here
+   could hand an old evaluación the new inspector's identity.
+2. No match, `profesional` has no person but a non-blank `rango`: an NP
+   with nobody named has nobody to attribute, so sources are never mixed
+   field-by-field (same invariant as step 1) — if the brigade-code roster
+   already names a person, its OWN `np` is kept and the API's `rango` is
+   ignored entirely (`inspector_fuente = "roster"`); only when the roster
+   has NO identity at all (no entry, or an np-only entry) does the bare
+   `rango` become `np`, and `inspector_fuente` stays `""` (still nobody to
+   attribute).
+3. No match, and `profesional` has no usable data at all: the
+   roster-by-brigade-code fallback, unchanged since before `profesional`
+   existed.
+
+"Names a person" (steps 2 and 3 above) means a non-blank
 `nombre_completo`, `identificacion` or `entidad` on the roster entry — NOT
 `uid` (F2, 2026-09-08). `inspector_profiles` always sets `uid` to the
 Firestore doc id, so every roster entry has one whether or not it names
 anyone; counting `uid` here would make an np-only roster doc (e.g. one
 carrying only `NP`) wrongly read as "roster" for every real caller.
-
-Why step 4 requires `origen == "sistema"` for steps 2/3 at all:
-`profesional`'s reliability was verified only for `origen == "sistema"`
-rows. For `firebase`-origin (or blank/unknown-origin) rows that importer's
-reliability for `profesional` is unverified, so for those rows OUR
-Firestore roster stays the source of truth for identity and `profesional`
-is never consulted, not even for a bare `rango`. This is independent of
-the `fase` decision below — a separate field, confirmed reliable for ALL
-origins, including `firebase`.
 
 `fase` (2026-09-08, contrato v3) IS the Fase I/II signal for the Stickers
 tab: the atencionsismo API developer confirmed (2026-09-08) that `fase` is
@@ -247,27 +263,86 @@ def normalize_sticker(
     match = evaluacion_by_codigo.get(codigo) if codigo else None
     insp_match = (match or {}).get("inspector") or {}
     codigo_inspector = str(insp_match.get("codigo") or (parsed or {}).get("codigo_inspector") or "")
-    # D1 (updated): if a Firestore evaluación matched, its inspector fields
-    # (np, nombre_completo, identificacion, entidad, uid) are AUTHORITATIVE
-    # even when empty — the roster is consulted ONLY when there is no match.
-    # Brigade codes are reused once an inspector is deleted, so falling back
-    # to the roster here could hand an old evaluación the new inspector's
-    # identity.
+    # D1 (updated): if a Firestore evaluación matched AND `profesional`
+    # names nobody (Rule B below), its inspector fields (np,
+    # nombre_completo, identificacion, entidad, uid) are AUTHORITATIVE even
+    # when empty — the roster is consulted ONLY when there is no match.
+    # Brigade codes are reused once an inspector is deleted, so falling
+    # back to the roster here could hand an old evaluación the new
+    # inspector's identity.
     roster_match = roster_by_codigo.get(codigo_inspector, {}) if codigo_inspector else {}
     cedula_api, nombre_api, rango_api, tarjeta_api = _profesional_fields(row)
     profesional_names_person = bool(cedula_api or nombre_api)
-    # F3: `profesional` is trusted ONLY when the row's own `origen` is
-    # "sistema" — the SAME atencionsismo import that tags every
-    # Firebase-origin row `fase: 2` regardless of the real NP (module
-    # docstring) also wrote `profesional` for those rows, and that
-    # importer's reliability for `profesional` on non-"sistema" origins is
-    # unverified. For any other origen (including "firebase", blank, or
-    # unknown), `profesional` is ignored entirely and the plain
-    # roster-by-brigade-code fallback applies, exactly as it did before
-    # `profesional` existed.
+    # `origen_value` still drives `fecha_fuente` resolution below — it no
+    # longer gates trust in `profesional` (see Rule A in the module
+    # docstring, 2026-09-15).
     origen_value = str(row.get("origen") or "").strip().lower()
-    trust_profesional = origen_value == "sistema"
-    if match is not None:
+    # Default `codigo` output for every branch except Rule A (overridden
+    # inside it below, per the fresh-review fix) — a matched evaluación's
+    # own codigo when there's a match, else the code parsed from `numero`,
+    # exactly as `codigo_inspector`/`roster_match` above already compute.
+    codigo_value = codigo_inspector
+    if profesional_names_person:
+        # Rule A (2026-09-15, module docstring): `profesional` IS
+        # `evaluacion.tecnico` per the API's own docs — the technician tied
+        # to THIS evaluation — verified populated regardless of `origen`.
+        # It wins identity UNCONDITIONALLY, even when a Firestore
+        # evaluación also matched by code: the Survey-match identity path
+        # (Rule B, below) is now legacy and only a fallback for when
+        # `profesional` names nobody. `cedula` is a unique per-person key,
+        # unlike the reused brigade `codigo`, so joining it against
+        # `roster_by_cedula` (by the digits-only `cedula_key`, F7) carries
+        # no misattribution risk. The API always wins on conflict; the
+        # roster only fills what the API left blank. `identificacion`
+        # stores the API's cedula VERBATIM (stripped) — the normalised key
+        # is a join key only. `insp_match` (a matched evaluación's own
+        # inspector) is NEVER consulted here — never mixed field-by-field
+        # with `profesional` — but everything else the match drives
+        # (fecha, fotos, clasificacion, coords, ...), computed
+        # independently below, is unaffected by this branch.
+        cedula_join_key = cedula_key(cedula_api)
+        roster_cedula_match = roster_by_cedula.get(cedula_join_key, {}) if cedula_join_key else {}
+        # Fresh review (2026-09-15): `codigo` must NEVER come from the
+        # matched evaluación's brigade code (`insp_match`) on this path —
+        # that would silently reattach a DIFFERENT sticker's brigade code
+        # to this API-identified person. Only `roster_by_cedula`'s own
+        # `codigo` (a per-person field, safe to trust like every other
+        # `roster_cedula_match` field above) or the code parsed straight
+        # from this sticker's own `numero` are legitimate sources here.
+        codigo_value = str(roster_cedula_match.get("codigo") or "").strip() \
+            or str((parsed or {}).get("codigo_inspector") or "")
+        # Fresh review (2026-09-15): same-person backfill for np/entidad/
+        # uid ONLY — never identificacion/nombre_completo/codigo, which
+        # have their own, stricter rules. A matched evaluación's inspector
+        # may fill in what the API/roster left blank, but ONLY when that
+        # inspector's own `identificacion` is confirmed to be the SAME
+        # person as `profesional` (digits-only cédula match) — never on a
+        # different or blank cédula, and never when there is no match at
+        # all (both sides of the comparison are then blank, which must NOT
+        # read as "same person").
+        same_cedula_match = bool(cedula_join_key) and cedula_join_key == cedula_key(insp_match.get("identificacion"))
+        np_value = rango_api or str(roster_cedula_match.get("np") or "").strip()
+        if not np_value and same_cedula_match:
+            np_value = str(insp_match.get("np") or "").strip()
+        nombre_completo_value = nombre_api or str(roster_cedula_match.get("nombre_completo") or "").strip()
+        identificacion_value = cedula_api
+        uid_value = str(roster_cedula_match.get("uid") or "")
+        if not uid_value and same_cedula_match:
+            uid_value = str(insp_match.get("uid") or "")
+        entidad_value = str(roster_cedula_match.get("entidad") or "")
+        if not entidad_value and same_cedula_match:
+            entidad_value = str(insp_match.get("entidad") or "")
+        inspector_fuente = "api"
+        # Same "API wins, roster only backfills what's blank" pattern as
+        # np_value above.
+        tarjeta_value = tarjeta_api or str(roster_cedula_match.get("tarjeta_profesional") or "").strip()
+        telefono_value = str(roster_cedula_match.get("num_telefono") or "").strip()
+        correo_value = str(roster_cedula_match.get("correo_contacto") or "").strip()
+    elif match is not None:
+        # Rule B, step 1: `profesional` names nobody, but a Firestore
+        # evaluación matched by code — its own inspector fields are
+        # AUTHORITATIVE even when empty, unchanged since before Rule A
+        # existed.
         np_value = str(insp_match.get("np") or "").strip()
         uid_value = str(insp_match.get("uid") or "")
         nombre_completo_value = str(insp_match.get("nombre_completo") or "")
@@ -277,38 +352,16 @@ def normalize_sticker(
         # W3 (plan cozy-wobbling-dragonfly): contact fields (never present
         # on a Firestore evaluación doc) stay blank on the matched branch —
         # same "never mix sources field-by-field" invariant as np/identity
-        # above: neither the API's `profesional` nor the roster is ever
-        # consulted once a Firestore evaluación has matched.
+        # above: neither the API's `profesional` (already established
+        # empty by the `elif` above) nor the roster is ever consulted once
+        # a Firestore evaluación has matched.
         tarjeta_value = ""
         telefono_value = ""
         correo_value = ""
-    elif trust_profesional and profesional_names_person:
-        # Contrato v3, step 2: `profesional` is the technician tied to THIS
-        # evaluation — its `cedula` is a unique per-person key, unlike the
-        # reused brigade `codigo`, so joining it against `roster_by_cedula`
-        # (by the digits-only `cedula_key`, F7) carries no misattribution
-        # risk. The API always wins on conflict; the roster only fills what
-        # the API left blank. `identificacion` stores the API's cedula
-        # VERBATIM (stripped) — the normalised key is a join key only.
-        cedula_join_key = cedula_key(cedula_api)
-        roster_cedula_match = roster_by_cedula.get(cedula_join_key, {}) if cedula_join_key else {}
-        np_value = rango_api or str(roster_cedula_match.get("np") or "").strip()
-        nombre_completo_value = nombre_api or str(roster_cedula_match.get("nombre_completo") or "").strip()
-        identificacion_value = cedula_api
-        uid_value = str(roster_cedula_match.get("uid") or "")
-        entidad_value = str(roster_cedula_match.get("entidad") or "")
-        inspector_fuente = "api"
-        # W3: same "API wins, roster only backfills what's blank" pattern
-        # as np_value above. `num_telefono`/`correo_contacto` have no API
-        # source at all (contrato v3 only adds `tarjetaProfesional`), so
-        # those two always come from the roster (blank if absent there).
-        tarjeta_value = tarjeta_api or str(roster_cedula_match.get("tarjeta_profesional") or "").strip()
-        telefono_value = str(roster_cedula_match.get("num_telefono") or "").strip()
-        correo_value = str(roster_cedula_match.get("correo_contacto") or "").strip()
-    elif trust_profesional and rango_api:
-        # Contrato v3, step 3: `profesional` carries a bare `rango` (no
-        # person to name it). F4: never mix sources field-by-field — if the
-        # brigade-code roster already names a person, its OWN np is
+    elif rango_api:
+        # Rule B, step 2: no match, `profesional` carries a bare `rango`
+        # (no person to name it). F4: never mix sources field-by-field —
+        # if the brigade-code roster already names a person, its OWN np is
         # authoritative and the API's rango is ignored (same invariant as
         # the matched branch above); only when the roster has NO identity
         # at all (no entry, or an np-only entry) does the bare rango become
@@ -337,15 +390,14 @@ def normalize_sticker(
             np_value = rango_api
             inspector_fuente = ""
     else:
-        # Contrato v3, step 4 (also reached for any non-"sistema" origen,
-        # per F3 above, and for a `profesional` with no usable data at
-        # all): the plain roster-by-brigade-code fallback, unchanged since
-        # before `profesional` existed. F3 fix: coerce None/other
-        # falsy-but-present roster values to "", same as the matched branch
-        # above — `dict.get(k, "")` only applies its default when the key
-        # is ABSENT, so a roster doc with an explicit `None` field (e.g. a
-        # manually repaired Firestore doc) used to leak a raw `None` into
-        # the response instead of "".
+        # Rule B, step 3 (also reached when `profesional` has no usable
+        # data at all): the plain roster-by-brigade-code fallback,
+        # unchanged since before `profesional` existed. F3 fix: coerce
+        # None/other falsy-but-present roster values to "", same as the
+        # matched branch above — `dict.get(k, "")` only applies its
+        # default when the key is ABSENT, so a roster doc with an explicit
+        # `None` field (e.g. a manually repaired Firestore doc) used to
+        # leak a raw `None` into the response instead of "".
         np_value = str(roster_match.get("np") or "")
         uid_value = str(roster_match.get("uid") or "")
         nombre_completo_value = str(roster_match.get("nombre_completo") or "")
@@ -418,7 +470,7 @@ def normalize_sticker(
         "inspector_fuente": inspector_fuente,
         "inspector": {
             "uid": uid_value,
-            "codigo": codigo_inspector,
+            "codigo": codigo_value,
             "nombre_completo": nombre_completo_value,
             "identificacion": identificacion_value,
             "entidad": entidad_value,

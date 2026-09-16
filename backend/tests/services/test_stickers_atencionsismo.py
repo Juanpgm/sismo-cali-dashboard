@@ -486,67 +486,246 @@ def test_profesional_rango_whitespace_and_case_kept_as_stripped_string_not_parse
     assert out["inspector"]["np"] == "p3"
 
 
-def test_profesional_ignored_when_evaluacion_matched():
-    matched_eval = _eval_firestore()
+def test_profesional_wins_identity_even_when_evaluacion_matched():
+    # Rule A (2026-09-15, supersedes the old "evaluación always wins"
+    # contract): `profesional` is `evaluacion.tecnico` per the API's own
+    # docs, so when it names a person it wins identity UNCONDITIONALLY —
+    # even when a Firestore evaluación also matched by code. The match's
+    # own `inspector` sub-object is never consulted in that case, but
+    # everything else the match drives (fecha, fotos, clasificacion, ...)
+    # is untouched by this rule.
+    matched_eval = _eval_firestore(fecha="2026-08-20T10:00:00", fotos=["https://firestore/1.jpg"])
     out = sa.normalize_sticker(
         _row(origen="sistema", profesional={"cedula": "999", "nombre": "Otra Persona", "rango": "P9"}),
         roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": matched_eval},
         roster_by_cedula={"999": {"uid": "u-x"}},
     )
-    # F9: full inspector dict equality, not just a couple of fields — the
-    # matched evaluación's own inspector must be untouched, in full.
+    assert out["inspector"] == {"uid": "u-x", "codigo": "004", "nombre_completo": "Otra Persona",
+                                "identificacion": "999", "entidad": "", "np": "P9",
+                                "tarjeta_profesional": "", "num_telefono": "", "correo_contacto": ""}
+    assert out["inspector_fuente"] == "api"
+    # The match still drives everything else, unaffected by Rule A.
+    assert out["fecha"] == "2026-08-20T10:00:00"
+    assert out["fecha_fuente"] == "evaluacion"
+    assert out["fotos"] == ["https://firestore/1.jpg"]
+    assert out["clasificacion"] == "INSEGURO"
+
+
+# ── Fresh review (2026-09-15): on Rule A, `codigo` must NEVER come from the
+# matched evaluación's own inspector — only `roster_by_cedula`'s own
+# `codigo` (if the cédula is in the roster) or the code parsed from the
+# sticker's own `numero`, same "profesional identity, never mixed with the
+# match" invariant as every other Rule A field. The existing Rule A tests
+# above could not catch this: `_eval_firestore()`'s default inspector.codigo
+# ("004") is IDENTICAL to the code embedded in the default `numero`, so a
+# bug that leaked the match's codigo was invisible until the two differ. ──
+
+
+def test_rule_a_codigo_comes_from_parsed_numero_never_matched_evaluacion():
+    # matched_eval's own codigo ("777") deliberately DIFFERS from the one
+    # embedded in `numero` ("004") -- if `codigo` leaked from the match this
+    # would read "777" instead of the correct "004".
+    matched_eval = _eval_firestore(
+        inspector={"uid": "u1", "codigo": "777", "nombre_completo": "Ana", "identificacion": "1",
+                   "entidad": "E", "np": "P4"}
+    )
+    out = sa.normalize_sticker(
+        _row(origen="sistema", profesional={"cedula": "999", "nombre": "Otra Persona"}),
+        roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": matched_eval},
+        roster_by_cedula={},
+    )
+    assert out["inspector_fuente"] == "api"
+    assert out["inspector"]["codigo"] == "004", "codigo must come from the parsed numero, never the matched evaluación"
+
+
+def test_rule_a_codigo_prefers_roster_by_cedula_over_parsed_and_match():
+    matched_eval = _eval_firestore(
+        inspector={"uid": "u1", "codigo": "777", "nombre_completo": "Ana", "identificacion": "1",
+                   "entidad": "E", "np": "P4"}
+    )
+    out = sa.normalize_sticker(
+        _row(origen="sistema", profesional={"cedula": "999", "nombre": "Otra Persona"}),
+        roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": matched_eval},
+        roster_by_cedula={"999": {"codigo": "010"}},
+    )
+    assert out["inspector"]["codigo"] == "010"
+
+
+def test_rule_a_codigo_falls_back_to_parsed_when_no_roster_by_cedula_hit():
+    out = sa.normalize_sticker(
+        _row(origen="sistema", profesional={"cedula": "999", "nombre": "Otra Persona"}),
+        roster_by_codigo={}, evaluacion_by_codigo={}, roster_by_cedula={},
+    )
+    assert out["inspector"]["codigo"] == "004"  # parsed from the default numero, no match involved
+
+
+# ── Fresh review (2026-09-15): same-person backfill on Rule A for np/
+# entidad/uid — when the API/roster leave one of these blank, fall back to
+# the MATCHED evaluación's own inspector, but ONLY when that inspector's
+# `identificacion` equals the API cédula after digit-only normalization
+# (same person, so no identity mixing risk). Precedence per field: API
+# value -> roster_by_cedula -> same-cédula matched evaluación -> "".
+# Different cédula, blank cédula, or no match at all -> never touch the
+# match. `identificacion`/`nombre_completo`/`codigo` are NOT part of this
+# backfill (they have their own, stricter rules above). ────────────────────
+
+
+def test_rule_a_same_cedula_match_backfills_np_when_rango_blank():
+    matched_eval = _eval_firestore(
+        inspector={"uid": "u1", "codigo": "777", "nombre_completo": "Ana", "identificacion": "1.234.567",
+                   "entidad": "E", "np": "P4"}
+    )
+    out = sa.normalize_sticker(
+        _row(origen="sistema", profesional={"cedula": "1234567", "nombre": "Otra Persona", "rango": ""}),
+        roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": matched_eval}, roster_by_cedula={},
+    )
+    assert out["inspector_fuente"] == "api"
+    assert out["inspector"]["np"] == "P4"
+
+
+def test_rule_a_different_cedula_match_never_backfills_np():
+    matched_eval = _eval_firestore(
+        inspector={"uid": "u1", "codigo": "777", "nombre_completo": "Ana", "identificacion": "1",
+                   "entidad": "E", "np": "P4"}
+    )
+    out = sa.normalize_sticker(
+        _row(origen="sistema", profesional={"cedula": "999", "nombre": "Otra Persona", "rango": ""}),
+        roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": matched_eval}, roster_by_cedula={},
+    )
+    assert out["inspector"]["np"] == ""
+
+
+def test_rule_a_same_cedula_match_backfills_entidad_when_roster_lacks_it():
+    matched_eval = _eval_firestore(
+        inspector={"uid": "u1", "codigo": "777", "nombre_completo": "Ana", "identificacion": "1234567",
+                   "entidad": "Curaduria 9", "np": "P4"}
+    )
+    out = sa.normalize_sticker(
+        _row(origen="sistema", profesional={"cedula": "1.234.567", "nombre": "Otra Persona"}),
+        roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": matched_eval},
+        roster_by_cedula={"1234567": {"uid": "u9"}},  # no entidad here
+    )
+    assert out["inspector"]["entidad"] == "Curaduria 9"
+    assert out["inspector"]["uid"] == "u9"  # roster still wins for uid, unaffected
+
+
+def test_rule_a_different_cedula_match_never_backfills_entidad_or_uid():
+    matched_eval = _eval_firestore(
+        inspector={"uid": "u1", "codigo": "777", "nombre_completo": "Ana", "identificacion": "1",
+                   "entidad": "Curaduria 9", "np": "P4"}
+    )
+    out = sa.normalize_sticker(
+        _row(origen="sistema", profesional={"cedula": "999", "nombre": "Otra Persona"}),
+        roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": matched_eval}, roster_by_cedula={},
+    )
+    assert out["inspector"]["entidad"] == ""
+    assert out["inspector"]["uid"] == ""
+
+
+def test_rule_a_same_cedula_match_backfills_uid_when_roster_lacks_it():
+    matched_eval = _eval_firestore(
+        inspector={"uid": "u-real", "codigo": "777", "nombre_completo": "Ana", "identificacion": "999",
+                   "entidad": "E", "np": "P4"}
+    )
+    out = sa.normalize_sticker(
+        _row(origen="sistema", profesional={"cedula": "999", "nombre": "Otra Persona"}),
+        roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": matched_eval}, roster_by_cedula={},
+    )
+    assert out["inspector"]["uid"] == "u-real"
+
+
+def test_rule_a_blank_cedula_never_backfills_from_match_even_with_blank_insp_match_identificacion():
+    # Belt-and-suspenders: a blank API cédula must never fall back to the
+    # match even in the degenerate case where the match's own identificacion
+    # is ALSO blank (cedula_key("") == cedula_key("") would otherwise be a
+    # false "same person").
+    matched_eval = _eval_firestore(
+        inspector={"uid": "u1", "codigo": "777", "nombre_completo": "", "identificacion": "",
+                   "entidad": "Curaduria 9", "np": "P4"}
+    )
+    out = sa.normalize_sticker(
+        _row(origen="sistema", profesional={"cedula": "", "nombre": "Solo Nombre", "rango": ""}),
+        roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": matched_eval}, roster_by_cedula={},
+    )
+    assert out["inspector"]["np"] == ""
+    assert out["inspector"]["entidad"] == ""
+    assert out["inspector"]["uid"] == ""
+
+
+def test_profesional_empty_evaluacion_matched_stays_evaluacion_unchanged():
+    # Rule B fallback: when `profesional` names nobody, a matched
+    # evaluación's own inspector is still authoritative, exactly as before
+    # Rule A existed — including blank contact fields.
+    matched_eval = _eval_firestore()
+    out = sa.normalize_sticker(
+        _row(origen="sistema"), roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": matched_eval},
+    )
     assert out["inspector"] == {"uid": "u1", "codigo": "004", "nombre_completo": "Ana",
                                 "identificacion": "1", "entidad": "E", "np": "P4",
                                 "tarjeta_profesional": "", "num_telefono": "", "correo_contacto": ""}
     assert out["inspector_fuente"] == "evaluacion"
 
 
-# ── F3: `profesional` (identity/rango branches) is only trusted when the
-# row's own `origen` is "sistema" — the SAME import that tags every
-# Firebase-origin row `fase: 2` regardless of the real NP also wrote
-# `profesional`, so it is untrusted for any other origen; the plain
-# roster-by-brigade-code fallback applies instead. ─────────────────────────
+# ── Rule A (2026-09-15): `profesional` is now consulted regardless of
+# `origen` — a live sample found it populated on both "sistema" and
+# "firebase" origin rows (module docstring); the old "sistema"-only trust
+# restriction (contrato v3, F3) was verified false and removed. ───────────
 
 
-def test_profesional_ignored_on_firebase_origin_falls_back_to_roster_path():
+def test_profesional_used_on_firebase_origin_now_wins_over_roster():
     roster = {"004": {"np": "P4", "nombre_completo": "Ana Gomez"}}
     out = sa.normalize_sticker(
         _row(origen="firebase", profesional={"cedula": "999", "nombre": "Otra Persona", "rango": "P9"}),
         roster_by_codigo=roster, evaluacion_by_codigo={}, roster_by_cedula={"999": {"uid": "u-x"}},
     )
-    assert out["inspector"]["np"] == "P4"  # from the roster, not the API's rango
-    assert out["inspector"]["nombre_completo"] == "Ana Gomez"  # from the roster, not the API's nombre
-    assert out["inspector_fuente"] == "roster"
+    assert out["inspector"]["np"] == "P9"  # from the API's rango, not the roster
+    assert out["inspector"]["nombre_completo"] == "Otra Persona"  # from the API, not the roster
+    assert out["inspector_fuente"] == "api"
 
 
-def test_profesional_ignored_on_firebase_origin_with_no_roster_hit_is_fuente_empty():
+def test_profesional_used_on_firebase_origin_with_no_roster_hit_is_fuente_api():
     out = sa.normalize_sticker(
         _row(origen="firebase", profesional={"cedula": "999", "nombre": "Otra Persona", "rango": "P9"}),
         roster_by_codigo={}, evaluacion_by_codigo={}, roster_by_cedula={"999": {"uid": "u-x"}},
     )
-    assert out["inspector"]["np"] == ""
-    assert out["inspector"]["identificacion"] == ""
-    assert out["inspector_fuente"] == ""
+    assert out["inspector"]["np"] == "P9"
+    assert out["inspector"]["identificacion"] == "999"
+    assert out["inspector"]["uid"] == "u-x"
+    assert out["inspector_fuente"] == "api"
 
 
-def test_profesional_ignored_on_blank_origen_falls_back_to_roster_path():
+def test_profesional_used_on_blank_origen_now_wins_over_roster():
     roster = {"004": {"np": "P4", "nombre_completo": "Ana Gomez"}}
     out = sa.normalize_sticker(
         _row(origen="", profesional={"cedula": "999", "nombre": "Otra Persona"}),
         roster_by_codigo=roster, evaluacion_by_codigo={}, roster_by_cedula={"999": {"uid": "u-x"}},
     )
-    assert out["inspector"]["nombre_completo"] == "Ana Gomez"
-    assert out["inspector_fuente"] == "roster"
+    assert out["inspector"]["nombre_completo"] == "Otra Persona"
+    assert out["inspector_fuente"] == "api"
 
 
-def test_profesional_trusted_when_origen_sistema_case_and_whitespace_insensitive():
-    for origen in ("Sistema", " sistema ", "SISTEMA"):
+def test_profesional_trusted_regardless_of_origen_case_and_whitespace():
+    for origen in ("Sistema", " sistema ", "SISTEMA", "firebase", "", "algo-desconocido"):
         out = sa.normalize_sticker(
             _row(origen=origen, profesional={"cedula": "123", "nombre": "Juan Perez"}),
             roster_by_codigo={}, evaluacion_by_codigo={},
         )
-        assert out["inspector_fuente"] == "api", f"origen={origen!r} should still trust profesional"
+        assert out["inspector_fuente"] == "api", f"origen={origen!r} should trust profesional"
         assert out["inspector"]["nombre_completo"] == "Juan Perez"
+
+
+def test_profesional_nombre_only_blank_cedula_is_api_identity_without_roster_cedula_join():
+    # A blank cedula must never join `roster_by_cedula` — `cedula_key("")`
+    # is "", and callers of the join treat "" as "no key" (F7).
+    out = sa.normalize_sticker(
+        _row(origen="sistema", profesional={"cedula": "", "nombre": "Solo Nombre", "rango": "P2"}),
+        roster_by_codigo={}, evaluacion_by_codigo={},
+        roster_by_cedula={"": {"uid": "should-not-match"}},
+    )
+    assert out["inspector"]["identificacion"] == ""
+    assert out["inspector"]["nombre_completo"] == "Solo Nombre"
+    assert out["inspector"]["uid"] == ""
+    assert out["inspector_fuente"] == "api"
 
 
 def test_firebase_origin_fase_2_with_p1_match_keeps_np_p1():
@@ -871,14 +1050,40 @@ def test_comuna_reportada_missing_key_is_empty():
     assert out["comuna_reportada"] == ""
 
 
-def test_contact_fields_blank_on_matched_branch_never_mixes_roster_or_api():
+def test_contact_fields_from_api_win_even_when_evaluacion_matched():
+    # Rule A (2026-09-15): once `profesional` names a person, contact
+    # fields follow the SAME api-branch rules (API wins, roster backfills
+    # what's blank) even when a Firestore evaluación also matched — the
+    # OLD invariant ("contact fields always blank on the matched branch")
+    # only holds now for Rule B (`profesional` empty), see
+    # `test_contact_fields_blank_on_matched_branch_when_profesional_empty`.
     matched_eval = _eval_firestore()
     roster = {"004": {"tarjeta_profesional": "TP-ROSTER", "num_telefono": "3000000000",
                       "correo_contacto": "roster@x.co"}}
     out = sa.normalize_sticker(
         _row(origen="sistema", profesional={"cedula": "1", "nombre": "A", "tarjetaProfesional": "TP-API"}),
         roster_by_codigo=roster, evaluacion_by_codigo={"76001-1-0040007": matched_eval},
-        roster_by_cedula={"1": {"tarjeta_profesional": "TP-CEDULA"}},
+        roster_by_cedula={"1": {"tarjeta_profesional": "TP-CEDULA", "num_telefono": "3009990000",
+                                "correo_contacto": "cedula@x.co"}},
+    )
+    assert out["inspector"]["tarjeta_profesional"] == "TP-API"  # API wins on conflict
+    assert out["inspector"]["num_telefono"] == "3009990000"  # no API source -> cedula-roster backfill
+    assert out["inspector"]["correo_contacto"] == "cedula@x.co"
+    assert out["inspector"]["nombre_completo"] == "A"
+    assert out["inspector_fuente"] == "api"
+    for value in roster["004"].values():
+        assert value not in out["inspector"].values()  # brigade-code roster never consulted here
+
+
+def test_contact_fields_blank_on_matched_branch_when_profesional_empty():
+    # Preserves the pre-Rule-A invariant for the case Rule A does not
+    # touch: no `profesional` identity at all, evaluación matched.
+    matched_eval = _eval_firestore()
+    roster = {"004": {"tarjeta_profesional": "TP-ROSTER", "num_telefono": "3000000000",
+                      "correo_contacto": "roster@x.co"}}
+    out = sa.normalize_sticker(
+        _row(origen="sistema"), roster_by_codigo=roster,
+        evaluacion_by_codigo={"76001-1-0040007": matched_eval},
     )
     assert out["inspector"]["tarjeta_profesional"] == ""
     assert out["inspector"]["num_telefono"] == ""
