@@ -35,7 +35,7 @@ import re
 import threading
 import time
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -45,6 +45,8 @@ from pydantic import BaseModel
 from app.auth.deps import require_role
 from app.credentials import clients as credentials
 from app.services import blob_lkg
+from app.services.probed_scan import ProbedScan
+from app.services.roster_invalidation import invalidate_inspectores_roster
 from app.services.stickers_atencionsismo import cedula_key
 
 # `sismo` is already unconditionally in credentials.WEB_STARTUP_CLIENTS, but
@@ -65,6 +67,13 @@ _CEDULA_RE = re.compile(r"^\d{5,12}$")
 _CODIGO_RE = re.compile(r"^\d{3}$")
 
 EVALUACIONES_CACHE_TTL_SECONDS = 5 * 60
+# Error body of GET /evaluaciones (viewers can read it): a fixed message, never
+# the exception text, which can echo a cedula or a name.
+DETALLE_FALLO_EVALUACIONES = "No se pudo obtener la lista de evaluaciones en este momento."
+# Longest a FAILING probe may hide a change of the evaluaciones collection (D34, C1): the
+# 15-minute evaluaciones component TTL (`stickers_atencionsismo.EVALUACIONES_FS_CACHE_TTL_SECONDS`,
+# asserted equal in the tests; it cannot be imported from here without a cycle).
+EVALUACIONES_PROBE_FAILURE_GRACE_S = 15 * 60.0
 EVALUACIONES_LKG_BLOB = "data/evaluaciones_last_good.json"  # last-known-good payload, see services/blob_lkg.py
 
 INSPECTORES_CACHE_TTL_SECONDS = 5 * 60
@@ -99,10 +108,14 @@ class InspectoresCache:
             try:
                 self._payload = fetch()
                 self._at = now
-            except Exception:
+            except Exception as exc:
                 if self._payload is None:
                     raise
-                logging.exception("inspectores: fetch fallo, sirviendo el ultimo payload en cache (stale)")
+                # Type only, never `logging.exception`: the traceback text carries
+                # the upstream message, which can echo a cedula or a name.
+                logging.error(
+                    "inspectores: fetch fallo (%s), sirviendo el ultimo payload en cache (stale)", type(exc).__name__
+                )
         assert self._payload is not None
         return self._payload
 
@@ -113,6 +126,16 @@ class InspectoresCache:
         idea. Clears only the timestamp, keeping the last-good payload
         available to serve-stale if the forced re-fetch also hits a 429."""
         self._at = None
+
+
+class StickersSnapshot(NamedTuple):
+    """One consistent `(payload, version, degraded)` triple: a reader that
+    needs the payload AND its content version (D21) must never pair the
+    payload of one fetch with the version of the next."""
+
+    payload: list[dict[str, Any]]
+    version: int
+    degraded: bool
 
 
 class EvaluacionesCache:
@@ -133,7 +156,18 @@ class EvaluacionesCache:
         lkg_blob: str = EVALUACIONES_LKG_BLOB,
         redact: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
         failure_backoff_s: float = 0.0,
+        clock: Callable[[], float] | None = None,
     ) -> None:
+        # `clock` is injectable for tests; None resolves `time.monotonic` at
+        # CALL time so a test that patches it globally still applies.
+        self._clock = clock
+        # Content-stable snapshot (D21): `_content_hash` is `payload_hash` of
+        # the FULL unredacted served payload plus `degraded`; identical
+        # content keeps the previous list object and `_version`, changed
+        # content bumps it. Internal: it never enters the response body.
+        self._version = 0
+        self._content_hash: str | None = None
+        self._snap: StickersSnapshot | None = None
         # Parametrized so a sibling dataset (atencionsismo stickers, see
         # routers/stickers_atencionsismo.py) reuses the serve-stale +
         # Blob-restore + degraded semantics with its OWN pathname/redaction.
@@ -174,8 +208,38 @@ class EvaluacionesCache:
         `/evaluaciones` route) surface this so the dashboard can warn."""
         return self._degraded
 
+    @property
+    def snapshot_version(self) -> int:
+        """Content version of the served payload (0 = nothing served yet)."""
+        return self._version
+
+    def _now(self) -> float:
+        return (self._clock or time.monotonic)()
+
+    def _publish(self, payload: list[dict[str, Any]], degraded: bool) -> None:
+        """Install `payload` as the served snapshot. Equal content (and equal
+        `degraded`) keeps the PREVIOUS list object and version, so an expired
+        TTL alone never looks like a change to downstream fingerprints."""
+        digest = blob_lkg.payload_hash({"degraded": degraded, "rows": payload})
+        if self._payload is not None and digest == self._content_hash:
+            payload = self._payload
+        else:
+            self._version += 1
+            self._content_hash = digest
+        self._payload = payload
+        self._degraded = degraded
+        self._snap = StickersSnapshot(payload, self._version, degraded)
+
+    def get_or_fetch_snapshot(self, fetch: Any) -> StickersSnapshot:
+        """`get_or_fetch` plus the payload's version and `degraded` flag read
+        as ONE consistent triple (never a payload from one fetch with the
+        version of another)."""
+        payload = self.get_or_fetch(fetch)
+        snap = self._snap
+        return snap if snap is not None else StickersSnapshot(payload, self._version, self._degraded)
+
     def get_or_fetch(self, fetch: Any) -> list[dict[str, Any]]:
-        now = time.monotonic()
+        now = self._now()
         stale = self._payload is None or self._at is None or (now - self._at) > EVALUACIONES_CACHE_TTL_SECONDS
         if not stale:
             assert self._payload is not None
@@ -185,7 +249,7 @@ class EvaluacionesCache:
             # Re-evaluate staleness inside the lock: another thread may have
             # already refreshed (or failure-serve-staled) the payload while
             # this one was waiting on the lock — don't fetch twice.
-            now = time.monotonic()
+            now = self._now()
             stale = self._payload is None or self._at is None or (now - self._at) > EVALUACIONES_CACHE_TTL_SECONDS
             if not stale:
                 assert self._payload is not None
@@ -203,12 +267,11 @@ class EvaluacionesCache:
                 return self._payload
 
             try:
-                self._payload = fetch()
+                self._publish(fetch(), False)  # real fresh data, even if it was degraded before
                 self._at = now
-                self._degraded = False  # real fresh data, even if it was degraded before
                 self._failed_at = None  # recovered: clear any armed backoff
                 self._persist_last_good()
-            except Exception:
+            except Exception as exc:
                 # Serve-stale-on-error (30-ago-2026): a Firestore 429/
                 # ResourceExhausted degrading this route to a raw 502 is
                 # worse than showing a slightly-old evaluaciones list — the
@@ -224,15 +287,17 @@ class EvaluacionesCache:
                     if restored is None:
                         self._failed_at = now
                         raise
-                    logging.exception(
-                        "evaluaciones: fetch fallo sin payload previo, sirviendo el ultimo bueno desde Blob"
+                    # Type only, never `logging.exception` (the message can echo PII).
+                    logging.error(
+                        "evaluaciones: fetch fallo (%s) sin payload previo, sirviendo el ultimo bueno desde Blob",
+                        type(exc).__name__,
                     )
-                    self._payload = restored
+                    self._publish(restored, True)  # blanked np, see the `degraded` property above
                     self._at = now  # behaves as a normal (stale-able) payload from here on
-                    self._degraded = True  # blanked np, see the `degraded` property above
                 else:
-                    logging.exception(
-                        "evaluaciones: fetch fallo, sirviendo el ultimo payload en cache (stale)"
+                    logging.error(
+                        "evaluaciones: fetch fallo (%s), sirviendo el ultimo payload en cache (stale)",
+                        type(exc).__name__,
                     )
                 self._failed_at = now
             assert self._payload is not None
@@ -438,6 +503,44 @@ def _np_by_uid(db: Any, uids: set[str]) -> dict[str, str]:
     return out
 
 
+def roster_np_lookup(db: Any, get_roster: Callable[[], Any]) -> Callable[[set[str]], dict[str, str]]:
+    """uid -> `NP` lookup for `list_evaluaciones` served from the roster
+    snapshot (`inspector_profiles`' two maps, which the 30-minute `roster_cache`
+    component already holds) instead of one `inspectores/{uid}` read per
+    distinct evaluación uid on EVERY scan (design D33).
+
+    Every roster profile carries its Firestore doc id as `uid` and its NP
+    already stripped, exactly like `_np_by_uid` computes it, so a uid found here
+    resolves to the byte-identical value. A uid the roster cannot resolve — a
+    doc with neither `codigo` nor `identificacion` (invisible to both maps),
+    one that lost a duplicate-key collision, a profile without an `np` key, or
+    no doc at all — is read in ONE batched `get_all` (the old path, for those
+    uids only). An unavailable roster falls back to the old path for every uid.
+    Staleness: the NP shown is at most one roster TTL old, plus the existing
+    evaluaciones caches; an admin roster write invalidates the roster."""
+
+    def lookup(uids: set[str]) -> dict[str, str]:
+        if not uids:
+            return {}
+        try:
+            by_codigo, by_identificacion = get_roster()
+        except Exception as exc:  # noqa: BLE001 - never worse than the old path
+            logging.warning("evaluaciones np: roster unavailable (%s); reading inspectores/{uid} directly", type(exc).__name__)
+            return _np_by_uid(db, uids)
+        known: dict[str, str] = {}
+        for profiles in (by_identificacion, by_codigo):
+            for profile in profiles.values():
+                uid = profile.get("uid")
+                if uid in uids and "np" in profile and uid not in known:
+                    known[uid] = profile["np"]
+        missing = uids - known.keys()
+        if missing:
+            known.update(_np_by_uid(db, missing))
+        return known
+
+    return lookup
+
+
 def inspector_profiles(db: Any) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]]:
     """ONE Firestore read of the `inspectores` collection, projected into
     the two roster lookup shapes callers need — by 3-digit brigade `codigo`
@@ -469,12 +572,25 @@ def inspector_profiles(db: Any) -> tuple[dict[str, dict[str, str]], dict[str, di
     by_identificacion: dict[str, dict[str, str]] = {}
     for snap in db.collection(INSPECTORES_COLLECTION).get():
         d = snap.to_dict() or {}
+        raw_codigo = str(d.get("codigo") or "").strip()
         profile = {
             "uid": snap.id,
             "nombre_completo": str(d.get("nombre_completo") or "").strip(),
             "identificacion": str(d.get("identificacion") or "").strip(),
             "entidad": str(d.get("entidad") or "").strip(),
             "np": str(d.get("NP") or "").strip(),
+            # Bug fix (Phase 3 apply pass, 2026-09-16, found while wiring
+            # `inspectores_depuracion`): `codigo` was computed into
+            # `raw_codigo` above ONLY to key `by_codigo`, never actually
+            # stored as a field on `profile` itself — so
+            # `stickers_atencionsismo.normalize_sticker`'s Rule A
+            # (`roster_cedula_match.get("codigo")`, this file's own
+            # `by_identificacion` map) always read "" in production; only
+            # unit tests exercised that branch, via hand-built
+            # `roster_by_cedula` fixtures that set "codigo" directly. Purely
+            # additive (a new dict key) — no existing consumer reads
+            # dict-equality against the full profile shape.
+            "codigo": raw_codigo,
             # W3 (plan cozy-wobbling-dragonfly): projected from the SAME
             # scan, no second Firestore read. `tarjeta_profesional` has no
             # backing Firestore field yet (plumbing kept ready for when one
@@ -484,7 +600,6 @@ def inspector_profiles(db: Any) -> tuple[dict[str, dict[str, str]], dict[str, di
             "num_telefono": str(d.get("num_telefono") or "").strip(),
             "correo_contacto": str(d.get("correo_contacto") or "").strip(),
         }
-        raw_codigo = str(d.get("codigo") or "").strip()
         if raw_codigo:
             by_codigo[raw_codigo.zfill(3)] = dict(profile)
         identificacion_key = cedula_key(profile["identificacion"])
@@ -531,8 +646,13 @@ def inspector_profile_by_identificacion(db: Any) -> dict[str, dict[str, str]]:
     return inspector_profiles(db)[1]
 
 
-def list_evaluaciones(db: Any) -> list[dict[str, Any]]:
+def list_evaluaciones(
+    db: Any, *, np_lookup: Callable[[set[str]], dict[str, str]] | None = None
+) -> list[dict[str, Any]]:
     """Every ATC-20 evaluation, flattened for the dashboard's Stickers tab.
+    `np_lookup` (`roster_np_lookup`, D33) replaces the per-uid `inspectores`
+    reads with the roster snapshot; omitted -> the original batched `get_all`.
+
     Verbatim port of `api/stickers.js`'s `listEvaluaciones` — read here
     (Admin SDK, bypasses Firestore rules) rather than straight from the
     browser, mirroring the legacy handler's own comment: `evaluaciones` is
@@ -550,7 +670,7 @@ def list_evaluaciones(db: Any) -> list[dict[str, Any]]:
     docs = list(db.collection(EVALUACIONES_COLLECTION).get())
     uids = {str(((doc.to_dict() or {}).get("inspector") or {}).get("uid") or "").strip() for doc in docs}
     uids.discard("")
-    np_by_uid = _np_by_uid(db, uids)
+    np_by_uid = np_lookup(uids) if np_lookup is not None else _np_by_uid(db, uids)
 
     result: list[dict[str, Any]] = []
     for doc in docs:
@@ -600,6 +720,61 @@ def list_evaluaciones(db: Any) -> list[dict[str, Any]]:
         )
     result.sort(key=lambda r: str(r.get("fecha") or ""), reverse=True)
     return result
+
+
+def new_evaluaciones_source() -> ProbedScan[list[dict[str, Any]]]:
+    """Probe-gated source of the Firestore evaluaciones list (D34). Evidence for
+    the ordering field: the only writer is the inspectors' form (create-only
+    transaction with `timestamp: serverTimestamp()`), the rules forbid client
+    updates and deletes, and nothing in the repo edits the collection through
+    the Admin SDK — so every mutation either bumps `timestamp` or changes the
+    count. An out-of-band edit is the documented blind spot (forced reconcile)."""
+    return ProbedScan(
+        name="evaluaciones",
+        collection=EVALUACIONES_COLLECTION,
+        order_field="timestamp",
+        probe_failure_grace_s=EVALUACIONES_PROBE_FAILURE_GRACE_S,
+    )
+
+
+def scan_evaluaciones(
+    db: Any, roster_cache: Any | None = None, source: ProbedScan[list[dict[str, Any]]] | None = None
+) -> list[dict[str, Any]]:
+    """The Firestore scan the cached evaluaciones routes run. With the roster
+    component (`VersionedCache`, D22) the NP join is served from its snapshot
+    (D33; the SAME snapshot the depuración roster read uses, single-flight);
+    without it, the original per-uid lookup.
+
+    `source` (D34, only together with the roster component): the scan is replaced
+    by a `count()` + newest-`timestamp` probe while nothing moved. The roster's
+    content version is part of the probe signature, because the flattened rows
+    embed the roster-derived NP: a changed roster is a changed input."""
+    if roster_cache is None:
+        return list_evaluaciones(db)
+
+    def read_roster() -> Any:
+        return roster_cache.get(lambda: inspector_profiles(db))
+
+    if source is None:
+        return list_evaluaciones(db, np_lookup=roster_np_lookup(db, lambda: read_roster().value))
+    # ONE roster snapshot (`Versioned`) feeds both the probe signature (`.version`) and the NP
+    # join of the scan (`.value`): a roster that changes while the scan runs can never leave
+    # rows joined with version B recorded under version A (a later revert to A's content would
+    # then keep B's NPs).
+    try:
+        roster = read_roster()
+    except Exception as exc:  # noqa: BLE001 - an unreadable roster just means "always rescan"
+        logging.warning("evaluaciones probe: roster unavailable (%s); scanning", type(exc).__name__)
+        roster_version = "roster-unavailable"
+        lookup = roster_np_lookup(db, lambda: read_roster().value)  # no snapshot to inject: the lookup retries/falls back
+    else:
+        roster_version = roster.version
+        lookup = roster_np_lookup(db, lambda: roster.value)
+
+    def scan() -> list[dict[str, Any]]:
+        return list_evaluaciones(db, np_lookup=lookup)
+
+    return source.fetch(db, scan, extra=roster_version)
 
 
 def _allocate_codigo(db: Any, uid: str, perfil: dict[str, Any], codigo_pedido: str) -> str:
@@ -719,11 +894,11 @@ def stickers(
             return JSONResponse({"ok": True, "evaluaciones": list_evaluaciones(db)})
         if body.action == "create":
             result = create_inspector(db, app, payload)
-            cache.invalidate()
+            invalidate_inspectores_roster(request.app.state)
             return JSONResponse({"ok": True, **result}, status_code=201)
         if body.action == "setEnabled":
             result = set_enabled(db, app, payload)
-            cache.invalidate()
+            invalidate_inspectores_roster(request.app.state)
             return JSONResponse({"ok": True, **result})
         raise bad_request(f"Acción desconocida: {body.action}")
     except HTTPException:
@@ -747,8 +922,10 @@ def get_evaluaciones(
     a 5-min TTL cache on app.state. Reuses `list_evaluaciones` verbatim."""
     cache: EvaluacionesCache = request.app.state.stickers_evaluaciones_cache
     db = credentials.sismo().firestore
+    roster_cache = getattr(request.app.state, "roster_cache", None)
+    source = getattr(request.app.state, "evaluaciones_source", None)
     try:
-        evaluaciones = cache.get_or_fetch(lambda: list_evaluaciones(db))
+        evaluaciones = cache.get_or_fetch(lambda: scan_evaluaciones(db, roster_cache, source))
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - fail-open surface, mirrors
@@ -758,5 +935,5 @@ def get_evaluaciones(
         # headers attached, which the browser then reports as a misleading
         # "blocked by CORS policy" / "Failed to fetch" instead of the real
         # cause. A normal HTTPException always carries CORS headers.
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=DETALLE_FALLO_EVALUACIONES) from exc
     return JSONResponse({"ok": True, "evaluaciones": evaluaciones, "degraded": cache.degraded})

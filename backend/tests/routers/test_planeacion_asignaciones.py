@@ -2747,7 +2747,7 @@ def test_crear_vehiculo_rejects_invalid_dia_pico_placa(monkeypatch):
         json={"action": "crearVehiculo", "placa": "abc123", "dia_pico_placa": "sabado"},
     )
 
-    assert resp.status_code == 400
+    _assert_rejected_as_invalid_dia(resp)
     assert stores.get(VEHICULOS, {}) == {}
 
 
@@ -2806,43 +2806,126 @@ def test_editar_vehiculo_updates_fields(monkeypatch):
 
 # ── Pico y placa: blocks conductor-assignment and grupo-assignment on the
 # vehicle's restricted weekday (binding user decision 2026-08-26) ───────────
+#
+# Every test in this family FREEZES the router's Bogota-local "today" (see
+# `freeze_bogota_weekday`) so it is deterministic on any real weekday, and it
+# asserts on WHICH rule rejected the request: the pico-y-placa gate vs. the
+# "dia_pico_placa inválido" validation. Asserting on the status code alone let
+# tests pass for the wrong reason on weekends (400 = "invalid day", not the
+# gate) — see `test_pico_placa_and_invalid_day_rejections_are_distinguishable`.
+
+_DIAS_LABORALES = ["lunes", "martes", "miercoles", "jueves", "viernes"]
+_DIAS_FIN_DE_SEMANA = ["sabado", "domingo"]
+_TODOS_LOS_DIAS = _DIAS_LABORALES + _DIAS_FIN_DE_SEMANA
+_LABORALES_WD = list(range(5))  # Monday..Friday -> gate can be ACTIVE
+_FIN_DE_SEMANA_WD = [5, 6]  # Saturday, Sunday -> gate INACTIVE
+
+# 2026-09-14 is a Monday; the frozen instant is noon Bogota-local.
+_FROZEN_MONDAY = datetime(2026, 9, 14, 12, 0, tzinfo=pa.BOGOTA_TZ)
+
+_MSG_PICO_PLACA = "pico y placa hoy"
+_MSG_DIA_INVALIDO = "inválido"
+
+
+@pytest.fixture
+def freeze_bogota_weekday(monkeypatch):
+    """Return `freeze(weekday) -> dia` that pins the router's clock.
+
+    The gate calls `datetime.now(BOGOTA_TZ)` through the `datetime` name of
+    `app.routers.planeacion_asignaciones`; that name is replaced by a
+    `datetime` subclass whose `now()` returns a fixed aware instant on the
+    wanted weekday (0=Monday .. 6=Sunday). Returns the Spanish day name.
+    """
+
+    def _freeze(weekday: int) -> str:
+        frozen = _FROZEN_MONDAY + timedelta(days=weekday)
+        assert frozen.weekday() == weekday
+
+        class _FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen if tz is None else frozen.astimezone(tz)
+
+        monkeypatch.setattr(pa, "datetime", _FrozenDatetime)
+        return pa._WEEKDAY_A_DIA[weekday]
+
+    return _freeze
 
 
 def _hoy_bogota_es(dia: str) -> bool:
-    """True iff `dia` (e.g. 'lunes') is Bogota-local today — used to build a
-    deterministic test around whatever day the suite actually runs on."""
-    from app.integracion.config import BOGOTA_TZ
-    from app.routers.planeacion_asignaciones import _WEEKDAY_A_DIA
-    return _WEEKDAY_A_DIA.get(datetime.now(BOGOTA_TZ).weekday()) == dia
+    """True iff `dia` (e.g. 'lunes') is Bogota-local today per the router's
+    (frozen, when `freeze_bogota_weekday` is active) clock."""
+    return pa._WEEKDAY_A_DIA.get(pa.datetime.now(pa.BOGOTA_TZ).weekday()) == dia
 
 
 def _dia_pico_placa_de_hoy() -> str:
-    from app.integracion.config import BOGOTA_TZ
-    from app.routers.planeacion_asignaciones import _WEEKDAY_A_DIA
-    return _WEEKDAY_A_DIA[datetime.now(BOGOTA_TZ).weekday()]
+    return pa._WEEKDAY_A_DIA[pa.datetime.now(pa.BOGOTA_TZ).weekday()]
 
 
-def test_crear_vehiculo_rejects_conductor_when_today_is_pico_placa(monkeypatch):
+def _assert_rejected_by_pico_placa_gate(resp) -> None:
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert _MSG_PICO_PLACA in detail, detail
+    assert _MSG_DIA_INVALIDO not in detail, detail
+
+
+def _assert_rejected_as_invalid_dia(resp) -> None:
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert _MSG_DIA_INVALIDO in detail, detail
+    assert _MSG_PICO_PLACA not in detail, detail
+
+
+def _otro_dia_laboral(hoy: str) -> str:
+    return next(d for d in _DIAS_LABORALES if d != hoy)
+
+
+@pytest.mark.parametrize("weekday", _LABORALES_WD, ids=_DIAS_LABORALES)
+def test_crear_vehiculo_rejects_conductor_when_today_is_pico_placa(monkeypatch, freeze_bogota_weekday, weekday):
+    hoy = freeze_bogota_weekday(weekday)
     stores = _stores()
     stores[CONDUCTORES] = {"c1": {"cedula": "123", "nombre_completo": "Pedro"}}
     client = _admin_client(monkeypatch, stores)
-    hoy = _dia_pico_placa_de_hoy()
 
     resp = client.post(
         "/planeacion-asignaciones",
         json={"action": "crearVehiculo", "placa": "abc123", "dia_pico_placa": hoy, "conductor_id": "c1"},
     )
 
-    assert resp.status_code == 400
+    _assert_rejected_by_pico_placa_gate(resp)
     assert stores.get(VEHICULOS, {}) == {}
 
 
-def test_crear_vehiculo_allows_conductor_on_a_non_restricted_day(monkeypatch):
+@pytest.mark.parametrize("dia_fin_de_semana", _DIAS_FIN_DE_SEMANA)
+@pytest.mark.parametrize("weekday", range(7), ids=_TODOS_LOS_DIAS)
+def test_crear_vehiculo_rejects_weekend_dia_pico_placa_as_invalid(
+    monkeypatch, freeze_bogota_weekday, weekday, dia_fin_de_semana
+):
+    # A weekend day is never a valid `dia_pico_placa`, whatever "today" is —
+    # even on Saturday/Sunday (where hoy == dia) the rejection is the
+    # validation error, not the pico-y-placa gate (which is inactive then).
+    freeze_bogota_weekday(weekday)
     stores = _stores()
     stores[CONDUCTORES] = {"c1": {"cedula": "123", "nombre_completo": "Pedro"}}
     client = _admin_client(monkeypatch, stores)
-    hoy = _dia_pico_placa_de_hoy()
-    otro_dia = next(d for d in ["lunes", "martes", "miercoles", "jueves", "viernes"] if d != hoy)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "crearVehiculo", "placa": "abc123",
+              "dia_pico_placa": dia_fin_de_semana, "conductor_id": "c1"},
+    )
+
+    _assert_rejected_as_invalid_dia(resp)
+    assert stores.get(VEHICULOS, {}) == {}
+
+
+@pytest.mark.parametrize("weekday", range(7), ids=_TODOS_LOS_DIAS)
+def test_crear_vehiculo_allows_conductor_on_a_non_restricted_day(monkeypatch, freeze_bogota_weekday, weekday):
+    hoy = freeze_bogota_weekday(weekday)
+    stores = _stores()
+    stores[CONDUCTORES] = {"c1": {"cedula": "123", "nombre_completo": "Pedro"}}
+    client = _admin_client(monkeypatch, stores)
+    otro_dia = _otro_dia_laboral(hoy)
 
     resp = client.post(
         "/planeacion-asignaciones",
@@ -2854,8 +2937,32 @@ def test_crear_vehiculo_allows_conductor_on_a_non_restricted_day(monkeypatch):
     assert stores[VEHICULOS][vehiculo_id]["conductor_id"] == "c1"
 
 
-def test_editar_vehiculo_rejects_conductor_change_when_todays_own_pico_placa(monkeypatch):
-    hoy = _dia_pico_placa_de_hoy()
+@pytest.mark.parametrize("dia", _DIAS_LABORALES)
+@pytest.mark.parametrize("weekday", _FIN_DE_SEMANA_WD, ids=_DIAS_FIN_DE_SEMANA)
+def test_crear_vehiculo_allows_conductor_on_weekends_for_every_restricted_day(
+    monkeypatch, freeze_bogota_weekday, weekday, dia
+):
+    # Pico y placa only exists Monday-Friday: on Saturday/Sunday the gate is
+    # inactive for EVERY vehicle.
+    freeze_bogota_weekday(weekday)
+    stores = _stores()
+    stores[CONDUCTORES] = {"c1": {"cedula": "123", "nombre_completo": "Pedro"}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "crearVehiculo", "placa": "abc123", "dia_pico_placa": dia, "conductor_id": "c1"},
+    )
+
+    assert resp.status_code == 201
+    assert stores[VEHICULOS][resp.json()["id"]]["conductor_id"] == "c1"
+
+
+@pytest.mark.parametrize("weekday", _LABORALES_WD, ids=_DIAS_LABORALES)
+def test_editar_vehiculo_rejects_conductor_change_when_todays_own_pico_placa(
+    monkeypatch, freeze_bogota_weekday, weekday
+):
+    hoy = freeze_bogota_weekday(weekday)
     stores = _stores()
     stores[VEHICULOS] = {"v1": {"placa": "ABC123", "activo": True, "dia_pico_placa": hoy, "conductor_id": None}}
     stores[CONDUCTORES] = {"c1": {"cedula": "123", "nombre_completo": "Pedro"}}
@@ -2866,12 +2973,15 @@ def test_editar_vehiculo_rejects_conductor_change_when_todays_own_pico_placa(mon
         json={"action": "editarVehiculo", "vehiculo_id": "v1", "conductor_id": "c1"},
     )
 
-    assert resp.status_code == 400
+    _assert_rejected_by_pico_placa_gate(resp)
     assert stores[VEHICULOS]["v1"]["conductor_id"] is None
 
 
-def test_editar_vehiculo_rejects_conductor_when_setting_pico_placa_in_same_call(monkeypatch):
-    hoy = _dia_pico_placa_de_hoy()
+@pytest.mark.parametrize("weekday", _LABORALES_WD, ids=_DIAS_LABORALES)
+def test_editar_vehiculo_rejects_conductor_when_setting_pico_placa_in_same_call(
+    monkeypatch, freeze_bogota_weekday, weekday
+):
+    hoy = freeze_bogota_weekday(weekday)
     stores = _stores()
     stores[VEHICULOS] = {"v1": {"placa": "ABC123", "activo": True, "conductor_id": None}}
     stores[CONDUCTORES] = {"c1": {"cedula": "123", "nombre_completo": "Pedro"}}
@@ -2882,17 +2992,62 @@ def test_editar_vehiculo_rejects_conductor_when_setting_pico_placa_in_same_call(
         json={"action": "editarVehiculo", "vehiculo_id": "v1", "dia_pico_placa": hoy, "conductor_id": "c1"},
     )
 
-    assert resp.status_code == 400
+    _assert_rejected_by_pico_placa_gate(resp)
     assert stores[VEHICULOS]["v1"].get("dia_pico_placa") is None
     assert stores[VEHICULOS]["v1"]["conductor_id"] is None
 
 
-def test_editar_vehiculo_resending_same_conductor_on_pico_placa_day_is_allowed(monkeypatch):
+@pytest.mark.parametrize("dia_fin_de_semana", _DIAS_FIN_DE_SEMANA)
+@pytest.mark.parametrize("weekday", range(7), ids=_TODOS_LOS_DIAS)
+def test_editar_vehiculo_rejects_weekend_dia_pico_placa_as_invalid(
+    monkeypatch, freeze_bogota_weekday, weekday, dia_fin_de_semana
+):
+    freeze_bogota_weekday(weekday)
+    stores = _stores()
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "activo": True, "conductor_id": None}}
+    stores[CONDUCTORES] = {"c1": {"cedula": "123", "nombre_completo": "Pedro"}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "editarVehiculo", "vehiculo_id": "v1",
+              "dia_pico_placa": dia_fin_de_semana, "conductor_id": "c1"},
+    )
+
+    _assert_rejected_as_invalid_dia(resp)
+    assert stores[VEHICULOS]["v1"].get("dia_pico_placa") is None
+    assert stores[VEHICULOS]["v1"]["conductor_id"] is None
+
+
+@pytest.mark.parametrize("dia", _DIAS_LABORALES)
+@pytest.mark.parametrize("weekday", _FIN_DE_SEMANA_WD, ids=_DIAS_FIN_DE_SEMANA)
+def test_editar_vehiculo_allows_conductor_change_on_weekends_for_every_restricted_day(
+    monkeypatch, freeze_bogota_weekday, weekday, dia
+):
+    freeze_bogota_weekday(weekday)
+    stores = _stores()
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "activo": True, "dia_pico_placa": dia, "conductor_id": None}}
+    stores[CONDUCTORES] = {"c1": {"cedula": "123", "nombre_completo": "Pedro"}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "editarVehiculo", "vehiculo_id": "v1", "conductor_id": "c1"},
+    )
+
+    assert resp.status_code == 200
+    assert stores[VEHICULOS]["v1"]["conductor_id"] == "c1"
+
+
+@pytest.mark.parametrize("weekday", _LABORALES_WD, ids=_DIAS_LABORALES)
+def test_editar_vehiculo_resending_same_conductor_on_pico_placa_day_is_allowed(
+    monkeypatch, freeze_bogota_weekday, weekday
+):
     # Hotfix A2 (2026-08-26): the frontend re-sends the CURRENT conductor_id on
     # EVERY save (buildVehiculoPayload always includes it), so an unrelated
     # edit (empresa/activo) of a vehicle restricted TODAY used to 400 all day.
     # An unchanged driver must never trip the gate.
-    hoy = _dia_pico_placa_de_hoy()
+    hoy = freeze_bogota_weekday(weekday)
     stores = _stores()
     stores[VEHICULOS] = {"v1": {"placa": "ABC123", "activo": True, "dia_pico_placa": hoy, "conductor_id": "c1"}}
     stores[CONDUCTORES] = {"c1": {"cedula": "123", "nombre_completo": "Pedro"}}
@@ -2909,10 +3064,13 @@ def test_editar_vehiculo_resending_same_conductor_on_pico_placa_day_is_allowed(m
     assert stores[VEHICULOS]["v1"]["conductor_id"] == "c1"  # unchanged, not blocked
 
 
-def test_editar_vehiculo_clearing_conductor_on_pico_placa_day_is_allowed(monkeypatch):
+@pytest.mark.parametrize("weekday", _LABORALES_WD, ids=_DIAS_LABORALES)
+def test_editar_vehiculo_clearing_conductor_on_pico_placa_day_is_allowed(
+    monkeypatch, freeze_bogota_weekday, weekday
+):
     # Removing the driver ("" -> None) is never "putting into service" — allowed
     # even on the restricted day.
-    hoy = _dia_pico_placa_de_hoy()
+    hoy = freeze_bogota_weekday(weekday)
     stores = _stores()
     stores[VEHICULOS] = {"v1": {"placa": "ABC123", "activo": True, "dia_pico_placa": hoy, "conductor_id": "c1"}}
     client = _admin_client(monkeypatch, stores)
@@ -2926,11 +3084,14 @@ def test_editar_vehiculo_clearing_conductor_on_pico_placa_day_is_allowed(monkeyp
     assert stores[VEHICULOS]["v1"]["conductor_id"] is None
 
 
-def test_editar_vehiculo_allows_unrelated_field_when_conductor_untouched_on_pico_placa_day(monkeypatch):
+@pytest.mark.parametrize("weekday", _LABORALES_WD, ids=_DIAS_LABORALES)
+def test_editar_vehiculo_allows_unrelated_field_when_conductor_untouched_on_pico_placa_day(
+    monkeypatch, freeze_bogota_weekday, weekday
+):
     # Only a conductor CHANGE is blocked — editing another field (e.g. activo)
     # on a vehicle that already has a conductor + is pico-y-placa today must
     # still succeed (the gate only fires when conductor_id is IN the body).
-    hoy = _dia_pico_placa_de_hoy()
+    hoy = freeze_bogota_weekday(weekday)
     stores = _stores()
     stores[VEHICULOS] = {"v1": {"placa": "ABC123", "activo": True, "dia_pico_placa": hoy, "conductor_id": "c1"}}
     client = _admin_client(monkeypatch, stores)
@@ -2945,8 +3106,9 @@ def test_editar_vehiculo_allows_unrelated_field_when_conductor_untouched_on_pico
     assert stores[VEHICULOS]["v1"]["conductor_id"] == "c1"  # untouched
 
 
-def test_asignar_vehiculo_a_grupo_rejects_on_pico_placa_day(monkeypatch):
-    hoy = _dia_pico_placa_de_hoy()
+@pytest.mark.parametrize("weekday", _LABORALES_WD, ids=_DIAS_LABORALES)
+def test_asignar_vehiculo_a_grupo_rejects_on_pico_placa_day(monkeypatch, freeze_bogota_weekday, weekday):
+    hoy = freeze_bogota_weekday(weekday)
     stores = _stores()
     stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "G1", "miembros": ["u1"], "activo": True}}
     stores[VEHICULOS] = {"v1": {"placa": "ABC123", "activo": True, "dia_pico_placa": hoy}}
@@ -2957,13 +3119,14 @@ def test_asignar_vehiculo_a_grupo_rejects_on_pico_placa_day(monkeypatch):
         json={"action": "asignarVehiculoAGrupo", "grupo_id": "g1", "vehiculo_id": "v1"},
     )
 
-    assert resp.status_code == 400
+    _assert_rejected_by_pico_placa_gate(resp)
     assert stores[GRUPOS_INSPECTORES]["g1"].get("vehiculo_id") is None
 
 
-def test_asignar_vehiculo_a_grupo_succeeds_on_a_non_restricted_day(monkeypatch):
-    hoy = _dia_pico_placa_de_hoy()
-    otro_dia = next(d for d in ["lunes", "martes", "miercoles", "jueves", "viernes"] if d != hoy)
+@pytest.mark.parametrize("weekday", range(7), ids=_TODOS_LOS_DIAS)
+def test_asignar_vehiculo_a_grupo_succeeds_on_a_non_restricted_day(monkeypatch, freeze_bogota_weekday, weekday):
+    hoy = freeze_bogota_weekday(weekday)
+    otro_dia = _otro_dia_laboral(hoy)
     stores = _stores()
     stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "G1", "miembros": ["u1"], "activo": True}}
     stores[VEHICULOS] = {"v1": {"placa": "ABC123", "activo": True, "dia_pico_placa": otro_dia}}
@@ -2976,6 +3139,70 @@ def test_asignar_vehiculo_a_grupo_succeeds_on_a_non_restricted_day(monkeypatch):
 
     assert resp.status_code == 200
     assert stores[GRUPOS_INSPECTORES]["g1"]["vehiculo_id"] == "v1"
+
+
+@pytest.mark.parametrize("dia", _DIAS_LABORALES)
+@pytest.mark.parametrize("weekday", _FIN_DE_SEMANA_WD, ids=_DIAS_FIN_DE_SEMANA)
+def test_asignar_vehiculo_a_grupo_succeeds_on_weekends_for_every_restricted_day(
+    monkeypatch, freeze_bogota_weekday, weekday, dia
+):
+    freeze_bogota_weekday(weekday)
+    stores = _stores()
+    stores[GRUPOS_INSPECTORES] = {"g1": {"nombre": "G1", "miembros": ["u1"], "activo": True}}
+    stores[VEHICULOS] = {"v1": {"placa": "ABC123", "activo": True, "dia_pico_placa": dia}}
+    client = _admin_client(monkeypatch, stores)
+
+    resp = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "asignarVehiculoAGrupo", "grupo_id": "g1", "vehiculo_id": "v1"},
+    )
+
+    assert resp.status_code == 200
+    assert stores[GRUPOS_INSPECTORES]["g1"]["vehiculo_id"] == "v1"
+
+
+@pytest.mark.parametrize("weekday", range(7), ids=_TODOS_LOS_DIAS)
+def test_frozen_clock_drives_both_the_router_and_the_test_helpers(freeze_bogota_weekday, weekday):
+    hoy = freeze_bogota_weekday(weekday)
+
+    assert hoy == _TODOS_LOS_DIAS[weekday]
+    assert _dia_pico_placa_de_hoy() == hoy
+    assert _hoy_bogota_es(hoy)
+    # The gate is active for today's own restricted day (Mon-Fri) and for no
+    # other day; on weekends no valid restricted day can match.
+    if weekday in _LABORALES_WD:
+        assert pa._hoy_es_dia_pico_placa(hoy) is True
+    assert [d for d in _DIAS_LABORALES if pa._hoy_es_dia_pico_placa(d)] == (
+        [hoy] if weekday in _LABORALES_WD else []
+    )
+
+
+def test_pico_placa_and_invalid_day_rejections_are_distinguishable(monkeypatch, freeze_bogota_weekday):
+    # Both rejections are HTTP 400, so a status-only assertion cannot tell them
+    # apart (that is how "rejects on pico y placa day" tests used to pass for the
+    # wrong reason on weekends). The assertion helpers must fail on the wrong one.
+    freeze_bogota_weekday(0)  # Monday
+    stores = _stores()
+    stores[CONDUCTORES] = {"c1": {"cedula": "123", "nombre_completo": "Pedro"}}
+    client = _admin_client(monkeypatch, stores)
+
+    gate = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "crearVehiculo", "placa": "abc123", "dia_pico_placa": "lunes", "conductor_id": "c1"},
+    )
+    invalid = client.post(
+        "/planeacion-asignaciones",
+        json={"action": "crearVehiculo", "placa": "abc123", "dia_pico_placa": "sabado", "conductor_id": "c1"},
+    )
+
+    assert gate.status_code == invalid.status_code == 400
+    assert gate.json()["detail"] != invalid.json()["detail"]
+    _assert_rejected_by_pico_placa_gate(gate)
+    _assert_rejected_as_invalid_dia(invalid)
+    with pytest.raises(AssertionError):
+        _assert_rejected_by_pico_placa_gate(invalid)
+    with pytest.raises(AssertionError):
+        _assert_rejected_as_invalid_dia(gate)
 
 
 def test_editar_vehiculo_rejects_duplicate_placa(monkeypatch):

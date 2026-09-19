@@ -36,7 +36,8 @@ from app.routers import (
 )
 from app.routers.planeacion_asignaciones import PlaneacionAggregatesCache, PlaneacionPuntosSnapshot
 from app.routers.puntos_solicitados import BuscarCache, PuntosSolicitadosCache
-from app.routers.stickers import EvaluacionesCache, InspectoresCache
+from app.routers.stickers import EvaluacionesCache, InspectoresCache, new_evaluaciones_source
+from app.services.versioned_cache import VersionedCache
 from app.routers.sticker_status import StickerStatusCache
 from app.services.snapshot import ReportadosSnapshot, refresh_loop, seed_from_blob
 
@@ -147,6 +148,37 @@ def create_app() -> FastAPI:
     # (31-ago-2026 quota-outage follow-up: this action had no cache at all).
     app.state.stickers_inspectores_cache = InspectoresCache()
 
+    # seguimiento-inspectores-depurado (design D4/D6): derived cache for the
+    # `depuracion` block GET /stickers-atencionsismo optionally attaches,
+    # gated by SEGUIMIENTO_DEPURACION. Own TTL for the (private) reference
+    # bundle read (outside the lock) plus a content-keyed, single-flight cache
+    # for `depurar()`'s own output — see `DepuracionCache`'s docstring.
+    app.state.depuracion_cache = stickers_atencionsismo.DepuracionCache()
+
+    # Encoded response bodies of GET /stickers-atencionsismo (D26): serialized
+    # and gzipped once per key, current key only, so a warm request is bytes and
+    # a matching If-None-Match is a bodyless 304.
+    app.state.encoded_bodies = stickers_atencionsismo.EncodedBodyCache()
+
+    # Versioned component caches feeding it (efficiency extension D22): one per
+    # Firestore-derived input, own TTL + lock + serve-stale + `invalidate()`.
+    # The roster one is invalidated by every in-process `inspectores` writer (admin
+    # create/setEnabled/delete) through services/roster_invalidation.py.
+    app.state.roster_cache = VersionedCache(
+        name="roster", ttl_s=stickers_atencionsismo.ROSTER_CACHE_TTL_SECONDS
+    )
+    app.state.survey_names_cache = VersionedCache(
+        name="survey_names", ttl_s=stickers_atencionsismo.SURVEY_NAMES_CACHE_TTL_SECONDS
+    )
+    app.state.evaluaciones_fs_cache = VersionedCache(
+        name="evaluaciones_fs", ttl_s=stickers_atencionsismo.EVALUACIONES_FS_CACHE_TTL_SECONDS
+    )
+    # Probe-gated sources (D34): on a TTL expiry a count() + newest-timestamp probe
+    # replaces the full scan of `survey_cali` / `evaluaciones` while nothing moved,
+    # with one forced full reconcile every 6 h (`services/probed_scan.py`).
+    app.state.survey_names_source = stickers_atencionsismo.new_survey_names_source()
+    app.state.evaluaciones_source = new_evaluaciones_source()
+
     # Same convention, `planeacion_asignaciones.py`'s own `resumen`/
     # `metricasProgreso` aggregate cache (speed follow-up, 2026-08-27).
     app.state.planeacion_aggregates_cache = PlaneacionAggregatesCache()
@@ -175,6 +207,7 @@ def create_app() -> FastAPI:
         allow_credentials=config.CORS_ALLOW_CREDENTIALS,
         allow_methods=list(config.CORS_ALLOW_METHODS),
         allow_headers=list(config.CORS_ALLOW_HEADERS),
+        expose_headers=list(config.CORS_EXPOSE_HEADERS),
     )
 
     for router_module in _ROUTERS:

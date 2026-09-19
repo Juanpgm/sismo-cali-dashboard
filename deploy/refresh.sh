@@ -20,6 +20,12 @@
 # Optional:
 #   GOOGLE_MAPS_API_KEY   habilita el arbitraje por geocodificación (fail-soft si falta)
 #   VISITADOS_API_PASS    habilita el pull de reportes de la API (fail-soft si falta)
+#   BLOB_PRIVATE_TOKEN    token del store Blob PRIVADO que aloja
+#                         referencia/inspectores/bundle.json. No lo usa este script:
+#                         lo leen el backend (lectura) y
+#                         scripts/publicar_referencia_inspectores.py (publicación),
+#                         ambos con la MISMA variable (fallback a BLOB_READ_WRITE_TOKEN
+#                         si falta).
 set -euo pipefail
 
 _scrub() { sed "s/${DASHBOARD_REPO_TOKEN}/***/g"; }   # never echo the token

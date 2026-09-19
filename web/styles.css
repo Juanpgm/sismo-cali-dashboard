@@ -2108,7 +2108,27 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="sti
    header buttons and the roster caveat mark are genuinely new. */
 .seg-section .asignacion-search { flex: 1 1 220px; margin: 0; }
 .seg-section .asignacion-filters { align-items: flex-end; }
-#view-seguimiento { max-width: 1180px; margin: 0 auto; }
+/* #view-seguimiento is a direct flex item of .main-column (flex-direction:
+   column) that also carries `margin: 0 auto` to center itself under
+   max-width on wide screens. A flex item with an auto margin on the cross
+   axis (horizontal, here) is NOT stretched to the container's available
+   width the way align-items:stretch normally would — the spec instead sizes
+   it by shrink-to-fit (its own content's preferred/max-content width,
+   clamped only by max-width), ignoring how little space the viewport
+   actually has. The content here is the 12-column .tipologia-table's
+   forced-nowrap cells (~1928px wide), so on narrow viewports the section
+   still resolves to max-width's 1180px instead of the viewport's width, and
+   the overflow becomes unreachable (html,body use overflow-x:clip, so there
+   is no page-level horizontal scrollbar to recover it). `width: 100%` gives
+   the item a definite size so shrink-to-fit no longer applies (max-width
+   still clamps it on wide screens, margin:auto still centers it); min-width:
+   0 additionally guards against the same content-based auto-minimum on top
+   of that definite width. .table-scroll below (overflow-x:auto) still
+   provides in-place horizontal scrolling for the table itself.
+   Scoped to #view-seguimiento specifically — do NOT move this to
+   .main-column or .eval-section, both of which are shared by every other
+   tab and must keep their current sizing behavior unchanged. */
+#view-seguimiento { width: 100%; max-width: 1180px; margin: 0 auto; min-width: 0; }
 .seg-sort-btn {
   display: flex; align-items: center; gap: 4px; background: none; border: none;
   color: inherit; font: inherit; font-weight: 600; padding: 0; cursor: pointer;
@@ -2116,6 +2136,20 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="sti
 }
 .seg-sort-btn.is-active { color: var(--accent); }
 .seg-caveat { cursor: help; color: var(--accent); }
+/* GRUPO-EXTERNOS row (Task 4.4/4.5): its <td> otherwise inherits
+   .tipologia-table td's right-align/nowrap (meant for numeric columns),
+   which right-aligns the toggle label and disconnects each detail <li>'s
+   bullet from its (far-right, unwrapped) text. This is free text, not a
+   numeric cell — read left-to-right, wrap like normal prose. */
+.seg-grupo-externos-row td { text-align: left; white-space: normal; }
+/* Degraded/absent depuración banner (Phase 11): reuses .sticker-note, only the
+   warning accent is new; wraps like prose so it never widens the view. */
+.seg-depuracion-banner {
+  border-left: 3px solid var(--warning, #e0a020); padding-left: 10px;
+  color: var(--text-primary); overflow-wrap: anywhere;
+}
+/* Manual-review entries carry names and lists of cédulas: wrap, never widen. */
+.seg-revision-manual-list li { overflow-wrap: anywhere; }
 
 /* ============================================================
    ASIGNACIÓN — sub-section inside the Stickers tab (design.md

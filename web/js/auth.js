@@ -25,6 +25,7 @@ import {
   onAuthStateChanged, signOut,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
 import { ALLOWED_DOMAIN, isConfigured, getFirebaseApp } from './firebase-config.js';
+import { announceRole } from './role-events.js';
 
 // Only juanp.gzmz@gmail.com is Administrador by default and can never be locked
 // out — mirrors SUPERADMIN_EMAIL in api/refresh.js. Everyone else is an
@@ -226,6 +227,10 @@ export function initAuth(onFirstAuthorized) {
     if (!user) {
       currentRole = null;
       delete document.body.dataset.role;
+      // Sign-out (or an expired session): role-scoped data (Seguimiento's
+      // retained admin snapshot AND the table it rendered) must not outlive the
+      // session. The body role is already gone when the listeners run.
+      announceRole(null);
       coverInstant(); // overlay opaco YA, sin fade → nunca se ve el contenido detrás
       overlay.classList.remove('is-resolving'); // no hay sesión: ahora sí, revelar el login
       const form = overlay.querySelector('#auth-form');
@@ -245,7 +250,12 @@ export function initAuth(onFirstAuthorized) {
     }
 
     currentRole = role;
+    // The body role is set BEFORE the announcement: listeners (the Seguimiento
+    // session wiring re-opens the tab) run with the new role already applied.
     document.body.dataset.role = role;
+    // A role OR uid change (admin -> viewer, admin A -> admin B, ...) drops
+    // role-scoped data; the same user's token refresh (same uid + role) does not.
+    announceRole(role, user.uid);
     mountUserChip(user, role);
     overlay.style.opacity = ''; // soltar el opacity inline de coverInstant para que el fade-out corra
     overlay.classList.add('is-authed');

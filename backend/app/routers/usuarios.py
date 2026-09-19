@@ -87,7 +87,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from firebase_admin import auth as fb_auth
 from pydantic import BaseModel
@@ -95,6 +95,7 @@ from pydantic import BaseModel
 from app.auth.deps import require_role
 from app.auth.roles import role_from
 from app.credentials import clients as credentials
+from app.services.roster_invalidation import invalidate_inspectores_roster
 
 # `sismo` is already unconditionally in credentials.WEB_STARTUP_CLIENTS, but
 # this router still declares it per ADR-4's declaration mechanism (same
@@ -268,6 +269,7 @@ class UsuariosRequest(BaseModel):
 
 @router.post("/usuarios")
 def usuarios(
+    request: Request,
     body: UsuariosRequest,
     claims: dict[str, Any] = Depends(_require_usuarios_admin),
 ) -> JSONResponse:
@@ -287,6 +289,9 @@ def usuarios(
             return JSONResponse({"ok": True, **result})
         if body.action == "delete":
             result = delete_usuario(db, app, payload, caller_uid)
+            # `inspectores/{uid}` was just deleted (or, fail-soft, its delete was
+            # logged): either way the roster-derived caches must re-read now.
+            invalidate_inspectores_roster(request.app.state)
             return JSONResponse({"ok": True, **result})
         raise bad_request(f"Acción desconocida: {body.action}")
     except HTTPException:

@@ -18,23 +18,64 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import copy
+import gzip
+import hashlib
+import json
 import logging
-from typing import Any
+import os
+import re
+import secrets
+import threading
+import time
+import traceback
+from datetime import date, datetime
+from typing import Any, Callable, NamedTuple
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import Response
 
 from app.auth.deps import require_role
+from app.auth.roles import role_from_claims
 from app.credentials import clients as credentials
 from app.routers import stickers
-from app.services import atencionsismo
+from app.services import atencionsismo, blob_lkg, fechas_es_co
+from app.services import inspectores_depuracion as depuracion_svc
+from app.services import inspectores_referencia as referencia_svc
+from app.services import survey_cali as survey_cali_svc
+from app.services.probed_scan import ProbedScan
+from app.services.versioned_cache import VersionedCache
 from app.services.stickers_atencionsismo import build_evaluaciones
 
 router = APIRouter()
 REQUIRED_CLIENTS: tuple[str, ...] = ("sismo",)
 
 STICKERS_LKG_BLOB = "data/stickers_atencionsismo_last_good.json"
+
+# design.md's Data Flow diagram: "cargar_referencia (30 min)" — how often
+# `DepuracionCache` re-reads the (private) reference bundle from Blob,
+# independent of the sticker payload's own 5-min TTL.
+REFERENCIA_CACHE_TTL_SECONDS = 30 * 60
+
+# Versioned component caches (design D22): each Firestore-derived input has its
+# own TTL, so "0 recomputes/hour with static inputs" holds. Admin writes to the
+# roster invalidate its component immediately (`routers/stickers.py`).
+ROSTER_CACHE_TTL_SECONDS = 30 * 60
+SURVEY_NAMES_CACHE_TTL_SECONDS = 60 * 60
+EVALUACIONES_FS_CACHE_TTL_SECONDS = 15 * 60
+
+# Rollback switch (design's Migration/Rollout): unset or "0" -> the response
+# omits `depuracion` entirely, byte-identical to the pre-Phase-3 payload.
+SEGUIMIENTO_DEPURACION_ENV = "SEGUIMIENTO_DEPURACION"
+
+# Error bodies of GET /stickers-atencionsismo. `require_role("admin", "viewer")`
+# lets any institutional account read this route, and an upstream/Firestore
+# exception message can echo a cedula, a name or a correo, so the response
+# carries a fixed message per status class and NEVER the exception text (the
+# log keeps type + location only, see `_resumen_seguro`).
+DETALLE_SERVICIO_NO_DISPONIBLE = "El servicio de stickers no está disponible en este momento. Intente de nuevo más tarde."
+DETALLE_FALLO_STICKERS = "No se pudo obtener la información de stickers en este momento."
 
 # Dedicated executor for the two Firestore reads in `build_payload`'s
 # concurrent gather (fail-fast fix, adversarial review 2026-09-10) — this
@@ -118,8 +159,713 @@ def redact_for_blob(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def build_payload(db: Any, evaluaciones_cache: stickers.EvaluacionesCache) -> list[dict[str, Any]]:
+# D-VIEWER-PII: contact data of a roster person, admin-only in EVERY payload
+# (the `depuracion` block is already admin-only). Only the admin-only
+# Seguimiento tab reads these three fields; the viewer-facing Stickers tab
+# never does.
+CONTACT_FIELDS = ("tarjeta_profesional", "num_telefono", "correo_contacto")
+
+
+def redact_contact_fields(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Viewer projection of the served `evaluaciones`: every contact field that
+    is PRESENT in a row's `inspector` block is set to `""` (whatever it held:
+    text, `None`, a number). The KEYS stay - the `redact_for_blob` convention -
+    so the response shape does not move for existing clients; a key that is
+    absent is not added (nothing to leak, and rows stay byte-identical). Rows
+    without a usable `inspector` block pass through as the same object.
+
+    Pure and never mutating: `payload` is the shared list the sticker cache
+    holds (and persisted, redacted, to the public Blob), and the admin variant
+    is served from it. Only the row and its `inspector` dict are copied, and
+    only when there is something to blank."""
+    out: list[dict[str, Any]] = []
+    for row in payload:
+        insp = row.get("inspector") if isinstance(row, dict) else None
+        present = [k for k in CONTACT_FIELDS if k in insp] if isinstance(insp, dict) else []
+        if present:
+            row = {**row, "inspector": {**insp, **dict.fromkeys(present, "")}}
+        out.append(row)
+    return out
+
+
+def evaluaciones_for_role(payload: list[dict[str, Any]], role: Any) -> list[dict[str, Any]]:
+    """The list a caller of `role` is served: the shared `payload` itself for an
+    exact `"admin"`, the redacted copy for EVERYTHING else (fail closed - a role
+    added later, or an unexpected value, can never inherit the admin bytes)."""
+    return payload if role == "admin" else redact_contact_fields(payload)
+
+
+# ── Depuración wiring (design.md D1-D8, tasks.md Phase 3) ──────────────────
+#
+# `depuracion` is assembled by the ROUTE HANDLER, entirely OUTSIDE
+# `redact_for_blob`/`payload` above (D3, PII isolation): nothing in this
+# section ever touches `payload` (the cached, Blob-persisted evaluaciones
+# list) or `redact_for_blob`'s allowlist. See
+# `get_stickers_atencionsismo`'s own body for the actual assembly order.
+
+
+def _depuracion_habilitada() -> bool:
+    """Unset or "0" -> disabled (byte-identical current payload, design's
+    Migration/Rollout rollback switch); any other value -> enabled."""
+    return os.environ.get(SEGUIMIENTO_DEPURACION_ENV, "0").strip() not in ("", "0")
+
+
+# Per-request opt-in (design D25): the Stickers tab uses the same endpoint and
+# must never pay for (or download) the PII block, so only a caller that asks for
+# it - Seguimiento - gets it.
+DEPURACION_QUERY_PARAM = "depuracion"
+DEPURACION_OPT_IN_VALUE = "1"
+
+# `motivo` of the block served when the sticker snapshot is the redacted Blob
+# restore (design D16); distinct from the reference bundle's own `motivo`s.
+MOTIVO_STICKERS_DEGRADADOS = "stickers_degradados"
+
+
+def _depuracion_solicitada(request: Request) -> bool:
+    """True only for exactly one `depuracion=1` parameter. `0`, `true`, `yes`,
+    an empty value, `01`, `1 ` and a repeated parameter (`depuracion=1&depuracion=0`,
+    even `depuracion=1&depuracion=1`) all mean "not requested" - never an
+    error: an unknown value is simply ignored."""
+    return request.query_params.getlist(DEPURACION_QUERY_PARAM) == [DEPURACION_OPT_IN_VALUE]
+
+
+def _depuracion_stickers_degradados() -> depuracion_svc.Depuracion:
+    """D16: a degraded snapshot (redacted LKG, `identificacion` blank) is
+    unattributable, so no table is built from it - with the full universe every
+    code-less person would turn into a `candidato_desactivacion` and every
+    suspicious one would be wrongly collapsed. Nothing is read or computed."""
+    return depuracion_svc.Depuracion(
+        activa=False, motivo=MOTIVO_STICKERS_DEGRADADOS, referencia_generada_en="",
+        inspectores=(), grupo_externos=None, alias_nombres={}, revision_manual=(),
+    )
+
+
+def _resumen_seguro(exc: BaseException) -> str:
+    """Exception TYPE plus where it was raised, never its message: a `KeyError`
+    on a cédula key or a `ValueError` quoting a row would put PII in the log
+    (spec: contact fields and identity keys are never logged in clear)."""
+    frames = traceback.extract_tb(exc.__traceback__)
+    donde = f"{os.path.basename(frames[-1].filename)}:{frames[-1].lineno} in {frames[-1].name}" if frames else "?"
+    return f"{type(exc).__name__} at {donde}"
+
+
+def _stickers_para_depuracion(evaluaciones: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Adapts the cached `evaluaciones[]` shape
+    (`stickers_atencionsismo.normalize_sticker`) into
+    `inspectores_depuracion.depurar()`'s `stickers` contract.
+
+    KNOWN GAP (documented on `inspectores_depuracion.py`'s own module
+    docstring, confirmed while wiring this): `fecha` is the MATCHED
+    Firestore evaluación's own date when one exists, not always
+    byte-identical to the sticker's raw `fechaCreacion` — `normalize_sticker`
+    never preserves the raw value once a match overrides it. This proxy is
+    the best available signal without threading a new raw-timestamp field
+    through `normalize_sticker` (a Phase 2 file, out of this PR's assigned
+    scope) — a real follow-up, not a silent shortcut. Impact: `perfil.
+    tiene_sticker_valido`/`dias_inactivo` may be marginally stale for the
+    subset of stickers with a Firestore-matched evaluación."""
+    out: list[dict[str, Any]] = []
+    for evaluacion in evaluaciones:
+        insp = evaluacion.get("inspector") or {}
+        out.append({
+            "origen": evaluacion.get("origen"),
+            "fecha_creacion": evaluacion.get("fecha"),
+            "inspector": {
+                "identificacion": insp.get("identificacion"),
+                "codigo": insp.get("codigo"),
+                "nombre_completo": insp.get("nombre_completo"),
+            },
+        })
+    return out
+
+
+def depuracion_inputs_version(stickers_proj: list[dict[str, Any]]) -> str:
+    """Content fingerprint of EXACTLY what `depurar()` consumes from the stickers
+    (the `_stickers_para_depuracion` projection), judgment-day W5.
+
+    `snapshot_version` hashes the whole served payload (photos, comments,
+    coordinates, addresses...) because it will drive the HTTP ETag; keying the
+    depuración cache by it would force a full `depurar()` for changes the engine
+    never reads. This one changes only when an `origen`, a `fecha` or an
+    inspector identity changes.
+
+    Order-independent, like the engine itself (its result does not depend on the
+    sticker order): each projected row is serialised canonically and the rows are
+    sorted, so a re-ordered upstream walk fingerprints the same. A duplicated
+    sticker still counts (multiset, not set). `default=str` keeps a raw
+    `datetime` deterministic instead of raising."""
+    rows = sorted(json.dumps(row, sort_keys=True, ensure_ascii=False, default=str) for row in stickers_proj)
+    return blob_lkg.payload_hash(rows)
+
+
+def _roster_para_depuracion(roster_by_cedula: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+    """Adapts `stickers.inspector_profiles()`'s `roster_by_cedula` shape
+    into `depurar()`'s expected roster contract.
+
+    `correo`: `inspectores` Firestore docs carry no dedicated `correo`
+    field (only `correo_contacto`, W3) — used here as a best-effort proxy;
+    documented gap, not a silent guess (both feed the SAME
+    `es_cuenta_no_persona` heuristic, which is priority-only, never an
+    auto-disqualifier by itself). `creado_en`: no backing Firestore field
+    either — left blank; `_elegir_survivor`'s tie-break already degrades to
+    insertion order when every tied candidate's `creado_en` is blank."""
+    out: dict[str, dict[str, str]] = {}
+    for cedula_key, perfil in (roster_by_cedula or {}).items():
+        correo_contacto = perfil.get("correo_contacto", "")
+        out[cedula_key] = {
+            "identificacion": perfil.get("identificacion", ""),
+            "nombre_completo": perfil.get("nombre_completo", ""),
+            "correo": correo_contacto,
+            "codigo": perfil.get("codigo", ""),
+            "entidad": perfil.get("entidad", ""),
+            "tarjeta_profesional": perfil.get("tarjeta_profesional", ""),
+            "num_telefono": perfil.get("num_telefono", ""),
+            "correo_contacto": correo_contacto,
+            "creado_en": "",
+        }
+    return out
+
+
+def _hoy() -> date:
+    """Bogota calendar day (design D6): part of the depuracion cache key, so
+    the midnight rollover costs exactly one recompute. Module-level so tests
+    can pin it."""
+    return datetime.now(fechas_es_co.BOGOTA).date()
+
+
+def new_survey_names_source() -> ProbedScan[list[str]]:
+    """Probe-gated source of the `survey_cali` names (D34). Every write to
+    `survey_cali` goes through `survey_cali.apply_mutation`, which stamps
+    `_updated_at` with the write time on every effective change (a no-op write
+    stamps nothing and changes nothing), so `(count, newest _updated_at)` moves
+    on any edit, create or revert; deletions move the count. NOT
+    `_meta/survey_cali_ingest_state.last_run_at`: that changes every ingest run."""
+    return ProbedScan(
+        name="survey_names",
+        collection=survey_cali_svc.SURVEY_CALI_COLLECTION,
+        order_field="_updated_at",
+        probe_failure_grace_s=SURVEY_NAMES_CACHE_TTL_SECONDS,
+    )
+
+
+def _nombres_survey(db: Any) -> list[str]:
+    """`survey_cali` docs' evaluator name field — `nombre_evaluador`
+    (`scripts/refresh_data.py`'s own RENAME_MAP: "Nombre Evaluador:" ->
+    "nombre_evaluador"). Spec: "Non-Person Counts Deduped Against
+    survey_cali"."""
+    nombres: list[str] = []
+    for snap in db.collection(survey_cali_svc.SURVEY_CALI_COLLECTION).get():
+        data = snap.to_dict() or {}
+        nombre = data.get("nombre_evaluador")
+        if nombre:
+            nombres.append(str(nombre))
+    return nombres
+
+
+def _depuracion_a_dict(resultado: depuracion_svc.Depuracion) -> dict[str, Any]:
+    return {
+        "activa": resultado.activa,
+        "motivo": resultado.motivo,
+        "referencia_generada_en": resultado.referencia_generada_en,
+        "inspectores": list(resultado.inspectores),
+        "grupo_externos": resultado.grupo_externos,
+        "alias_nombres": resultado.alias_nombres,
+        "revision_manual": list(resultado.revision_manual),
+    }
+
+
+# Upper bound a follower waits on another thread's referencia download or
+# compute before giving up. A sync route parks one Starlette worker thread (40
+# by default) for the whole wait, so 120 s of hung upstream could exhaust the
+# pool; 10 s is far above a normal compute (~0.3 s) and a timeout degrades to a
+# `calculo_fallido` / `referencia_timeout` block, never to an error. Read at
+# call time so tests can inject a short deadline.
+_FLIGHT_WAIT_S = 10.0
+
+# `motivo`s of the blocks served instead of a table (see `DepuracionCache`).
+MOTIVO_CALCULO_FALLIDO = "calculo_fallido"
+MOTIVO_REFERENCIA_TIMEOUT = "referencia_timeout"
+
+
+def _depuracion_calculo_fallido() -> depuracion_svc.Depuracion:
+    """The compute failed and there is no result computed under the SAME key to
+    fall back on: a declared gap (`activa=False`, no table), never data
+    computed for other inputs."""
+    return depuracion_svc.Depuracion(
+        activa=False, motivo=MOTIVO_CALCULO_FALLIDO, referencia_generada_en="",
+        inspectores=(), grupo_externos=None, alias_nombres={}, revision_manual=(),
+    )
+
+
+class _Flight:
+    """One in-flight referencia load or compute that concurrent callers wait
+    on. `error`/`result` are written BEFORE `event.set()`."""
+
+    __slots__ = ("event", "result", "error")
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.result: Any = None
+        self.error: BaseException | None = None
+
+
+def _referencia_key(referencia: referencia_svc.ReferenciaBundle) -> tuple[str, bool, str, str]:
+    """Fingerprint of the bundle. `huella` (content hash, D24) is what detects
+    a same-day republish; `activa`/`generado_en`/`motivo` are what the RESULT
+    embeds (`Depuracion.referencia_generada_en`/`motivo`), so they must key it
+    too (a degraded bundle has `huella == ""`)."""
+    return (referencia.huella, referencia.activa, referencia.generado_en, referencia.motivo)
+
+
+class Resolved(NamedTuple):
+    """`DepuracionCache.resolve` outcome: the (shared, read-only) result and the
+    fingerprint of what determined it (folded into the response ETag)."""
+
+    result: depuracion_svc.Depuracion
+    version: str
+
+
+def _key_version(key: tuple) -> str:
+    """Stable fingerprint of a `DepuracionCache` key (str/bool/date members, so
+    `repr` is deterministic)."""
+    return hashlib.sha256(repr(key).encode("utf-8")).hexdigest()[:24]
+
+
+class DepuracionCache:
+    """Design D23/D24: owns the reference bundle's own 30-min TTL read AND the
+    derived `depurar()` result.
+
+    Derived result: keyed by content fingerprints
+    `(inputs_version, roster_version, survey_version, referencia key, hoy)` -
+    never by object identity. `inputs_version` is the PROJECTED fingerprint of
+    exactly what `depurar()` reads from the stickers
+    (`depuracion_inputs_version`), not the whole-payload `snapshot_version`
+    (that one also moves with photos/comments/coordinates and will drive the
+    HTTP ETag). A single-flight in-flight marker per key: the first caller for a
+    key computes OUTSIDE the lock, concurrent callers of the SAME key wait on
+    the marker and receive the same result (N requests = 1 compute). Only the
+    current key (plus the last-good result it replaced) is retained; no TTL of
+    its own - freshness is bounded by the component TTLs.
+
+    Failure (judgment-day W6): the marker is always cleared, also when the
+    leader raises. A result computed under a DIFFERENT key is never presented as
+    current (across a `hoy` rollover it would serve yesterday's dias_inactivo).
+    So when the leader's compute fails: the leader serves the outcome below
+    straight away (it just failed; no retry of its own) and each waiter retries
+    ONCE as a new leader (single-flight again: N failing waiters cost one extra
+    compute, not N). The outcome of a failed compute is the last-good result
+    ONLY if it was computed under the same key (strict equality; reachable after
+    `invalidate()`), else the `calculo_fallido` block (`activa=False`, no
+    table). Leader and waiters therefore always agree. A waiter that times out
+    on a hung leader gets the same outcome without a competing compute.
+
+    Referencia: the TTL check under the lock is O(1); at most ONE caller
+    downloads (outside the lock), everyone else reads the last-good bundle
+    without waiting (a cold start with nothing to read waits, bounded by
+    `_FLIGHT_WAIT_S`, for that one download and then degrades to a
+    `referencia_timeout` bundle). A failed load keeps the last-good bundle and
+    still advances the timestamp, so it is retried at most once per TTL; a
+    degraded bundle is adopted only when there was no good one.
+
+    Shared vs copied (D23, D26): the cached `Depuracion` is shared across
+    requests and its dicts are mutable. Two entry points, with different
+    contracts:
+
+    - `resolve()` returns the SHARED result, no copy. It is the production path
+      and the route uses it ONLY to serialize (`_depuracion_a_dict` puts the
+      shared dicts into the response body, on a bytes-cache miss): nothing may
+      mutate what it returns. Guarded by a route-level test that snapshots the
+      shared result before and after a full request cycle.
+    - `get_or_compute()` is the deep-copying variant for a caller that may
+      mutate: what it gets can never change what the next request receives. It
+      is currently exercised by tests only."""
+
+    def __init__(
+        self,
+        *,
+        cargar_referencia: Callable[[], referencia_svc.ReferenciaBundle] = referencia_svc.cargar_referencia,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        self._cargar_referencia = cargar_referencia
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._referencia: referencia_svc.ReferenciaBundle | None = None
+        self._referencia_at: float | None = None
+        self._referencia_flight: _Flight | None = None
+        self._key: tuple | None = None  # key a cache HIT is valid for (cleared by invalidate())
+        self._result: depuracion_svc.Depuracion | None = None
+        self._result_key: tuple | None = None  # key `_result` was computed under (kept by invalidate())
+        self._inflight: dict[tuple, _Flight] = {}
+        self._generation = 0
+        # (payload object, projection, fingerprint) of the last payload seen: the
+        # projection is O(rows), so it is paid once per NEW payload object, never
+        # per request. Identity is exact: the sticker cache keeps the same list
+        # object while the content is unchanged.
+        self._inputs: tuple[Any, list[dict[str, Any]], str] | None = None
+
+    def _now(self) -> float:
+        return (self._clock or time.monotonic)()
+
+    def inputs_for(self, payload: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
+        """`(projection, inputs_version)` of the sticker payload, memoised by
+        payload identity. The projection is shared read-only with `depurar()`
+        (which never mutates its inputs)."""
+        memo = self._inputs
+        if memo is not None and memo[0] is payload:
+            return memo[1], memo[2]
+        projected = _stickers_para_depuracion(payload)
+        version = depuracion_inputs_version(projected)
+        self._inputs = (payload, projected, version)
+        return projected, version
+
+    def _referencia_fresh(self, now: float) -> bool:
+        if self._referencia is None or self._referencia_at is None:
+            return False
+        age = now - self._referencia_at
+        return 0 <= age <= REFERENCIA_CACHE_TTL_SECONDS  # a negative age (clock went back) is stale
+
+    def _referencia_actual(self) -> referencia_svc.ReferenciaBundle:
+        # Real time, never the injectable clock: this bounds an actual wait.
+        deadline = time.monotonic() + _FLIGHT_WAIT_S
+        while True:
+            with self._lock:
+                if self._referencia_fresh(self._now()):
+                    assert self._referencia is not None
+                    return self._referencia
+                flight = self._referencia_flight
+                if flight is None:
+                    flight = self._referencia_flight = _Flight()
+                    leader = True
+                else:
+                    leader = False
+                    if self._referencia is not None:
+                        return self._referencia  # last-good: never wait behind a download
+            if leader:
+                return self._descargar_referencia(flight)
+            # Cold start with a download already running: wait for that one, but
+            # never past the deadline (a hung download must not park the worker).
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not flight.event.wait(remaining):
+                logging.warning("depuracion: referencia download still running; serving a degraded bundle")
+                return referencia_svc.ReferenciaBundle.vacia(motivo=MOTIVO_REFERENCIA_TIMEOUT)
+            if flight.error is not None and self._referencia is None:
+                raise flight.error
+
+    def _descargar_referencia(self, flight: _Flight) -> referencia_svc.ReferenciaBundle:
+        """Runs OUTSIDE `self._lock` (a Blob GET can take up to 30 s)."""
+        nueva: referencia_svc.ReferenciaBundle | None = None
+        error: Exception | None = None
+        try:
+            nueva = self._cargar_referencia()
+        except Exception as exc:  # noqa: BLE001 - the contract says it never raises; be safe anyway
+            error = exc
+        with self._lock:
+            try:
+                if error is None:
+                    assert nueva is not None
+                    # `cargar_referencia()` never raises: a transient failure degrades to
+                    # `ReferenciaBundle.vacia()` (`activa=False`), which must NOT replace a
+                    # last-known-good bundle (spec: "Unavailable reference source degrades to
+                    # last-good cache"); a degraded one is adopted only with nothing better.
+                    tenia_buena = self._referencia is not None and self._referencia.activa
+                    if not (nueva.activa is False and tenia_buena):
+                        self._referencia = nueva
+                    self._referencia_at = self._now()  # advances on failure too: <= 1 retry per TTL
+                elif self._referencia is not None:
+                    self._referencia_at = self._now()
+                    logging.warning(
+                        "depuracion: referencia load failed (%s); keeping the last-good bundle",
+                        type(error).__name__,
+                    )
+            finally:
+                self._referencia_flight = None
+                flight.error = error
+                flight.event.set()
+            referencia = self._referencia
+        if referencia is None:
+            assert error is not None
+            raise error
+        return referencia
+
+    def get_or_compute(self, **kwargs: Any) -> depuracion_svc.Depuracion:
+        """`resolve(**kwargs)` handed out as a private deep copy: a caller that
+        mutates it can never change what the next request receives."""
+        return copy.deepcopy(self.resolve(**kwargs).result)
+
+    def resolve(
+        self,
+        *,
+        inputs_version: Any,
+        roster_version: Any = "",
+        survey_version: Any = "",
+        hoy: date,
+        compute: Callable[[referencia_svc.ReferenciaBundle], depuracion_svc.Depuracion],
+    ) -> "Resolved":
+        """`compute(referencia)` builds a fresh `Depuracion` from the CURRENT
+        bundle - invoked only when one of the five fingerprints changed since
+        the last call, by exactly one caller per key, outside every lock. A
+        failing `compute` never raises (see the class docstring for the
+        outcome); only a `BaseException` that is not an `Exception` unwinds.
+
+        Returns the outcome together with its `version` (a fingerprint of the
+        key it was computed under, or `MOTIVO_CALCULO_FALLIDO`): what the HTTP
+        layer folds into the ETag. The result is the SHARED cached object - read
+        it, never mutate it; `get_or_compute` is the copying variant. A warm
+        request costs O(1) and no copy, which is what lets a 304 stay cheap."""
+        referencia = self._referencia_actual()
+        key = (inputs_version, roster_version, survey_version, _referencia_key(referencia), hoy)
+        retried = False
+        while True:
+            cached = None
+            with self._lock:
+                if self._key == key and self._result is not None:
+                    cached = self._result
+                else:
+                    flight = self._inflight.get(key)
+                    leader = flight is None
+                    if flight is None:
+                        flight = self._inflight[key] = _Flight()
+                    generation = self._generation
+            if cached is not None:
+                return Resolved(cached, _key_version(key))
+            if leader:
+                try:
+                    return Resolved(self._computar(key, flight, generation, compute, referencia), _key_version(key))
+                except Exception as exc:  # noqa: BLE001 - advisory feature: degrade, never raise
+                    logging.error(
+                        "depuracion: compute failed (%s); serving the last-good of the same key or a declared gap",
+                        _resumen_seguro(exc),
+                    )
+                    return self._sin_resultado(key)
+
+            if not flight.event.wait(_FLIGHT_WAIT_S):
+                logging.warning("depuracion: timed out waiting for the in-flight compute")
+                return self._sin_resultado(key)
+            if flight.error is None:
+                return Resolved(flight.result, _key_version(key))
+            if retried:
+                return self._sin_resultado(key)
+            retried = True  # the leader failed: ONE retry as (or behind) a new leader, then give up
+
+    def _sin_resultado(self, key: tuple) -> "Resolved":
+        """Outcome of a failed compute for `key`: the last-good ONLY when it was
+        computed under exactly this key, else the declared gap."""
+        with self._lock:
+            last_good = self._result if self._result_key == key else None
+        if last_good is not None:
+            return Resolved(last_good, _key_version(key))
+        return Resolved(_depuracion_calculo_fallido(), MOTIVO_CALCULO_FALLIDO)
+
+    def _computar(self, key, flight, generation, compute, referencia) -> depuracion_svc.Depuracion:
+        try:
+            result = compute(referencia)
+        except BaseException as exc:
+            with self._lock:
+                self._inflight.pop(key, None)
+            flight.error = exc
+            flight.event.set()
+            raise
+        with self._lock:
+            self._inflight.pop(key, None)
+            if generation == self._generation:  # an invalidate() mid-compute leaves it uncached
+                self._key, self._result, self._result_key = key, result, key
+        flight.result = result
+        flight.event.set()
+        return result
+
+    def invalidate(self) -> None:
+        """Forces one recompute on the next request; keeps the last-good
+        result (with the key it was computed under) for a failing recompute of
+        that same key."""
+        with self._lock:
+            self._generation += 1
+            self._key = None
+
+
+# ── HTTP encoding: bytes cache, ETag/304, gzip (design D26) ─────────────────
+#
+# Additive to the pre-extension response: the BODY of a request that sends no
+# `If-None-Match` and no `Accept-Encoding: gzip` is the very same bytes
+# (`_encode_body` reproduces Starlette's `JSONResponse` serialization), only
+# headers are new.
+
+# The body carries names, cedulas, phones and emails: no shared cache and no
+# browser-disk copy. The frontend revalidates with an in-memory MANUAL
+# conditional GET (hence the CORS `If-None-Match` allow + `ETag` expose).
+CACHE_CONTROL = "no-store"
+VARY = "Authorization, Accept-Encoding"
+GZIP_LEVEL = 6
+
+# `depuracion_version` of a request that gets no `depuracion` key by design, and
+# of one whose block was omitted because computing it raised (advisory feature).
+DEPURACION_VERSION_NONE = "none"
+DEPURACION_VERSION_OMITTED = "omitted"
+
+
+def _encode_body(body: dict[str, Any]) -> bytes:
+    """Byte-for-byte what `JSONResponse(body).body` produced before this slice."""
+    return json.dumps(body, ensure_ascii=False, allow_nan=False, indent=None, separators=(",", ":")).encode("utf-8")
+
+
+def _gzip_body(raw: bytes) -> bytes:
+    return gzip.compress(raw, compresslevel=GZIP_LEVEL, mtime=0)  # mtime=0: same input, same bytes
+
+
+class _BodyEntry:
+    """One response body for one key: the identity bytes and their gzip form,
+    each built AT MOST ONCE (the entry lock is the single flight; a failing
+    build stores nothing, so the next caller simply retries). Both are
+    immutable `bytes`. The builder (which closes over the payload and the PII
+    block) is dropped as soon as the bytes exist."""
+
+    __slots__ = ("key", "_etag_base", "_build", "_lock", "_identity", "_gzip")
+
+    def __init__(self, key: tuple, etag_base: str, build: Callable[[], dict[str, Any]]) -> None:
+        self.key = key
+        self._etag_base = etag_base
+        self._build: Callable[[], dict[str, Any]] | None = build
+        self._lock = threading.Lock()
+        self._identity: bytes | None = None
+        self._gzip: bytes | None = None
+
+    def etag(self, gzipped: bool) -> str:
+        """Strong validators differ per representation (`-gzip` suffix)."""
+        return f'"{self._etag_base}-gzip"' if gzipped else f'"{self._etag_base}"'
+
+    def body(self, gzipped: bool) -> bytes:
+        with self._lock:
+            if self._identity is None:
+                assert self._build is not None
+                self._identity = _encode_body(self._build())
+                self._build = None
+            if not gzipped:
+                return self._identity
+            if self._gzip is None:
+                self._gzip = _gzip_body(self._identity)
+            return self._gzip
+
+
+class EncodedBodyCache:
+    """Encoded response bodies keyed by
+    `(snapshot_version, depuracion_version, role, degraded, opt_in)` (+ the
+    encoding, held by the entry). Admin bytes are never served to a viewer,
+    opt-in bytes never to a plain request, degraded bytes never to a live
+    snapshot: each of those is part of the key AND of the ETag.
+
+    Bounded memory: one entry per `(role, opt_in)` variant, each holding only
+    its CURRENT key (a superseded key is dropped, never accumulated) - at most
+    three entries are reachable (admin opt-in, admin plain, viewer). A single
+    slot would let a viewer request evict the admin's bytes and back, on every
+    role switch.
+
+    `snapshot_version` is a counter that restarts at 1 on every deploy, so the
+    same key names DIFFERENT content across restarts: a per-process nonce is
+    folded into the ETag so a pre-deploy validator can never match."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries: dict[tuple[str, bool], _BodyEntry] = {}
+        self._nonce = secrets.token_hex(8)
+
+    def entry(
+        self, *, snapshot_version: int, depuracion_version: str, role: str, degraded: bool, opt_in: bool,
+        build: Callable[[], dict[str, Any]],
+    ) -> _BodyEntry:
+        key = (snapshot_version, depuracion_version, role, degraded, opt_in)
+        with self._lock:
+            current = self._entries.get((role, opt_in))
+            if current is None or current.key != key:
+                digest = hashlib.sha256(json.dumps([self._nonce, *key]).encode("utf-8")).hexdigest()[:32]
+                current = self._entries[(role, opt_in)] = _BodyEntry(key, digest, build)
+            return current
+
+    def retained_keys(self) -> list[tuple]:
+        with self._lock:
+            return [entry.key for entry in self._entries.values()]
+
+
+def _accepts_gzip(header_values: list[str]) -> bool:
+    """`gzip` is used only when the client names it with a valid q in (0, 1]
+    (case-insensitive). Absent header, `identity`, `gzip;q=0`, a malformed or
+    contradictory q (`gzip;q=0, gzip`) and `*` all mean the identity body."""
+    qs: list[float] = []
+    for part in ",".join(header_values).split(","):
+        coding, _, params = part.partition(";")
+        if coding.strip().lower() != "gzip":
+            continue
+        q = 1.0
+        for param in params.split(";"):
+            name, _, value = param.partition("=")
+            if name.strip().lower() == "q":
+                try:
+                    q = float(value.strip())
+                except ValueError:
+                    q = 0.0
+        qs.append(q)
+    return bool(qs) and all(0.0 < q <= 1.0 for q in qs)
+
+
+_ENTITY_TAG = re.compile(r'(?:W/)?"([^"]*)"')
+
+
+def _if_none_match_hits(header_values: list[str], etag: str) -> bool:
+    """RFC 9110 weak comparison for `If-None-Match`: a list and `W/` prefixes are
+    accepted; anything that is not a quoted entity-tag (garbage, empty, an
+    unquoted value) matches nothing, so the caller just gets a 200.
+
+    `*` is deliberately NOT honored (design D26, judgment-day W1): it would be a
+    304 for any authorised caller and any variant, including one that never
+    received a body (a downgraded session, a cold client), so a validator could
+    stand for a body its sender does not hold. Only the exact ETag of THIS
+    caller's representation validates it."""
+    return etag[1:-1] in _ENTITY_TAG.findall(",".join(header_values))
+
+
+_EVALUACIONES_DEGRADADAS = "evaluaciones degradado: sin match de Firestore no hay identidad ni NP de respaldo"
+
+
+def build_payload(
+    db: Any,
+    evaluaciones_cache: stickers.EvaluacionesCache,
+    *,
+    roster_cache: VersionedCache | None = None,
+    evaluaciones_fs_cache: VersionedCache | None = None,
+    evaluaciones_source: ProbedScan | None = None,
+) -> list[dict[str, Any]]:
+    """`roster_cache` / `evaluaciones_fs_cache` (D22, optional and additive):
+    when given, the two Firestore reads go through those versioned component
+    caches (TTL + serve-stale) instead of scanning on every 5-minute refresh,
+    and the SAME roster snapshot is reused by the depuracion compute (no second
+    `inspectores` scan). Omitted -> every call scans, exactly as before."""
     user, password = atencionsismo.credentials_from_env()
+
+    def _read_roster() -> Any:
+        if roster_cache is None:
+            return stickers.inspector_profiles(db)
+        return roster_cache.get(lambda: stickers.inspector_profiles(db)).value
+
+    def _read_evaluaciones() -> list[dict[str, Any]]:
+        # D33: the evaluación NP join comes from the roster component (the SAME
+        # snapshot `_read_roster` uses, single-flight), not one read per uid.
+        evaluaciones = evaluaciones_cache.get_or_fetch(lambda: stickers.scan_evaluaciones(db, roster_cache, evaluaciones_source))
+        if evaluaciones_cache.degraded:
+            # design D4: "si Firestore falla, el fetch falla completo" — a
+            # Blob-restored evaluaciones payload has `inspector.np`,
+            # `nombre_completo` AND `identificacion` all blanked
+            # (`stickers._redact_for_blob`), so silently joining it here would
+            # poison BOTH the Fase fallback and the identity of a matched record
+            # (not just serve a stale one). Fail this fetch too so THIS cache
+            # (`stickers_atencionsismo_cache`) runs its own serve-stale /
+            # Blob-restore chain instead of serving a payload with a poisoned
+            # identity/Fase. Checked INSIDE the read so a versioned component
+            # cache can never pin a degraded payload for its whole TTL.
+            raise RuntimeError(_EVALUACIONES_DEGRADADAS)
+        return evaluaciones
+
+    def _read_evaluaciones_firestore() -> list[dict[str, Any]]:
+        if evaluaciones_fs_cache is None:
+            return _read_evaluaciones()
+        return evaluaciones_fs_cache.get(_read_evaluaciones).value
 
     async def _pull() -> list[dict]:
         async with httpx.AsyncClient() as client:
@@ -171,13 +917,10 @@ def build_payload(db: Any, evaluaciones_cache: stickers.EvaluacionesCache) -> li
         roster_task = asyncio.ensure_future(
             # F6: ONE `inspectores` collection scan for both roster shapes —
             # see inspector_profiles' own doc comment.
-            loop.run_in_executor(_FIRESTORE_READ_EXECUTOR, stickers.inspector_profiles, db)
+            loop.run_in_executor(_FIRESTORE_READ_EXECUTOR, _read_roster)
         )
         firestore_task = asyncio.ensure_future(
-            loop.run_in_executor(
-                _FIRESTORE_READ_EXECUTOR, evaluaciones_cache.get_or_fetch,
-                lambda: stickers.list_evaluaciones(db),
-            )
+            loop.run_in_executor(_FIRESTORE_READ_EXECUTOR, _read_evaluaciones_firestore)
         )
 
         try:
@@ -225,17 +968,6 @@ def build_payload(db: Any, evaluaciones_cache: stickers.EvaluacionesCache) -> li
     roster_map, roster_by_cedula = roster_result
     firestore_evals = firestore_result
 
-    if evaluaciones_cache.degraded:
-        # design D4: "si Firestore falla, el fetch falla completo" — a
-        # Blob-restored evaluaciones payload has `inspector.np`,
-        # `nombre_completo` AND `identificacion` all blanked
-        # (`stickers._redact_for_blob`), so silently joining it here would
-        # poison BOTH the Fase fallback and the identity of a matched record
-        # (not just serve a stale one). Fail this fetch too so THIS cache
-        # (`stickers_atencionsismo_cache`) runs its own serve-stale /
-        # Blob-restore chain instead of serving a payload with a poisoned
-        # identity/Fase.
-        raise RuntimeError("evaluaciones degradado: sin match de Firestore no hay identidad ni NP de respaldo")
     return build_evaluaciones(
         rows, roster_by_codigo=roster_map, evaluaciones_firestore=firestore_evals,
         roster_by_cedula=roster_by_cedula,
@@ -246,12 +978,23 @@ def build_payload(db: Any, evaluaciones_cache: stickers.EvaluacionesCache) -> li
 def get_stickers_atencionsismo(
     request: Request,
     claims: dict[str, Any] = Depends(require_role("admin", "viewer")),
-) -> JSONResponse:
+) -> Response:
     cache: stickers.EvaluacionesCache = request.app.state.stickers_atencionsismo_cache
     evaluaciones_cache: stickers.EvaluacionesCache = request.app.state.stickers_evaluaciones_cache
     db = credentials.sismo().firestore
+    state = request.app.state
     try:
-        payload = cache.get_or_fetch(lambda: build_payload(db, evaluaciones_cache))
+        # One consistent (payload, content version, degraded) triple. The
+        # whole-payload version is ETag material (slice 09b); the depuracion
+        # cache is keyed by the projected `depuracion_inputs_version` (W5).
+        snapshot = cache.get_or_fetch_snapshot(
+            lambda: build_payload(
+                db, evaluaciones_cache,
+                roster_cache=state.roster_cache, evaluaciones_fs_cache=state.evaluaciones_fs_cache,
+                evaluaciones_source=state.evaluaciones_source,
+            )
+        )
+        payload = snapshot.payload
     except HTTPException:
         raise
     except (atencionsismo.ApiUnavailableError, atencionsismo.ApiCredentialsError,
@@ -264,8 +1007,118 @@ def get_stickers_atencionsismo(
         # every other upstream-unavailable case — this is the "nothing
         # trustworthy to serve" branch, not an unclassified bug, so it does
         # not deserve the generic 502 below.
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=DETALLE_SERVICIO_NO_DISPONIBLE) from exc
     except Exception as exc:  # pragma: no cover - same CORS-preserving catch-all as GET /evaluaciones
-        logging.exception("stickers-atencionsismo: fallo no clasificado")
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return JSONResponse({"ok": True, "fuente": "atencionsismo", "evaluaciones": payload, "degraded": cache.degraded})
+        # Type and location only, never `logging.exception`: its traceback text
+        # carries the message, which can echo a cedula or a name.
+        logging.error("stickers-atencionsismo: fallo no clasificado (%s)", _resumen_seguro(exc))
+        raise HTTPException(status_code=502, detail=DETALLE_FALLO_STICKERS) from exc
+
+    # The response body — never `payload` itself — is where `depuracion` gets
+    # added (`build_body` below, D3, PII isolation): `payload` is the exact list
+    # object `stickers_atencionsismo_cache` already persisted (redacted) to the
+    # PUBLIC Blob inside `cache.get_or_fetch` above, before this line ever
+    # runs. Nothing past this point may mutate `payload`.
+    role = role_from_claims(claims)
+    depuracion_version = DEPURACION_VERSION_NONE
+    resultado: depuracion_svc.Depuracion | None = None
+
+    # CRITICAL (adversarial review): `depuracion` carries full PII
+    # (cédula/tarjeta_profesional/num_telefono/correo_contacto/no_persona) —
+    # this route's own `require_role("admin", "viewer")` above lets ANY
+    # authenticated @cali.gov.co account through as "viewer"
+    # (`app.auth.roles.role_from_claims`), not a curated admin allowlist.
+    # The rest of the payload stays available to both roles (unchanged); only
+    # this block is gated to `admin` so a viewer's response is exactly the
+    # same shape as the flag-off case (key absent entirely).
+    #
+    # Gates, cheapest first, ALL required (D25 + D16): the request carries
+    # exactly `?depuracion=1`, the flag is on, the caller is an admin. A request
+    # that fails any of them performs 0 depuracion work: no component read, no
+    # referencia GET, no `depurar` (its body stays byte-identical to flag-off).
+    opt_in = _depuracion_solicitada(request) and _depuracion_habilitada() and role == "admin"
+    if opt_in:
+        depuracion_cache: DepuracionCache = state.depuracion_cache
+        hoy = _hoy()
+
+        try:
+            if snapshot.degraded:
+                # D16: unattributable stickers -> a declared gap, not a table.
+                # Scoped to the STICKERS source only: a missing reference bundle
+                # keeps its own path (D5) inside `depurar`. Nothing is read.
+                resultado, depuracion_version = _depuracion_stickers_degradados(), MOTIVO_STICKERS_DEGRADADOS
+            else:
+                # Component reads are TTL-guarded and single-flight (D22): a warm
+                # request pays O(1) here. `build_payload` already shares the SAME
+                # roster snapshot, so one window costs one `inspectores` scan.
+                roster = state.roster_cache.get(lambda: stickers.inspector_profiles(db))
+                # D34: on TTL expiry a count() + newest-`_updated_at` probe replaces the
+                # full `survey_cali` scan while nothing moved (forced reconcile every 6 h).
+                survey = state.survey_names_cache.get(
+                    lambda: state.survey_names_source.fetch(db, lambda: sorted(_nombres_survey(db)))
+                )
+
+                # The cache key carries the PROJECTED fingerprint of what `depurar`
+                # reads (W5), not `snapshot.version` (a new photo must not force a
+                # recompute); the projection is memoised per payload object.
+                stickers_proj, inputs_version = depuracion_cache.inputs_for(payload)
+
+                def _compute(referencia: referencia_svc.ReferenciaBundle) -> depuracion_svc.Depuracion:
+                    return depuracion_svc.depurar(
+                        stickers=stickers_proj,
+                        roster_by_cedula=_roster_para_depuracion(roster.value[1]),
+                        nombres_survey=survey.value,
+                        referencia=referencia,
+                        hoy=hoy,
+                    )
+
+                # `resolve`, not `get_or_compute`: no deep copy on a warm request
+                # (the result is only serialized, and only on a bytes-cache miss).
+                resultado, depuracion_version = depuracion_cache.resolve(
+                    inputs_version=inputs_version, roster_version=roster.version,
+                    survey_version=survey.version, hoy=hoy, compute=_compute,
+                )
+        except Exception as exc:
+            resultado, depuracion_version = None, DEPURACION_VERSION_OMITTED
+            # Advisory-only feature (spec: "Classification never writes to
+            # the inspector record"): a depuración failure must never turn
+            # an otherwise-healthy sticker response into an error. Omitting
+            # the key entirely (not a half-filled `depuracion`) keeps the
+            # frontend's existing "`depuracion` absent -> current code path"
+            # branch (design's Frontend Changes) as the fallback, same as
+            # the flag-off case. Logged by type and location only - never
+            # `logging.exception`, whose traceback text carries the message.
+            logging.error(
+                "stickers-atencionsismo: fallo calculando depuracion (%s); se omite el bloque (advisory-only)",
+                _resumen_seguro(exc),
+            )
+
+    def build_body() -> dict[str, Any]:
+        # D-VIEWER-PII: the redaction sits HERE, in the role-specific builder the
+        # `(role, opt_in)` bytes-cache variant is built from: the viewer variant
+        # is constructed redacted (never redacted after a shared lookup), the
+        # admin variant serves `payload` itself (`evaluaciones_for_role` fails
+        # closed: anything that is not an admin gets the redacted copy).
+        evaluaciones = evaluaciones_for_role(payload, role)
+        body: dict[str, Any] = {
+            "ok": True, "fuente": "atencionsismo", "evaluaciones": evaluaciones, "degraded": snapshot.degraded,
+        }
+        if resultado is not None:
+            body["depuracion"] = _depuracion_a_dict(resultado)
+        return body
+
+    # Encoded bytes + validators (D26). Authentication and the role gate already
+    # ran (`require_role`), so a 304 can only ever answer an authorised caller,
+    # and the ETag is derived from exactly what determines THESE bytes.
+    entry = state.encoded_bodies.entry(
+        snapshot_version=snapshot.version, depuracion_version=depuracion_version,
+        role=role, degraded=snapshot.degraded, opt_in=opt_in, build=build_body,
+    )
+    gzipped = _accepts_gzip(request.headers.getlist("accept-encoding"))
+    etag = entry.etag(gzipped)
+    headers = {"ETag": etag, "Cache-Control": CACHE_CONTROL, "Vary": VARY}
+    if _if_none_match_hits(request.headers.getlist("if-none-match"), etag):
+        return Response(status_code=304, headers=headers)
+    if gzipped:
+        headers["Content-Encoding"] = "gzip"
+    return Response(content=entry.body(gzipped), media_type="application/json", headers=headers)

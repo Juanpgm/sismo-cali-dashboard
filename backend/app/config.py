@@ -23,7 +23,10 @@ CORS_ALLOW_ORIGIN_REGEX = r"^http://(localhost|127\.0\.0\.1):\d+$"
 # created point — both routes worked fine when called directly (curl/pytest
 # bypass the browser's own preflight), only the real browser UI was blocked.
 CORS_ALLOW_METHODS: tuple[str, ...] = ("GET", "POST", "PATCH", "DELETE", "OPTIONS")
-CORS_ALLOW_HEADERS: tuple[str, ...] = ("Authorization", "Content-Type")
+CORS_ALLOW_HEADERS: tuple[str, ...] = ("Authorization", "Content-Type", "If-None-Match")
+# Response headers JS may read cross-origin: the conditional GET of
+# /stickers-atencionsismo (design D27) needs the validator.
+CORS_EXPOSE_HEADERS: tuple[str, ...] = ("ETag",)
 CORS_ALLOW_CREDENTIALS = False
 
 

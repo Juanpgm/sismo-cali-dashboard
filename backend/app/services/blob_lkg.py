@@ -59,6 +59,7 @@ import blob_sync  # noqa: E402  (path must be set up first)
 _TIMEOUT_S = 30
 
 _warned_no_token = False
+_warned_no_private_token = False
 
 
 def _token_available() -> bool:
@@ -73,6 +74,23 @@ def _token_available() -> bool:
             "blob_lkg: BLOB_READ_WRITE_TOKEN ausente; fallback/persistencia Blob deshabilitados"
         )
         _warned_no_token = True
+    return False
+
+
+def _private_token_available() -> bool:
+    """Gate for the PRIVATE-store read (`load_json_private`): the token
+    resolved by `blob_sync.private_token()` (BLOB_PRIVATE_TOKEN, else
+    BLOB_READ_WRITE_TOKEN). The one presence check every private-read caller
+    (incl. `inspectores_referencia`) shares. Logs once, like
+    `_token_available`."""
+    global _warned_no_private_token
+    if blob_sync.private_token():
+        return True
+    if not _warned_no_private_token:
+        logging.warning(
+            "blob_lkg: BLOB_PRIVATE_TOKEN/BLOB_READ_WRITE_TOKEN ausentes; lectura privada deshabilitada"
+        )
+        _warned_no_private_token = True
     return False
 
 
@@ -130,6 +148,40 @@ def load_json(pathname: str, expected_type: type) -> Any | None:
         return data
     except (Exception, SystemExit) as exc:  # noqa: BLE001 - fallback is "no fallback"
         logging.warning("blob_lkg: no pude leer %s (%s); sin fallback disponible", pathname, exc)
+        return None
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def load_json_private(pathname: str, expected_type: type) -> Any | None:
+    """Same contract as `load_json` (never raises, None on ANY failure), but
+    reads through `blob_sync.download_authenticated` — required for
+    `access:'private'` blobs (design.md D8: `inspectores_referencia`'s
+    bundle is the only caller of this today). `load_json` itself is left
+    untouched: every other Blob-backed cache in this repo reads a PUBLIC
+    blob and must keep the unauthenticated path."""
+    if not _private_token_available():
+        return None
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(suffix=".json")
+        os.close(fd)
+        if not blob_sync.download_authenticated(pathname, tmp, timeout=_TIMEOUT_S):
+            return None  # 404 -> nothing published yet
+        data = json.loads(Path(tmp).read_text(encoding="utf-8"))
+        if not isinstance(data, expected_type):
+            logging.warning(
+                "blob_lkg: payload privado de %s con forma inválida (%s, se esperaba %s); descartado",
+                pathname, type(data).__name__, expected_type.__name__,
+            )
+            return None
+        return data
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 - fallback is "no fallback"
+        logging.warning("blob_lkg: no pude leer %s privado (%s); sin fallback disponible", pathname, exc)
         return None
     finally:
         if tmp:
