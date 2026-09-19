@@ -100,10 +100,14 @@ class InspectoresCache:
             try:
                 self._payload = fetch()
                 self._at = now
-            except Exception:
+            except Exception as exc:
                 if self._payload is None:
                     raise
-                logging.exception("inspectores: fetch fallo, sirviendo el ultimo payload en cache (stale)")
+                # Type only, never `logging.exception`: the traceback text carries
+                # the upstream message, which can echo a cedula or a name.
+                logging.error(
+                    "inspectores: fetch fallo (%s), sirviendo el ultimo payload en cache (stale)", type(exc).__name__
+                )
         assert self._payload is not None
         return self._payload
 
@@ -259,7 +263,7 @@ class EvaluacionesCache:
                 self._at = now
                 self._failed_at = None  # recovered: clear any armed backoff
                 self._persist_last_good()
-            except Exception:
+            except Exception as exc:
                 # Serve-stale-on-error (30-ago-2026): a Firestore 429/
                 # ResourceExhausted degrading this route to a raw 502 is
                 # worse than showing a slightly-old evaluaciones list — the
@@ -275,14 +279,17 @@ class EvaluacionesCache:
                     if restored is None:
                         self._failed_at = now
                         raise
-                    logging.exception(
-                        "evaluaciones: fetch fallo sin payload previo, sirviendo el ultimo bueno desde Blob"
+                    # Type only, never `logging.exception` (the message can echo PII).
+                    logging.error(
+                        "evaluaciones: fetch fallo (%s) sin payload previo, sirviendo el ultimo bueno desde Blob",
+                        type(exc).__name__,
                     )
                     self._publish(restored, True)  # blanked np, see the `degraded` property above
                     self._at = now  # behaves as a normal (stale-able) payload from here on
                 else:
-                    logging.exception(
-                        "evaluaciones: fetch fallo, sirviendo el ultimo payload en cache (stale)"
+                    logging.error(
+                        "evaluaciones: fetch fallo (%s), sirviendo el ultimo payload en cache (stale)",
+                        type(exc).__name__,
                     )
                 self._failed_at = now
             assert self._payload is not None

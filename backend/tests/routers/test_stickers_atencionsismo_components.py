@@ -96,6 +96,14 @@ class Rig:
             self.ledger.hit("depurar")
             return real_depurar(**kw)
 
+        # Blob PUT counter (task 10b.14): counts only, the payload is never captured.
+        monkeypatch.setattr(stickers.blob_lkg, "save_json", lambda *_a: self.ledger.hit("put") or True)
+
+        # HTTP encoding counters (slice 09b): body serializations and compressions.
+        real_encode, real_gzip = router_mod._encode_body, router_mod._gzip_body
+        monkeypatch.setattr(router_mod, "_encode_body", lambda body: self.ledger.hit("encode") or real_encode(body))
+        monkeypatch.setattr(router_mod, "_gzip_body", lambda raw: self.ledger.hit("gzip") or real_gzip(raw))
+
         monkeypatch.setattr(stickers, "inspector_profiles", profiles)
         monkeypatch.setattr(stickers, "list_evaluaciones", evals)
         monkeypatch.setattr(router_mod, "_nombres_survey", survey)
@@ -114,6 +122,8 @@ class Rig:
 
         def load_referencia():
             self.ledger.hit("referencia")
+            if "referencia" in self.fail:
+                raise RuntimeError("blob 500")
             return self.referencia
 
         state = self.app.state
@@ -133,6 +143,14 @@ class Rig:
 
     def counts(self) -> dict[str, int]:
         return {k: self.ledger[k] for k in ("walk", "roster", "survey", "evals", "depurar", "referencia")}
+
+    def puts(self) -> int:
+        """Blob PUTs so far. The upload runs on a daemon thread, so the persist
+        workers are joined first to make the count deterministic."""
+        for cache in (self.app.state.stickers_atencionsismo_cache, self.app.state.stickers_evaluaciones_cache):
+            if cache._persist_thread is not None:
+                cache._persist_thread.join(timeout=5)
+        return self.ledger["put"]
 
 
 @pytest.fixture
@@ -344,9 +362,11 @@ def test_20_threads_at_expiry_one_compute_at_most_one_scan_per_component(rig):
     assert statuses == [200] * 20
     after = rig.counts()
     assert after["walk"] - before["walk"] == 1
-    assert after["roster"] - before["roster"] <= 1
-    assert after["survey"] - before["survey"] <= 1
-    assert after["evals"] - before["evals"] <= 1
+    # Every TTL expired at once, so each component MUST rescan exactly once (a cache
+    # that served stale forever would pass `<= 1`), and 20 threads never make it two.
+    assert after["roster"] - before["roster"] == 1
+    assert after["survey"] - before["survey"] == 1
+    assert after["evals"] - before["evals"] == 1
     assert after["depurar"] - before["depurar"] == 0  # identical content: nothing to recompute
     assert after["referencia"] - before["referencia"] == 1
 
@@ -407,6 +427,30 @@ def test_evaluaciones_component_never_caches_a_degraded_payload(rig):
     resp = rig.client.get("/stickers-atencionsismo", params=OPT_IN)
     assert resp.status_code == 503
     assert state.evaluaciones_fs_cache.current is None
+
+
+def test_degraded_guard_only_bites_a_cold_evaluaciones_component(rig, caplog):
+    """09a review W-2 (design.md, "Flag-off visible data changes"): the D4 guard
+    runs INSIDE the component refresh. With the component warm it is not
+    evaluated within the TTL, and when a refresh does run and the guard raises,
+    the failed refresh serves the last-good value. The degraded state is forced
+    by hand: no request sequence makes a WARM evaluaciones cache degraded. The
+    cold case (503) is `test_evaluaciones_component_never_caches_a_degraded_payload`."""
+    rig.get()
+    evals_cache = rig.app.state.stickers_evaluaciones_cache
+    evals_cache._degraded = True
+    rig.clock.advance(STICKER_TTL + 1)  # the walk runs again; the 15-minute component is still fresh
+    body = rig.get()
+    assert body["degraded"] is False and len(body["evaluaciones"]) == 2  # (a) guard not evaluated
+
+    rig.clock.advance(EVALS_TTL + 1)  # the component refreshes now ...
+    evals_cache._at = rig.clock()  # ... and the shared cache serves its (degraded) payload as fresh
+    scans = rig.ledger["evals"]
+    with caplog.at_level("WARNING"):
+        body = rig.get()
+    assert rig.ledger["evals"] == scans  # the guard, not a scan, decided
+    assert "evaluaciones_fs: refresh failed (RuntimeError)" in caplog.text  # the guard raised inside the refresh
+    assert body["degraded"] is False and len(body["evaluaciones"]) == 2  # (b) raise -> last-good component value
 
 
 def test_flag_off_never_touches_any_depuracion_component(monkeypatch):

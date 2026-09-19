@@ -87,3 +87,77 @@ def test_cookie_only_request_is_rejected_on_authenticated_route(monkeypatch):
     resp = client.get("/stub-auth", headers={"Cookie": "session=whatever-a-cookie-carries"})
 
     assert resp.status_code == 401
+
+
+# ── Conditional GET across origins (design D27, tasks 10b.10-10b.12) ─────────
+#
+# The frontend (Vercel) and the backend (Railway) are cross-origin: without
+# `If-None-Match` in the allowlist the preflight of a conditional GET fails and
+# the fetch is blocked; without `ETag` exposed JS cannot read the validator.
+
+STICKERS_URL = "/stickers-atencionsismo"
+
+
+def _preflight(client, *, origin=ALLOWED_ORIGIN, headers="if-none-match", method="GET", path=STICKERS_URL):
+    return client.options(path, headers={
+        "Origin": origin, "Access-Control-Request-Method": method,
+        "Access-Control-Request-Headers": headers,
+    })
+
+
+def _allowed_headers(resp) -> set[str]:
+    return {h.strip().lower() for h in resp.headers.get("access-control-allow-headers", "").split(",") if h.strip()}
+
+
+def test_cors_preflight_allows_if_none_match_and_exposes_etag(monkeypatch):
+    client = _client(monkeypatch)
+    pre = _preflight(client)
+    assert pre.status_code == 200, pre.text
+    assert "if-none-match" in _allowed_headers(pre)
+
+    actual = client.get("/health", headers={"Origin": ALLOWED_ORIGIN})
+    assert actual.headers.get("access-control-expose-headers") == "ETag"
+
+
+def test_preflight_for_a_conditional_get_carrying_all_three_headers_passes(monkeypatch):
+    pre = _preflight(_client(monkeypatch), headers="authorization,content-type,if-none-match")
+    assert pre.status_code == 200, pre.text
+    assert {"authorization", "content-type", "if-none-match"} <= _allowed_headers(pre)
+
+
+def test_authorization_and_content_type_remain_allowed_and_no_wildcard_crept_in(monkeypatch):
+    pre = _preflight(_client(monkeypatch), headers="authorization,content-type")
+    assert pre.status_code == 200
+    allowed = _allowed_headers(pre)
+    assert {"authorization", "content-type"} <= allowed and "*" not in allowed
+
+
+def test_a_header_that_was_never_allowed_is_still_rejected_at_the_preflight(monkeypatch):
+    client = _client(monkeypatch)
+    for header in ("x-evil", "if-match", "authorization,x-evil"):
+        pre = _preflight(client, headers=header)
+        assert pre.status_code == 400 and "headers" in pre.text.lower(), (header, pre.status_code)
+
+
+def test_a_disallowed_origin_is_still_rejected_and_never_gets_an_allow_origin(monkeypatch):
+    """Starlette's `simple_headers` (incl. Expose-Headers) ride on every response
+    that carries an Origin; without `Access-Control-Allow-Origin` a browser
+    ignores them, so the guarantee that matters is the absent allow-origin."""
+    client = _client(monkeypatch)
+    pre = _preflight(client, origin=UNLISTED_ORIGIN)
+    assert pre.status_code == 400 and "access-control-allow-origin" not in pre.headers
+    actual = client.get("/health", headers={"Origin": UNLISTED_ORIGIN})
+    assert "access-control-allow-origin" not in {k.lower() for k in actual.headers}
+
+
+def test_only_etag_is_exposed_and_the_localhost_dev_origin_gets_it_too(monkeypatch):
+    client = _client(monkeypatch)
+    for origin in (ALLOWED_ORIGIN, LOCALHOST_DEV_ORIGIN):
+        exposed = client.get("/health", headers={"Origin": origin}).headers.get("access-control-expose-headers", "")
+        assert [h.strip() for h in exposed.split(",")] == ["ETag"], (origin, exposed)
+
+
+def test_the_config_allowlist_keeps_its_original_entries_and_gains_only_if_none_match():
+    from app import config
+
+    assert config.CORS_ALLOW_HEADERS == ("Authorization", "Content-Type", "If-None-Match")

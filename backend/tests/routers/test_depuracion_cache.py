@@ -578,6 +578,48 @@ def test_a_failing_first_ever_compute_returns_calculo_fallido_and_next_request_r
     assert env.get().activa is True and env.computes == 2
 
 
+# ── `resolve`: the outcome plus the fingerprint the ETag is built from (09b) ─
+
+
+def _resolve(env, compute=None, **over):
+    return env.cache.resolve(compute=compute or env.compute, **_kw(**over))
+
+
+def test_resolve_version_is_stable_on_a_hit_and_moves_with_each_fingerprint():
+    env = Env()
+    first = _resolve(env)
+    assert _resolve(env) == first and env.computes == 1  # a hit: same shared result, same version
+    versions = {first.version}
+    for change in (dict(inputs_version="s2"), dict(roster_version="r2"), dict(survey_version="v2"),
+                   dict(hoy=date(2026, 9, 20))):
+        versions.add(_resolve(env, **change).version)
+    assert len(versions) == 5  # each fingerprint alone moves it
+    env.referencia = _bundle(huella="h2")  # a same-day republish
+    env.clock.advance(TTL + 1)
+    assert _resolve(env).version not in versions
+
+
+def test_resolve_hands_out_the_shared_object_but_get_or_compute_a_private_copy():
+    env = Env()
+    shared = _resolve(env).result
+    assert _resolve(env).result is shared  # O(1), no copy on a warm request
+    private = env.get()
+    assert private == shared and private is not shared
+    private.alias_nombres["ana"] = "MUTATED"
+    assert _resolve(env).result.alias_nombres == {"ana": "Ana Gomez"}  # the boundary still protects the cache
+
+
+def test_resolve_failure_versions_never_collide_with_a_real_key():
+    env = Env()
+    good = _resolve(env)
+    failed = _resolve(env, compute=_boom(env), inputs_version="s2")
+    assert failed.result == _calculo_fallido() and failed.version == "calculo_fallido"
+    assert failed.version != good.version
+    env.cache.invalidate()  # same key, failing recompute: last-good of THAT key, under that key's version
+    same = _resolve(env, compute=_boom(env))
+    assert same.result == good.result and same.version == good.version
+
+
 class _CountingEvent(threading.Event):
     """Signals `arrived` right before a caller blocks on the flight, so a test
     can release a gated leader only once every waiter is really parked."""

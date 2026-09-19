@@ -238,7 +238,7 @@ def cargar_referencia(*, load_json=blob_lkg.load_json_private, ahora=None) -> Re
     except Exception as exc:  # noqa: BLE001 - never propagate, degrade instead
         logging.warning(
             "inspectores_referencia: fallo leyendo %s (%s); degradando a bundle vacío",
-            BUNDLE_BLOB, exc,
+            BUNDLE_BLOB, type(exc).__name__,
         )
         return ReferenciaBundle.vacia(motivo="manifiesto_invalido")
     if raw is None:

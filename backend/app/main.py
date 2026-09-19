@@ -155,6 +155,11 @@ def create_app() -> FastAPI:
     # for `depurar()`'s own output — see `DepuracionCache`'s docstring.
     app.state.depuracion_cache = stickers_atencionsismo.DepuracionCache()
 
+    # Encoded response bodies of GET /stickers-atencionsismo (D26): serialized
+    # and gzipped once per key, current key only, so a warm request is bytes and
+    # a matching If-None-Match is a bodyless 304.
+    app.state.encoded_bodies = stickers_atencionsismo.EncodedBodyCache()
+
     # Versioned component caches feeding it (efficiency extension D22): one per
     # Firestore-derived input, own TTL + lock + serve-stale + `invalidate()`.
     # The roster one is invalidated by every in-process `inspectores` writer (admin
@@ -197,6 +202,7 @@ def create_app() -> FastAPI:
         allow_credentials=config.CORS_ALLOW_CREDENTIALS,
         allow_methods=list(config.CORS_ALLOW_METHODS),
         allow_headers=list(config.CORS_ALLOW_HEADERS),
+        expose_headers=list(config.CORS_EXPOSE_HEADERS),
     )
 
     for router_module in _ROUTERS:
