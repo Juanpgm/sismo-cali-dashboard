@@ -354,10 +354,10 @@ _CAMPOS_TEXTO_BACKFILL = (
 
 
 def _recalcular_no_persona(perfil: Perfil) -> None:
-    """`es_cuenta_no_persona` from the profile's CURRENT correo / nombre /
-    `no_persona_ref` (bundle-precomputed flag). Called by the overlay pass and
-    again after a D-P2 merge, whose backfilled correo / ORed `no_persona_ref`
-    would otherwise leave the flag stale (the overlays already ran)."""
+    """`es_cuenta_no_persona` from the profile's OWN correo / nombre / `no_persona_ref`
+    (bundle-precomputed flag), evaluated ONCE by the overlay pass, before any D-P2
+    merge. It is deliberately never called again afterwards: a merge never changes
+    the survivor's flags (D-SURVFLAGS, design D20)."""
     perfil.es_cuenta_no_persona = perfil.no_persona_ref or es_cuenta_no_persona(
         perfil.correo, perfil.nombre_completo
     )
@@ -372,15 +372,14 @@ def _fusionar_en_survivor(survivor: Perfil, perdedor: Perfil) -> None:
     OR-ed), and every key the loser answered to — its own cédula and any it had
     already absorbed — is registered in `cedulas_unificadas` so later lookups
     resolve to the survivor (compared by `_cedula_key`, never by raw string).
-    `es_cuenta_no_persona` is NOT a pure recompute of the merged fields: it is
-    the survivor's own flag OR-ed with a fresh evaluation of the survivor's
-    CURRENT correo / nombre / `no_persona_ref`. Only the bundle flag
-    `no_persona_ref` is OR-ed from the loser; the loser's HEURISTIC flag (its
-    own `@import.local` correo, say) is dropped whenever the survivor already
-    has a non-empty correo (backfill never overwrites), so a real survivor never
-    becomes a "non-person" because of a loser. That is the notebook's rule:
-    "survivor keeps its own flags, backfill first-non-empty". `cedula_sospechosa`
-    stays the survivor's, computed from its ORIGINAL cédula (D18)."""
+    The survivor's FLAGS are never touched (D-SURVFLAGS): `es_cuenta_no_persona`,
+    `no_persona_ref` and `cedula_sospechosa` stay what they were, computed per row
+    from the survivor's OWN cédula / correo / nombre / bundle flag BEFORE the
+    unification, exactly like the notebook (its flags are columns of the row and
+    the backfill only fills empty fields, first-non-empty wins). A correo
+    backfilled from a loser, or a loser's bundle flag, never turns a real person
+    into a "non-person" (nor cures a non-person): that flipped 22 real profiles in
+    the first live parity run."""
     for campo in _CAMPOS_TEXTO_BACKFILL:
         if not getattr(survivor, campo):
             setattr(survivor, campo, getattr(perdedor, campo))
@@ -388,8 +387,6 @@ def _fusionar_en_survivor(survivor: Perfil, perdedor: Perfil) -> None:
         survivor.en_vercel, survivor.np_vercel = True, perdedor.np_vercel
     if not survivor.en_fase2 and perdedor.en_fase2:
         survivor.en_fase2, survivor.np_fase2 = True, perdedor.np_fase2
-    if not survivor.no_persona_ref and perdedor.no_persona_ref:
-        survivor.no_persona_ref = True
     survivor.n_stickers += perdedor.n_stickers
     if perdedor.ultimo_sticker and (
         not survivor.ultimo_sticker or perdedor.ultimo_sticker > survivor.ultimo_sticker
@@ -414,9 +411,6 @@ def _fusionar_en_survivor(survivor: Perfil, perdedor: Perfil) -> None:
             vistas.add(normalizada)
             unificadas.append(clave)
     survivor.cedulas_unificadas = tuple(unificadas)
-    previo = survivor.es_cuenta_no_persona
-    _recalcular_no_persona(survivor)
-    survivor.es_cuenta_no_persona = survivor.es_cuenta_no_persona or previo
 
 
 def _unificar_por_nombre(perfiles: dict[str, Perfil]) -> tuple[dict[str, Perfil], tuple[dict, ...]]:

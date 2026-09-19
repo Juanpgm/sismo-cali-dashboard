@@ -1665,7 +1665,11 @@ def test_c1_result_is_independent_of_input_order():
 # ── C2: no_persona is recomputed after a merge ──────────────────────────────
 
 
-def test_c2_loser_flagged_no_persona_in_the_bundle_flags_the_survivor():
+def test_c2_loser_flagged_no_persona_in_the_bundle_does_not_flag_the_survivor():
+    """D-SURVFLAGS (2026-09-19, live parity run): a real survivor merged with a duplicate the bundle
+    flags as a non-person stays a PERSON. REPLACES the earlier C2 pin, which OR-ed the loser's
+    `no_persona_ref` into the survivor: the notebook's survivor keeps its OWN flags (they are computed
+    per row BEFORE the unification, which only backfills empty fields)."""
     main = [
         _entrada(cedula_key="7000001", nombre_norm="ana uno", nombre="Ana Uno", correo="ana@example.com"),
         _entrada(cedula_key="7000002", nombre_norm="ana uno", nombre="Ana Uno", no_persona=True),
@@ -1674,11 +1678,13 @@ def test_c2_loser_flagged_no_persona_in_the_bundle_flags_the_survivor():
     resultado = _depurar(main=main, stickers=stickers)
     assert list(_by_key(resultado)) == ["7000001"]
     fila = _by_key(resultado)["7000001"]
-    assert fila["no_persona"] is True and fila["estado_sugerido"] == "no_persona"
+    assert fila["no_persona"] is False and fila["estado_sugerido"] != "no_persona"
     assert fila["cedulas_unificadas"] == ["7000002"]
 
 
-def test_c2_loser_import_local_correo_backfilled_into_survivor_flags_it():
+def test_c2_loser_import_local_correo_backfilled_into_survivor_does_not_flag_it():
+    """The correo is still backfilled (first-non-empty wins) but the flag was computed BEFORE, from the
+    survivor's own (empty) correo: it stays False. REPLACES the earlier C2 pin (D-SURVFLAGS)."""
     main = [
         _entrada(cedula_key="7000001", nombre_norm="ana uno", nombre="Ana Uno"),  # empty correo
         _entrada(cedula_key="7000002", nombre_norm="ana uno", nombre="Ana Uno", correo="migrated@import.local"),
@@ -1686,7 +1692,7 @@ def test_c2_loser_import_local_correo_backfilled_into_survivor_flags_it():
     stickers = [_sticker("7000001", fecha_creacion="2026-09-11T00:00:00Z")]
     fila = _by_key(_depurar(main=main, stickers=stickers))["7000001"]
     assert fila["correo_contacto"] == "migrated@import.local"
-    assert fila["no_persona"] is True and fila["estado_sugerido"] == "no_persona"
+    assert fila["no_persona"] is False and fila["estado_sugerido"] != "no_persona"
 
 
 def test_c2_survivor_flagged_loser_not_stays_flagged():
@@ -1709,17 +1715,18 @@ def test_c2_clean_pair_stays_not_no_persona():
     assert fila["no_persona"] is False and fila["correo_contacto"] == "ana@example.com"
 
 
-def test_c2_unificar_duplicados_recomputes_the_flag_from_merged_fields():
+def test_c2_unificar_duplicados_never_recomputes_the_flag_from_merged_fields():
+    """D-SURVFLAGS: the survivor's flags are its OWN (REPLACES the earlier C2 pin that recomputed the
+    flag from the merged correo / OR-ed `no_persona_ref`)."""
     survivor = _perfil("A", "juan perez", ultimo_sticker=date(2026, 8, 1))
     perdedor = _perfil("B", "juan perez", no_persona_ref=True)
     resultado, _ = dep.unificar_duplicados({"A": survivor, "B": perdedor})
-    assert resultado["A"].no_persona_ref is True and resultado["A"].es_cuenta_no_persona is True
-    assert survivor.es_cuenta_no_persona is False  # the caller's input stays untouched
+    assert resultado["A"].no_persona_ref is False and resultado["A"].es_cuenta_no_persona is False
 
     survivor2 = _perfil("A", "juan perez", ultimo_sticker=date(2026, 8, 1))
     perdedor2 = _perfil("B", "juan perez", correo="x@import.local")
     resultado2, _ = dep.unificar_duplicados({"A": survivor2, "B": perdedor2})
-    assert resultado2["A"].correo == "x@import.local" and resultado2["A"].es_cuenta_no_persona is True
+    assert resultado2["A"].correo == "x@import.local" and resultado2["A"].es_cuenta_no_persona is False
 
 
 def test_c2_cedula_sospechosa_is_kept_from_the_survivor_original_cedula():
@@ -2127,20 +2134,177 @@ def test_w5_survivor_with_a_real_correo_keeps_no_persona_false_despite_a_flagged
     assert fusionado.no_persona_ref is False
 
 
-def test_w5_only_the_bundle_flag_no_persona_ref_is_ored_into_the_survivor():
+def test_w5_the_bundle_flag_no_persona_ref_of_a_loser_is_not_ored_into_the_survivor():
+    """D-SURVFLAGS: REPLACES `test_w5_only_the_bundle_flag_no_persona_ref_is_ored_into_the_survivor`
+    (the old rule made 22 real people non-persons in the live parity run)."""
     survivor = _perfil("A", "juan perez", correo="juan@example.com", ultimo_sticker=date(2026, 8, 1))
     perdedor = _perfil("B", "juan perez", correo="b@import.local", no_persona_ref=True, es_cuenta_no_persona=True)
     resultado, _ = dep.unificar_duplicados({"A": survivor, "B": perdedor})
-    assert resultado["A"].no_persona_ref is True
-    assert resultado["A"].es_cuenta_no_persona is True
+    assert resultado["A"].no_persona_ref is False
+    assert resultado["A"].es_cuenta_no_persona is False
 
 
-def test_w5_an_empty_survivor_correo_backfills_the_flagged_one_and_the_flag_follows():
+def test_w5_an_empty_survivor_correo_backfills_the_flagged_one_and_the_flag_does_not_follow():
+    """D-SURVFLAGS: REPLACES `..._and_the_flag_follows`. The notebook backfills the correo first-non-empty
+    but its flag was computed BEFORE, from the survivor's own (empty) correo."""
     survivor = _perfil("A", "juan perez", correo="", ultimo_sticker=date(2026, 8, 1))
     perdedor = _perfil("B", "juan perez", correo="b@import.local", es_cuenta_no_persona=True)
     resultado, _ = dep.unificar_duplicados({"A": survivor, "B": perdedor})
     assert resultado["A"].correo == "b@import.local"
-    assert resultado["A"].es_cuenta_no_persona is True
+    assert resultado["A"].es_cuenta_no_persona is False
+
+
+# ── D-SURVFLAGS: a merge never changes the survivor's own flags (live parity run 2026-09-19) ──
+
+
+def _flags_de(fila):
+    return fila["no_persona"], fila["estado_sugerido"]
+
+
+def test_survflags_real_survivor_with_a_non_person_duplicate_stays_a_person_and_keeps_its_estado():
+    """The 22-profile defect: a real person merged with a duplicate `@import.local` / bundle-flagged
+    main row became `no_persona`. With a código the estado must stay `activo`."""
+    main = [
+        _entrada(cedula_key="7000001", nombre_norm="ana uno", nombre="Ana Uno", correo="ana@example.com", codigo="041"),
+        _entrada(cedula_key="7000002", nombre_norm="ana uno", nombre="Ana Uno", correo="ana@import.local",
+                 no_persona=True),
+    ]
+    resultado = _depurar(main=main)
+    assert list(_by_key(resultado)) == ["7000001"]
+    assert _flags_de(_by_key(resultado)["7000001"]) == (False, "activo")
+
+
+@pytest.mark.parametrize("loser_extra", [
+    {"no_persona": True},
+    {"correo": "x@import.local"},
+    {"correo": "x@sismo.cali.gov.co"},
+    {"correo": "cuenta@migrated.example.com"},
+])
+def test_survflags_the_loser_flag_is_dropped_for_each_of_the_flag_sources(loser_extra):
+    """Bundle flag and every correo pattern on the loser: none leaks into a real survivor."""
+    main = [
+        _entrada(cedula_key="7000001", nombre_norm="ana uno", nombre="Ana Uno", correo="ana@example.com", codigo="041"),
+        _entrada(cedula_key="7000002", nombre_norm="ana uno", nombre="Ana Uno", **loser_extra),
+    ]
+    assert _flags_de(_by_key(_depurar(main=main))["7000001"]) == (False, "activo")
+
+
+def test_survflags_a_non_person_survivor_by_its_own_NAME_stays_a_non_person():
+    """The survivor's flag also comes from its own name pattern; a real duplicate does not cure it."""
+    main = [
+        _entrada(cedula_key="7000001", nombre_norm="brigada norte", nombre="Brigada Norte", correo="a@example.com"),
+        _entrada(cedula_key="7000002", nombre_norm="brigada norte", nombre="Brigada Norte", correo="b@example.com"),
+    ]
+    stickers = [_sticker("7000001", fecha_creacion="2026-09-11T00:00:00Z")]
+    assert _flags_de(_by_key(_depurar(main=main, stickers=stickers))["7000001"]) == (True, "no_persona")
+
+
+def test_survflags_the_reverse_a_non_person_survivor_with_a_real_duplicate_stays_a_non_person():
+    main = [
+        _entrada(cedula_key="7000001", nombre_norm="ana uno", nombre="Ana Uno", correo="ana@import.local"),
+        _entrada(cedula_key="7000002", nombre_norm="ana uno", nombre="Ana Uno", correo="ana@example.com"),
+    ]
+    stickers = [_sticker("7000001", fecha_creacion="2026-09-11T00:00:00Z")]  # the non-person survives
+    fila = _by_key(_depurar(main=main, stickers=stickers))["7000001"]
+    assert _flags_de(fila) == (True, "no_persona")
+
+
+def test_survflags_non_person_survivor_with_a_codigo_keeps_the_no_persona_precedence():
+    main = [
+        _entrada(cedula_key="7000001", nombre_norm="ana uno", nombre="Ana Uno", no_persona=True, codigo="041"),
+        _entrada(cedula_key="7000002", nombre_norm="ana uno", nombre="Ana Uno", correo="ana@example.com"),
+    ]
+    assert _flags_de(_by_key(_depurar(main=main))["7000001"]) == (True, "no_persona")
+
+
+def test_survflags_empty_correo_survivor_backfilling_a_non_person_correo_keeps_its_flag():
+    main = [
+        _entrada(cedula_key="7000001", nombre_norm="ana uno", nombre="Ana Uno", codigo="041"),  # empty correo
+        _entrada(cedula_key="7000002", nombre_norm="ana uno", nombre="Ana Uno", correo="x@import.local"),
+    ]
+    fila = _by_key(_depurar(main=main))["7000001"]
+    assert fila["correo_contacto"] == "x@import.local"  # first-non-empty backfill is kept
+    assert _flags_de(fila) == (False, "activo")
+
+
+def test_survflags_empty_correo_non_person_survivor_backfilling_a_real_correo_keeps_its_flag():
+    """The mirror image: the flag came from the survivor's own bundle flag; a real correo backfilled from
+    the loser does not cure it."""
+    main = [
+        _entrada(cedula_key="7000001", nombre_norm="ana uno", nombre="Ana Uno", no_persona=True),
+        _entrada(cedula_key="7000002", nombre_norm="ana uno", nombre="Ana Uno", correo="ana@example.com"),
+    ]
+    stickers = [_sticker("7000001", fecha_creacion="2026-09-11T00:00:00Z")]
+    fila = _by_key(_depurar(main=main, stickers=stickers))["7000001"]
+    assert fila["correo_contacto"] == "ana@example.com"
+    assert _flags_de(fila) == (True, "no_persona")
+
+
+def test_survflags_both_non_person_and_both_real_are_unchanged():
+    both_bad = [  # a código keeps the pair out of GRUPO-EXTERNOS so the row is observable
+        _entrada(cedula_key="7000001", nombre_norm="ana uno", nombre="Ana Uno", correo="a@import.local", codigo="041"),
+        _entrada(cedula_key="7000002", nombre_norm="ana uno", nombre="Ana Uno", correo="b@import.local"),
+    ]
+    both_ok = [
+        _entrada(cedula_key="7000001", nombre_norm="ana uno", nombre="Ana Uno", correo="a@example.com"),
+        _entrada(cedula_key="7000002", nombre_norm="ana uno", nombre="Ana Uno", correo="b@example.com"),
+    ]
+    assert list(_by_key(_depurar(main=both_bad)).values())[0]["no_persona"] is True
+    assert list(_by_key(_depurar(main=both_ok)).values())[0]["no_persona"] is False
+
+
+def test_survflags_chain_of_three_keeps_the_survivor_flag_in_every_order():
+    """One real survivor, a bundle-flagged loser and an `@import.local` loser (a chain of three)."""
+    filas = [
+        _entrada(cedula_key="7000001", nombre_norm="ana uno", nombre="Ana Uno", correo="ana@example.com", codigo="041"),
+        _entrada(cedula_key="7000002", nombre_norm="ana uno", nombre="Ana Uno", no_persona=True),
+        _entrada(cedula_key="7000003", nombre_norm="ana uno", nombre="Ana Uno", correo="z@import.local"),
+    ]
+    for orden in itertools.permutations(filas):
+        resultado = _depurar(main=orden)
+        assert list(_by_key(resultado)) == ["7000001"]
+        fila = _by_key(resultado)["7000001"]
+        assert _flags_de(fila) == (False, "activo")
+        assert sorted(fila["cedulas_unificadas"]) == ["7000002", "7000003"]
+
+
+def test_survflags_chain_of_three_with_a_non_person_survivor_stays_a_non_person_in_every_order():
+    filas = [
+        _entrada(cedula_key="7000001", nombre_norm="ana uno", nombre="Ana Uno", no_persona=True),
+        _entrada(cedula_key="7000002", nombre_norm="ana uno", nombre="Ana Uno", correo="a@example.com"),
+        _entrada(cedula_key="7000003", nombre_norm="ana uno", nombre="Ana Uno", correo="b@example.com"),
+    ]
+    stickers = [_sticker("7000001", fecha_creacion="2026-09-11T00:00:00Z")]
+    for orden in itertools.permutations(filas):
+        fila = _by_key(_depurar(main=orden, stickers=stickers))["7000001"]
+        assert _flags_de(fila) == (True, "no_persona")
+
+
+def test_survflags_roster_survivor_with_a_flagged_main_duplicate_stays_a_person():
+    """Firestore-backed roster profile (with its own clean `main` row) + a flagged `main` row of the same
+    name under another cédula."""
+    roster = {"7000001": _roster_entry("7000001", "Ana Uno", correo="ana@example.com", codigo="041")}
+    main = [
+        _entrada(cedula_key="7000001", nombre_norm="ana uno", nombre="Ana Uno", correo="ana@example.com"),
+        _entrada(cedula_key="7000002", nombre_norm="ana uno", nombre="Ana Uno", correo="x@import.local",
+                 no_persona=True),
+    ]
+    fila = _by_key(_depurar(roster=roster, main=main))["7000001"]
+    assert _flags_de(fila) == (False, "activo")
+
+
+def test_survflags_unificar_duplicados_leaves_every_survivor_flag_untouched_and_the_input_intact():
+    for own in (True, False):
+        for ref_survivor in (True, False):
+            for loser_flag in (True, False):
+                survivor = _perfil("A", "juan perez", ultimo_sticker=date(2026, 8, 1), correo="a@example.com",
+                                   es_cuenta_no_persona=own, no_persona_ref=ref_survivor)
+                perdedor = _perfil("B", "juan perez", correo="b@import.local", es_cuenta_no_persona=loser_flag,
+                                   no_persona_ref=loser_flag)
+                resultado, _ = dep.unificar_duplicados({"A": survivor, "B": perdedor})
+                assert resultado["A"].es_cuenta_no_persona is own
+                assert resultado["A"].no_persona_ref is ref_survivor
+                assert perdedor.no_persona_ref is loser_flag  # the loser (an input) is never touched
 
 
 # ── W6: unparseable creado_en is blank in the survivor tie-break ────────────

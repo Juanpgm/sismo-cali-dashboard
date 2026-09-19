@@ -15,6 +15,9 @@ randomized corpus (no new dependency: `random.Random(seed)`):
     INV-5  a keeper never ends with an empty código because of the pass that cleared the
            other holders (unless a review item says where the código went).
     INV-6  no `activo` row without a código (D7: `activo` is driven by the código alone).
+    INV-7  a merge never changes the survivor's own flags (D-SURVFLAGS): every output row's
+           `no_persona` and `cedula_sospechosa` equal the flags its OWN profile had before the
+           D-P2 unification (a loser's flag or a backfilled correo never flips them).
 
 plus "no exception, no input mutation". A failure message carries the SEED and a minimal
 description; rebuild the input with `_generar(random.Random(seed))`.
@@ -358,6 +361,48 @@ def test_inv6_no_activo_row_without_a_codigo(corpus):
             if fila["estado_sugerido"] == "activo" and (not fila["codigo"] or fila["codigo"] != fila["codigo"].strip()):
                 yield f"INV-6: row {fila['identidad_key']!r} is activo with codigo {fila['codigo']!r}"
     _ok(_fallos(corpus, comprobar))
+
+
+# ── INV-7 ────────────────────────────────────────────────────────────────────
+
+
+def _banderas_previas(entrada: dict) -> dict[str, tuple[bool, bool]]:
+    """`{identidad_key: (es_cuenta_no_persona, cedula_sospechosa)}` of every profile as it stands
+    BEFORE the D-P2 unification (stage 1 + remap), i.e. each row's own flags."""
+    perfiles, _ = dep.fusionar_identidad(entrada["stickers"], entrada["roster_by_cedula"], entrada["referencia"])
+    perfiles, _ = dep.remapear_codigos(perfiles, entrada["referencia"])
+    return {clave: (p.es_cuenta_no_persona, p.cedula_sospechosa) for clave, p in perfiles.items()}
+
+
+def test_inv7_a_merge_never_changes_the_survivors_own_flags(corpus):
+    def comprobar(caso):
+        previas = _banderas_previas(caso.entrada)
+        for fila in caso.resultado.inspectores:
+            propias = previas.get(fila["identidad_key"])
+            if propias is None:
+                yield f"INV-7: output row {fila['identidad_key']!r} has no pre-unification profile"
+            elif (fila["no_persona"], fila["cedula_sospechosa"]) != propias:
+                yield (f"INV-7: row {fila['identidad_key']!r} ends with (no_persona, cedula_sospechosa)="
+                       f"{(fila['no_persona'], fila['cedula_sospechosa'])} but its own flags were {propias}")
+    _ok(_fallos(corpus, comprobar))
+
+
+def test_inv7_corpus_really_exercises_a_flagged_loser_merged_into_a_clean_survivor(corpus):
+    """Anti-vacuity: the corpus contains merges where the loser carried a flag the survivor does not."""
+    hallazgos = 0
+    for caso in corpus:
+        if caso.resultado is None or not any(f["cedulas_unificadas"] for f in caso.resultado.inspectores):
+            continue
+        perfiles, _ = dep.fusionar_identidad(caso.entrada["stickers"], caso.entrada["roster_by_cedula"],
+                                             caso.entrada["referencia"])
+        perfiles, _ = dep.remapear_codigos(perfiles, caso.entrada["referencia"])
+        finales = {f["identidad_key"]: f for f in caso.resultado.inspectores}
+        _, fusiones = dep.unificar_duplicados(perfiles)
+        for fusion in fusiones:
+            survivor, perdedor = perfiles[fusion["survivor"]], perfiles[fusion["perdedor"]]
+            if perdedor.es_cuenta_no_persona and not survivor.es_cuenta_no_persona and fusion["survivor"] in finales:
+                hallazgos += 1
+    assert hallazgos >= 3, hallazgos
 
 
 # ── hostile shapes: None / NaN everywhere still satisfies the invariants ─────

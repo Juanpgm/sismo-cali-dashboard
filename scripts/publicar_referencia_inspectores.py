@@ -111,13 +111,21 @@ def _cedula_key(row: dict, *columnas: str) -> str:
     return ""
 
 
+def _nombre_norm_vercel(row: dict) -> str:
+    """The Vercel row's normalized name. A pandas NaN is truthy, so `nombre_completo or nombre` used to hand the
+    float over to `normalizar_nombre` (`str(nan)` -> "nan"): two rows with a missing name would then look like the
+    same person. `_limpiar` maps every missing marker to "" first, so a blank `nombre_completo` falls back to
+    `nombre` and a name that is blank in both is "" (which never pairs, see `_codigos_duplicados`)."""
+    return normalizar_nombre(_limpiar(row.get("nombre_completo")) or _limpiar(row.get("nombre")))
+
+
 def _fila_vercel(row: dict) -> dict[str, Any] | None:
     cedula_key = _cedula_key(row, "identificacion", "cedula")
     if not cedula_key:
         return None
     return {
         "cedula_key": cedula_key,
-        "nombre_norm": normalizar_nombre(row.get("nombre_completo") or row.get("nombre")),
+        "nombre_norm": _nombre_norm_vercel(row),
         "np": _limpiar(row.get("NP")),
         "entidad": _limpiar(row.get("entidad")),
         "codigo": _campo_id(row, "codigo"),
@@ -166,19 +174,38 @@ def _fila_main(row: dict) -> dict[str, Any] | None:
     }
 
 
-def _codigos_duplicados(vercel_rows: list[dict]) -> list[str]:
-    """D-P1: a `codigo` shared by 2+ DIFFERENT Vercel identities is excluded
-    from remap and routed to manual review. `remapear_codigos` (Phase 2)
-    ALSO detects this dynamically at runtime from `referencia.vercel`
-    itself — this list is a convenience default an operator can hand-edit
-    for cases the raw Vercel export alone wouldn't reveal (e.g. a code
-    known duplicated against a system this CLI never reads)."""
+def _codigos_duplicados(vercel_rows: list[dict], sin_cedula: list[dict] | tuple = ()) -> list[str]:
+    """D-P1: the codes excluded from remap and routed to manual review, the union of two rules:
+
+    1. a `codigo` shared by 2+ DIFFERENT Vercel cedulas (the original rule), and
+    2. every `codigo` of a Vercel row whose `nombre_norm` occurs 2+ times among the Vercel rows: the notebook's
+       `dup_vercel` (`vercel["nombre_norm"].duplicated(keep=False)`, cell 30), whose codes (`codigos_dup_v`, cell 67)
+       have their remap OMITTED. A person registered twice in Vercel (two cedulas, two codes) is not one
+       "code on two cedulas", so rule 1 alone never listed them (live parity run 2026-09-19: 097, 116, 123, 127,
+       147, 148; 368/372 on the `codigo` column). Rows are counted, so a re-exported identical row pairs too.
+
+    `sin_cedula` are the rows `construir_bundle` dropped for lacking a cedula (`{"nombre_norm", "codigo"}`): the
+    notebook's frame keeps them, so they stay in the name count (a name twin of a cedula-less row is a duplicate)
+    and their own code is listed, but they never reach `bundle["vercel"]`.
+
+    Empty names never pair (two blank names are not one person) and blank codes are ignored. Codes are kept as
+    exact strings ("097" and "97" are two codes, like the engine compares them); the result is sorted and
+    deduplicated. `remapear_codigos` ALSO detects a repeated Vercel code at runtime; this list additionally
+    carries what the runtime cannot see (the name rule needs the names, and an operator may hand-edit it)."""
     por_codigo: dict[str, set[str]] = {}
-    for fila in vercel_rows:
-        codigo = fila.get("codigo")
-        if codigo:
+    por_nombre: dict[str, list[str]] = {}
+    for fila in (*vercel_rows, *sin_cedula):
+        codigo = fila.get("codigo") or ""
+        nombre = fila.get("nombre_norm") or ""
+        if nombre:
+            por_nombre.setdefault(nombre, []).append(codigo)
+        if codigo and fila.get("cedula_key"):
             por_codigo.setdefault(codigo, set()).add(fila["cedula_key"])
-    return sorted(codigo for codigo, cedulas in por_codigo.items() if len(cedulas) >= 2)
+    duplicados = {codigo for codigo, cedulas in por_codigo.items() if len(cedulas) >= 2}
+    for codigos in por_nombre.values():
+        if len(codigos) >= 2:
+            duplicados.update(codigo for codigo in codigos if codigo)
+    return sorted(duplicados)
 
 
 def construir_bundle(
@@ -193,7 +220,10 @@ def construir_bundle(
     argument is a plain list of dicts (e.g. `DataFrame.to_dict("records")`),
     never a DataFrame directly, so this stays testable with small
     list-of-dict fixtures — no pandas/file I/O needed in unit tests."""
-    vercel_rows = [f for f in (_fila_vercel(r) for r in vercel_records) if f is not None]
+    vercel_filas = [(r, _fila_vercel(r)) for r in vercel_records]
+    vercel_rows = [f for _, f in vercel_filas if f is not None]
+    vercel_sin_cedula = [{"nombre_norm": _nombre_norm_vercel(r), "codigo": _campo_id(r, "codigo")}
+                         for r, f in vercel_filas if f is None]
     fase2_rows = [f for f in (_fila_fase2(r) for r in fase2_records) if f is not None]
     main_rows = [f for f in (_fila_main(r) for r in main_records) if f is not None]
     return {
@@ -209,7 +239,7 @@ def construir_bundle(
             "vercel": len(vercel_records) - len(vercel_rows),
             "fase2": len(fase2_records) - len(fase2_rows),
         },
-        "codigos_duplicados": _codigos_duplicados(vercel_rows),
+        "codigos_duplicados": _codigos_duplicados(vercel_rows, vercel_sin_cedula),
         "vercel": vercel_rows,
         "fase2": fase2_rows,
         "main": main_rows,

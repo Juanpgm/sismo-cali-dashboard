@@ -177,18 +177,20 @@ def test_construir_bundle_flags_codigo_shared_by_two_identities():
     assert bundle["codigos_duplicados"] == ["097"]
 
 
-def test_construir_bundle_same_identity_repeated_codigo_not_flagged_duplicate():
-    # Same cedula_key twice (e.g. re-exported row) must not falsely trigger
-    # the 2-DIFFERENT-identities rule.
+def test_construir_bundle_same_identity_repeated_codigo_does_not_trigger_the_two_cedulas_rule_but_the_name_rule():
+    # Same cedula_key twice (e.g. re-exported row) does not trigger the 2-DIFFERENT-cedulas rule; since the
+    # 2026-09-19 live parity run it IS listed by the notebook's name-duplicate rule (`dup_vercel` counts rows).
+    # A single row of that person is not listed by either rule.
     bundle = cli.construir_bundle(
         vercel_records=[
             {"identificacion": "111", "nombre_completo": "A", "codigo": "097"},
             {"identificacion": "111", "nombre_completo": "A", "codigo": "097"},
+            {"identificacion": "222", "nombre_completo": "B", "codigo": "052"},
         ],
         fase2_records=[], main_records=[],
         generado_en="2026-09-16", origen={},
     )
-    assert bundle["codigos_duplicados"] == []
+    assert bundle["codigos_duplicados"] == ["097"]
 
 
 # --- main rows: no_persona heuristic reused from inspectores_depuracion ---
@@ -481,8 +483,9 @@ def test_construir_bundle_duplicate_cedulas_stay_exact_and_are_kept_per_row():
     ])
     assert [f["cedula_key"] for f in bundle["vercel"]] == ["31837630", "31837630"]
     assert [f["codigo"] for f in bundle["vercel"]] == ["021", "021"]
-    # same identity twice -> NOT a shared-by-two-identities duplicate
-    assert bundle["codigos_duplicados"] == []
+    # same identity twice: not a shared-by-two-cedulas duplicate, but the name rule (notebook `dup_vercel`, counts
+    # rows) lists it since the 2026-09-19 live parity run. Updated on purpose (was: []).
+    assert bundle["codigos_duplicados"] == ["021"]
 
 
 # --- Extension 2026-09-19 (PR 06): main rows emit the optional fields -------
@@ -757,3 +760,216 @@ def test_cli_creado_en_iso_dates_stay_byte_identical_through_round_trip(fecha):
     )
     assert bundle["main"][0]["creado_en"] == fecha
     assert ir.parse_bundle(bundle).main[0].creado_en == fecha
+
+
+# ── D-P1 (2026-09-19 live parity run): the notebook's name-duplicate rule ────
+# The notebook (`dup_vercel`, cell 30) lists every Vercel row whose `nombre_norm` occurs 2+ times and OMITS the
+# remap of every one of their codes. The publisher used to derive the list from "one code, 2+ cedulas" only, so a
+# person registered twice in Vercel (two cedulas, two codes) never reached `codigos_duplicados`.
+
+
+def _vercel(cedula, nombre, codigo, **extra):
+    return {"identificacion": cedula, "nombre_completo": nombre, "codigo": codigo, **extra}
+
+
+def _dup(*records):
+    return cli.construir_bundle(
+        vercel_records=list(records), fase2_records=[], main_records=[],
+        generado_en="2026-09-19", origen={},
+    )["codigos_duplicados"]
+
+
+def test_dup_name_person_registered_twice_lists_both_codes():
+    assert _dup(_vercel("111", "Adan Duran", "097"), _vercel("112", "Adan Duran", "127")) == ["097", "127"]
+
+
+def test_dup_name_unique_names_are_not_listed():
+    assert _dup(_vercel("111", "Ana Uno", "041"), _vercel("222", "Beto Dos", "052")) == []
+
+
+def test_dup_name_three_rows_of_the_same_person_list_all_three_codes():
+    assert _dup(
+        _vercel("111", "Adan Duran", "097"), _vercel("112", "Adan Duran", "127"), _vercel("113", "Adan Duran", "148"),
+        _vercel("999", "Otra Persona", "010"),
+    ) == ["097", "127", "148"]
+
+
+def test_dup_name_result_is_sorted_and_deduplicated():
+    assert _dup(
+        _vercel("1", "Zeta Uno", "200"), _vercel("2", "Zeta Uno", "100"),
+        _vercel("3", "Alfa Uno", "100"), _vercel("4", "Alfa Uno", "300"),
+    ) == ["100", "200", "300"]
+
+
+@pytest.mark.parametrize("nombre", ["", "   ", None, float("nan"), "\t\n"])
+def test_dup_name_empty_names_never_pair(nombre):
+    # two blank/None/NaN names are not the same person; pandas hands a missing cell over as NaN, and the string
+    # "nan" must never become a name that pairs two unrelated rows.
+    assert _dup(_vercel("111", nombre, "041"), _vercel("222", nombre, "052")) == []
+
+
+def test_dup_name_a_blank_nombre_completo_falls_back_to_nombre_and_still_pairs_by_it():
+    assert _dup(
+        {"identificacion": "111", "nombre_completo": float("nan"), "nombre": "Adan Duran", "codigo": "097"},
+        _vercel("112", "Adan Duran", "127"),
+    ) == ["097", "127"]
+
+
+def test_dup_name_accents_case_and_spacing_are_normalized_before_pairing():
+    assert _dup(_vercel("111", "ADÁN  Durán", "097"), _vercel("112", "adan duran", "127")) == ["097", "127"]
+
+
+def test_dup_name_zero_padded_codes_are_never_conflated():
+    # "097" and "97" are two different strings: both are kept verbatim (the engine compares exact text)
+    assert _dup(_vercel("111", "Adan Duran", "097"), _vercel("112", "Adan Duran", "97")) == ["097", "97"]
+    assert _dup(_vercel("111", "Ana Uno", "097"), _vercel("222", "Beto Dos", "97")) == []
+
+
+def test_dup_name_blank_codes_are_ignored_but_the_other_code_of_the_pair_is_listed():
+    assert _dup(_vercel("111", "Adan Duran", ""), _vercel("112", "Adan Duran", "127")) == ["127"]
+    assert _dup(_vercel("111", "Adan Duran", "  "), _vercel("112", "Adan Duran", None)) == []
+
+
+def test_dup_name_float_tail_codes_are_normalized_like_the_rows_themselves():
+    assert _dup(_vercel("111", "Adan Duran", "97.0"), _vercel("112", "Adan Duran", "127.0")) == ["127", "97"]
+
+
+def test_dup_name_keeps_the_existing_rule_one_code_on_two_cedulas():
+    assert _dup(_vercel("111", "Ana Uno", "097"), _vercel("222", "Beto Dos", "097"), _vercel("3", "Cy Tres", "010")) == ["097"]
+
+
+def test_dup_name_both_rules_together_are_merged():
+    assert _dup(
+        _vercel("111", "Ana Uno", "041"), _vercel("222", "Beto Dos", "041"),  # one code, two cedulas
+        _vercel("333", "Adan Duran", "097"), _vercel("334", "Adan Duran", "127"),  # one person, two codes
+    ) == ["041", "097", "127"]
+
+
+def test_dup_name_an_exact_repeated_row_is_a_name_duplicate_like_in_the_notebook():
+    # `dup_vercel` counts ROWS: a re-exported identical row is listed (it was omitted from the remap in the notebook,
+    # and the engine excludes a repeated Vercel code anyway). Updated on purpose (was: not flagged).
+    assert _dup(_vercel("111", "A", "097"), _vercel("111", "A", "097")) == ["097"]
+
+
+def test_dup_name_rows_without_a_cedula_still_pair_by_name_like_in_the_notebook():
+    # The notebook's `vercel` frame keeps rows with no cedula; the bundle drops them (`descartados_sin_cedula`).
+    # They stay in the name count, so the name-twin that HAS a cedula is excluded from the remap too, and the
+    # dropped row's own code is listed (the notebook listed it), while it never reaches `bundle["vercel"]`.
+    bundle = cli.construir_bundle(
+        vercel_records=[_vercel("", "Adan Duran", "097"), _vercel("112", "Adan Duran", "127")],
+        fase2_records=[], main_records=[], generado_en="2026-09-19", origen={},
+    )
+    assert bundle["codigos_duplicados"] == ["097", "127"]
+    assert [f["codigo"] for f in bundle["vercel"]] == ["127"]
+    assert bundle["descartados_sin_cedula"]["vercel"] == 1
+
+
+def test_dup_name_a_lone_row_without_a_cedula_pairs_with_nobody():
+    assert _dup(_vercel("", "Adan Duran", "097"), _vercel("112", "Beto Dos", "127")) == []
+
+
+def test_dup_name_main_and_fase2_names_never_feed_the_vercel_rule():
+    bundle = cli.construir_bundle(
+        vercel_records=[_vercel("111", "Adan Duran", "097")],
+        fase2_records=[{"identificacion": "112", "nombre_completo": "Adan Duran"}],
+        main_records=[{"cedula": "113", "nombre": "Adan Duran", "codigoInspector": "127"}],
+        generado_en="2026-09-19", origen={},
+    )
+    assert bundle["codigos_duplicados"] == []
+
+
+def test_dup_name_bundle_round_trips_through_json_and_parse_bundle_with_the_codes_intact():
+    bundle = cli.construir_bundle(
+        vercel_records=[_vercel("111", "Adan Duran", "097"), _vercel("112", "Adan Duran", "127"),
+                        _vercel("113", "Ana Uno", "010")],
+        fase2_records=[], main_records=[], generado_en="2026-09-19", origen={},
+    )
+    validado = ir.parse_bundle(json.loads(json.dumps(bundle, ensure_ascii=False)))
+    assert validado is not None
+    assert validado.codigos_duplicados == ("097", "127")  # strings, leading zero kept, sorted
+
+
+def test_dup_name_a_large_export_stays_fast_and_exact():
+    import time
+
+    filas = [_vercel(str(1_000_000 + i), f"Persona {i // 2}", f"{i:03d}") for i in range(20_000)]  # 10,000 pairs
+    inicio = time.perf_counter()
+    listados = _dup(*filas)
+    assert time.perf_counter() - inicio < 2.0
+    assert len(listados) == 20_000 and listados == sorted(set(listados))
+
+
+def test_dup_name_the_real_notebook_case_lists_the_six_codes_of_the_three_people():
+    # the shape of the live run: 6 codes of Vercel rows whose person is duplicated by name
+    filas = [_vercel(f"90{i}", "Adan Duran Yomayusa", c) for i, c in enumerate(("097", "127"))]
+    filas += [_vercel(f"91{i}", "Ana Maria Ejemplo", c) for i, c in enumerate(("116", "123"))]
+    filas += [_vercel(f"92{i}", "Beto Sin Repetir", c) for i, c in enumerate(("050",))]
+    filas += [_vercel(f"93{i}", "Carla Otra Persona", c) for i, c in enumerate(("147", "148"))]
+    assert _dup(*filas) == ["097", "116", "123", "127", "147", "148"]
+
+
+# End to end (design D-P1 + the publisher fix): publisher output -> parse_bundle -> depurar. The 486/660 shape: the
+# Vercel owner of code 148 is listed under two cedulas (one person, two codes), and 148 is held in `main` by a
+# DIFFERENT person. The notebook omitted the remap, so the holder keeps 148 and the Vercel owner gets nothing.
+
+
+def _e2e_bundle(codigos_duplicados_override=None):
+    from datetime import date  # noqa: F401  (kept local: only this block runs the engine)
+
+    bundle = cli.construir_bundle(
+        vercel_records=[
+            _vercel("1000000486", "Ivan Ejemplo Rojas", "148"),
+            _vercel("1000000487", "Ivan Ejemplo Rojas", "097"),  # the same person under a second cedula and code
+        ],
+        fase2_records=[],
+        main_records=[
+            {"cedula": "1000000660", "nombre": "Beto Otro Distinto", "codigoInspector": "148"},  # the wrong holder
+            {"cedula": "1000000486", "nombre": "Ivan Ejemplo Rojas"},
+        ],
+        generado_en="2026-09-19", origen={},
+    )
+    if codigos_duplicados_override is not None:
+        bundle["codigos_duplicados"] = codigos_duplicados_override
+    return ir.parse_bundle(json.loads(json.dumps(bundle)))
+
+
+def _e2e_depurar(referencia, roster=None):
+    from datetime import date
+
+    from app.services import inspectores_depuracion as dep
+
+    return dep.depurar(stickers=[], roster_by_cedula=roster or {}, nombres_survey=[], referencia=referencia,
+                       hoy=date(2026, 9, 19))
+
+
+def _codigos_por_clave(depurado):
+    return {r["identidad_key"]: r["codigo"] for r in depurado.inspectores}
+
+
+def test_d_p1_end_to_end_published_name_duplicate_code_is_skipped_and_the_holder_keeps_it():
+    referencia = _e2e_bundle()
+    assert referencia.codigos_duplicados == ("097", "148")
+    depurado = _e2e_depurar(referencia)
+    assert _codigos_por_clave(depurado)["1000000660"] == "148"  # the holder keeps it
+    assert _codigos_por_clave(depurado)["1000000486"] == ""  # the Vercel owner is NOT assigned it (notebook parity)
+    motivos = {i["motivo"] for i in depurado.revision_manual}
+    assert not motivos & {"remap_sin_duenio", "remap_conflicto", "codigo_reemplazado", "remap_mismos_titulares"}
+
+
+def test_d_p1_end_to_end_without_the_name_duplicate_rule_the_holder_would_lose_the_code():
+    # the pre-fix bundle (`codigos_duplicados: []`): the engine clears the holder and assigns the owner (the live
+    # ***660 / ***486 divergence). This pins that the publisher list is what makes the difference.
+    depurado = _e2e_depurar(_e2e_bundle(codigos_duplicados_override=[]))
+    assert _codigos_por_clave(depurado)["1000000660"] == ""
+    assert _codigos_por_clave(depurado)["1000000486"] == "148"
+
+
+def test_d_p1_end_to_end_a_prelisted_code_held_by_two_profiles_emits_codigo_vercel_duplicado_with_its_holders():
+    roster = {
+        "a": {"identificacion": "1000000660", "nombre_completo": "Beto Otro Distinto", "codigo": "148"},
+        "b": {"identificacion": "1000000661", "nombre_completo": "Carla Tercera Persona", "codigo": "148"},
+    }
+    depurado = _e2e_depurar(_e2e_bundle(), roster=roster)
+    items = [i for i in depurado.revision_manual if i["motivo"] == "codigo_vercel_duplicado"]
+    assert [(i["codigo"], i["identidad_keys_titulares"]) for i in items] == [("148", ["1000000660", "1000000661"])]
+    assert _codigos_por_clave(depurado)["1000000660"] == "148" and _codigos_por_clave(depurado)["1000000661"] == "148"
