@@ -78,8 +78,21 @@ def _limpiar(value: object) -> str:
     return str(value).strip()
 
 
+_SUFIJO_DECIMAL_CERO = re.compile(r"^(\d+)\.0+$")
+
+
+def _sin_sufijo_decimal(texto: str) -> str:
+    """Turns "31837630.0" into "31837630". A float-typed cell (Excel numeric, or a
+    pandas column inferred as float64 because of one blank) stringifies with a
+    ".0" tail; stripping non-digits from that would append a spurious "0".
+    Only a PURE decimal-zero tail is dropped: "1.234.567" and "3.5" are left
+    untouched. Leading zeros are never added or removed here."""
+    coincidencia = _SUFIJO_DECIMAL_CERO.match(texto)
+    return coincidencia.group(1) if coincidencia else texto
+
+
 def _solo_digitos(value: object) -> str:
-    return re.sub(r"\D", "", _limpiar(value))
+    return re.sub(r"\D", "", _sin_sufijo_decimal(_limpiar(value)))
 
 
 def _cedula_key(row: dict, *columnas: str) -> str:
@@ -99,7 +112,7 @@ def _fila_vercel(row: dict) -> dict[str, Any] | None:
         "nombre_norm": normalizar_nombre(row.get("nombre_completo") or row.get("nombre")),
         "np": _limpiar(row.get("NP")),
         "entidad": _limpiar(row.get("entidad")),
-        "codigo": _limpiar(row.get("codigo")),
+        "codigo": _sin_sufijo_decimal(_limpiar(row.get("codigo"))),
     }
 
 
@@ -176,10 +189,14 @@ def construir_bundle(
 
 
 def _leer_tabla(path: Path) -> list[dict]:
+    # dtype=str is load-bearing: identifier columns (identificacion, cedula,
+    # codigo) must never be float-inferred — a single blank turns the whole
+    # column into float64 ("31837630" -> 31837630.0) and strips leading zeros
+    # ("021" -> 21). Blanks stay NaN; `_limpiar` maps them to "".
     if path.suffix.lower() in (".xlsx", ".xls"):
-        df = pd.read_excel(path)
+        df = pd.read_excel(path, dtype=str)
     else:
-        df = pd.read_csv(path)
+        df = pd.read_csv(path, dtype=str)
     return df.to_dict("records")
 
 

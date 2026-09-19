@@ -242,3 +242,175 @@ def test_main_dry_run_reads_real_fixture_files(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Bundle valido" in out
     assert "no se sube nada" in out
+
+
+# --- regression: identifier columns must never be float-inferred ----------
+#
+# A column like `identificacion` holding ONE blank is inferred as float64 by
+# pandas, turning 31837630 into 31837630.0; stripping non-digits then yields
+# 318376300 (spurious trailing 0), and `codigo` "021" loses its leading zero.
+# `_leer_tabla` must read everything as text, and the digit helpers must be
+# robust to a float-ish "NNN.0" that still reaches them (e.g. an Excel cell
+# stored as a float).
+
+
+def _bundle_desde_vercel(records):
+    return cli.construir_bundle(
+        vercel_records=records, fase2_records=[], main_records=[],
+        generado_en="2026-09-16", origen={},
+    )
+
+
+def _escribir_tabla(path, filas, columnas):
+    import pandas as pd
+
+    df = pd.DataFrame(filas, columns=columnas)
+    if path.suffix == ".xlsx":
+        df.to_excel(path, index=False)
+    else:
+        df.to_csv(path, index=False)
+
+
+@pytest.mark.parametrize("sufijo", [".csv", ".xlsx"])
+def test_leer_tabla_cedula_and_codigo_survive_a_blank_row_in_the_column(tmp_path, sufijo):
+    ruta = tmp_path / f"vercel{sufijo}"
+    _escribir_tabla(
+        ruta,
+        [
+            ["31837630", "Ana Uno", "021"],
+            [None, "Sin Cedula", "022"],
+            ["7552410", "Beto Dos", "058"],
+            ["1024591312", "Caro Tres", "101"],
+        ],
+        ["identificacion", "nombre_completo", "codigo"],
+    )
+
+    bundle = _bundle_desde_vercel(cli._leer_tabla(ruta))
+
+    claves = [f["cedula_key"] for f in bundle["vercel"]]
+    assert claves == ["31837630", "7552410", "1024591312"]  # blank row dropped, no digit gained/lost
+    assert [f["codigo"] for f in bundle["vercel"]] == ["021", "058", "101"]  # leading zeros intact
+
+
+@pytest.mark.parametrize("sufijo", [".csv", ".xlsx"])
+def test_leer_tabla_main_cedula_with_blank_row_keeps_exact_digits(tmp_path, sufijo):
+    ruta = tmp_path / f"main{sufijo}"
+    _escribir_tabla(
+        ruta,
+        [["31837630", "Ana Uno", "a@x.co"], [None, "Sin Cedula", "b@x.co"], ["66826632", "Beto", "c@x.co"]],
+        ["cedula", "nombre", "correo"],
+    )
+
+    bundle = cli.construir_bundle(
+        vercel_records=[], fase2_records=[], main_records=cli._leer_tabla(ruta),
+        generado_en="2026-09-16", origen={},
+    )
+
+    assert [f["cedula_key"] for f in bundle["main"]] == ["31837630", "66826632"]
+
+
+def test_leer_tabla_csv_preserves_leading_zero_cedula_and_long_ids(tmp_path):
+    ruta = tmp_path / "vercel.csv"
+    ruta.write_text(
+        "identificacion,nombre_completo,codigo\n"
+        "0012345,Con Ceros,007\n"
+        "12345678901234567890,Id Larguisimo,008\n"
+        ",Sin Cedula,009\n",
+        encoding="utf-8",
+    )
+
+    bundle = _bundle_desde_vercel(cli._leer_tabla(ruta))
+
+    assert [f["cedula_key"] for f in bundle["vercel"]] == ["0012345", "12345678901234567890"]
+    assert [f["codigo"] for f in bundle["vercel"]] == ["007", "008"]
+
+
+def test_leer_tabla_xlsx_long_text_id_keeps_every_digit(tmp_path):
+    ruta = tmp_path / "vercel.xlsx"
+    _escribir_tabla(
+        ruta, [["12345678901234567890", "Id Larguisimo", "008"]],
+        ["identificacion", "nombre_completo", "codigo"],
+    )
+
+    bundle = _bundle_desde_vercel(cli._leer_tabla(ruta))
+
+    assert bundle["vercel"][0]["cedula_key"] == "12345678901234567890"
+
+
+def test_leer_tabla_xlsx_mixed_int_and_text_cells_in_one_column(tmp_path):
+    ruta = tmp_path / "vercel.xlsx"
+    _escribir_tabla(
+        ruta,
+        [[31837630, "Ana Uno", 21], ["0012345", "Con Ceros", "021"], [None, "Sin", ""], ["7552410", "Beto", "058"]],
+        ["identificacion", "nombre_completo", "codigo"],
+    )
+
+    bundle = _bundle_desde_vercel(cli._leer_tabla(ruta))
+
+    assert [f["cedula_key"] for f in bundle["vercel"]] == ["31837630", "0012345", "7552410"]
+    # an int cell has no leading zero to preserve; the text cell keeps its own
+    assert [f["codigo"] for f in bundle["vercel"]] == ["21", "021", "058"]
+
+
+def test_leer_tabla_xlsx_float_cell_never_gains_a_trailing_zero(tmp_path):
+    # Real numeric float cells (what Excel stores for a number typed into a
+    # column that also has a blank) must not become 318376300.
+    ruta = tmp_path / "vercel.xlsx"
+    _escribir_tabla(
+        ruta,
+        [[31837630.0, "Ana Uno", 21.0], [None, "Sin", None], [7552410.0, "Beto", 58.0]],
+        ["identificacion", "nombre_completo", "codigo"],
+    )
+
+    bundle = _bundle_desde_vercel(cli._leer_tabla(ruta))
+
+    assert [f["cedula_key"] for f in bundle["vercel"]] == ["31837630", "7552410"]
+    assert [f["codigo"] for f in bundle["vercel"]] == ["21", "58"]
+
+
+@pytest.mark.parametrize(
+    "crudo, esperado",
+    [
+        ("31837630.0", "31837630"),
+        ("31837630.00", "31837630"),
+        (31837630.0, "31837630"),
+        ("0012345", "0012345"),
+        ("1.234.567", "1234567"),  # thousands separators still stripped
+        ("31.837.630", "31837630"),
+        ("CC 31837630", "31837630"),
+        ("  31837630  ", "31837630"),
+    ],
+)
+def test_cedula_key_decimal_zero_suffix_is_dropped_not_appended(crudo, esperado):
+    assert cli._cedula_key({"identificacion": crudo}, "identificacion") == esperado
+
+
+@pytest.mark.parametrize("crudo", [None, "", "   ", "abc", "N/A", "-", float("nan")])
+def test_cedula_key_blank_or_non_numeric_is_empty_never_zero(crudo):
+    assert cli._cedula_key({"identificacion": crudo}, "identificacion") == ""
+
+
+def test_fila_vercel_blank_or_junk_identificacion_is_dropped():
+    for crudo in (None, "", "   ", "abc", float("nan")):
+        assert cli._fila_vercel({"identificacion": crudo, "nombre_completo": "X", "codigo": "021"}) is None
+
+
+@pytest.mark.parametrize(
+    "crudo, esperado",
+    [("021", "021"), ("21.0", "21"), ("021.0", "021"), (21.0, "21"), ("  041 ", "041"),
+     ("A-12", "A-12"), (None, ""), (float("nan"), ""), ("3.5", "3.5")],
+)
+def test_fila_vercel_codigo_float_suffix_is_dropped_leading_zeros_kept(crudo, esperado):
+    fila = cli._fila_vercel({"identificacion": "111", "nombre_completo": "A", "codigo": crudo})
+    assert fila["codigo"] == esperado
+
+
+def test_construir_bundle_duplicate_cedulas_stay_exact_and_are_kept_per_row():
+    bundle = _bundle_desde_vercel([
+        {"identificacion": "31837630.0", "nombre_completo": "A", "codigo": "021"},
+        {"identificacion": "31837630", "nombre_completo": "A", "codigo": "021.0"},
+    ])
+    assert [f["cedula_key"] for f in bundle["vercel"]] == ["31837630", "31837630"]
+    assert [f["codigo"] for f in bundle["vercel"]] == ["021", "021"]
+    # same identity twice -> NOT a shared-by-two-identities duplicate
+    assert bundle["codigos_duplicados"] == []

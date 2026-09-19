@@ -228,3 +228,45 @@ def test_parity_no_persona_row_is_collapsed_not_standalone():
 def test_parity_no_unexpected_revision_manual_entries():
     resultado = _run()
     assert resultado.revision_manual == ()
+
+
+# --- Cédula join, not name fallback (live-parity regression) -----------------
+#
+# The roster (Firestore) name and the Vercel name for the SAME person can differ
+# completely. When the bundle's `cedula_key` is correct, the match is by cédula
+# and `en_vercel`/`codigo`/`entidad` resolve; a corrupted `cedula_key` would
+# silently fall through to the name fallback and (as here) miss entirely.
+# Fake data — no real identity.
+
+_CEDULA_JOIN = "71234567"
+
+
+def _run_cedula_join(vercel_cedula_key):
+    roster = {_CEDULA_JOIN: _roster(_CEDULA_JOIN, "jorge luis sanchez", "jls.ejemplo@example.com")}
+    referencia = ReferenciaBundle(
+        vercel=(_entrada(vercel_cedula_key, "jorge sanchez sierra", np="P1", entidad="SGRED", codigo="066"),),
+        fase2=(), main=(),
+        generado_en="2026-09-12", activa=True, motivo="", codigos_duplicados=(),
+    )
+    resultado = dep.depurar(
+        stickers=[], roster_by_cedula=roster, nombres_survey=[],
+        referencia=referencia, hoy=date(2026, 9, 12),
+    )
+    return {i["identidad_key"]: i for i in resultado.inspectores}[_CEDULA_JOIN]
+
+
+def test_parity_vercel_match_by_cedula_when_roster_and_vercel_names_differ():
+    inspector = _run_cedula_join(_CEDULA_JOIN)
+    assert inspector["codigo"] == "066"  # taken from Vercel, roster had none
+    assert inspector["entidad"] == "SGRED"
+    assert inspector["np"] == "P1"
+    assert "vercel" in inspector["fuente_dato"].split("+")
+    assert inspector["fuente_dato"] == "main+vercel"
+
+
+def test_parity_corrupted_cedula_key_does_not_resolve_via_name_fallback():
+    # Counter-proof: with the spurious-trailing-zero key the names differ too,
+    # so nothing matches — proving the case above is carried by the cédula join.
+    inspector = _run_cedula_join(_CEDULA_JOIN + "0")
+    assert inspector["codigo"] == ""
+    assert inspector["fuente_dato"] == "main"
