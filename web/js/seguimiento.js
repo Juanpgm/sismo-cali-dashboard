@@ -3155,15 +3155,15 @@ export function cellHtml(r, key, stickersLoaded) {
     case 'cedula': return stk(escapeHtml(r.cedula || 'Sin dato'));
     case 'tarjetaProfesional': return stk(escapeHtml(r.tarjetaProfesional || 'Sin dato'));
     case 'enfasis': {
-      // Free text of any length: the cell shows an ellipsis-truncated line (`.seg-enfasis`) and keeps the
-      // whole escaped text in the tooltip; nothing is sliced here, so copy/search/export keep the full value.
+      // Free text of any length: the cell wraps it (`.seg-enfasis`, the row grows, nothing is clipped) and
+      // keeps the whole escaped text in the tooltip; nothing is sliced here, so copy/search/export keep the full value.
       if (!stickersLoaded) return DASH;
       if (!r.enfasis) return 'Sin dato';
       const texto = escapeHtml(r.enfasis);
       return `<span class="seg-enfasis" title="${texto}">${texto}</span>`;
     }
     case 'profesion': {
-      // D-PROFESION: free text like énfasis: one ellipsis-truncated line (`.seg-profesion`), the whole escaped text in
+      // D-PROFESION: free text like énfasis: wrapped inside the cell (`.seg-profesion`), the whole escaped text in
       // the tooltip, nothing sliced or re-cased here (the registry has case/gender variants of the same profession).
       if (!stickersLoaded) return DASH;
       if (!r.profesion) return 'Sin dato';
@@ -3180,7 +3180,7 @@ export function cellHtml(r, key, stickersLoaded) {
     case 'avgStickersPerDay':
       return stickersLoaded ? (Number.isFinite(r.avgStickersPerDay) ? r.avgStickersPerDay : DASH) : DASH;
     case 'barriosActivos': {
-      // A comma-joined list that can be long: like Profesión/Énfasis, one ellipsis-truncated line (`.seg-barrios`)
+      // A comma-joined list that can be long: like Profesión/Énfasis, wrapped inside the cell (`.seg-barrios`)
       // with the whole escaped list in the tooltip; the text and the ', ' separator are exactly what they were.
       if (!stickersLoaded) return DASH;
       if (!(r.barriosActivos && r.barriosActivos.length)) return 'Sin dato';

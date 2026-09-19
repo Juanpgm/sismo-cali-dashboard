@@ -3105,7 +3105,7 @@ console.log('buildMassReportDocDefinition: 110-professional perf sanity (page br
   assert.equal(cellHtml(row, 'codigo', true), 'B1');
   assert.equal(cellHtml(row, 'cedula', true), '123');
   assert.equal(cellHtml(row, 'tarjetaProfesional', true), 'TP-9988');
-  // Confined like Profesión/Énfasis (a truncating span with the full list as tooltip); the visible text is unchanged.
+  // Wrapped like Profesión/Énfasis (a wrapping span with the full list as tooltip); the visible text is unchanged.
   assert.equal(cellHtml(row, 'barriosActivos', true), '<span class="seg-barrios" title="San Antonio">San Antonio</span>');
   assert.equal(cellHtml(row, 'barriosActivos', true).replace(/<[^>]*>/g, ''), 'San Antonio');
   assert.equal(cellHtml(row, 'activeDays', true), 3);
@@ -4821,17 +4821,19 @@ named('test_enfasis_cell_escapes_and_follows_the_sin_dato_convention', () => {
   assert.ok(title && !/[<>]/.test(title[1]) && !title[1].includes("'"), 'the title attribute is fully escaped');
 });
 
-named('test_enfasis_cell_long_text_is_confined_by_a_truncating_class', () => {
+named('test_enfasis_cell_long_text_wraps_inside_the_cell_and_is_never_truncated', () => {
+  // Owner decision 2026-09-19: nothing is clipped; the text wraps and the row grows (reverses the old ellipsis rule).
   const largo = cellHtml({ enfasis: ENFASIS_LARGO }, 'enfasis', true);
   assert.ok(largo.includes(ENFASIS_LARGO), 'the whole text stays reachable (tooltip / copy), never sliced in JS');
   assert.match(largo, /class="seg-enfasis"/);
   const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
   const rule = /\.seg-enfasis\s*\{([^}]*)\}/.exec(css);
   assert.ok(rule, 'styles.css defines .seg-enfasis');
-  assert.match(rule[1], /max-width\s*:/);
-  assert.match(rule[1], /overflow\s*:\s*hidden/);
-  assert.match(rule[1], /text-overflow\s*:\s*ellipsis/);
-  assert.match(rule[1], /white-space\s*:\s*nowrap/);
+  assert.match(rule[1], /white-space\s*:\s*normal/);
+  assert.match(rule[1], /overflow-wrap\s*:\s*break-word/);
+  assert.doesNotMatch(rule[1], /text-overflow\s*:\s*ellipsis/);
+  assert.doesNotMatch(rule[1], /overflow\s*:\s*hidden/);
+  assert.doesNotMatch(rule[1], /white-space\s*:\s*nowrap/);
 });
 
 named('test_enfasis_cell_is_left_aligned_including_the_plain_sin_dato_cells', () => {
@@ -5025,7 +5027,7 @@ named('test_profesion_cell_escapes_and_follows_the_sin_dato_convention', () => {
   assert.ok(title && !/[<>]/.test(title[1]) && !title[1].includes("'"), 'the title attribute is fully escaped');
 });
 
-named('test_profesion_cell_long_text_is_confined_by_a_truncating_class', () => {
+named('test_profesion_cell_long_text_wraps_inside_the_cell_and_is_never_truncated', () => {
   const largo = cellHtml({ profesion: PROFESION_LARGA }, 'profesion', true);
   assert.ok(largo.includes(PROFESION_LARGA), 'the whole text stays reachable (tooltip / copy), never sliced in JS');
   assert.match(largo, /class="seg-profesion"/);
@@ -5033,10 +5035,11 @@ named('test_profesion_cell_long_text_is_confined_by_a_truncating_class', () => {
   const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
   const rule = /([^{}]*\.seg-profesion[^{}]*)\{([^}]*)\}/.exec(css);
   assert.ok(rule, 'styles.css defines .seg-profesion');
-  assert.match(rule[2], /max-width\s*:\s*24ch/);
-  assert.match(rule[2], /overflow\s*:\s*hidden/);
-  assert.match(rule[2], /text-overflow\s*:\s*ellipsis/);
-  assert.match(rule[2], /white-space\s*:\s*nowrap/);
+  assert.doesNotMatch(rule[2], /max-width\s*:\s*\d+ch/, 'the old width cap (max-width: 24ch) is gone');
+  assert.doesNotMatch(rule[2], /overflow\s*:\s*hidden/);
+  assert.doesNotMatch(rule[2], /text-overflow\s*:\s*ellipsis/);
+  assert.match(rule[2], /white-space\s*:\s*normal/);
+  assert.match(rule[2], /overflow-wrap\s*:\s*break-word/);
 });
 
 named('test_profesion_cell_is_left_aligned_including_the_plain_sin_dato_cells', () => {
@@ -5270,7 +5273,7 @@ named('test_temporales_body_shows_registry_text_for_seeded_zero_activity_people'
   assert.equal(rows.find((r) => r.name === 'Profesional 3').activeDays, 0);
 });
 
-named('test_temporales_body_text_cells_are_left_aligned_escaped_and_truncated', () => {
+named('test_temporales_body_text_cells_are_left_aligned_escaped_and_kept_whole', () => {
   const rows = temporalesSeeded();
   const html = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columnsFor('temporales', TEMP_ALL), false);
   const temporalCols = columnsFor('temporales', TEMP_ALL);
@@ -5555,7 +5558,7 @@ named('test_align_css_contract_rules_for_both_classes_and_the_header_button', ()
   assert.match(css, /\.seg-sort-btn\s*\{[^}]*white-space:\s*nowrap/, 'the base button rule is intact');
 });
 
-named('test_barrios_cell_is_confined_like_the_other_free_text_columns_and_keeps_its_text_and_separator', () => {
+named('test_barrios_cell_wraps_like_the_other_free_text_columns_and_keeps_its_text_and_separator', () => {
   const lista = ['San Antonio', 'El Ingenio'];
   assert.equal(cellHtml({ barriosActivos: lista }, 'barriosActivos', true), '<span class="seg-barrios" title="San Antonio, El Ingenio">San Antonio, El Ingenio</span>');
   assert.equal(cellHtml({ barriosActivos: ['Solo'] }, 'barriosActivos', true), '<span class="seg-barrios" title="Solo">Solo</span>');
@@ -5572,9 +5575,98 @@ named('test_barrios_cell_is_confined_like_the_other_free_text_columns_and_keeps_
   const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
   const [rule] = cssRulesMatching(css, '.seg-barrios');
   assert.ok(rule, 'styles.css defines .seg-barrios');
-  for (const cls of ['.seg-profesion', '.seg-enfasis']) assert.ok(rule.selector.includes(cls), `${cls} shares the truncation rule, so all three truncate alike`);
-  assert.match(rule.body, /max-width\s*:\s*24ch/); assert.match(rule.body, /overflow\s*:\s*hidden/);
-  assert.match(rule.body, /text-overflow\s*:\s*ellipsis/); assert.match(rule.body, /white-space\s*:\s*nowrap/);
+  for (const cls of ['.seg-profesion', '.seg-enfasis']) assert.ok(rule.selector.includes(cls), `${cls} shares the wrapping rule, so all three wrap alike`);
+  assert.doesNotMatch(rule.body, /max-width\s*:\s*\d+ch/); assert.doesNotMatch(rule.body, /overflow\s*:\s*hidden/);
+  assert.doesNotMatch(rule.body, /text-overflow\s*:\s*ellipsis/); assert.match(rule.body, /white-space\s*:\s*normal/);
+  assert.match(rule.body, /overflow-wrap\s*:\s*break-word/);
+});
+
+// ---- Wrapping contract (owner decision 2026-09-19): text wraps, the row grows, nothing is clipped ----
+const WRAP_SPAN_CLASSES = ['.seg-barrios', '.seg-profesion', '.seg-enfasis'];
+function wrapCss() { return readFileSync(new URL('../styles.css', import.meta.url), 'utf8'); }
+// Declarations that apply to a given element kind, in source order: every rule with a selector matching `test`.
+function declarationsFor(css, test) {
+  return cssRulesMatching(css, '').filter((r) => r.selector.split(',').some((s) => test(s.trim()))).map((r) => r.body).join(';');
+}
+const isTextTd = (s) => /td\.seg-align-left$/.test(s);
+const isNumericTd = (s) => /td\.seg-align-right$/.test(s);
+
+named('test_wrap_left_aligned_text_cells_wrap_and_are_never_clipped', () => {
+  const body = declarationsFor(wrapCss(), isTextTd);
+  assert.match(body, /white-space\s*:\s*normal/, 'text cells override the table-wide nowrap');
+  assert.match(body, /overflow-wrap\s*:\s*break-word/, 'even an unbroken token wraps at the cell edge');
+  assert.match(body, /overflow\s*:\s*visible/);
+  assert.doesNotMatch(body, /overflow\s*:\s*hidden/);
+  assert.doesNotMatch(body, /text-overflow\s*:\s*ellipsis/);
+  assert.doesNotMatch(body, /white-space\s*:\s*nowrap/);
+  assert.match(body, /text-align\s*:\s*left/, 'the previous alignment contract is intact');
+  // A short placeholder such as "Sin dato" (8 characters, the commonest value in Clase/Código) must not split in two lines
+  // just because its column is sized at min-content (the table is wider than its scroller).
+  const minWidth = /min-width\s*:\s*(\d+)ch/.exec(body);
+  assert.ok(minWidth && Number(minWidth[1]) >= 12, 'every text column (border-box, padding included) fits "Sin dato" on one line');
+});
+
+named('test_wrap_the_three_free_text_spans_are_block_boxes_without_any_cap_or_clipping', () => {
+  const css = wrapCss();
+  const rules = cssRulesMatching(css, '.seg-barrios');
+  assert.equal(rules.length, 1, 'one shared rule');
+  for (const cls of WRAP_SPAN_CLASSES) assert.ok(rules[0].selector.includes(cls), `${cls} is in the shared rule`);
+  const body = rules[0].body;
+  assert.match(body, /display\s*:\s*block/);
+  assert.match(body, /max-width\s*:\s*none/, 'the 24ch cap is removed');
+  assert.match(body, /white-space\s*:\s*normal/);
+  assert.match(body, /overflow\s*:\s*visible/);
+  assert.match(body, /overflow-wrap\s*:\s*break-word/);
+  assert.match(body, /min-width\s*:\s*\d+ch/, 'a readable measure: the column never collapses to a sliver');
+  assert.match(body, /text-overflow\s*:\s*clip/);
+  for (const bad of [/ellipsis/, /overflow\s*:\s*hidden/, /nowrap/, /max-width\s*:\s*\d+ch/]) assert.doesNotMatch(body, bad);
+  // No other rule may re-introduce truncation for these classes or for the text cells.
+  for (const cls of [...WRAP_SPAN_CLASSES, 'td.seg-align-left']) {
+    for (const rule of cssRulesMatching(css, cls)) {
+      assert.doesNotMatch(rule.body, /text-overflow\s*:\s*ellipsis|overflow\s*:\s*hidden|white-space\s*:\s*nowrap/, `${rule.selector} clips nothing`);
+    }
+  }
+});
+
+named('test_wrap_numeric_date_and_time_cells_stay_on_one_line', () => {
+  const css = wrapCss();
+  const base = cssRulesMatching(css, '.tipologia-table th, .tipologia-table td')[0];
+  assert.ok(base, 'the table-wide rule exists');
+  assert.match(base.body, /white-space\s*:\s*nowrap/, 'the table default (numbers, dates, times) is still nowrap');
+  const numeric = declarationsFor(css, isNumericTd);
+  assert.doesNotMatch(numeric, /white-space\s*:\s*(normal|pre-wrap|break-spaces)/, 'no rule lets numeric cells wrap');
+  assert.doesNotMatch(numeric, /overflow-wrap\s*:\s*(anywhere|break-word)/);
+  assert.match(numeric, /text-align\s*:\s*right/);
+  // Headers keep their one-line labels: the wrapping override is body-cell only.
+  const header = declarationsFor(css, (s) => /th\.seg-align-(left|right)$/.test(s));
+  assert.doesNotMatch(header, /white-space\s*:\s*(normal|pre-wrap|break-spaces)/, 'headers stay nowrap');
+});
+
+named('test_wrap_cells_of_a_tall_row_align_to_the_top', () => {
+  const css = wrapCss();
+  const body = declarationsFor(css, (s) => /^\.tipologia-table[^,]*\btd$/.test(s) || isTextTd(s) || isNumericTd(s));
+  assert.match(body, /vertical-align\s*:\s*top/, 'a grown row reads from its first line');
+  assert.doesNotMatch(body, /vertical-align\s*:\s*(middle|bottom|baseline)/);
+  for (const cls of WRAP_SPAN_CLASSES) assert.doesNotMatch(cssRulesMatching(css, cls)[0].body, /vertical-align\s*:\s*bottom/, 'the span no longer sits on the baseline of a one-line box');
+});
+
+named('test_wrap_a_wide_token_does_not_widen_the_column_and_the_group_row_and_scroll_container_are_untouched', () => {
+  const css = wrapCss().replace(/\r\n/g, '\n');
+  // `break-word` breaks a 120-char token at the cell edge (the 260px cap below), so it cannot spill or widen past the cap.
+  // `anywhere` is banned here: it drops min-content to one character and, in a table sized at min-content, collapses every
+  // text column to a sliver (a cédula split mid-number, a 340-char Énfasis 60 lines tall). Seen in Chromium.
+  const textBody = declarationsFor(css, isTextTd);
+  assert.match(textBody, /overflow-wrap\s*:\s*break-word/);
+  assert.doesNotMatch(textBody + cssRulesMatching(css, '.seg-barrios')[0].body, /overflow-wrap\s*:\s*anywhere/);
+  // Nombre (first column, plain text) gets its own minimum measure; the spans carry theirs.
+  const nameRule = cssRulesMatching(css, 'td.seg-align-left:first-child')[0];
+  assert.ok(nameRule && /min-width\s*:\s*\d+ch/.test(nameRule.body), 'the Nombre column keeps a readable width');
+  // The td width cap stays: text wraps at the cap rather than stretching the table.
+  assert.match(css, /\ntd\s*\{[^}]*max-width\s*:\s*260px/);
+  assert.match(css, /\.table-scroll\s*\{\s*overflow-x:\s*auto;/, 'the horizontal scroll container is untouched');
+  assert.match(css, /\.seg-grupo-externos-row td\s*\{\s*text-align:\s*left;\s*white-space:\s*normal;\s*\}/);
+  // Markup is unchanged: the span wrappers and tooltips stay.
+  assert.equal(cellHtml({ enfasis: 'x'.repeat(120) }, 'enfasis', true), `<span class="seg-enfasis" title="${'x'.repeat(120)}">${'x'.repeat(120)}</span>`);
 });
 
 if (phase11Failures.length) {

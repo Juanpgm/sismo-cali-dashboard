@@ -2197,16 +2197,20 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="sti
 }
 .seg-sort-btn.is-active { color: var(--accent); }
 .seg-caveat { cursor: help; color: var(--accent); }
-/* "Énfasis" is free text of any length (the registry has 189 distinct values, some long): one truncated
-   line inside the cell, the full text in the tooltip. The table already scrolls inside .table-scroll, so
-   this only keeps a single value from stretching the whole table on a phone. "Profesión" (D-PROFESION, also
-   registry free text: 59 distinct values with case/gender variants) and "Barrios activos" (a comma-joined
-   list of neighbourhood names) share the rule, so all three truncate alike. */
+/* Nothing in the Seguimiento tables is clipped (owner decision 2026-09-19, reversing the earlier one-line
+   ellipsis rule): free text wraps inside its cell and the row grows to show all of it. "Énfasis" (the registry
+   has 189 distinct values, some long), "Profesión" (D-PROFESION, 59 distinct values with case/gender variants)
+   and "Barrios activos" (a comma-joined list of neighbourhood names) share the rule, so all three wrap alike;
+   the tooltip (`title`) stays as a harmless extra. `overflow-wrap: break-word` breaks even an unbroken token
+   at the column edge (the `td { max-width: 260px }` cap), so nothing spills into the next cell. `anywhere` is
+   deliberately NOT used: it lowers the min-content width to one character, and this table (wider than its
+   scroller, so sized at min-content) would squeeze every text column to a sliver, splitting a cédula mid-number.
+   `min-width` gives the free-text columns a readable measure for the same reason. */
 .seg-barrios,
 .seg-profesion,
 .seg-enfasis {
-  display: inline-block; max-width: 24ch; overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; vertical-align: bottom; text-align: left;
+  display: block; min-width: 24ch; max-width: none; overflow: visible; text-overflow: clip;
+  white-space: normal; overflow-wrap: break-word; text-align: left;
 }
 /* Column-type alignment, driven by `column.align` in seguimiento.js (headerRowHtml/rowHtml put the SAME class on a
    column's <th> and <td>). .tipologia-table right-aligns every cell by default (meant for numbers), which left
@@ -2220,6 +2224,19 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="sti
 .tipologia-table th.seg-align-right,
 .tipologia-table thead th.seg-align-right,
 .tipologia-table td.seg-align-right { text-align: right; }
+/* Text and identifier cells (Nombre, Cédula, Tarjeta profesional, Clase, Código, Estado, Profesión, Énfasis,
+   Barrios) wrap and the row grows: `.tipologia-table td` is nowrap (meant for numbers) and the global
+   `td { max-width: 260px }` would let a long unbroken name spill into the neighbouring cell. Body cells only:
+   headers keep their one-line labels, numeric/date/time cells keep the table-wide nowrap, and the group row
+   (no alignment class) keeps its own rule. Cells of a grown row align to the top so numbers sit on the first line.
+   `min-width: 12ch` keeps a short placeholder ("Sin dato") on one line: the table is wider than its scroller, so it is
+   sized at min-content and would otherwise split it. Nombre is always the first column and is plain text (no wrapper
+   span to carry a min-width), hence :first-child. */
+.tipologia-table tbody td.seg-align-left {
+  white-space: normal; overflow-wrap: break-word; overflow: visible; text-overflow: clip; min-width: 12ch;
+}
+.tipologia-table tbody td.seg-align-left:first-child { min-width: 24ch; }
+.tipologia-table tbody td { vertical-align: top; }
 /* The sort button is a block-level flex box, so `text-align` on the <th> cannot move it (it sat at the left of
    every header). Spanning the cell and justifying its content puts the label and the ▲/▼ arrow on the same
    side as the column's cells. Scoped to <th>: the "Externos agrupados" toggle reuses .seg-sort-btn inside a <td>. */
