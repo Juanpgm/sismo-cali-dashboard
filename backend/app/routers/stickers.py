@@ -35,7 +35,7 @@ import re
 import threading
 import time
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -45,6 +45,7 @@ from pydantic import BaseModel
 from app.auth.deps import require_role
 from app.credentials import clients as credentials
 from app.services import blob_lkg
+from app.services.roster_invalidation import invalidate_inspectores_roster
 from app.services.stickers_atencionsismo import cedula_key
 
 # `sismo` is already unconditionally in credentials.WEB_STARTUP_CLIENTS, but
@@ -115,6 +116,16 @@ class InspectoresCache:
         self._at = None
 
 
+class StickersSnapshot(NamedTuple):
+    """One consistent `(payload, version, degraded)` triple: a reader that
+    needs the payload AND its content version (D21) must never pair the
+    payload of one fetch with the version of the next."""
+
+    payload: list[dict[str, Any]]
+    version: int
+    degraded: bool
+
+
 class EvaluacionesCache:
     """Process-lifetime 5-min TTL cache for the flattened evaluaciones list —
     same app.state / test-isolated pattern as sticker_status.py's
@@ -133,7 +144,18 @@ class EvaluacionesCache:
         lkg_blob: str = EVALUACIONES_LKG_BLOB,
         redact: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
         failure_backoff_s: float = 0.0,
+        clock: Callable[[], float] | None = None,
     ) -> None:
+        # `clock` is injectable for tests; None resolves `time.monotonic` at
+        # CALL time so a test that patches it globally still applies.
+        self._clock = clock
+        # Content-stable snapshot (D21): `_content_hash` is `payload_hash` of
+        # the FULL unredacted served payload plus `degraded`; identical
+        # content keeps the previous list object and `_version`, changed
+        # content bumps it. Internal: it never enters the response body.
+        self._version = 0
+        self._content_hash: str | None = None
+        self._snap: StickersSnapshot | None = None
         # Parametrized so a sibling dataset (atencionsismo stickers, see
         # routers/stickers_atencionsismo.py) reuses the serve-stale +
         # Blob-restore + degraded semantics with its OWN pathname/redaction.
@@ -174,8 +196,38 @@ class EvaluacionesCache:
         `/evaluaciones` route) surface this so the dashboard can warn."""
         return self._degraded
 
+    @property
+    def snapshot_version(self) -> int:
+        """Content version of the served payload (0 = nothing served yet)."""
+        return self._version
+
+    def _now(self) -> float:
+        return (self._clock or time.monotonic)()
+
+    def _publish(self, payload: list[dict[str, Any]], degraded: bool) -> None:
+        """Install `payload` as the served snapshot. Equal content (and equal
+        `degraded`) keeps the PREVIOUS list object and version, so an expired
+        TTL alone never looks like a change to downstream fingerprints."""
+        digest = blob_lkg.payload_hash({"degraded": degraded, "rows": payload})
+        if self._payload is not None and digest == self._content_hash:
+            payload = self._payload
+        else:
+            self._version += 1
+            self._content_hash = digest
+        self._payload = payload
+        self._degraded = degraded
+        self._snap = StickersSnapshot(payload, self._version, degraded)
+
+    def get_or_fetch_snapshot(self, fetch: Any) -> StickersSnapshot:
+        """`get_or_fetch` plus the payload's version and `degraded` flag read
+        as ONE consistent triple (never a payload from one fetch with the
+        version of another)."""
+        payload = self.get_or_fetch(fetch)
+        snap = self._snap
+        return snap if snap is not None else StickersSnapshot(payload, self._version, self._degraded)
+
     def get_or_fetch(self, fetch: Any) -> list[dict[str, Any]]:
-        now = time.monotonic()
+        now = self._now()
         stale = self._payload is None or self._at is None or (now - self._at) > EVALUACIONES_CACHE_TTL_SECONDS
         if not stale:
             assert self._payload is not None
@@ -185,7 +237,7 @@ class EvaluacionesCache:
             # Re-evaluate staleness inside the lock: another thread may have
             # already refreshed (or failure-serve-staled) the payload while
             # this one was waiting on the lock — don't fetch twice.
-            now = time.monotonic()
+            now = self._now()
             stale = self._payload is None or self._at is None or (now - self._at) > EVALUACIONES_CACHE_TTL_SECONDS
             if not stale:
                 assert self._payload is not None
@@ -203,9 +255,8 @@ class EvaluacionesCache:
                 return self._payload
 
             try:
-                self._payload = fetch()
+                self._publish(fetch(), False)  # real fresh data, even if it was degraded before
                 self._at = now
-                self._degraded = False  # real fresh data, even if it was degraded before
                 self._failed_at = None  # recovered: clear any armed backoff
                 self._persist_last_good()
             except Exception:
@@ -227,9 +278,8 @@ class EvaluacionesCache:
                     logging.exception(
                         "evaluaciones: fetch fallo sin payload previo, sirviendo el ultimo bueno desde Blob"
                     )
-                    self._payload = restored
+                    self._publish(restored, True)  # blanked np, see the `degraded` property above
                     self._at = now  # behaves as a normal (stale-able) payload from here on
-                    self._degraded = True  # blanked np, see the `degraded` property above
                 else:
                     logging.exception(
                         "evaluaciones: fetch fallo, sirviendo el ultimo payload en cache (stale)"
@@ -731,11 +781,11 @@ def stickers(
             return JSONResponse({"ok": True, "evaluaciones": list_evaluaciones(db)})
         if body.action == "create":
             result = create_inspector(db, app, payload)
-            cache.invalidate()
+            invalidate_inspectores_roster(request.app.state)
             return JSONResponse({"ok": True, **result}, status_code=201)
         if body.action == "setEnabled":
             result = set_enabled(db, app, payload)
-            cache.invalidate()
+            invalidate_inspectores_roster(request.app.state)
             return JSONResponse({"ok": True, **result})
         raise bad_request(f"Acción desconocida: {body.action}")
     except HTTPException:

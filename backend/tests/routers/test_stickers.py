@@ -94,6 +94,9 @@ class _FakeDocRef:
         current.update(data)
         self._store[self._id] = current
 
+    def delete(self) -> None:
+        self._store.pop(self._id, None)
+
 
 class _FakeQuery:
     def __init__(self, docs: list[_FakeSnapshot]) -> None:
@@ -1383,3 +1386,139 @@ def test_evaluaciones_cache_concurrent_get_or_fetch_calls_fetch_once():
         t.join()
 
     assert calls["n"] == 1
+
+
+# ── Content-stable stickers snapshot (D21, tasks 10.13-10.17) ──────────────
+
+from tests.ledger_fakes import CallLedger, FakeClock  # noqa: E402
+
+
+def _snap_rows(*ids: str, np: str = "P1") -> list[dict[str, Any]]:
+    return [{"id": i, "codigo_edificacion": i, "inspector": {"uid": "u", "np": np}} for i in ids]
+
+
+def _fetcher(ledger: CallLedger, factory):
+    def _fetch():
+        ledger.hit("fetch")
+        return factory()
+    return _fetch
+
+
+def test_snapshot_version_stable_when_refetch_content_identical():
+    clock, ledger = FakeClock(), CallLedger()
+    cache = stickers.EvaluacionesCache(clock=clock)
+    fetch = _fetcher(ledger, lambda: _snap_rows("a", "b"))  # a NEW list every call
+
+    first = cache.get_or_fetch(fetch)
+    v1 = cache.snapshot_version
+    clock.advance(stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1)
+    second = cache.get_or_fetch(fetch)
+
+    assert ledger["fetch"] == 2  # the TTL really expired
+    assert second is first  # no new list object on identical content
+    assert cache.snapshot_version == v1
+
+
+def test_snapshot_version_bumps_on_one_changed_sticker():
+    clock = FakeClock()
+    cache = stickers.EvaluacionesCache(clock=clock)
+    cache.get_or_fetch(lambda: _snap_rows("a", "b"))
+    v1 = cache.snapshot_version
+    clock.advance(stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1)
+    changed = cache.get_or_fetch(lambda: _snap_rows("a", "c"))
+    assert cache.snapshot_version != v1
+    assert [r["id"] for r in changed] == ["a", "c"]
+
+
+def test_snapshot_version_bumps_on_np_only_change_while_blob_put_stays_gated(monkeypatch):
+    clock, ledger = FakeClock(), CallLedger()
+    cache = stickers.EvaluacionesCache(clock=clock)
+    monkeypatch.setattr(stickers.blob_lkg, "save_json", lambda *_a: ledger.hit("put") or True)
+
+    cache.get_or_fetch(lambda: _snap_rows("a", np="P1"))
+    _join_persist(cache)
+    v1 = cache.snapshot_version
+    clock.advance(stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1)
+    cache.get_or_fetch(lambda: _snap_rows("a", np="P9"))  # np feeds classification
+    _join_persist(cache)
+
+    assert cache.snapshot_version != v1
+    assert ledger["put"] == 1  # the redacted copy blanks np -> hash unchanged -> no second PUT
+
+
+def test_snapshot_version_includes_degraded_flag(monkeypatch):
+    clock = FakeClock()
+    rows = _snap_rows("a")
+    monkeypatch.setattr(stickers.blob_lkg, "load_json", lambda _p, _t: [dict(r) for r in rows])
+    cache = stickers.EvaluacionesCache(clock=clock)
+
+    def boom():
+        raise RuntimeError("429")
+
+    cache.get_or_fetch(boom)  # restored from Blob -> degraded
+    v_degraded = cache.snapshot_version
+    clock.advance(stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1)
+    cache.get_or_fetch(lambda: [dict(r) for r in rows])  # live again, identical rows
+    assert cache.degraded is False
+    assert cache.snapshot_version != v_degraded  # same rows, `degraded` toggled -> new version
+
+
+def test_snapshot_version_row_order_change_bumps():
+    clock = FakeClock()
+    cache = stickers.EvaluacionesCache(clock=clock)
+    cache.get_or_fetch(lambda: _snap_rows("a", "b"))
+    v1 = cache.snapshot_version
+    clock.advance(stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1)
+    cache.get_or_fetch(lambda: _snap_rows("b", "a"))  # conservative: one extra recompute, never an error
+    assert cache.snapshot_version != v1
+
+
+def test_snapshot_failed_refetch_keeps_previous_object_and_version():
+    clock = FakeClock()
+    cache = stickers.EvaluacionesCache(clock=clock)
+    first = cache.get_or_fetch(lambda: _snap_rows("a"))
+    v1 = cache.snapshot_version
+    clock.advance(stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1)
+
+    def boom():
+        raise RuntimeError("upstream down")
+
+    served = cache.get_or_fetch(boom)
+    assert served is first
+    assert cache.snapshot_version == v1
+
+
+def test_snapshot_cold_start_failure_without_blob_leaves_no_snapshot(monkeypatch):
+    monkeypatch.setattr(stickers.blob_lkg, "load_json", lambda _p, _t: None)
+    cache = stickers.EvaluacionesCache(clock=FakeClock())
+
+    def boom():
+        raise RuntimeError("down")
+
+    with pytest.raises(RuntimeError):
+        cache.get_or_fetch(boom)
+    assert cache.snapshot_version == 0
+
+
+def test_snapshot_pair_is_consistent_payload_and_version():
+    cache = stickers.EvaluacionesCache(clock=FakeClock())
+    snap = cache.get_or_fetch_snapshot(lambda: _snap_rows("a"))
+    assert snap.payload == _snap_rows("a")
+    assert snap.version == cache.snapshot_version == 1
+    assert snap.degraded is False
+
+
+def test_snapshot_empty_payload_is_a_valid_version():
+    cache = stickers.EvaluacionesCache(clock=FakeClock())
+    snap = cache.get_or_fetch_snapshot(lambda: [])
+    assert snap.payload == [] and snap.version == 1
+
+
+def test_snapshot_huge_payload_hash_is_stable():
+    clock = FakeClock()
+    cache = stickers.EvaluacionesCache(clock=clock)
+    big = lambda: _snap_rows(*[f"id-{i}" for i in range(20000)])  # noqa: E731
+    first = cache.get_or_fetch(big)
+    clock.advance(stickers.EVALUACIONES_CACHE_TTL_SECONDS + 1)
+    assert cache.get_or_fetch(big) is first
+    assert cache.snapshot_version == 1

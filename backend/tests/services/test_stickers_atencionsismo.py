@@ -9,6 +9,10 @@ it, hiding the exact bug those tests guard against (see `_FakeInspectorDb`
 below)."""
 from __future__ import annotations
 
+import re
+
+import pytest
+
 from app.routers import stickers
 from app.services import stickers_atencionsismo as sa
 
@@ -1231,3 +1235,75 @@ def test_build_evaluaciones_3000_rows_perf_budget():
     # regression. 0.25s still comfortably CI-safe (>8x the measured time)
     # while actually able to fail on a real slowdown.
     assert elapsed < 0.25, f"build_evaluaciones took {elapsed:.3f}s for 3000 rows, budget is 0.25s"
+
+
+# ── 10.12 (D-CEDDEC known limitation): `cedula_key` goes through the shared
+# `cedula_utils.solo_digitos` rule, so a float-artifact roster cédula keys the
+# same as its digits-only form instead of gaining a phantom trailing zero. ──
+
+
+@pytest.mark.parametrize("crudo, esperado", [
+    ("1234567.0", "1234567"),          # the float artifact: was "12345670"
+    (" 1234567.0 ", "1234567"),
+    (1234567.0, "1234567"),            # a real float cell
+    ("1.234.567", "1234567"),          # thousands dots stay separators
+    (" 1234567 ", "1234567"),
+    ("CC 123", "123"),
+    ("0012345", "0012345"),            # zero-padded keeps its zeros
+    (1234567, "1234567"),
+    ("12345.00", "1234500"),           # NOT a float artifact: dots are separators
+    ("166.000", "166000"),
+    ("21.0a", "210"),
+])
+def test_cedula_key_matches_the_shared_rule_on_realistic_shapes(crudo, esperado):
+    assert sa.cedula_key(crudo) == esperado
+
+
+@pytest.mark.parametrize("crudo", [None, "", "   ", 0, "abc", float("nan"), "-", False])
+def test_cedula_key_no_digits_is_empty(crudo):
+    assert sa.cedula_key(crudo) == ""
+
+
+def test_cedula_key_huge_and_unicode_digit_inputs():
+    assert sa.cedula_key("9" * 200_000) == "9" * 200_000
+    # The shared rule is ASCII-only (like the JS `\d`): Arabic-Indic and
+    # full-width digits are not digits, on either side of the join. Every case
+    # discriminates: the previous `re.sub(r"\D", "", ...)` KEPT these
+    # characters (Python's `\d` is Unicode-aware), so it would fail here.
+    arabic_indic, full_width, mixed = "\u0661\u0662\u0663", "\uff11\uff12\uff13", "12\u0663"
+    assert re.sub(r"\D", "", arabic_indic) == arabic_indic  # old behaviour: kept
+    assert re.sub(r"\D", "", full_width) == full_width
+    assert re.sub(r"\D", "", mixed) == mixed
+    assert sa.cedula_key(arabic_indic) == ""
+    assert sa.cedula_key(full_width) == ""
+    assert sa.cedula_key(mixed) == "12"
+
+
+def test_roster_float_artifact_identificacion_keys_as_digits_in_inspector_profile_by_identificacion():
+    db = _FakeInspectorDb({"u1": {"identificacion": "1234567.0", "nombre_completo": "Ana"}})
+    out = stickers.inspector_profile_by_identificacion(db)
+    assert list(out) == ["1234567"]
+    assert out["1234567"]["identificacion"] == "1234567.0"  # stored verbatim: the key is a join key only
+
+
+def test_float_artifact_roster_cedula_matches_the_api_cedula_in_same_cedula_match():
+    """`same_cedula_match` compares the API's cédula key with the matched
+    evaluación's own `identificacion` key: "1234567.0" there must equal "1234567"."""
+    ev = _eval_firestore(inspector={"uid": "u1", "codigo": "004", "nombre_completo": "Ana",
+                                    "identificacion": "1234567.0", "entidad": "E1", "np": "P7"})
+    out = sa.normalize_sticker(
+        _row(origen="sistema", profesional={"cedula": "1234567", "nombre": "Ana", "rango": ""}),
+        roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": ev}, roster_by_cedula={},
+    )
+    assert out["inspector"]["np"] == "P7" and out["inspector"]["uid"] == "u1"  # backfilled: same person
+    assert out["inspector"]["identificacion"] == "1234567"  # the API's own value, verbatim
+
+
+def test_different_cedulas_still_do_not_match_after_the_change():
+    ev = _eval_firestore(inspector={"uid": "u1", "codigo": "004", "nombre_completo": "Ana",
+                                    "identificacion": "12345670", "entidad": "E1", "np": "P7"})
+    out = sa.normalize_sticker(
+        _row(origen="sistema", profesional={"cedula": "1234567", "nombre": "Ana", "rango": ""}),
+        roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": ev}, roster_by_cedula={},
+    )
+    assert out["inspector"]["np"] == "" and out["inspector"]["uid"] == ""  # a genuinely different cédula

@@ -61,6 +61,13 @@ class ReferenciaBundle:
     activa: bool
     motivo: str
     codigos_duplicados: tuple[str, ...]
+    # Content fingerprint of the RAW bundle JSON (`blob_lkg.payload_hash`,
+    # D24): computed on read, never published, so old bundles keep working
+    # (`schema` stays 1). It keys the depuración cache instead of the
+    # day-granular `generado_en`, so a same-day republish is detected. Empty
+    # for every degraded bundle (`vacia`), which therefore never equals a real
+    # one.
+    huella: str = ""
 
     @classmethod
     def vacia(cls, motivo: str = "") -> "ReferenciaBundle":
@@ -175,6 +182,7 @@ def parse_bundle(raw: dict) -> ReferenciaBundle | None:
         activa=True,
         motivo="",
         codigos_duplicados=codigos_duplicados,
+        huella=blob_lkg.payload_hash(raw),
     )
 
 

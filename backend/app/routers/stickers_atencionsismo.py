@@ -18,10 +18,13 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import copy
+import json
 import logging
 import os
 import threading
 import time
+import traceback
 from datetime import date, datetime
 from typing import Any, Callable
 
@@ -33,10 +36,11 @@ from app.auth.deps import require_role
 from app.auth.roles import role_from_claims
 from app.credentials import clients as credentials
 from app.routers import stickers
-from app.services import atencionsismo, fechas_es_co
+from app.services import atencionsismo, blob_lkg, fechas_es_co
 from app.services import inspectores_depuracion as depuracion_svc
 from app.services import inspectores_referencia as referencia_svc
 from app.services import survey_cali as survey_cali_svc
+from app.services.versioned_cache import VersionedCache
 from app.services.stickers_atencionsismo import build_evaluaciones
 
 router = APIRouter()
@@ -48,6 +52,13 @@ STICKERS_LKG_BLOB = "data/stickers_atencionsismo_last_good.json"
 # `DepuracionCache` re-reads the (private) reference bundle from Blob,
 # independent of the sticker payload's own 5-min TTL.
 REFERENCIA_CACHE_TTL_SECONDS = 30 * 60
+
+# Versioned component caches (design D22): each Firestore-derived input has its
+# own TTL, so "0 recomputes/hour with static inputs" holds. Admin writes to the
+# roster invalidate its component immediately (`routers/stickers.py`).
+ROSTER_CACHE_TTL_SECONDS = 30 * 60
+SURVEY_NAMES_CACHE_TTL_SECONDS = 60 * 60
+EVALUACIONES_FS_CACHE_TTL_SECONDS = 15 * 60
 
 # Rollback switch (design's Migration/Rollout): unset or "0" -> the response
 # omits `depuracion` entirely, byte-identical to the pre-Phase-3 payload.
@@ -150,6 +161,45 @@ def _depuracion_habilitada() -> bool:
     return os.environ.get(SEGUIMIENTO_DEPURACION_ENV, "0").strip() not in ("", "0")
 
 
+# Per-request opt-in (design D25): the Stickers tab uses the same endpoint and
+# must never pay for (or download) the PII block, so only a caller that asks for
+# it - Seguimiento - gets it.
+DEPURACION_QUERY_PARAM = "depuracion"
+DEPURACION_OPT_IN_VALUE = "1"
+
+# `motivo` of the block served when the sticker snapshot is the redacted Blob
+# restore (design D16); distinct from the reference bundle's own `motivo`s.
+MOTIVO_STICKERS_DEGRADADOS = "stickers_degradados"
+
+
+def _depuracion_solicitada(request: Request) -> bool:
+    """True only for exactly one `depuracion=1` parameter. `0`, `true`, `yes`,
+    an empty value, `01`, `1 ` and a repeated parameter (`depuracion=1&depuracion=0`,
+    even `depuracion=1&depuracion=1`) all mean "not requested" - never an
+    error: an unknown value is simply ignored."""
+    return request.query_params.getlist(DEPURACION_QUERY_PARAM) == [DEPURACION_OPT_IN_VALUE]
+
+
+def _depuracion_stickers_degradados() -> depuracion_svc.Depuracion:
+    """D16: a degraded snapshot (redacted LKG, `identificacion` blank) is
+    unattributable, so no table is built from it - with the full universe every
+    code-less person would turn into a `candidato_desactivacion` and every
+    suspicious one would be wrongly collapsed. Nothing is read or computed."""
+    return depuracion_svc.Depuracion(
+        activa=False, motivo=MOTIVO_STICKERS_DEGRADADOS, referencia_generada_en="",
+        inspectores=(), grupo_externos=None, alias_nombres={}, revision_manual=(),
+    )
+
+
+def _resumen_seguro(exc: BaseException) -> str:
+    """Exception TYPE plus where it was raised, never its message: a `KeyError`
+    on a cédula key or a `ValueError` quoting a row would put PII in the log
+    (spec: contact fields and identity keys are never logged in clear)."""
+    frames = traceback.extract_tb(exc.__traceback__)
+    donde = f"{os.path.basename(frames[-1].filename)}:{frames[-1].lineno} in {frames[-1].name}" if frames else "?"
+    return f"{type(exc).__name__} at {donde}"
+
+
 def _stickers_para_depuracion(evaluaciones: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Adapts the cached `evaluaciones[]` shape
     (`stickers_atencionsismo.normalize_sticker`) into
@@ -180,6 +230,25 @@ def _stickers_para_depuracion(evaluaciones: list[dict[str, Any]]) -> list[dict[s
     return out
 
 
+def depuracion_inputs_version(stickers_proj: list[dict[str, Any]]) -> str:
+    """Content fingerprint of EXACTLY what `depurar()` consumes from the stickers
+    (the `_stickers_para_depuracion` projection), judgment-day W5.
+
+    `snapshot_version` hashes the whole served payload (photos, comments,
+    coordinates, addresses...) because it will drive the HTTP ETag; keying the
+    depuración cache by it would force a full `depurar()` for changes the engine
+    never reads. This one changes only when an `origen`, a `fecha` or an
+    inspector identity changes.
+
+    Order-independent, like the engine itself (its result does not depend on the
+    sticker order): each projected row is serialised canonically and the rows are
+    sorted, so a re-ordered upstream walk fingerprints the same. A duplicated
+    sticker still counts (multiset, not set). `default=str` keeps a raw
+    `datetime` deterministic instead of raising."""
+    rows = sorted(json.dumps(row, sort_keys=True, ensure_ascii=False, default=str) for row in stickers_proj)
+    return blob_lkg.payload_hash(rows)
+
+
 def _roster_para_depuracion(roster_by_cedula: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
     """Adapts `stickers.inspector_profiles()`'s `roster_by_cedula` shape
     into `depurar()`'s expected roster contract.
@@ -208,6 +277,13 @@ def _roster_para_depuracion(roster_by_cedula: dict[str, dict[str, str]]) -> dict
     return out
 
 
+def _hoy() -> date:
+    """Bogota calendar day (design D6): part of the depuracion cache key, so
+    the midnight rollover costs exactly one recompute. Module-level so tests
+    can pin it."""
+    return datetime.now(fechas_es_co.BOGOTA).date()
+
+
 def _nombres_survey(db: Any) -> list[str]:
     """`survey_cali` docs' evaluator name field — `nombre_evaluador`
     (`scripts/refresh_data.py`'s own RENAME_MAP: "Nombre Evaluador:" ->
@@ -234,115 +310,323 @@ def _depuracion_a_dict(resultado: depuracion_svc.Depuracion) -> dict[str, Any]:
     }
 
 
-class DepuracionCache:
-    """Design D4/D6: owns BOTH the reference bundle's own 30-min TTL read
-    (Data Flow diagram's "cargar_referencia (30 min)") AND the derived
-    `depurar()` result, keyed by the sticker payload's OBJECT IDENTITY plus
-    Bogotá `hoy` plus the reference bundle's own `generado_en` — no separate
-    TTL of its own for the derived result. `stickers.EvaluacionesCache`
-    returns the SAME list object until it refetches, so `self._src is
-    evaluaciones` is an O(1), exact recompute signal (same idea that
-    class's own docstring documents). One shared lock guards both the
-    referencia TTL check and the compare-and-recompute, mirroring
-    `EvaluacionesCache`'s own concurrency story."""
+# Upper bound a follower waits on another thread's referencia download or
+# compute before giving up. A sync route parks one Starlette worker thread (40
+# by default) for the whole wait, so 120 s of hung upstream could exhaust the
+# pool; 10 s is far above a normal compute (~0.3 s) and a timeout degrades to a
+# `calculo_fallido` / `referencia_timeout` block, never to an error. Read at
+# call time so tests can inject a short deadline.
+_FLIGHT_WAIT_S = 10.0
 
-    def __init__(self, *, cargar_referencia: Callable[[], referencia_svc.ReferenciaBundle] = referencia_svc.cargar_referencia) -> None:
+# `motivo`s of the blocks served instead of a table (see `DepuracionCache`).
+MOTIVO_CALCULO_FALLIDO = "calculo_fallido"
+MOTIVO_REFERENCIA_TIMEOUT = "referencia_timeout"
+
+
+def _depuracion_calculo_fallido() -> depuracion_svc.Depuracion:
+    """The compute failed and there is no result computed under the SAME key to
+    fall back on: a declared gap (`activa=False`, no table), never data
+    computed for other inputs."""
+    return depuracion_svc.Depuracion(
+        activa=False, motivo=MOTIVO_CALCULO_FALLIDO, referencia_generada_en="",
+        inspectores=(), grupo_externos=None, alias_nombres={}, revision_manual=(),
+    )
+
+
+class _Flight:
+    """One in-flight referencia load or compute that concurrent callers wait
+    on. `error`/`result` are written BEFORE `event.set()`."""
+
+    __slots__ = ("event", "result", "error")
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.result: Any = None
+        self.error: BaseException | None = None
+
+
+def _referencia_key(referencia: referencia_svc.ReferenciaBundle) -> tuple[str, bool, str, str]:
+    """Fingerprint of the bundle. `huella` (content hash, D24) is what detects
+    a same-day republish; `activa`/`generado_en`/`motivo` are what the RESULT
+    embeds (`Depuracion.referencia_generada_en`/`motivo`), so they must key it
+    too (a degraded bundle has `huella == ""`)."""
+    return (referencia.huella, referencia.activa, referencia.generado_en, referencia.motivo)
+
+
+class DepuracionCache:
+    """Design D23/D24: owns the reference bundle's own 30-min TTL read AND the
+    derived `depurar()` result.
+
+    Derived result: keyed by content fingerprints
+    `(inputs_version, roster_version, survey_version, referencia key, hoy)` -
+    never by object identity. `inputs_version` is the PROJECTED fingerprint of
+    exactly what `depurar()` reads from the stickers
+    (`depuracion_inputs_version`), not the whole-payload `snapshot_version`
+    (that one also moves with photos/comments/coordinates and will drive the
+    HTTP ETag). A single-flight in-flight marker per key: the first caller for a
+    key computes OUTSIDE the lock, concurrent callers of the SAME key wait on
+    the marker and receive the same result (N requests = 1 compute). Only the
+    current key (plus the last-good result it replaced) is retained; no TTL of
+    its own - freshness is bounded by the component TTLs.
+
+    Failure (judgment-day W6): the marker is always cleared, also when the
+    leader raises. A result computed under a DIFFERENT key is never presented as
+    current (across a `hoy` rollover it would serve yesterday's dias_inactivo).
+    So when the leader's compute fails: the leader serves the outcome below
+    straight away (it just failed; no retry of its own) and each waiter retries
+    ONCE as a new leader (single-flight again: N failing waiters cost one extra
+    compute, not N). The outcome of a failed compute is the last-good result
+    ONLY if it was computed under the same key (strict equality; reachable after
+    `invalidate()`), else the `calculo_fallido` block (`activa=False`, no
+    table). Leader and waiters therefore always agree. A waiter that times out
+    on a hung leader gets the same outcome without a competing compute.
+
+    Referencia: the TTL check under the lock is O(1); at most ONE caller
+    downloads (outside the lock), everyone else reads the last-good bundle
+    without waiting (a cold start with nothing to read waits, bounded by
+    `_FLIGHT_WAIT_S`, for that one download and then degrades to a
+    `referencia_timeout` bundle). A failed load keeps the last-good bundle and
+    still advances the timestamp, so it is retried at most once per TTL; a
+    degraded bundle is adopted only when there was no good one.
+
+    Immutable boundary (D23): the cached `Depuracion` is shared across
+    requests and its dicts are mutable, so EVERY caller receives a deep copy -
+    a caller that mutates what it got can never change what the next request
+    receives."""
+
+    def __init__(
+        self,
+        *,
+        cargar_referencia: Callable[[], referencia_svc.ReferenciaBundle] = referencia_svc.cargar_referencia,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
         self._cargar_referencia = cargar_referencia
-        self._referencia_at: float | None = None
-        self._referencia: referencia_svc.ReferenciaBundle | None = None
-        self._src: list[dict[str, Any]] | None = None
-        self._hoy: date | None = None
-        self._result: depuracion_svc.Depuracion | None = None
+        self._clock = clock
         self._lock = threading.Lock()
+        self._referencia: referencia_svc.ReferenciaBundle | None = None
+        self._referencia_at: float | None = None
+        self._referencia_flight: _Flight | None = None
+        self._key: tuple | None = None  # key a cache HIT is valid for (cleared by invalidate())
+        self._result: depuracion_svc.Depuracion | None = None
+        self._result_key: tuple | None = None  # key `_result` was computed under (kept by invalidate())
+        self._inflight: dict[tuple, _Flight] = {}
+        self._generation = 0
+        # (payload object, projection, fingerprint) of the last payload seen: the
+        # projection is O(rows), so it is paid once per NEW payload object, never
+        # per request. Identity is exact: the sticker cache keeps the same list
+        # object while the content is unchanged.
+        self._inputs: tuple[Any, list[dict[str, Any]], str] | None = None
+
+    def _now(self) -> float:
+        return (self._clock or time.monotonic)()
+
+    def inputs_for(self, payload: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
+        """`(projection, inputs_version)` of the sticker payload, memoised by
+        payload identity. The projection is shared read-only with `depurar()`
+        (which never mutates its inputs)."""
+        memo = self._inputs
+        if memo is not None and memo[0] is payload:
+            return memo[1], memo[2]
+        projected = _stickers_para_depuracion(payload)
+        version = depuracion_inputs_version(projected)
+        self._inputs = (payload, projected, version)
+        return projected, version
+
+    def _referencia_fresh(self, now: float) -> bool:
+        if self._referencia is None or self._referencia_at is None:
+            return False
+        age = now - self._referencia_at
+        return 0 <= age <= REFERENCIA_CACHE_TTL_SECONDS  # a negative age (clock went back) is stale
 
     def _referencia_actual(self) -> referencia_svc.ReferenciaBundle:
-        now = time.monotonic()
-        stale = (
-            self._referencia is None
-            or self._referencia_at is None
-            or (now - self._referencia_at) > REFERENCIA_CACHE_TTL_SECONDS
-        )
-        if stale:
+        # Real time, never the injectable clock: this bounds an actual wait.
+        deadline = time.monotonic() + _FLIGHT_WAIT_S
+        while True:
+            with self._lock:
+                if self._referencia_fresh(self._now()):
+                    assert self._referencia is not None
+                    return self._referencia
+                flight = self._referencia_flight
+                if flight is None:
+                    flight = self._referencia_flight = _Flight()
+                    leader = True
+                else:
+                    leader = False
+                    if self._referencia is not None:
+                        return self._referencia  # last-good: never wait behind a download
+            if leader:
+                return self._descargar_referencia(flight)
+            # Cold start with a download already running: wait for that one, but
+            # never past the deadline (a hung download must not park the worker).
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not flight.event.wait(remaining):
+                logging.warning("depuracion: referencia download still running; serving a degraded bundle")
+                return referencia_svc.ReferenciaBundle.vacia(motivo=MOTIVO_REFERENCIA_TIMEOUT)
+            if flight.error is not None and self._referencia is None:
+                raise flight.error
+
+    def _descargar_referencia(self, flight: _Flight) -> referencia_svc.ReferenciaBundle:
+        """Runs OUTSIDE `self._lock` (a Blob GET can take up to 30 s)."""
+        nueva: referencia_svc.ReferenciaBundle | None = None
+        error: Exception | None = None
+        try:
             nueva = self._cargar_referencia()
-            # WARNING fix (adversarial review): `cargar_referencia()` never
-            # raises — a transient failure (Blob network blip) degrades to
-            # `ReferenciaBundle.vacia()` (`activa=False`), which would
-            # otherwise unconditionally REPLACE a last-known-good bundle
-            # here. `get_or_compute` below keys its recompute decision off
-            # `referencia.activa`, so that replacement would immediately
-            # recompute `depurar()` against an EMPTY reference and DISCARD
-            # the previously-good `depuracion` result, exactly the
-            # regression spec's "Unavailable reference source degrades to
-            # last-good cache" scenario forbids. Keep serving the
-            # last-known-good bundle instead; only ever adopt a degraded one
-            # when there was no good bundle to fall back on. `_referencia_at`
-            # still advances either way, so this doesn't retry
-            # `cargar_referencia()` on every single request during an
-            # outage — it still respects the 30-min TTL cadence.
-            tenia_buena = self._referencia is not None and self._referencia.activa
-            if not (nueva.activa is False and tenia_buena):
-                self._referencia = nueva
-            self._referencia_at = now
-        assert self._referencia is not None
-        return self._referencia
+        except Exception as exc:  # noqa: BLE001 - the contract says it never raises; be safe anyway
+            error = exc
+        with self._lock:
+            try:
+                if error is None:
+                    assert nueva is not None
+                    # `cargar_referencia()` never raises: a transient failure degrades to
+                    # `ReferenciaBundle.vacia()` (`activa=False`), which must NOT replace a
+                    # last-known-good bundle (spec: "Unavailable reference source degrades to
+                    # last-good cache"); a degraded one is adopted only with nothing better.
+                    tenia_buena = self._referencia is not None and self._referencia.activa
+                    if not (nueva.activa is False and tenia_buena):
+                        self._referencia = nueva
+                    self._referencia_at = self._now()  # advances on failure too: <= 1 retry per TTL
+                elif self._referencia is not None:
+                    self._referencia_at = self._now()
+                    logging.warning(
+                        "depuracion: referencia load failed (%s); keeping the last-good bundle",
+                        type(error).__name__,
+                    )
+            finally:
+                self._referencia_flight = None
+                flight.error = error
+                flight.event.set()
+            referencia = self._referencia
+        if referencia is None:
+            assert error is not None
+            raise error
+        return referencia
 
     def get_or_compute(
         self,
         *,
-        evaluaciones: list[dict[str, Any]],
+        inputs_version: Any,
+        roster_version: Any = "",
+        survey_version: Any = "",
         hoy: date,
         compute: Callable[[referencia_svc.ReferenciaBundle], depuracion_svc.Depuracion],
     ) -> depuracion_svc.Depuracion:
-        """`compute(referencia)` builds a fresh `Depuracion` from the
-        CURRENT reference bundle — invoked only when the sticker payload's
-        identity, `hoy`, or `referencia.generado_en`/`activa` changed since
-        the last call.
+        """`compute(referencia)` builds a fresh `Depuracion` from the CURRENT
+        bundle - invoked only when one of the five fingerprints changed since
+        the last call, by exactly one caller per key, outside every lock. A
+        failing `compute` never raises (see the class docstring for the
+        outcome); only a `BaseException` that is not an `Exception` unwinds."""
+        referencia = self._referencia_actual()
+        key = (inputs_version, roster_version, survey_version, _referencia_key(referencia), hoy)
+        retried = False
+        while True:
+            cached = None
+            with self._lock:
+                if self._key == key and self._result is not None:
+                    cached = self._result
+                else:
+                    flight = self._inflight.get(key)
+                    leader = flight is None
+                    if flight is None:
+                        flight = self._inflight[key] = _Flight()
+                    generation = self._generation
+            if cached is not None:
+                return copy.deepcopy(cached)
+            if leader:
+                try:
+                    return self._computar(key, flight, generation, compute, referencia)
+                except Exception as exc:  # noqa: BLE001 - advisory feature: degrade, never raise
+                    logging.error(
+                        "depuracion: compute failed (%s); serving the last-good of the same key or a declared gap",
+                        _resumen_seguro(exc),
+                    )
+                    return self._sin_resultado(key)
 
-        WARNING fix (adversarial review): `compute(...)` runs a Firestore
-        roster/survey scan plus `depuracion_svc.depurar()`'s O(n×m) rapidfuzz
-        loop — potentially hundreds of ms. It now runs OUTSIDE `self._lock`
-        so a concurrent `/stickers-atencionsismo` request (including one
-        that would have hit the `unchanged` fast path) is never blocked
-        behind it; the lock only protects the referencia TTL check above and
-        the cached-result compare/write below, mirroring
-        `EvaluacionesCache`'s own concurrency story."""
+            if not flight.event.wait(_FLIGHT_WAIT_S):
+                logging.warning("depuracion: timed out waiting for the in-flight compute")
+                return self._sin_resultado(key)
+            if flight.error is None:
+                return copy.deepcopy(flight.result)
+            if retried:
+                return self._sin_resultado(key)
+            retried = True  # the leader failed: ONE retry as (or behind) a new leader, then give up
+
+    def _sin_resultado(self, key: tuple) -> depuracion_svc.Depuracion:
+        """Outcome of a failed compute for `key`: the last-good ONLY when it was
+        computed under exactly this key, else the declared gap."""
         with self._lock:
-            referencia = self._referencia_actual()
-            unchanged = (
-                self._result is not None
-                and self._src is evaluaciones
-                and self._hoy == hoy
-                and self._result.referencia_generada_en == referencia.generado_en
-                and self._result.activa == referencia.activa
-            )
-            if unchanged:
-                assert self._result is not None
-                return self._result
+            last_good = self._result if self._result_key == key else None
+        if last_good is not None:
+            return copy.deepcopy(last_good)
+        return _depuracion_calculo_fallido()
 
-        result = compute(referencia)
-
+    def _computar(self, key, flight, generation, compute, referencia) -> depuracion_svc.Depuracion:
+        try:
+            result = compute(referencia)
+        except BaseException as exc:
+            with self._lock:
+                self._inflight.pop(key, None)
+            flight.error = exc
+            flight.event.set()
+            raise
         with self._lock:
-            self._result = result
-            self._src = evaluaciones
-            self._hoy = hoy
-            return self._result
+            self._inflight.pop(key, None)
+            if generation == self._generation:  # an invalidate() mid-compute leaves it uncached
+                self._key, self._result, self._result_key = key, result, key
+        flight.result = result
+        flight.event.set()
+        return copy.deepcopy(result)
+
+    def invalidate(self) -> None:
+        """Forces one recompute on the next request; keeps the last-good
+        result (with the key it was computed under) for a failing recompute of
+        that same key."""
+        with self._lock:
+            self._generation += 1
+            self._key = None
+
+
+_EVALUACIONES_DEGRADADAS = "evaluaciones degradado: sin match de Firestore no hay identidad ni NP de respaldo"
 
 
 def build_payload(
     db: Any,
     evaluaciones_cache: stickers.EvaluacionesCache,
     *,
-    roster_out: dict[str, dict[str, str]] | None = None,
+    roster_cache: VersionedCache | None = None,
+    evaluaciones_fs_cache: VersionedCache | None = None,
 ) -> list[dict[str, Any]]:
-    """`roster_out` (WARNING fix, adversarial review): when given, this
-    function fills it IN PLACE with the same `roster_by_cedula` map this
-    call's own `stickers.inspector_profiles(db)` scan already produced — a
-    caller that also needs the roster for `depuracion_svc.depurar()`
-    (`get_stickers_atencionsismo`'s `_compute`) can reuse it instead of
-    triggering a second, redundant `inspectores` collection scan. Optional
-    and additive: every existing caller that omits it keeps the exact same
-    `list[dict]` return value/type."""
+    """`roster_cache` / `evaluaciones_fs_cache` (D22, optional and additive):
+    when given, the two Firestore reads go through those versioned component
+    caches (TTL + serve-stale) instead of scanning on every 5-minute refresh,
+    and the SAME roster snapshot is reused by the depuracion compute (no second
+    `inspectores` scan). Omitted -> every call scans, exactly as before."""
     user, password = atencionsismo.credentials_from_env()
+
+    def _read_roster() -> Any:
+        if roster_cache is None:
+            return stickers.inspector_profiles(db)
+        return roster_cache.get(lambda: stickers.inspector_profiles(db)).value
+
+    def _read_evaluaciones() -> list[dict[str, Any]]:
+        evaluaciones = evaluaciones_cache.get_or_fetch(lambda: stickers.list_evaluaciones(db))
+        if evaluaciones_cache.degraded:
+            # design D4: "si Firestore falla, el fetch falla completo" — a
+            # Blob-restored evaluaciones payload has `inspector.np`,
+            # `nombre_completo` AND `identificacion` all blanked
+            # (`stickers._redact_for_blob`), so silently joining it here would
+            # poison BOTH the Fase fallback and the identity of a matched record
+            # (not just serve a stale one). Fail this fetch too so THIS cache
+            # (`stickers_atencionsismo_cache`) runs its own serve-stale /
+            # Blob-restore chain instead of serving a payload with a poisoned
+            # identity/Fase. Checked INSIDE the read so a versioned component
+            # cache can never pin a degraded payload for its whole TTL.
+            raise RuntimeError(_EVALUACIONES_DEGRADADAS)
+        return evaluaciones
+
+    def _read_evaluaciones_firestore() -> list[dict[str, Any]]:
+        if evaluaciones_fs_cache is None:
+            return _read_evaluaciones()
+        return evaluaciones_fs_cache.get(_read_evaluaciones).value
 
     async def _pull() -> list[dict]:
         async with httpx.AsyncClient() as client:
@@ -394,13 +678,10 @@ def build_payload(
         roster_task = asyncio.ensure_future(
             # F6: ONE `inspectores` collection scan for both roster shapes —
             # see inspector_profiles' own doc comment.
-            loop.run_in_executor(_FIRESTORE_READ_EXECUTOR, stickers.inspector_profiles, db)
+            loop.run_in_executor(_FIRESTORE_READ_EXECUTOR, _read_roster)
         )
         firestore_task = asyncio.ensure_future(
-            loop.run_in_executor(
-                _FIRESTORE_READ_EXECUTOR, evaluaciones_cache.get_or_fetch,
-                lambda: stickers.list_evaluaciones(db),
-            )
+            loop.run_in_executor(_FIRESTORE_READ_EXECUTOR, _read_evaluaciones_firestore)
         )
 
         try:
@@ -448,21 +729,6 @@ def build_payload(
     roster_map, roster_by_cedula = roster_result
     firestore_evals = firestore_result
 
-    if roster_out is not None:
-        roster_out.clear()
-        roster_out.update(roster_by_cedula)
-
-    if evaluaciones_cache.degraded:
-        # design D4: "si Firestore falla, el fetch falla completo" — a
-        # Blob-restored evaluaciones payload has `inspector.np`,
-        # `nombre_completo` AND `identificacion` all blanked
-        # (`stickers._redact_for_blob`), so silently joining it here would
-        # poison BOTH the Fase fallback and the identity of a matched record
-        # (not just serve a stale one). Fail this fetch too so THIS cache
-        # (`stickers_atencionsismo_cache`) runs its own serve-stale /
-        # Blob-restore chain instead of serving a payload with a poisoned
-        # identity/Fase.
-        raise RuntimeError("evaluaciones degradado: sin match de Firestore no hay identidad ni NP de respaldo")
     return build_evaluaciones(
         rows, roster_by_codigo=roster_map, evaluaciones_firestore=firestore_evals,
         roster_by_cedula=roster_by_cedula,
@@ -477,16 +743,18 @@ def get_stickers_atencionsismo(
     cache: stickers.EvaluacionesCache = request.app.state.stickers_atencionsismo_cache
     evaluaciones_cache: stickers.EvaluacionesCache = request.app.state.stickers_evaluaciones_cache
     db = credentials.sismo().firestore
-    # WARNING fix (adversarial review, part a): filled in place by
-    # `build_payload` ONLY when it actually runs a fresh fetch (`cache.
-    # get_or_fetch` below calls it only while stale) — `_compute` reuses it
-    # instead of re-scanning `inspectores` via `stickers.inspector_profiles`
-    # a second time in the SAME request.
-    roster_by_cedula_holder: dict[str, dict[str, str]] = {}
+    state = request.app.state
     try:
-        payload = cache.get_or_fetch(
-            lambda: build_payload(db, evaluaciones_cache, roster_out=roster_by_cedula_holder)
+        # One consistent (payload, content version, degraded) triple. The
+        # whole-payload version is ETag material (slice 09b); the depuracion
+        # cache is keyed by the projected `depuracion_inputs_version` (W5).
+        snapshot = cache.get_or_fetch_snapshot(
+            lambda: build_payload(
+                db, evaluaciones_cache,
+                roster_cache=state.roster_cache, evaluaciones_fs_cache=state.evaluaciones_fs_cache,
+            )
         )
+        payload = snapshot.payload
     except HTTPException:
         raise
     except (atencionsismo.ApiUnavailableError, atencionsismo.ApiCredentialsError,
@@ -510,7 +778,7 @@ def get_stickers_atencionsismo(
     # PUBLIC Blob inside `cache.get_or_fetch` above, before this line ever
     # runs. Nothing past this point may mutate `payload`.
     body: dict[str, Any] = {
-        "ok": True, "fuente": "atencionsismo", "evaluaciones": payload, "degraded": cache.degraded,
+        "ok": True, "fuente": "atencionsismo", "evaluaciones": payload, "degraded": snapshot.degraded,
     }
 
     # CRITICAL (adversarial review): `depuracion` carries full PII
@@ -521,45 +789,59 @@ def get_stickers_atencionsismo(
     # The rest of the payload stays available to both roles (unchanged); only
     # this block is gated to `admin` so a viewer's response is exactly the
     # same shape as the flag-off case (key absent entirely).
-    if _depuracion_habilitada() and role_from_claims(claims) == "admin":
-        depuracion_cache: DepuracionCache = request.app.state.depuracion_cache
-        hoy = datetime.now(fechas_es_co.BOGOTA).date()
-
-        def _compute(referencia: referencia_svc.ReferenciaBundle) -> depuracion_svc.Depuracion:
-            # WARNING fix (adversarial review, part a): reuse the roster
-            # `build_payload` already scanned THIS request instead of
-            # calling `stickers.inspector_profiles(db)` again — that helper
-            # scans the whole `inspectores` collection, and `build_payload`
-            # (via `cache.get_or_fetch`) already paid that cost moments ago
-            # whenever it actually ran. Falls back to a fresh scan only for
-            # the rarer case where `depuracion_cache` decides to recompute
-            # (e.g. the referencia TTL just expired) without a fresh sticker
-            # fetch happening in THIS same request, so `roster_by_cedula_
-            # holder` was never populated.
-            roster_by_cedula = roster_by_cedula_holder or None
-            if roster_by_cedula is None:
-                _, roster_by_cedula = stickers.inspector_profiles(db)
-            return depuracion_svc.depurar(
-                stickers=_stickers_para_depuracion(payload),
-                roster_by_cedula=_roster_para_depuracion(roster_by_cedula),
-                nombres_survey=_nombres_survey(db),
-                referencia=referencia,
-                hoy=hoy,
-            )
+    #
+    # Gates, cheapest first, ALL required (D25 + D16): the request carries
+    # exactly `?depuracion=1`, the flag is on, the caller is an admin. A request
+    # that fails any of them performs 0 depuracion work: no component read, no
+    # referencia GET, no `depurar` (its body stays byte-identical to flag-off).
+    if _depuracion_solicitada(request) and _depuracion_habilitada() and role_from_claims(claims) == "admin":
+        depuracion_cache: DepuracionCache = state.depuracion_cache
+        hoy = _hoy()
 
         try:
-            resultado = depuracion_cache.get_or_compute(evaluaciones=payload, hoy=hoy, compute=_compute)
+            if snapshot.degraded:
+                # D16: unattributable stickers -> a declared gap, not a table.
+                # Scoped to the STICKERS source only: a missing reference bundle
+                # keeps its own path (D5) inside `depurar`. Nothing is read.
+                resultado = _depuracion_stickers_degradados()
+            else:
+                # Component reads are TTL-guarded and single-flight (D22): a warm
+                # request pays O(1) here. `build_payload` already shares the SAME
+                # roster snapshot, so one window costs one `inspectores` scan.
+                roster = state.roster_cache.get(lambda: stickers.inspector_profiles(db))
+                survey = state.survey_names_cache.get(lambda: sorted(_nombres_survey(db)))
+
+                # The cache key carries the PROJECTED fingerprint of what `depurar`
+                # reads (W5), not `snapshot.version` (a new photo must not force a
+                # recompute); the projection is memoised per payload object.
+                stickers_proj, inputs_version = depuracion_cache.inputs_for(payload)
+
+                def _compute(referencia: referencia_svc.ReferenciaBundle) -> depuracion_svc.Depuracion:
+                    return depuracion_svc.depurar(
+                        stickers=stickers_proj,
+                        roster_by_cedula=_roster_para_depuracion(roster.value[1]),
+                        nombres_survey=survey.value,
+                        referencia=referencia,
+                        hoy=hoy,
+                    )
+
+                resultado = depuracion_cache.get_or_compute(
+                    inputs_version=inputs_version, roster_version=roster.version,
+                    survey_version=survey.version, hoy=hoy, compute=_compute,
+                )
             body["depuracion"] = _depuracion_a_dict(resultado)
-        except Exception:
+        except Exception as exc:
             # Advisory-only feature (spec: "Classification never writes to
             # the inspector record"): a depuración failure must never turn
             # an otherwise-healthy sticker response into an error. Omitting
             # the key entirely (not a half-filled `depuracion`) keeps the
             # frontend's existing "`depuracion` absent -> current code path"
             # branch (design's Frontend Changes) as the fallback, same as
-            # the flag-off case.
-            logging.exception(
-                "stickers-atencionsismo: fallo calculando depuracion; se omite el bloque (advisory-only)"
+            # the flag-off case. Logged by type and location only - never
+            # `logging.exception`, whose traceback text carries the message.
+            logging.error(
+                "stickers-atencionsismo: fallo calculando depuracion (%s); se omite el bloque (advisory-only)",
+                _resumen_seguro(exc),
             )
 
     return JSONResponse(body)

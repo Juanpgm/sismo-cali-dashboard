@@ -113,7 +113,7 @@ import re
 from datetime import timezone
 from typing import Any
 
-from app.services import fechas_es_co
+from app.services import cedula_utils, fechas_es_co
 
 # Our field-form code: 76001-{area}-{inspector 3 digits}{consecutivo 4+ digits}
 # (formulario/js/logic.js buildCodigo). atencionsismo re-exports it verbatim
@@ -240,8 +240,13 @@ def cedula_key(value: object) -> str:
     resolve to the same key. Returns "" when nothing digit-like remains
     (blank/whitespace-only input) — callers treat "" as "no key" and never
     look it up in the roster. This is a JOIN KEY ONLY: the API's own cedula
-    is still stored verbatim (stripped) as `inspector.identificacion`."""
-    return re.sub(r"\D", "", str(value or ""))
+    is still stored verbatim (stripped) as `inspector.identificacion`.
+
+    Delegates to the ONE shared rule (`cedula_utils.solo_digitos`, D-CEDDEC):
+    a float artifact ("1234567.0", what a float cell stringifies to) keys as
+    "1234567" - it used to become "12345670" - and digits are ASCII only, like
+    the depuracion engine and the frontend's `cedulaKey`."""
+    return cedula_utils.solo_digitos(str(value or ""))
 
 
 def normalize_sticker(

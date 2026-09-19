@@ -731,3 +731,74 @@ def test_remapear_codigos_honors_numeric_codigos_duplicados_from_bundle():
     assert perfiles["3333333"].codigo == ""   # 22 (int) excludes "22"
     assert perfiles["4444444"].codigo == "23"  # not listed -> remapped normally
     assert revision == ()
+
+
+# --- huella: content fingerprint of the raw bundle (D24, tasks 10.25-10.27) --
+
+
+def _reordered(raw: dict) -> dict:
+    """Same content, JSON object keys in reverse order at every dict level."""
+    if isinstance(raw, dict):
+        return {k: _reordered(raw[k]) for k in reversed(list(raw))}
+    if isinstance(raw, list):
+        return [_reordered(x) for x in raw]
+    return raw
+
+
+def test_huella_identical_for_identical_content_and_json_key_order():
+    a = ir.parse_bundle(VALID_RAW)
+    b = ir.parse_bundle(_reordered(VALID_RAW))
+    assert a is not None and b is not None
+    assert a.huella and len(a.huella) == 64
+    assert a.huella == b.huella
+    assert a.huella == ir.blob_lkg.payload_hash(VALID_RAW)
+
+
+def test_huella_changes_on_same_day_republish():
+    republished = {**VALID_RAW, "vercel": [{**VALID_RAW["vercel"][0], "np": "P4"}]}
+    assert republished["generado_en"] == VALID_RAW["generado_en"]
+    assert ir.parse_bundle(republished).huella != ir.parse_bundle(VALID_RAW).huella
+
+
+def test_huella_changes_when_only_an_optional_contact_field_changes():
+    with_phone = {**VALID_RAW, "vercel": [{**VALID_RAW["vercel"][0], "telefono": "3000000001"}]}
+    other_phone = {**VALID_RAW, "vercel": [{**VALID_RAW["vercel"][0], "telefono": "3000000002"}]}
+    assert ir.parse_bundle(with_phone).huella != ir.parse_bundle(other_phone).huella
+    assert ir.parse_bundle(with_phone).huella != ir.parse_bundle(VALID_RAW).huella
+
+
+def test_huella_is_order_sensitive_for_row_order_inside_a_section():
+    row2 = {"cedula_key": "7654321", "nombre_norm": "ana", "np": "P1"}
+    a = {**VALID_RAW, "vercel": [VALID_RAW["vercel"][0], row2]}
+    b = {**VALID_RAW, "vercel": [row2, VALID_RAW["vercel"][0]]}
+    assert ir.parse_bundle(a).huella != ir.parse_bundle(b).huella  # first-wins makes row order an INPUT
+
+
+def test_huella_empty_for_degraded_bundle_and_never_equals_a_real_one():
+    degraded = ir.ReferenciaBundle.vacia(motivo="sin_blob")
+    assert degraded.huella == ""
+    assert ir.parse_bundle(VALID_RAW).huella != degraded.huella
+
+
+def test_huella_empty_for_schema_mismatch_and_malformed_bundles(monkeypatch):
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "fake-token")
+    assert ir.cargar_referencia(load_json=_fake_load_json({**VALID_RAW, "schema": 99})).huella == ""
+    assert ir.cargar_referencia(load_json=_fake_load_json(["not", "a", "dict"])).huella == ""
+    assert ir.cargar_referencia(load_json=_fake_load_json(None)).huella == ""
+
+
+def test_old_bundle_without_any_huella_key_still_parses_and_gets_a_computed_one():
+    assert "huella" not in VALID_RAW
+    bundle = ir.parse_bundle(VALID_RAW)
+    assert bundle is not None and bundle.activa is True and bundle.huella
+
+
+def test_huella_from_cargar_referencia_matches_parse_bundle(monkeypatch):
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "fake-token")
+    loaded = ir.cargar_referencia(load_json=_fake_load_json(VALID_RAW))
+    assert loaded.huella == ir.parse_bundle(VALID_RAW).huella
+
+
+def test_huella_never_leaks_pii_in_the_bundle_repr():
+    with_phone = {**VALID_RAW, "vercel": [{**VALID_RAW["vercel"][0], "telefono": "3000000009"}]}
+    assert "3000000009" not in repr(ir.parse_bundle(with_phone))

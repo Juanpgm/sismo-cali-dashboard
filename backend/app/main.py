@@ -37,6 +37,7 @@ from app.routers import (
 from app.routers.planeacion_asignaciones import PlaneacionAggregatesCache, PlaneacionPuntosSnapshot
 from app.routers.puntos_solicitados import BuscarCache, PuntosSolicitadosCache
 from app.routers.stickers import EvaluacionesCache, InspectoresCache
+from app.services.versioned_cache import VersionedCache
 from app.routers.sticker_status import StickerStatusCache
 from app.services.snapshot import ReportadosSnapshot, refresh_loop, seed_from_blob
 
@@ -150,9 +151,23 @@ def create_app() -> FastAPI:
     # seguimiento-inspectores-depurado (design D4/D6): derived cache for the
     # `depuracion` block GET /stickers-atencionsismo optionally attaches,
     # gated by SEGUIMIENTO_DEPURACION. Own TTL for the (private) reference
-    # bundle read plus a keyed-by-object-identity cache for `depurar()`'s
-    # own output — see `DepuracionCache`'s docstring.
+    # bundle read (outside the lock) plus a content-keyed, single-flight cache
+    # for `depurar()`'s own output — see `DepuracionCache`'s docstring.
     app.state.depuracion_cache = stickers_atencionsismo.DepuracionCache()
+
+    # Versioned component caches feeding it (efficiency extension D22): one per
+    # Firestore-derived input, own TTL + lock + serve-stale + `invalidate()`.
+    # The roster one is invalidated by every in-process `inspectores` writer (admin
+    # create/setEnabled/delete) through services/roster_invalidation.py.
+    app.state.roster_cache = VersionedCache(
+        name="roster", ttl_s=stickers_atencionsismo.ROSTER_CACHE_TTL_SECONDS
+    )
+    app.state.survey_names_cache = VersionedCache(
+        name="survey_names", ttl_s=stickers_atencionsismo.SURVEY_NAMES_CACHE_TTL_SECONDS
+    )
+    app.state.evaluaciones_fs_cache = VersionedCache(
+        name="evaluaciones_fs", ttl_s=stickers_atencionsismo.EVALUACIONES_FS_CACHE_TTL_SECONDS
+    )
 
     # Same convention, `planeacion_asignaciones.py`'s own `resumen`/
     # `metricasProgreso` aggregate cache (speed follow-up, 2026-08-27).
