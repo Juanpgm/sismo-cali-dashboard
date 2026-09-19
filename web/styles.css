@@ -2100,7 +2100,42 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="sti
    specific to this tab. */
 .rep-section .asignacion-search { flex: 1 1 220px; margin: 0; }
 .rep-section .asignacion-filters { align-items: flex-end; }
-#view-reportes-ciudadanos { max-width: 1180px; margin: 0 auto; }
+/* #view-reportes-ciudadanos is a direct flex item of .main-column (flex-direction:
+   column) that carries `margin: 0 auto` to center itself under max-width. An
+   auto cross-axis margin turns off the stretch, so the item is sized by
+   shrink-to-fit: its content's max-content width, clamped only by max-width.
+   The filter selects size themselves to their LONGEST option (Barrio lists
+   hundreds of long names), which makes the whole tab ~700px wide on a 320-414px
+   phone (and up to ~750px wide tablets) and pushes the search box, the filter
+   fields and the KPIs past the viewport, where html/body clip overflow-x and
+   nothing can be reached. `width: 100%` gives it a definite size (max-width
+   still caps it, margin:auto still centers it); min-width:0 drops the
+   content-based automatic minimum. Same recipe as #view-seguimiento below.
+   Scoped to this tab: .main-column and .eval-section are shared and must not
+   change. */
+#view-reportes-ciudadanos { width: 100%; max-width: 1180px; margin: 0 auto; min-width: 0; }
+/* Filter toolbar must never outgrow its card (same rules as .seg-section below):
+   bound every field and truncate the closed select instead of widening it. */
+.rep-section .asignacion-inline-field { min-width: 0; max-width: 100%; }
+.rep-section .asignacion-inline-field select {
+  min-width: 0; max-width: 100%; text-overflow: ellipsis;
+}
+/* Phone: the shared @media rule makes every .card-toolbar a column and
+   `.rep-section .asignacion-filters` adds align-items:flex-end. A wrapping
+   column is multi-line, so its single line is as wide as its widest item (the
+   Barrio select) and flex-end pushes every field to that line's far edge, past
+   the viewport. Back to a wrapping row: each field stacked label-over-control
+   and bounded by the toolbar, each select on its own full-width row. */
+@media (max-width: 640px) {
+  .rep-section .asignacion-filters { flex-direction: row; align-items: stretch; }
+  .rep-section .asignacion-inline-field {
+    flex: 1 1 100%; flex-direction: column !important; align-items: stretch; gap: 5px !important;
+  }
+  .rep-section .asignacion-inline-field select { width: 100%; min-width: 0; box-sizing: border-box; }
+  /* The four "Colorear por" tabs are equal-share flex items; at 320px their
+     14px side padding made the row ~19px wider than the card. */
+  .rep-section .segmented-btn { min-width: 0; padding-left: 6px; padding-right: 6px; }
+}
 
 /* ---- Seguimiento tab — reuses .eval-section/-kpis, .kpi-row/-tile,
    .card/-toolbar, .sticker-field/-search-input/-action/-note, .chart-tile,
