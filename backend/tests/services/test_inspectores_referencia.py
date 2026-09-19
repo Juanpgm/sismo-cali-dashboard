@@ -866,3 +866,76 @@ def test_parse_bundle_enfasis_round_trips_and_wrong_typed_one_never_drops_the_ro
     assert bundle is not None
     assert [e.enfasis for e in bundle.main] == ["Geotecnia", ""]
     assert [e.cedula_key for e in bundle.main] == ["1234567", "7654321"]
+
+
+# --- D-PROFESION: optional free-text `profesion` at schema 1 -----------------
+
+
+def test_entrada_referencia_profesion_defaults_to_empty_when_built_directly():
+    entrada = ir.EntradaReferencia(
+        cedula_key="1", nombre_norm="x", np="", entidad="", codigo="", pasos=(), no_persona=False,
+    )
+    assert entrada.profesion == ""
+
+
+def test_parse_entrada_reads_profesion_verbatim_trimmed():
+    entrada = ir._parse_entrada({**_MAIN_COMPLETA, "profesion": "  Ingeniero Civil "})
+    assert entrada is not None
+    assert entrada.profesion == "Ingeniero Civil"  # case untouched
+    assert entrada.tarjeta_profesional == "TP-1"  # neighbours untouched
+
+
+def test_parse_bundle_old_bundle_without_the_key_parses_with_blank_profesion():
+    bundle = ir.parse_bundle(VALID_RAW)  # published before the field existed
+
+    assert bundle is not None and bundle.activa is True
+    for entrada in (*bundle.vercel, *bundle.fase2, *bundle.main):
+        assert entrada.profesion == ""
+
+
+@pytest.mark.parametrize(
+    "crudo, esperado",
+    [
+        ("Arquitecto", "Arquitecto"),
+        ("  Arquitecto  ", "Arquitecto"),
+        ("INGENIERO CIVIL", "INGENIERO CIVIL"),
+        ("ingeniero", "ingeniero"),
+        ("Psicólogo", "Psicólogo"),
+        ("<script>alert('x')</script> \"a\" & <b>", "<script>alert('x')</script> \"a\" & <b>"),
+        ("Ingeniero 2.0", "Ingeniero 2.0"),
+        ("Ingeniero civil " * 150, ("Ingeniero civil " * 150).strip()),  # 2,000+ chars are kept whole
+        (None, ""),
+        ("", ""),
+        ("   ", ""),
+        (float("nan"), ""),
+        (float("inf"), ""),
+        (5, "5"),  # coerced like every optional field
+        (5.0, "5"),
+        (True, ""),
+        (["Arquitecto"], ""),  # a container is never str()'d
+        ({"a": "b"}, ""),
+    ],
+    ids=lambda v: repr(v)[:24],
+)
+def test_parse_entrada_profesion_tolerant_coercion(crudo, esperado):
+    entrada = ir._parse_entrada({**_MAIN_COMPLETA, "profesion": crudo})
+    assert entrada is not None
+    assert entrada.profesion == esperado
+
+
+def test_parse_bundle_profesion_round_trips_and_wrong_typed_one_never_drops_the_row():
+    bundle = _bundle_con(main=[
+        {**_MAIN_COMPLETA, "profesion": "Arquitecto"},
+        {**_MAIN_COMPLETA, "cedula_key": "7654321", "profesion": ["x"]},
+    ])
+    assert bundle is not None
+    assert [e.profesion for e in bundle.main] == ["Arquitecto", ""]
+    assert [e.cedula_key for e in bundle.main] == ["1234567", "7654321"]
+
+
+def test_parse_entrada_profesion_and_enfasis_are_read_from_their_own_keys():
+    entrada = ir._parse_entrada({**_MAIN_COMPLETA, "enfasis": "Geotecnia", "profesion": "Arquitecto"})
+    assert entrada is not None
+    assert (entrada.enfasis, entrada.profesion) == ("Geotecnia", "Arquitecto")
+    solo = ir._parse_entrada({**_MAIN_COMPLETA, "profesion": "Arquitecto"})
+    assert solo is not None and (solo.enfasis, solo.profesion) == ("", "Arquitecto")

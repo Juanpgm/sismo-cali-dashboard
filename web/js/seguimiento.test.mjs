@@ -4925,7 +4925,231 @@ named('test_enfasis_dom_wiring_passes_the_seeded_flag_to_the_table_and_the_expor
   const calls = js.match(/columnsFor\(subTab, \{[^}]*\}\)/g) || [];
   assert.ok(calls.length >= 2 && calls.every((c) => /withEnfasis:\s*currentIdentity\.depuracionActiva/.test(c)),
     'both columnsFor call sites (render + stillSortable) gate the column on the depurado base');
-  assert.match(js, /xlsxRowsFor\(sorted, \{ subTab: sheetSubTab, withEnfasis: currentIdentity\.depuracionActiva \}\)/);
+  const xlsx = /xlsxRowsFor\(sorted, \{[^}]*\}\)/.exec(js);
+  assert.ok(xlsx && /subTab:\s*sheetSubTab/.test(xlsx[0]) && /withEnfasis:\s*currentIdentity\.depuracionActiva/.test(xlsx[0]));
+});
+
+// ── D-PROFESION: the registry's free-text "profesión" (depuracion.inspectores[].profesion) ─────
+
+const PROFESION_TEXTO = 'Ingeniero civil';
+const PROFESION_HOSTIL = `<script>alert('x')</script> "q" & <img src=x onerror=1>`;
+const PROFESION_LARGA = 'Ingeniero civil '.repeat(150).trim(); // 2,399 chars
+
+function profesionRowFor(extra) {
+  const dep = depuracionOf([depInspector(1, extra)]);
+  return rowsFor({ depuracion: dep }).rows[0];
+}
+function profesionReportRow(extra = {}) {
+  return enfasisReportRow(extra);
+}
+
+named('test_profesion_is_read_into_the_depurado_profile_and_the_row', () => {
+  const dep = depuracionOf([depInspector(1, { profesion: 'Psicólogo' })]);
+  const identity = buildIdentityIndex({ stickers: [], surveys: [], depuracion: dep });
+  assert.equal(identity.profiles.get('ced:1000001').profesion, 'Psicólogo');
+  const row = rowsFor({ depuracion: dep }).rows[0];
+  assert.equal(row.profesion, 'Psicólogo', 'the row carries the profile text untouched (accents kept)');
+  for (const variant of ['ingeniero', 'INGENIERO CIVIL', 'Arquitecta', 'Arquitecto']) {
+    assert.equal(profesionRowFor({ profesion: variant }).profesion, variant, `case/gender variant kept verbatim: ${variant}`);
+  }
+});
+
+named('test_profesion_missing_or_blank_in_the_depuracion_reads_as_an_empty_string', () => {
+  for (const extra of [{}, { profesion: '' }, { profesion: null }, { profesion: undefined }, { profesion: 5 }, { profesion: ['x'] }]) {
+    const row = profesionRowFor(extra);
+    assert.equal(row.profesion, '', `depuracion without a usable profesion (${JSON.stringify(extra)}) -> ''`);
+  }
+});
+
+named('test_profesion_never_leaks_into_the_legacy_rows', () => {
+  const stickers = [stickerFor('1000001', 'Profesional 1')];
+  const legacy = rowsFor({ stickers }).rows[0];
+  assert.equal('profesion' in legacy, false, 'a legacy (unseeded) row has no profesion key at all');
+  const inactive = rowsFor({ stickers, depuracion: { ...depuracionOf([depInspector(1)]), activa: false } }).rows[0];
+  assert.equal('profesion' in inactive, false, 'an inactive depuracion is the legacy path');
+});
+
+named('test_profesion_and_enfasis_columns_are_independent_on_a_row', () => {
+  const soloProfesion = profesionRowFor({ profesion: PROFESION_TEXTO });
+  assert.equal(soloProfesion.profesion, PROFESION_TEXTO);
+  assert.equal(soloProfesion.enfasis, '', 'a row with profesión but no énfasis');
+  const soloEnfasis = profesionRowFor({ enfasis: ENFASIS_TEXTO });
+  assert.equal(soloEnfasis.enfasis, ENFASIS_TEXTO);
+  assert.equal(soloEnfasis.profesion, '', 'a row with énfasis but no profesión');
+  assert.equal(cellHtml(soloProfesion, 'profesion', true).includes(PROFESION_TEXTO), true);
+  assert.equal(cellHtml(soloProfesion, 'enfasis', true), 'Sin dato');
+  assert.equal(cellHtml(soloEnfasis, 'profesion', true), 'Sin dato');
+  assert.equal(cellHtml(soloEnfasis, 'enfasis', true).includes(ENFASIS_TEXTO), true);
+});
+
+named('test_profesion_column_only_when_requested_between_tarjeta_profesional_and_enfasis', () => {
+  assert.deepEqual(columnsFor('totales'), COLUMNS_TOTALES, 'legacy columns untouched');
+  assert.deepEqual(columnsFor('totales', { withEstado: true }).map((c) => c.key),
+    columnsFor('totales', { withEstado: true, withProfesion: false }).map((c) => c.key), 'the flag defaults to off');
+  const only = columnsFor('totales', { withProfesion: true });
+  const onlyKeys = only.map((c) => c.key);
+  assert.equal(onlyKeys.length, COLUMNS_TOTALES.length + 1);
+  assert.equal(onlyKeys[onlyKeys.indexOf('tarjetaProfesional') + 1], 'profesion', 'right after "Tarjeta profesional"');
+  assert.equal(only.find((c) => c.key === 'profesion').label, 'Profesión');
+  assert.ok(!onlyKeys.includes('enfasis'), 'the énfasis flag is separate: off means no Énfasis column');
+  const both = columnsFor('totales', { withEstado: true, withEnfasis: true, withProfesion: true }).map((c) => c.key);
+  assert.deepEqual(both.slice(1, 7), ['cedula', 'tarjetaProfesional', 'profesion', 'enfasis', 'np', 'estadoSugerido'],
+    'order: Tarjeta profesional, Profesión, Énfasis, then Clase (P) and Estado sugerido keep their place');
+  assert.equal(both.length, COLUMNS_TOTALES.length + 3);
+  const noProfesion = columnsFor('totales', { withEstado: true, withEnfasis: true }).map((c) => c.key);
+  assert.ok(!noProfesion.includes('profesion'), 'énfasis alone never brings the Profesión column');
+  assert.deepEqual(columnsFor('temporales', { withProfesion: true }), COLUMNS_TEMPORALES, 'temporales sub-tab unchanged');
+  assert.ok(!COLUMNS_TOTALES.some((c) => c.key === 'profesion'), 'the exported legacy array is never mutated');
+});
+
+named('test_profesion_cell_escapes_and_follows_the_sin_dato_convention', () => {
+  const texto = cellHtml({ profesion: PROFESION_TEXTO }, 'profesion', true);
+  assert.ok(texto.includes(PROFESION_TEXTO), 'the real text is shown as is');
+  assert.equal(cellHtml({ profesion: '' }, 'profesion', true), 'Sin dato');
+  assert.equal(cellHtml({}, 'profesion', true), 'Sin dato');
+  assert.equal(cellHtml({ profesion: null }, 'profesion', true), 'Sin dato');
+  assert.equal(cellHtml({ profesion: PROFESION_TEXTO }, 'profesion', false), DASH, 'masked while stickers load, like the other identity cells');
+  for (const v of ['ingeniero', 'INGENIERO CIVIL', 'Psicólogo']) {
+    assert.ok(cellHtml({ profesion: v }, 'profesion', true).includes(`>${v}</span>`), `verbatim, never re-cased: ${v}`);
+  }
+  const hostil = cellHtml({ profesion: PROFESION_HOSTIL }, 'profesion', true);
+  assert.doesNotMatch(hostil, /<script|<img|onerror=1>/, 'no raw tag survives');
+  assert.ok(hostil.includes('&lt;script&gt;') && hostil.includes('&quot;q&quot;') && hostil.includes('&amp;'), 'text escaped');
+  const title = /title="([^"]*)"/.exec(hostil);
+  assert.ok(title && !/[<>]/.test(title[1]) && !title[1].includes("'"), 'the title attribute is fully escaped');
+});
+
+named('test_profesion_cell_long_text_is_confined_by_a_truncating_class', () => {
+  const largo = cellHtml({ profesion: PROFESION_LARGA }, 'profesion', true);
+  assert.ok(largo.includes(PROFESION_LARGA), 'the whole text stays reachable (tooltip / copy), never sliced in JS');
+  assert.match(largo, /class="seg-profesion"/);
+  assert.match(largo, /title="Ingeniero civil/);
+  const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+  const rule = /([^{}]*\.seg-profesion[^{}]*)\{([^}]*)\}/.exec(css);
+  assert.ok(rule, 'styles.css defines .seg-profesion');
+  assert.match(rule[2], /max-width\s*:\s*24ch/);
+  assert.match(rule[2], /overflow\s*:\s*hidden/);
+  assert.match(rule[2], /text-overflow\s*:\s*ellipsis/);
+  assert.match(rule[2], /white-space\s*:\s*nowrap/);
+});
+
+named('test_profesion_cell_is_left_aligned_including_the_plain_sin_dato_cells', () => {
+  const dep = depuracionOf([
+    depInspector(1, { profesion: PROFESION_TEXTO }),
+    depInspector(2, { profesion: '' }),
+  ]);
+  const { rows } = rowsFor({ depuracion: dep });
+  const columns = columnsFor('totales', { withEstado: true, withProfesion: true });
+  const html = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columns, false);
+  const cells = [...html.matchAll(/<td class="seg-td-text">([^<]*(?:<span[^>]*>[^<]*<\/span>)?)<\/td>/g)];
+  assert.equal(cells.length, 2, 'exactly the Profesión cells (one per row) carry the text-alignment class');
+  assert.ok(cells.some((m) => m[1] === 'Sin dato'), 'the blank cell is covered too');
+  const ambas = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false,
+    columnsFor('totales', { withEstado: true, withEnfasis: true, withProfesion: true }), false);
+  assert.equal([...ambas.matchAll(/<td class="seg-td-text">/g)].length, 4, 'Profesión and Énfasis cells, two rows each');
+  const legacy = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columnsFor('totales'), false);
+  assert.equal(legacy.includes('seg-td-text'), false, 'the legacy table markup is unchanged');
+});
+
+named('test_profesion_table_renders_both_columns_in_order_and_independently', () => {
+  const dep = depuracionOf([
+    depInspector(1, { profesion: 'Arquitecto', enfasis: '' }),
+    depInspector(2, { profesion: '', enfasis: 'Geotecnia' }),
+  ]);
+  const { rows } = rowsFor({ depuracion: dep });
+  const columns = columnsFor('totales', { withEnfasis: true, withProfesion: true });
+  const html = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columns, false);
+  const cells = [...html.matchAll(/<td class="seg-td-text">(.*?)<\/td>/g)].map((m) => m[1]);
+  assert.equal(cells.length, 4, 'two text cells per row, in column order: Profesión then Énfasis');
+  assert.ok(cells[0].includes('Arquitecto') && cells[1] === 'Sin dato', 'row 1: profesión set, énfasis blank');
+  assert.ok(cells[2] === 'Sin dato' && cells[3].includes('Geotecnia'), 'row 2: profesión blank, énfasis set');
+});
+
+named('test_profesion_xlsx_column_only_when_requested_legacy_sheet_untouched', () => {
+  const row = { ...profesionReportRow({ profesion: PROFESION_TEXTO, enfasis: ENFASIS_TEXTO }), key: 'ced:1', estadoSugerido: 'activo' };
+  const legacyKeys = Object.keys(xlsxRowsFor([row], { subTab: 'totales' })[0]);
+  assert.equal(legacyKeys.includes('profesion'), false, 'the legacy sheet carries no profesion column');
+  assert.deepEqual(xlsxRowsFor([row]), xlsxRowsFor([row], { withProfesion: false }), 'off by default');
+  const [seeded] = xlsxRowsFor([row], { subTab: 'totales', withProfesion: true });
+  const keys = Object.keys(seeded);
+  assert.equal(seeded.profesion, PROFESION_TEXTO);
+  assert.equal(keys[keys.indexOf('tarjeta_profesional') + 1], 'profesion', 'right after tarjeta_profesional');
+  assert.equal(keys.includes('enfasis'), false, 'the énfasis flag is separate');
+  assert.deepEqual(keys.filter((k) => k !== 'profesion'), legacyKeys, 'every other column is exactly the legacy set, in order');
+  const [ambas] = xlsxRowsFor([row], { withEnfasis: true, withProfesion: true });
+  const ambasKeys = Object.keys(ambas);
+  assert.deepEqual(ambasKeys.slice(ambasKeys.indexOf('tarjeta_profesional'), ambasKeys.indexOf('tarjeta_profesional') + 3),
+    ['tarjeta_profesional', 'profesion', 'enfasis'], 'profesión sits next to (right before) énfasis');
+  const [blank] = xlsxRowsFor([{ ...row, profesion: undefined }], { withProfesion: true });
+  assert.equal(blank.profesion, '', 'a missing value is an empty cell, never "undefined"');
+  assert.deepEqual(xlsxRowsFor([row], { subTab: 'temporales', withProfesion: true }), xlsxRowsFor([row], { subTab: 'temporales' }),
+    'the temporales sheet never carries it');
+  const [hostil] = xlsxRowsFor([{ ...row, profesion: PROFESION_HOSTIL }], { withProfesion: true });
+  assert.equal(hostil.profesion, PROFESION_HOSTIL, 'a spreadsheet cell keeps the raw text (typed text cell, never HTML)');
+});
+
+named('test_profesion_pdf_row_sits_right_before_the_enfasis_row', () => {
+  const doc = buildProfessionalReportDocDefinition(profesionReportRow({ profesion: PROFESION_TEXTO, enfasis: ENFASIS_TEXTO }), ENFASIS_POINTS, ENFASIS_CTX);
+  const text = JSON.stringify(doc.content);
+  assert.ok(text.includes('Profesión') && text.includes(PROFESION_TEXTO));
+  assert.ok(text.indexOf('Tarjeta profesional') < text.indexOf('Profesión'), 'after the tarjeta row');
+  assert.ok(text.indexOf('Profesión') < text.indexOf('Énfasis'), 'right before the énfasis row');
+  assert.ok(text.indexOf('Énfasis') < text.indexOf('Clase (P) / Código vigente'), 'the énfasis row keeps its place');
+  const vacio = JSON.stringify(buildProfessionalReportDocDefinition(profesionReportRow({ profesion: '' }), ENFASIS_POINTS, ENFASIS_CTX).content);
+  assert.ok(vacio.includes('Profesión'), 'a seeded row without profesión still shows the row');
+  assert.match(vacio, /"Profesión"[^\]]*"—"/, '... with the forced dash');
+  const solo = JSON.stringify(buildProfessionalReportDocDefinition(profesionReportRow({ profesion: PROFESION_TEXTO }), ENFASIS_POINTS, ENFASIS_CTX).content);
+  assert.ok(solo.includes('Profesión') && !solo.includes('Énfasis'), 'a row with only profesión gets no Énfasis row');
+  const hostil = JSON.stringify(buildProfessionalReportDocDefinition(profesionReportRow({ profesion: PROFESION_HOSTIL }), ENFASIS_POINTS, ENFASIS_CTX).content);
+  assert.ok(hostil.includes('onerror=1'), 'pdfmake prints text, it never parses it: the value is kept verbatim');
+});
+
+named('test_profesion_pdf_legacy_report_is_byte_identical', () => {
+  const sin = profesionReportRow();
+  assert.equal('profesion' in sin, false);
+  const text = JSON.stringify(buildProfessionalReportDocDefinition(sin, ENFASIS_POINTS, ENFASIS_CTX).content);
+  assert.ok(!text.includes('Profesión'), 'a legacy row (no profesion key) gets no Profesión row');
+  const conEnfasis = JSON.stringify(buildProfessionalReportDocDefinition(profesionReportRow({ enfasis: ENFASIS_TEXTO }), ENFASIS_POINTS, ENFASIS_CTX).content);
+  assert.ok(!conEnfasis.includes('Profesión'), 'a row with only the énfasis key (previous shape) is unchanged too');
+});
+
+named('test_profesion_search_matches_the_text_like_the_other_name_fields', () => {
+  const row = { name: 'Xyz', cedula: '', tarjetaProfesional: '', np: 'P1', profesion: 'Psicólogo' };
+  assert.equal(matchesSearch(row, 'psicologo'), true, 'accent-insensitive: the query lost its accent');
+  assert.equal(matchesSearch(row, 'PSICÓLOGO'), true, 'case-insensitive and accented');
+  assert.equal(matchesSearch(row, '  psicólogo  '), true, 'trimmed query');
+  assert.equal(matchesSearch(row, 'arquitecto'), false, 'a different text never matches');
+  assert.equal(matchesSearch({ ...row, profesion: '' }, 'psicologo'), false, 'blank profesión matches nothing');
+  const legacy = { name: 'Xyz', cedula: '', tarjetaProfesional: '', np: 'P1' };
+  assert.equal(matchesSearch(legacy, 'psicologo'), false, 'a legacy row (no key) never throws and never matches');
+  assert.equal(matchesSearch({ ...row, profesion: null }, 'psicologo'), false);
+  assert.equal(matchesSearch({ ...row, profesion: PROFESION_LARGA }, 'ingeniero'), true, 'a 2,000-char text is searchable');
+  assert.equal(matchesSearch({ ...row, profesion: 'Ingeniero civil' }, 'INGENIERO CIVIL'), true, 'case variants of the same profession are found by one query');
+  assert.equal(matchesSearch({ ...row, profesion: 'ingeniero' }, 'Ingeniero'), true);
+  assert.equal(matchesSearch(row, '2026'), false, 'a >=3-digit query stays on the cédula/TP path');
+  assert.equal(matchesSearch({ name: 'A', cedula: '', profesion: 'Nivel 2026 civil' }, '2026'), false, 'digit runs are cédula/TP fragments');
+  assert.equal(matchesSearch({ name: 'A', cedula: '', enfasis: ENFASIS_TEXTO }, 'psicologo'), false);
+  assert.equal(matchesSearch({ name: 'A', cedula: '', profesion: 'Arquitecto', enfasis: '' }, 'arquitecto'), true, 'independent of the énfasis clause');
+});
+
+named('test_profesion_search_composes_with_visibleRowsFor_and_sorts_like_any_text_column', () => {
+  const dep = depuracionOf([
+    depInspector(1, { profesion: 'Arquitecto' }), depInspector(2, { profesion: 'Ingeniero civil' }), depInspector(3),
+  ]);
+  const { rows } = rowsFor({ depuracion: dep });
+  assert.equal(visibleRowsFor(rows, { query: 'arquitec' }).length, 1);
+  assert.equal(visibleRowsFor(rows, { query: 'arquitec', estado: 'revisar' }).length, 1);
+  assert.deepEqual(sortRows(rows, 'profesion', 'asc').map((r) => r.profesion), ['', 'Arquitecto', 'Ingeniero civil']);
+});
+
+named('test_profesion_dom_wiring_passes_the_seeded_flag_to_the_table_and_the_export', () => {
+  const js = readFileSync(new URL('./seguimiento.js', import.meta.url), 'utf8');
+  const calls = js.match(/columnsFor\(subTab, \{[^}]*\}\)/g) || [];
+  assert.ok(calls.length >= 2 && calls.every((c) => /withProfesion:\s*currentIdentity\.depuracionActiva/.test(c)),
+    'both columnsFor call sites (render + stillSortable) gate the column on the depurado base');
+  const xlsx = /xlsxRowsFor\(sorted, \{[^}]*\}\)/.exec(js);
+  assert.ok(xlsx && /withProfesion:\s*currentIdentity\.depuracionActiva/.test(xlsx[0]) && /withEnfasis:\s*currentIdentity\.depuracionActiva/.test(xlsx[0]),
+    'the export feeds both flags from the depurado base');
 });
 
 if (phase11Failures.length) {

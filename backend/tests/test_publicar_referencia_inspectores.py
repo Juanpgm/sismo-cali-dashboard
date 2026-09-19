@@ -1073,3 +1073,134 @@ def test_publisher_output_round_trips_to_the_depuracion_row():
     assert filas["1000000660"]["enfasis"] == "Especialización en Estructuras"
     assert filas["1000000661"]["enfasis"] == ""
     assert filas["1000000662"]["enfasis"] == ""
+
+
+# --- D-PROFESION: `addlInfo.profesion` (free text) rides the main rows ------
+
+_COLUMNAS_MAIN_PROFESION = [*_COLUMNAS_MAIN, "addlInfo.profesion"]
+_COLUMNAS_MAIN_AMBAS = [*_COLUMNAS_MAIN, "addlInfo.enfasis", "addlInfo.profesion"]
+_PROFESION_LARGA = "Ingeniero civil " * 150  # 2,400 chars once trimmed
+_PROFESION_HOSTIL = "<script>alert('x')</script> \"Ingeniero\" & <b>Civil</b>"
+
+
+@pytest.mark.parametrize(
+    "crudo, esperado",
+    [
+        ("Psicólogo", "Psicólogo"),  # accents kept
+        ("INGENIERO CIVIL", "INGENIERO CIVIL"),  # case kept
+        ("ingeniero", "ingeniero"),  # never capitalised
+        ("Arquitecta", "Arquitecta"),  # gender variant kept
+        ("  Ingeniero civil  ", "Ingeniero civil"),  # only trimmed
+        ("Profesional\nvoluntario", "Profesional\nvoluntario"),  # inner whitespace verbatim
+        (_PROFESION_HOSTIL, _PROFESION_HOSTIL),  # never sanitized at publish time
+        (None, ""),
+        (float("nan"), ""),
+        (pd.NA, ""),
+        ("", ""),
+        ("   ", ""),
+        ("\t\n", ""),
+        (5.0, "5"),  # a float-typed cell: no ".0" artifact
+        (7, "7"),
+        ("Ingeniero 2.0", "Ingeniero 2.0"),  # only a LONE float tail is an artifact
+    ],
+)
+def test_fila_main_profesion_is_the_trimmed_text_verbatim(crudo, esperado):
+    fila = cli._fila_main({"cedula": "1234567", "nombre": "Ana", "addlInfo.profesion": crudo})
+    assert fila["profesion"] == esperado
+    assert fila["profesion"] not in ("nan", "None", "<NA>")
+
+
+def test_fila_main_profesion_very_long_text_is_kept_whole():
+    fila = cli._fila_main({"cedula": "1234567", "addlInfo.profesion": _PROFESION_LARGA})
+    assert fila["profesion"] == _PROFESION_LARGA.strip()
+    assert len(fila["profesion"]) > 2000
+
+
+def test_fila_main_without_the_profesion_column_emits_blank():
+    fila = cli._fila_main({"cedula": "1234567", "nombre": "Ana"})
+    assert fila["profesion"] == ""
+
+
+def test_fila_main_profesion_does_not_disturb_the_neighbouring_fields():
+    fila = cli._fila_main({"cedula": "1234567", "nombre": "Ana", "addlInfo.matriculaProfesional": "TP-1",
+                           "addlInfo.rango": "P2", "addlInfo.enfasis": "Geotecnia",
+                           "addlInfo.profesion": "Ingeniero civil"})
+    assert (fila["tarjeta_profesional"], fila["rango"], fila["enfasis"], fila["profesion"]) == (
+        "TP-1", "P2", "Geotecnia", "Ingeniero civil")
+
+
+def test_fila_main_profesion_and_enfasis_are_independent_columns():
+    solo_profesion = cli._fila_main({"cedula": "1", "addlInfo.profesion": "Arquitecto"})
+    solo_enfasis = cli._fila_main({"cedula": "2", "addlInfo.enfasis": "Geotecnia"})
+    assert (solo_profesion["profesion"], solo_profesion["enfasis"]) == ("Arquitecto", "")
+    assert (solo_enfasis["profesion"], solo_enfasis["enfasis"]) == ("", "Geotecnia")
+
+
+@pytest.mark.parametrize(
+    "crudo", ["Arquitecto", " Arquitecto ", "5.0", "5", "", "   ", 5.0, 5, float("nan"), None, "3.5", "2.0 niveles"],
+)
+def test_profesion_publisher_and_parser_agree(crudo):
+    assert cli._campo_id({"c": crudo}, "c") == ir._texto_opcional(crudo)
+
+
+@pytest.mark.parametrize("sufijo", [".csv", ".xlsx"])
+def test_cli_reads_the_profesion_column_from_csv_and_xlsx(tmp_path, sufijo):
+    ruta = tmp_path / f"main{sufijo}"
+    _escribir_tabla(
+        ruta,
+        [["u1", "1234567", "Ana", "", "", "", "", "P2", "TP-1", "", "Ingeniero civil"],
+         ["u2", "7654321", "Beto", "", "", "", "", "P3", "", "", None],
+         ["u3", "1111111", "Cata", "", "", "", "", "P3", "", "", "   "]],
+        _COLUMNAS_MAIN_PROFESION,
+    )
+
+    bundle = _bundle_desde_main_archivo(ruta)
+
+    assert [f["profesion"] for f in bundle["main"]] == ["Ingeniero civil", "", ""]
+    assert "NaN" not in json.dumps(bundle["main"]) and '"nan"' not in json.dumps(bundle["main"])
+    assert ir.parse_bundle(bundle).main[0].profesion == "Ingeniero civil"
+
+
+def test_cli_csv_with_both_columns_keeps_each_value_in_its_own_field(tmp_path):
+    ruta = tmp_path / "main.csv"
+    _escribir_tabla(
+        ruta,
+        [["u1", "1234567", "Ana", "", "", "", "", "P2", "", "", "Geotecnia", "Ingeniero civil"],
+         ["u2", "7654321", "Beto", "", "", "", "", "P3", "", "", "", "Arquitecto"],
+         ["u3", "1111111", "Cata", "", "", "", "", "P3", "", "", "Estructuras", ""]],
+        _COLUMNAS_MAIN_AMBAS,
+    )
+
+    filas = _bundle_desde_main_archivo(ruta)["main"]
+
+    assert [(f["enfasis"], f["profesion"]) for f in filas] == [
+        ("Geotecnia", "Ingeniero civil"), ("", "Arquitecto"), ("Estructuras", ""),
+    ]
+
+
+def test_cli_csv_without_profesion_column_still_publishes_blank(tmp_path):
+    ruta = tmp_path / "main.csv"
+    ruta.write_text("cedula,nombre\n1234567,Juan Perez\n", encoding="utf-8")
+
+    assert _bundle_desde_main_archivo(ruta)["main"][0]["profesion"] == ""
+
+
+def test_profesion_publisher_output_round_trips_to_the_depuracion_row():
+    """publisher -> JSON -> `parse_bundle` -> `depurar` -> `_perfil_a_dict`."""
+    bundle = cli.construir_bundle(
+        vercel_records=[], fase2_records=[],
+        main_records=[
+            {"cedula": "1000000660", "nombre": "Ana Uno", "addlInfo.profesion": "  Ingeniero Civil "},
+            {"cedula": "1000000661", "nombre": "Beto Dos", "addlInfo.profesion": float("nan")},
+            {"cedula": "1000000662", "nombre": "Cata Tres"},
+            {"cedula": "1000000663", "nombre": "Dora Cuatro", "addlInfo.enfasis": "Geotecnia"},
+        ],
+        generado_en="2026-09-19", origen={},
+    )
+    referencia = ir.parse_bundle(json.loads(json.dumps(bundle)))
+    filas = {f["identificacion"]: f for f in _e2e_depurar(referencia).inspectores}
+
+    assert filas["1000000660"]["profesion"] == "Ingeniero Civil"
+    assert filas["1000000661"]["profesion"] == ""
+    assert filas["1000000662"]["profesion"] == ""
+    assert (filas["1000000663"]["profesion"], filas["1000000663"]["enfasis"]) == ("", "Geotecnia")

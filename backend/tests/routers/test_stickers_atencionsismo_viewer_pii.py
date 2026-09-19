@@ -566,6 +566,7 @@ def test_a_healthy_degraded_response_is_still_a_200_and_the_error_mapping_is_unt
 # ── D-ENFASIS: the registry's free-text `enfasis` is admin-only (depuracion) ─
 
 ENFASIS_SECRETO = "Especializacion en estructuras SECRETA-ENF-77"
+PROFESION_SECRETA = "Ingeniero civil SECRETA-PROF-88"
 
 
 def _rig_with_enfasis(monkeypatch, *, admin: bool) -> Rig:
@@ -574,7 +575,7 @@ def _rig_with_enfasis(monkeypatch, *, admin: bool) -> Rig:
         vercel=(), fase2=(), generado_en="2026-09-12", activa=True, motivo="", codigos_duplicados=(),
         main=(EntradaReferencia(cedula_key=CEDULA, nombre_norm="beto secreto", np="P2", entidad="DAGRD",
                                 codigo="", pasos=(), no_persona=False, nombre="Beto Secreto",
-                                enfasis=ENFASIS_SECRETO),),
+                                enfasis=ENFASIS_SECRETO, profesion=PROFESION_SECRETA),),
         huella="h-enfasis",
     )
     return rig
@@ -598,4 +599,32 @@ def test_viewer_response_never_contains_enfasis_anywhere(monkeypatch, params, ae
     assert resp.status_code == 200
     assert "enfasis" not in resp.text
     assert ENFASIS_SECRETO not in resp.text
+    assert '"profesion"' not in resp.text  # the JSON key ("profesional" is a legitimate, different key)
+    assert PROFESION_SECRETA not in resp.text
+    assert "depuracion" not in resp.json()
+
+
+# ── D-PROFESION: the registry's free-text `profesion` is admin-only (depuracion) ─
+
+
+def test_admin_receives_profesion_only_inside_the_depuracion_block(monkeypatch):
+    rig = _rig_with_enfasis(monkeypatch, admin=True)
+    body = _get(rig, OPT_IN).json()
+    persona = next(i for i in body["depuracion"]["inspectores"] if i["identificacion"] == CEDULA)
+    assert persona["profesion"] == PROFESION_SECRETA
+    assert persona["enfasis"] == ENFASIS_SECRETO  # the two fields never overwrite each other
+    # never in the sticker rows' inspector block, for anyone
+    for row in body["evaluaciones"]:
+        assert "profesion" not in row["inspector"]
+
+
+@pytest.mark.parametrize("params", [OPT_IN, None, {"depuracion": "0"}])
+@pytest.mark.parametrize("ae", ["identity", "gzip"])
+def test_viewer_response_never_contains_profesion_anywhere(monkeypatch, params, ae):
+    rig = _rig_with_enfasis(monkeypatch, admin=False)
+    resp = _get(rig, params, ae=ae)
+    assert resp.status_code == 200
+    assert '"profesion"' not in resp.text  # the JSON key ("profesional" is a legitimate, different key)
+    assert PROFESION_SECRETA not in resp.text
+    assert "SECRETA-PROF" not in resp.text
     assert "depuracion" not in resp.json()

@@ -563,6 +563,57 @@ round trip), `test_inspectores_referencia.py` (`test_parse_entrada_enfasis_toler
 roster and main, duplicate main, unification backfill, permutations, hostile and 2,400-char text), the property file, `test_stickers_atencionsismo_viewer_pii.py`, and the
 `test_enfasis_*` named tests in `web/js/seguimiento.test.mjs`. Mutation-checked with 8 backend and 10 frontend scratch mutants (all killed).
 
+### D-PROFESION (2026-09-19): the registry's free-text "profesión" is shown in Seguimiento, next to "Énfasis" (admin-only)
+
+**Request.** The owner asked to show the professional's "profesión" in Seguimiento, next to the "Énfasis" column.
+
+**Findings (registry export "tecnicos atension sismo (12 sept 2026).csv", verified 2026-09-19).**
+
+- The technicians registry has the column `addlInfo.profesion` (next to `addlInfo.enfasis`, the same file the publisher already reads).
+- Coverage: 568 of 743 rows non-empty (76%). It is FREE TEXT with 59 distinct values and many case / gender / spelling variants of the same
+  profession: "ingeniero" (108), "Ingeniero civil" (107), "Arquitecto" (99), "PROFESIONAL VOLUNTARIO" (68), "Ingeniero Civil" (52),
+  "Arquitecta" (23), "INGENIERO CIVIL", "Voluntario UNGRD", "Psicólogo", ...
+- Like `enfasis`, the stickers endpoint does not carry it (its `profesional` block has only `cedula`, `nombre`, `rango`, `tarjetaProfesional`).
+
+**Decision.** Source = the REGISTRY, through the reference bundle, mirroring `enfasis` (D-ENFASIS) layer by layer:
+
+1. Publisher (`_fila_main`): `profesion` = `_campo_id(row, "addlInfo.profesion")` (NaN/None/blank -> `""`, trimmed, a lone float-artifact `.0` tail dropped). Optional
+   bundle field, `schema` stays 1.
+2. Parser: `EntradaReferencia.profesion: str = ""` read with `_texto_opcional`; an already-published bundle without the key parses with `""`.
+3. Engine: `Perfil.profesion` with EXACTLY the `enfasis` rules (main-only profile: the entry's text; roster and main: first-non-empty backfill in
+   `_rellenar_desde_main`; unification: added to `_CAMPOS_TEXTO_BACKFILL`, so a survivor without it takes the first non-empty loser's in ascending `identidad_key`
+   order and a survivor with one keeps it). Emitted by `_perfil_a_dict` as `depuracion.inspectores[].profesion`. The two fields are independent (a row can have either,
+   both or none). New property `test_profesion_output_only_ever_carries_a_text_of_a_main_entry` (moved, never invented); the generator derives the profession from the
+   entry `id` (no new random draw, so no existing seed changes its universe).
+4. Frontend (`seguimiento.js`): `insp.profesion` -> identity profile -> row (`profesion` key present ONLY on rows seeded from the depurado base). Column "Profesión"
+   (`profesion`) BETWEEN "Tarjeta profesional" and "Énfasis" in Totales. **Own flag `withProfesion`** (fed with `currentIdentity.depuracionActiva`, same gate as
+   Énfasis) instead of reusing `withEnfasis`: the existing exact-column-count tests (`COLUMNS_TOTALES.length + 1` for `{ withEnfasis }`, `+ 2` with `withEstado`, and the
+   `slice(1, 6)` order) pin what `withEnfasis` adds, so folding two columns under it would have meant rewriting them; two flags also keep the columns independently
+   switchable. The only existing test edited is the DOM-wiring regex of the XLSX call (it pinned the whole argument object on one line; it now checks `subTab` and `withEnfasis`
+   inside the call, and the new test checks `withProfesion`). Cell = escaped text in a `.seg-profesion` span (same rule as `.seg-enfasis` through a shared selector list in
+   `styles.css`: one ellipsis-truncated line, `max-width: 24ch`, the whole escaped text in the tooltip) or "Sin dato"; its `<td>` carries `seg-td-text` (left-aligned, so the
+   blank cells align too); searchable (name path of `matchesSearch`, accent- and case-insensitive; a >=3-digit query stays on the cédula/TP path); XLSX totales sheet gets
+   `profesion` right after `tarjeta_profesional` (before `enfasis`; `xlsxRowsFor(..., { withProfesion })`); the individual PDF gets a "Profesión" row right before "Énfasis"
+   (only for a row that has the key; `—` when blank). Everything escaped; the legacy table, XLSX and PDF are byte-identical.
+
+**Free text kept verbatim.** The value is trimmed and nothing else: NO case, gender or accent normalisation (neither in the data nor in the UI), NO derived category, NO
+KPI, NO filter. "ingeniero", "Ingeniero civil" and "INGENIERO CIVIL" are shown as they came; normalising them is a data-cleaning decision for the owner, not something to
+guess here (a wrong merge, e.g. "Voluntario UNGRD" vs "PROFESIONAL VOLUNTARIO", is worse than an honest variant). The search is accent/case-insensitive, so one query finds all variants.
+
+**Viewers never receive it.** Same as `enfasis`: the `depuracion` block is admin-only (D-VIEWER-PII and the opt-in) and `profesion` is NOT part of the sticker `inspector`
+block. `test_viewer_response_never_contains_profesion_anywhere` (3 query variants x 2 encodings) asserts the raw viewer body has neither the JSON key `"profesion"` (the
+legitimate `profesional` keys are different) nor the secret text, and the existing enfasis viewer test now covers both fields.
+
+**Rollout.** The bundle must be REPUBLISHED (`scripts/publicar_referencia_inspectores.py`) after this is deployed for the field to appear in production: until then every entry
+parses with `""` and the column shows "Sin dato". No flag, no schema bump. (Not done by this change: publishing is a live action.)
+
+**Tests.** `test_publicar_referencia_inspectores.py` (`test_fila_main_profesion_*`, `test_cli_reads_the_profesion_column_from_csv_and_xlsx`,
+`test_cli_csv_with_both_columns_keeps_each_value_in_its_own_field`, `test_profesion_publisher_and_parser_agree`, the publisher -> `parse_bundle` -> `depurar` round trip),
+`test_inspectores_referencia.py` (`test_parse_entrada_profesion_tolerant_coercion`, old bundle), `test_inspectores_depuracion.py` (`test_profesion_*`: main-only, roster and main,
+duplicate main, unification backfill, permutations, independence from enfasis, case variants, hostile and 2,400-char text), the property file,
+`test_stickers_atencionsismo_viewer_pii.py`, and the 15 `test_profesion_*` named tests in `web/js/seguimiento.test.mjs`. Mutation-checked with 11 backend and 14 frontend
+scratch mutants (all killed).
+
 ## Contradiction Register (efficiency extension)
 
 | # | Finding | Resolution |

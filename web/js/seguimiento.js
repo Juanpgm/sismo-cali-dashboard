@@ -366,6 +366,8 @@ function buildIdentityIndexFromDepuracion(depuracion, depMeta) {
       // D-ENFASIS: the registry's free text (admin-only depuracion block), kept as is. Only depurado
       // profiles carry the key; the legacy identity profiles never do.
       enfasis: typeof insp.enfasis === 'string' ? insp.enfasis : '',
+      // D-PROFESION: the registry's free-text profession, verbatim (case/gender variants kept), same rules as enfasis.
+      profesion: typeof insp.profesion === 'string' ? insp.profesion : '',
       celular: insp.num_telefono || '',
       correo: insp.correo_contacto || '',
       noPersona: Boolean(insp.no_persona),
@@ -731,6 +733,8 @@ export function buildProfessionalRows({
       tarjetaProfesional: profile.tarjetaProfesional || '',
       // D-ENFASIS: only a row seeded from the depurado base carries the key (legacy rows stay identical).
       ...(typeof profile.enfasis === 'string' ? { enfasis: profile.enfasis } : {}),
+      // D-PROFESION: same rule (the two keys are independent; a legacy row carries neither).
+      ...(typeof profile.profesion === 'string' ? { profesion: profile.profesion } : {}),
       celular: profile.celular || '',
       correo: profile.correo || '',
       ambiguous: Boolean(profile.ambiguous),
@@ -1868,6 +1872,8 @@ export function buildProfessionalReportDocDefinition(row, { stickerPoints, surve
         ['Cédula', row.cedula || DASH],
         ['Tarjeta profesional', row.tarjetaProfesional || DASH],
         // D-ENFASIS: only a row seeded from the depurado base has the key; a legacy report is unchanged.
+        // D-PROFESION: same rule; its row goes right before the Énfasis row.
+        ...(typeof row.profesion === 'string' ? [['Profesión', row.profesion || DASH]] : []),
         ...(typeof row.enfasis === 'string' ? [['Énfasis', row.enfasis || DASH]] : []),
         ['Clase (P) / Código vigente', `${row.np || DASH} / ${row.codigo || DASH}`],
         ['Celular', row.celular || DASH],
@@ -2115,17 +2121,19 @@ export const COLUMNS_TEMPORALES = [
 
 /** Which column set a sub-tab shows — an unrecognized/missing `subTab` falls
  *  back to 'totales' (never throws, never renders a headerless table). */
-export function columnsFor(subTab, { withEstado = false, withEnfasis = false } = {}) {
+export function columnsFor(subTab, { withEstado = false, withEnfasis = false, withProfesion = false } = {}) {
   if (subTab === 'temporales') return COLUMNS_TEMPORALES;
-  if (!withEstado && !withEnfasis) return COLUMNS_TOTALES;
+  if (!withEstado && !withEnfasis && !withProfesion) return COLUMNS_TOTALES;
   // Phase 11: the estado_sugerido column exists only when the table is fed by
   // an active depuracion (on the legacy path every estado is '' — a column of
   // "Sin dato" would be noise). Right after "Clase (P)". D-ENFASIS: same gate
   // for the registry's "Énfasis" (a separate flag, same caller value), right
-  // after "Tarjeta profesional".
+  // after "Tarjeta profesional". D-PROFESION: the registry's "Profesión" (its own
+  // flag, same caller value) goes between "Tarjeta profesional" and "Énfasis".
   const columns = [];
   for (const column of COLUMNS_TOTALES) {
     columns.push(column);
+    if (withProfesion && column.key === 'tarjetaProfesional') columns.push(COLUMN_PROFESION);
     if (withEnfasis && column.key === 'tarjetaProfesional') columns.push(COLUMN_ENFASIS);
     if (withEstado && column.key === 'np') columns.push(COLUMN_ESTADO);
   }
@@ -2133,6 +2141,7 @@ export function columnsFor(subTab, { withEstado = false, withEnfasis = false } =
 }
 const COLUMN_ESTADO = { key: 'estadoSugerido', label: 'Estado sugerido' };
 const COLUMN_ENFASIS = { key: 'enfasis', label: 'Énfasis' };
+const COLUMN_PROFESION = { key: 'profesion', label: 'Profesión' };
 
 /** The sort state a sub-tab opens with (D4: header-click sorting is
  *  preserved when the CURRENT sort column still exists in the new sub-tab's
@@ -2186,7 +2195,7 @@ export function formatMinutes(min) {
  *  viewer. The 'totales' sheet keeps today's existing field names (see the
  *  XLSX download handler below) and only ADDS the new W5/W9 fields —
  *  nothing existing silently renames/disappears. */
-export function xlsxRowsFor(rows, { subTab = 'totales', withEnfasis = false } = {}) {
+export function xlsxRowsFor(rows, { subTab = 'totales', withEnfasis = false, withProfesion = false } = {}) {
   const list = Array.isArray(rows) ? rows : [];
   if (subTab === 'temporales') {
     return list.map((r) => ({
@@ -2217,6 +2226,8 @@ export function xlsxRowsFor(rows, { subTab = 'totales', withEnfasis = false } = 
     profesional: r.name ?? '',
     cedula: r.cedula ?? '',
     tarjeta_profesional: r.tarjetaProfesional ?? '',
+    // D-PROFESION: only in a sheet exported from the depurado base (same gate as the table column); before enfasis.
+    ...(withProfesion ? { profesion: r.profesion ?? '' } : {}),
     // D-ENFASIS: only in a sheet exported from the depurado base (same gate as the table column).
     ...(withEnfasis ? { enfasis: r.enfasis ?? '' } : {}),
     clase_p: r.np ?? '',
@@ -2414,7 +2425,8 @@ export function kpiTotals(rowsResult, { stickersLoaded = true } = {}) {
  *  client value" — `row.np` is already the backend-resolved value
  *  buildProfessionalRows carries, never re-derived here; D-ENFASIS: the
  *  registry's free-text `row.enfasis` is searched the same way, accent- and
- *  case-insensitively, on the name path only — a digit run never searches it). A short numeric
+ *  case-insensitively, on the name path only — a digit run never searches it;
+ *  D-PROFESION: the registry's free-text `row.profesion` follows the same rule). A short numeric
  *  query like "123" therefore never falls back to matching a name (it stays
  *  on the cédula path, which correctly fails against a blank/non-matching
  *  cedula) — the query is either "clearly a cédula fragment" or "clearly a
@@ -2431,7 +2443,8 @@ export function matchesSearch(row, query) {
   return normalize((row && row.name) || '').includes(normalize(q))
     || normalize((row && row.tarjetaProfesional) || '').includes(normalize(q))
     || normalize((row && row.np) || '').includes(normalize(q))
-    || normalize((row && row.enfasis) || '').includes(normalize(q));
+    || normalize((row && row.enfasis) || '').includes(normalize(q))
+    || normalize((row && row.profesion) || '').includes(normalize(q));
 }
 
 /** The professional rows currently shown in the table: `rows` narrowed by
@@ -3127,6 +3140,14 @@ export function cellHtml(r, key, stickersLoaded) {
       const texto = escapeHtml(r.enfasis);
       return `<span class="seg-enfasis" title="${texto}">${texto}</span>`;
     }
+    case 'profesion': {
+      // D-PROFESION: free text like énfasis: one ellipsis-truncated line (`.seg-profesion`), the whole escaped text in
+      // the tooltip, nothing sliced or re-cased here (the registry has case/gender variants of the same profession).
+      if (!stickersLoaded) return DASH;
+      if (!r.profesion) return 'Sin dato';
+      const texto = escapeHtml(r.profesion);
+      return `<span class="seg-profesion" title="${texto}">${texto}</span>`;
+    }
     case 'np': return stk(escapeHtml(r.np || 'Sin dato'));
     case 'estadoSugerido': return stk(escapeHtml(r.estadoSugerido || 'Sin dato'));
     case 'codigo': return stk(escapeHtml(r.codigo || 'Sin dato'));
@@ -3183,9 +3204,9 @@ function rowHtml(r, stickersLoaded, isDegraded, columns, busy) {
   const reportTitle = isDegraded ? DEGRADED_TITLE
     : !stickersLoaded ? 'Esperando a que carguen los stickers…'
       : busy ? 'Generando exportación masiva…' : 'Descargar informe PDF de este profesional';
-  // The Énfasis column is free text: its <td> carries a class so it is left-aligned (the table right-aligns numeric
-  // columns), including the plain "Sin dato" cells that have no span. Other columns keep their bare <td>.
-  const cells = columns.map((c, i) => `<td${c.key === 'enfasis' ? ' class="seg-td-text"' : ''}>${cellHtml(r, c.key, stickersLoaded)}${i === 0 ? caveat : ''}</td>`).join('');
+  // The Énfasis and Profesión columns are free text: their <td> carries a class so it is left-aligned (the table
+  // right-aligns numeric columns), including the plain "Sin dato" cells that have no span. Other columns keep their bare <td>.
+  const cells = columns.map((c, i) => `<td${c.key === 'enfasis' || c.key === 'profesion' ? ' class="seg-td-text"' : ''}>${cellHtml(r, c.key, stickersLoaded)}${i === 0 ? caveat : ''}</td>`).join('');
   return `<tr>${cells}<td><button type="button" class="sticker-action seg-report-btn" data-seg-report="${escapeHtml(r.key)}"${reportBlocked ? ' disabled' : ''} title="${escapeHtml(reportTitle)}">📄 Reporte</button></td></tr>`;
 }
 
@@ -3786,7 +3807,9 @@ export function initSeguimiento(root, {
     });
     const sorted = sortRows(visibleRows, sortState.column, sortState.dir);
     const columns = columnsFor(subTab, {
-      withEstado: currentIdentity.depuracionActiva, withEnfasis: currentIdentity.depuracionActiva,
+      withEstado: currentIdentity.depuracionActiva,
+      withEnfasis: currentIdentity.depuracionActiva,
+      withProfesion: currentIdentity.depuracionActiva,
     });
     theadRow.innerHTML = headerRowHtml(sortState, columns);
     // L8: `busy || exportInFlight` — `busy` covers an export THIS init
@@ -4030,7 +4053,11 @@ export function initSeguimiento(root, {
       // keyboard pattern for an ARIA tablist.
       b.tabIndex = active ? 0 : -1;
     }
-    const stillSortable = columnsFor(subTab, { withEstado: currentIdentity.depuracionActiva, withEnfasis: currentIdentity.depuracionActiva })
+    const stillSortable = columnsFor(subTab, {
+      withEstado: currentIdentity.depuracionActiva,
+      withEnfasis: currentIdentity.depuracionActiva,
+      withProfesion: currentIdentity.depuracionActiva,
+    })
       .some((c) => c.key === sortState.column);
     sortState = stillSortable ? sortState : defaultSortFor(subTab);
     renderTable(currentRows);
@@ -4350,7 +4377,11 @@ export function initSeguimiento(root, {
       for (const sheetSubTab of ['totales', 'temporales']) {
         const sortSpec = defaultSortFor(sheetSubTab);
         const sorted = sortRows(visibleRows, sortSpec.column, sortSpec.dir);
-        const rows = xlsxRowsFor(sorted, { subTab: sheetSubTab, withEnfasis: currentIdentity.depuracionActiva });
+        const rows = xlsxRowsFor(sorted, {
+          subTab: sheetSubTab,
+          withEnfasis: currentIdentity.depuracionActiva,
+          withProfesion: currentIdentity.depuracionActiva,
+        });
         const ws = XLSX.utils.aoa_to_sheet([
           [`Seguimiento — profesionales (${sheetSubTab})`],
           ['Fecha de generación:', legible],

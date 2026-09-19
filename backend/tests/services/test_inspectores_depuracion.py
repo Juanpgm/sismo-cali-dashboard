@@ -4760,3 +4760,145 @@ def test_enfasis_hostile_and_very_long_text_pass_through_the_engine_verbatim(val
 def test_enfasis_blank_entry_values_never_leak_nan_or_none_text(valor):
     main = [_entrada(cedula_key="1111111", nombre_norm="ana gomez", enfasis=valor)]
     assert _by_key(_depurar(main=main))["1111111"]["enfasis"] == ""
+
+
+# ── D-PROFESION: free-text `profesion` from the registry (`main`) ───────────
+
+
+def test_profesion_main_only_profile_takes_the_main_entry_text():
+    main = [_entrada(cedula_key="12345678", nombre_norm="ana gomez", profesion="Ingeniero Civil")]
+    perfiles, _ = dep.fusionar_identidad([], {}, _bundle(main=main))
+    assert perfiles["12345678"].profesion == "Ingeniero Civil"
+
+
+def test_profesion_defaults_to_blank_for_a_main_entry_without_it():
+    perfiles, _ = dep.fusionar_identidad([], {}, _bundle(main=[_entrada(cedula_key="12345678", nombre_norm="ana")]))
+    assert perfiles["12345678"].profesion == ""
+
+
+def test_profesion_roster_and_main_intersection_backfills_when_roster_has_none():
+    roster = {"12345678": _roster_entry("12345678", "Juan Perez")}
+    main = [_entrada(cedula_key="12345678", nombre_norm="juan perez", profesion="Arquitecto")]
+    perfiles, _ = dep.fusionar_identidad([], roster, _bundle(main=main))
+    assert len(perfiles) == 1
+    assert perfiles["12345678"].profesion == "Arquitecto"
+    assert perfiles["12345678"].firestore_backed is True
+
+
+def test_profesion_roster_and_main_intersection_a_blank_main_value_backfills_nothing():
+    roster = {"12345678": _roster_entry("12345678", "Juan Perez")}
+    main = [_entrada(cedula_key="12345678", nombre_norm="juan perez", profesion="")]
+    perfiles, _ = dep.fusionar_identidad([], roster, _bundle(main=main))
+    assert perfiles["12345678"].profesion == ""
+
+
+def test_profesion_duplicate_main_cedula_first_row_wins():
+    main = [
+        _entrada(cedula_key="12345678", nombre_norm="ana gomez", profesion="Ingeniero civil"),
+        _entrada(cedula_key="12345678", nombre_norm="ana gomez b", profesion="Arquitecto"),
+    ]
+    perfiles, revision = dep.fusionar_identidad([], {}, _bundle(main=main))
+    assert perfiles["12345678"].profesion == "Ingeniero civil"
+    assert [r["motivo"] for r in revision] == ["cedula_duplicada_main"]
+
+
+def test_profesion_unificar_survivor_without_it_takes_the_first_non_empty_loser_text():
+    survivor = _perfil("S", "juan perez", ultimo_sticker=date(2026, 8, 1))
+    l1 = _perfil("L1", "juan perez", profesion="")
+    l2 = _perfil("L2", "juan perez", profesion="Arquitecto")
+    l3 = _perfil("L3", "juan perez", profesion="Ingeniero civil")
+    resultado, _ = dep.unificar_duplicados({"L3": l3, "S": survivor, "L2": l2, "L1": l1})
+    assert resultado["S"].profesion == "Arquitecto"  # ascending identidad_key: L2 before L3
+
+
+def test_profesion_unificar_survivor_own_text_is_never_overwritten():
+    survivor = _perfil("S", "juan perez", ultimo_sticker=date(2026, 8, 1), profesion="Ingeniero civil")
+    loser = _perfil("L1", "juan perez", profesion="Arquitecto")
+    resultado, _ = dep.unificar_duplicados({"S": survivor, "L1": loser})
+    assert resultado["S"].profesion == "Ingeniero civil"
+
+
+def test_profesion_unificar_is_deterministic_under_every_permutation():
+    import itertools
+
+    def perfiles():
+        return [
+            _perfil("S", "juan perez", ultimo_sticker=date(2026, 8, 1)),
+            _perfil("L1", "juan perez", profesion=""),
+            _perfil("L2", "juan perez", profesion="Arquitecto"),
+            _perfil("L3", "juan perez", profesion="Ingeniero civil"),
+        ]
+
+    resultados = set()
+    for orden in itertools.permutations(range(4)):
+        base = perfiles()
+        resultado, _ = dep.unificar_duplicados({base[i].identidad_key: base[i] for i in orden})
+        resultados.add(resultado["S"].profesion)
+    assert resultados == {"Arquitecto"}
+
+
+def test_profesion_and_enfasis_backfill_independently_on_unification():
+    survivor = _perfil("S", "juan perez", ultimo_sticker=date(2026, 8, 1), enfasis="Geotecnia")
+    loser = _perfil("L1", "juan perez", profesion="Arquitecto", enfasis="Estructuras")
+    resultado, _ = dep.unificar_duplicados({"S": survivor, "L1": loser})
+    assert (resultado["S"].enfasis, resultado["S"].profesion) == ("Geotecnia", "Arquitecto")
+
+
+def test_profesion_is_emitted_in_the_depuracion_row_and_blank_by_default():
+    main = [
+        _entrada(cedula_key="1111111", nombre_norm="ana gomez", profesion="Ingeniero civil"),
+        _entrada(cedula_key="2222222", nombre_norm="beto ruiz"),
+    ]
+    filas = _by_key(_depurar(main=main))
+    assert filas["1111111"]["profesion"] == "Ingeniero civil"
+    assert filas["2222222"]["profesion"] == ""
+
+
+def test_profesion_row_with_it_but_no_enfasis_and_vice_versa_stay_independent():
+    main = [
+        _entrada(cedula_key="1111111", nombre_norm="ana gomez", profesion="Arquitecto"),
+        _entrada(cedula_key="2222222", nombre_norm="beto ruiz", enfasis="Geotecnia"),
+    ]
+    filas = _by_key(_depurar(main=main))
+    assert (filas["1111111"]["profesion"], filas["1111111"]["enfasis"]) == ("Arquitecto", "")
+    assert (filas["2222222"]["profesion"], filas["2222222"]["enfasis"]) == ("", "Geotecnia")
+
+
+def test_profesion_survives_the_whole_pipeline_for_a_roster_person_and_a_unified_duplicate():
+    roster = {"1111111": _roster_entry("1111111", "Ana Gomez")}
+    main = [
+        _entrada(cedula_key="1111111", nombre_norm="ana gomez", profesion="Arquitecta"),
+        _entrada(cedula_key="3333333", nombre_norm="carlos ruiz", profesion=""),
+        _entrada(cedula_key="4444444", nombre_norm="carlos ruiz", profesion="Psicólogo"),
+    ]
+    filas = _by_key(_depurar(roster=roster, main=main))
+    assert filas["1111111"]["profesion"] == "Arquitecta"
+    survivor = next(f for k, f in filas.items() if k in ("3333333", "4444444"))
+    assert survivor["profesion"] == "Psicólogo"  # the empty survivor took the loser's text
+
+
+def test_profesion_case_and_accent_variants_are_kept_verbatim_never_normalised():
+    main = [
+        _entrada(cedula_key="1111111", nombre_norm="a a", profesion="ingeniero"),
+        _entrada(cedula_key="2222222", nombre_norm="b b", profesion="INGENIERO CIVIL"),
+        _entrada(cedula_key="3333333", nombre_norm="c c", profesion="Psicólogo"),
+        _entrada(cedula_key="4444444", nombre_norm="d d", profesion="Arquitecta"),
+    ]
+    filas = _by_key(_depurar(main=main))
+    assert [filas[k]["profesion"] for k in ("1111111", "2222222", "3333333", "4444444")] == [
+        "ingeniero", "INGENIERO CIVIL", "Psicólogo", "Arquitecta",
+    ]
+
+
+@pytest.mark.parametrize(
+    "valor", ["<script>alert(1)</script>", "\"quoted\" & <b>", "Ingeniero civil " * 150], ids=["script", "quoted", "long"],
+)
+def test_profesion_hostile_and_very_long_text_pass_through_the_engine_verbatim(valor):
+    main = [_entrada(cedula_key="1111111", nombre_norm="ana gomez", profesion=valor)]
+    assert _by_key(_depurar(main=main))["1111111"]["profesion"] == valor.strip()
+
+
+@pytest.mark.parametrize("valor", [None, float("nan"), float("inf"), "", "   "])
+def test_profesion_blank_entry_values_never_leak_nan_or_none_text(valor):
+    main = [_entrada(cedula_key="1111111", nombre_norm="ana gomez", profesion=valor)]
+    assert _by_key(_depurar(main=main))["1111111"]["profesion"] == ""

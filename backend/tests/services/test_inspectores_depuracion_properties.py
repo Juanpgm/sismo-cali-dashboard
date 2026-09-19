@@ -56,6 +56,7 @@ CORREOS = ["a@x.com", "b@import.local", "", "c@sismo.cali.gov.co", "d@y.com"]
 FECHAS = ["2026-08-19T10:00:00Z", "2026-08-21T10:00:00Z", "2026-07-01T00:00:00Z", None, "junk"]
 CREADOS = ["", "2024-01-01", "2023-05-05", "junk", "2025-12-31"]
 ENFASIS = ["", "Estructuras", "Geotecnia", "", "Especialización en estructuras", " "]
+PROFESIONES = ["Ingeniero civil", "", "ARQUITECTO", "ingeniero", "Psicólogo", " ", "Arquitecta"]
 
 
 def _generar(rnd: random.Random) -> dict:
@@ -69,6 +70,7 @@ def _generar(rnd: random.Random) -> dict:
             tarjeta_profesional=str(rnd.randrange(100)),
             # derived from the id: it adds NO draw, so every existing seed keeps its universe
             enfasis=ENFASIS[int(entrada_id) % len(ENFASIS)],
+            profesion=PROFESIONES[int(entrada_id) % len(PROFESIONES)],
         )
 
     roster = {}
@@ -505,6 +507,28 @@ def test_enfasis_output_only_ever_carries_a_text_of_a_main_entry(corpus):
                 con_texto += 1
                 if fila["enfasis"] not in posibles:
                     yield f"INV-ENFASIS: {fila['identidad_key']} carries {fila['enfasis']!r}, not in main {posibles}"
+            else:
+                sin_texto += 1
+    _ok(_fallos(corpus, comprobar))
+    assert con_texto > 50 and sin_texto > 50
+
+
+# ── D-PROFESION: the free-text field is carried, never invented ──────────────
+
+
+def test_profesion_output_only_ever_carries_a_text_of_a_main_entry(corpus):
+    """Backfill and unification MOVE a `profesion`; nothing may ever make one up. The corpus must also
+    really exercise the field (some row ends with one, some without)."""
+    con_texto = sin_texto = 0
+
+    def comprobar(caso):
+        nonlocal con_texto, sin_texto
+        posibles = {e.profesion for e in caso.entrada["referencia"].main}
+        for fila in caso.resultado.inspectores:
+            if fila["profesion"]:
+                con_texto += 1
+                if fila["profesion"] not in posibles:
+                    yield f"INV-PROFESION: {fila['identidad_key']} carries {fila['profesion']!r}, not in main {posibles}"
             else:
                 sin_texto += 1
     _ok(_fallos(corpus, comprobar))

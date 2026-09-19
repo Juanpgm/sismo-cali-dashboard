@@ -2199,7 +2199,9 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="sti
 .seg-caveat { cursor: help; color: var(--accent); }
 /* "Énfasis" is free text of any length (the registry has 189 distinct values, some long): one truncated
    line inside the cell, the full text in the tooltip. The table already scrolls inside .table-scroll, so
-   this only keeps a single value from stretching the whole table on a phone. */
+   this only keeps a single value from stretching the whole table on a phone. "Profesión" (D-PROFESION, also
+   registry free text: 59 distinct values with case/gender variants) shares the rule, so both truncate alike. */
+.seg-profesion,
 .seg-enfasis {
   display: inline-block; max-width: 24ch; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; vertical-align: bottom; text-align: left;

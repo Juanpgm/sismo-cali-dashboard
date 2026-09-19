@@ -26,7 +26,7 @@ Column mapping (verified against the real source files, 2026-09-16):
   fase2:  identificacion|cedula, nombre_completo, NP
   main:   cedula, nombre, addlInfo.rango, addlInfo.matriculaProfesional|
           addlInfo.matricula, addlInfo.entidad, addlInfo.enfasis (optional free text),
-          correo, telefono, codigoInspector, creadoEn, id
+          addlInfo.profesion (optional free text), correo, telefono, codigoInspector, creadoEn, id
 
 `pasos` (design's bundle JSON example, under `fase2`) is intentionally still
 NOT emitted in this slice: `app.services.inspectores_depuracion`'s six seams
@@ -162,6 +162,9 @@ def _fila_main(row: dict) -> dict[str, Any] | None:
         # D-ENFASIS: free text from the registry (`addlInfo.enfasis`, e.g. "Especialización en
         # estructuras"), kept verbatim and trimmed; blank/NaN/None -> "". Optional (schema stays 1).
         "enfasis": _campo_id(row, "addlInfo.enfasis"),
+        # D-PROFESION: free text from the registry (`addlInfo.profesion`, e.g. "Ingeniero civil"), kept verbatim
+        # (case, gender and accent variants included) and trimmed; blank/NaN/None -> "". Optional (schema stays 1).
+        "profesion": _campo_id(row, "addlInfo.profesion"),
         "correo": correo,
         # Optional identity/contact fields (schema stays 1, additive). Sources
         # are read as strings, so codigo "021" keeps its leading zero; `id` and

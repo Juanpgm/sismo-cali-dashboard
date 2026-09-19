@@ -66,3 +66,13 @@ El dueño pidió mostrar "el énfasis, la variable de la API que indica el posgr
 - Cobertura en el registro: 263 de 743 filas con valor (35%); 79 de las 153 filas que tienen `codigoInspector` (52%).
 - Es **texto libre** con 189 valores distintos ("Especialización en estructuras", "Estructuras", "Construccion", "Geotecnia", ...), no un indicador sí/no de posgrado. Se muestra tal cual (recortado); nunca se deriva un booleano.
 - Es dato de la referencia (Blob), no del endpoint en vivo: hay que **republicar el bundle** para que aparezca en producción. Solo lo recibe el rol admin (bloque `depuracion`).
+
+
+## Nota 2026-09-19 — profesión (D-PROFESION)
+
+El dueño pidió mostrar la "profesión" junto al énfasis. Verificado con el export del registro de técnicos ("tecnicos atension sismo (12 sept 2026)"):
+
+- La columna es `addlInfo.profesion` (junto a `addlInfo.enfasis`, la misma fuente que ya lee el publicador). El endpoint de STICKERS tampoco la trae.
+- Cobertura: 568 de 743 filas con valor (76%).
+- Es **texto libre** con 59 valores distintos y muchas variantes de mayúsculas, género y escritura de la misma profesión ("ingeniero" 108, "Ingeniero civil" 107, "Arquitecto" 99, "PROFESIONAL VOLUNTARIO" 68, "Ingeniero Civil" 52, "Arquitecta" 23, "INGENIERO CIVIL", "Voluntario UNGRD", "Psicólogo", ...). Se muestra tal cual (solo recortado de espacios): no se normaliza ni se deriva una categoría; unificar variantes es una decisión de limpieza de datos del dueño.
+- Es dato de la referencia (Blob): hay que **republicar el bundle** para que aparezca en producción. Solo lo recibe el rol admin (bloque `depuracion`).
