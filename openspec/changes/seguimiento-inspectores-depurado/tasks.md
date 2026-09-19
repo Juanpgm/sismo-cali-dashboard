@@ -237,26 +237,30 @@ Slice forecast: ~200 lines · risk Low · base `…-05-mobile-overflow`.
 
 Slice forecast: ~350-400 lines · risk Medium · base PR 06's branch.
 
-- [ ] 8.1 RED: `test_fusionar_identidad_main_row_creates_perfil` — a `main` `cedula_key` with no roster entry produces a profile (D9).
-- [ ] 8.2 GREEN: add the `referencia.main` pass after the roster loop in `fusionar_identidad`, keyed by `cedula_key`.
-- [ ] 8.3 RED+GREEN: `test_fusionar_identidad_firestore_first_main_backfills_empty_only` — matching key → one profile, Firestore `nombre` kept, empty `tarjeta_profesional` backfilled.
-- [ ] 8.4 RED+GREEN edge: `test_fusionar_identidad_main_duplicate_cedula_first_wins` — two `main` rows share a key → first wins, no overwrite, `revision_manual` gets `cedula_duplicada_main` (D19).
-- [ ] 8.5 RED+GREEN edge: `test_fusionar_identidad_main_row_without_cedula_not_dropped_silently` — no digits → no profile, `revision_manual` gets `main_sin_cedula`.
-- [ ] 8.6 RED+GREEN edge: `test_fusionar_identidad_empty_nombre_survives` — a profile with an empty `nombre_norm` is created and never unified against another empty name.
-- [ ] 8.7 RED: `test_atribuir_stickers_resolves_through_alias_index` — a sticker cédula matching a unified-away key lands on the survivor (D11).
-- [ ] 8.8 GREEN: build the `cedula_key` alias index (current + pre-fix + `cedulas_unificadas`) and route sticker attribution through it, replacing the exact-string `perfiles.get(identificacion)`.
-- [ ] 8.9 RED+GREEN edge: `test_atribuir_stickers_unknown_cedula_is_noop` — an unresolvable cédula changes no profile and raises nothing.
-- [ ] 8.10 RED+GREEN edge: `test_atribuir_stickers_normalizes_leading_zeros` — `"0012345"` and `"12345"` resolve to the same profile.
-- [ ] 8.11 RED: `test_unificar_duplicados_runs_after_overlays_scores_populated_flags` — a D-P2 pair where only one side is in Vercel and only the other has stickers → the sticker-bearing profile survives and inherits `en_vercel`/`np`/`codigo` (D10).
-- [ ] 8.12 GREEN: move `unificar_duplicados` after the overlays, the cédula fix and sticker attribution; register every loser key in `cedulas_unificadas`; backfill empty fields from the first non-empty loser.
-- [ ] 8.13 RED+GREEN edge: `test_unificar_duplicados_tiebreak_creado_en_then_firestore_backed` — full score tie → oldest `creado_en` wins; equal/empty `creado_en` → the Firestore-backed profile wins.
-- [ ] 8.14 RED+GREEN edge: `test_unificar_duplicados_absorbs_loser_sticker_aggregates` — survivor's `n_stickers`/`ultimo_sticker` reflect both sides.
-- [ ] 8.15 RED: `test_entidad_precedence_vercel_by_cedula_then_firestore_then_main` (D12).
-- [ ] 8.16 GREEN: implement the `entidad` resolver.
-- [ ] 8.17 RED+GREEN edge: `test_entidad_name_only_vercel_match_does_not_supply_entidad` and `test_entidad_absent_everywhere_is_empty_string`.
-- [ ] 8.18 REFACTOR: replace `_buscar_entrada`'s linear scan with `cedula_key` and `nombre_norm` dict indexes built once per `depurar()` call (D14); keep the public signature unchanged.
-- [ ] 8.19 RED+GREEN: `test_depurar_universe_row_count_grows_without_duplicates` — full-pipeline assertion that every emitted `identidad_key` is unique and the count equals `|roster ∪ main|` minus unified and collapsed rows.
+- [x] 8.1 RED: `test_fusionar_identidad_main_row_creates_perfil` — a `main` `cedula_key` with no roster entry produces a profile (D9).
+- [x] 8.2 GREEN: add the `referencia.main` pass after the roster loop in `fusionar_identidad`, keyed by `cedula_key`.
+- [x] 8.3 RED+GREEN: `test_fusionar_identidad_firestore_first_main_backfills_empty_only` — matching key → one profile, Firestore `nombre` kept, empty `tarjeta_profesional` backfilled.
+- [x] 8.4 RED+GREEN edge: `test_fusionar_identidad_main_duplicate_cedula_first_wins` — two `main` rows share a key → first wins, no overwrite, `revision_manual` gets `cedula_duplicada_main` (D19).
+- [x] 8.5 RED+GREEN edge: `test_fusionar_identidad_main_row_without_cedula_not_dropped_silently` — no digits → no profile, `revision_manual` gets `main_sin_cedula`.
+- [x] 8.6 RED+GREEN edge: `test_fusionar_identidad_empty_nombre_survives` — a profile with an empty `nombre_norm` is created and never unified against another empty name.
+- [x] 8.7 RED: `test_atribuir_stickers_resolves_through_alias_index` — a sticker cédula matching a unified-away key lands on the survivor (D11).
+- [x] 8.8 GREEN: build the `cedula_key` alias index (current + pre-fix + `cedulas_unificadas`) and route sticker attribution through it, replacing the exact-string `perfiles.get(identificacion)`.
+- [x] 8.9 RED+GREEN edge: `test_atribuir_stickers_unknown_cedula_is_noop` — an unresolvable cédula changes no profile and raises nothing.
+- [x] 8.10 RED+GREEN edge: `test_atribuir_stickers_normalizes_leading_zeros` — `"0012345"` and `"12345"` resolve to the same profile.
+- [x] 8.11 RED: `test_unificar_duplicados_runs_after_overlays_scores_populated_flags` — a D-P2 pair where only one side is in Vercel and only the other has stickers → the sticker-bearing profile survives and inherits `en_vercel`/`np`/`codigo` (D10).
+- [x] 8.12 GREEN: move `unificar_duplicados` after the overlays, the cédula fix and sticker attribution; register every loser key in `cedulas_unificadas`; backfill empty fields from the first non-empty loser.
+- [x] 8.13 RED+GREEN edge: `test_unificar_duplicados_tiebreak_creado_en_then_firestore_backed` — full score tie → oldest `creado_en` wins; equal/empty `creado_en` → the Firestore-backed profile wins.
+- [x] 8.14 RED+GREEN edge: `test_unificar_duplicados_absorbs_loser_sticker_aggregates` — survivor's `n_stickers`/`ultimo_sticker` reflect both sides.
+- [x] 8.15 RED: `test_entidad_precedence_vercel_by_cedula_then_firestore_then_main` (D12).
+- [x] 8.16 GREEN: implement the `entidad` resolver.
+- [x] 8.17 RED+GREEN edge: `test_entidad_name_only_vercel_match_does_not_supply_entidad` and `test_entidad_absent_everywhere_is_empty_string`.
+- [x] 8.18 REFACTOR: replace `_buscar_entrada`'s linear scan with `cedula_key` and `nombre_norm` dict indexes built once per `depurar()` call (D14); keep the public signature unchanged.
+- [x] 8.19 RED+GREEN: `test_depurar_universe_row_count_grows_without_duplicates` — full-pipeline assertion that every emitted `identidad_key` is unique and the count equals `|roster ∪ main|` minus unified and collapsed rows.
 - [ ] 8.20 Gate: `python -m pytest backend/tests/ -q` green; open PR 07 against PR 06's branch.
+
+**GATING NOTE (slice 07 -> 08, review 2026-09-19 W3)**: main `codigo` now backfills EMPTY Firestore codes, but slice 08 (clear the wrong holder, tasks 9.1-9.6, D13) is not in yet, so two profiles can hold the same `codigo` (pinned by `test_known_state_until_slice_08_two_profiles_can_hold_the_same_codigo`, to be replaced in slice 08). `SEGUIMIENTO_DEPURACION` MUST NOT be flipped to `1` before slice 08 lands.
+
+**Found/fixed during this pass (beyond the literal task list)**: `fusionar_identidad` now returns `(perfiles, revision_manual)` (was `perfiles`) so `cedula_duplicada_main`/`main_sin_cedula` can surface; `_cedula_key` is the single identity key (digits-only, leading zeros KEPT to mirror the frontend's `cedulaKey`, a lone `.0` float artifact dropped, thousands-separated dots are just dots — the shared `cedula_utils` rule, review 2026-09-19 C3; the zero-stripped form survives only as the sticker alias-index fallback, review 2026-09-19 C1) and `cedula_sospechosa` reads the same digits (divergence D-CEDDEC); `n_stickers` is now SUMMED into the survivor (earlier "not summed" test replaced deliberately: no parity column depends on the count); `num_telefono` from `main` is digits-only (notebook); the alias-nombres INFO log is count-only. Two existing tests changed on purpose (unification moved out of stage 1; sticker-count absorption); no parity test changed.
 
 ## Phase 9: Engine — Remap And Cédula Fix (PR 08)
 
@@ -293,6 +297,7 @@ Slice forecast: ~150 lines · risk Low · base PR 08's branch.
 - [ ] 10.9 RED+GREEN edge: `test_depuracion_cache_still_keyed_by_snapshot_identity_with_full_universe` — same list object → no recompute; new `hoy`/`generado_en` → recompute (D4/D6 regression guard).
 - [ ] 10.10 RED+GREEN edge: `test_flag_off_response_still_byte_identical_with_full_universe` — `SEGUIMIENTO_DEPURACION` unset → the 4-key body shape.
 - [ ] 10.11 Gate: `python -m pytest backend/tests/ -q` green; open PR 09 against PR 08's branch.
+- [ ] 10.12 RED+GREEN (follow-up, D-CEDDEC known limitation): route `backend/app/services/stickers_atencionsismo.py::cedula_key` through `cedula_utils.solo_digitos`, with a test on the float-artifact shape (roster `identificacion` "1234567.0" keys as "1234567" in `inspector_profile_by_identificacion` and `same_cedula_match`, not "12345670").
 
 ## Phase 11: Frontend — Seeding, KPIs, Filter, Export (PR 10)
 
@@ -339,6 +344,6 @@ Slice forecast: ~150 lines · risk Low · base PR 10's branch.
 - [ ] 12b.1 Deploy slices 06-09 with `SEGUIMIENTO_DEPURACION` unset/`0`; confirm the payload is unchanged.
 - [ ] 12b.2 Run `scripts/publicar_referencia_inspectores.py`; record the resulting `generado_en`.
 - [ ] 12b.3 Run `scripts/parity_inspectores_depurado.py` against live output; attach the report.
-- [ ] 12b.4 Flip `SEGUIMIENTO_DEPURACION=1` only if 12b.3 meets every acceptance threshold.
+- [ ] 12b.4 Flip `SEGUIMIENTO_DEPURACION=1` only if 12b.3 meets every acceptance threshold AND slice 08 (holder clearing, Phase 9) is deployed — before it, `main.codigo` backfill can leave two profiles with the same código and inflate `activo`.
 - [ ] 12b.5 Merge the tracker `feat/seguimiento-inspectores-depurado` into `main`.
 - [ ] 12b.6 Rollback drill: confirm setting the flag back to `0` restores the pre-extension payload and the frontend's legacy path.

@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -54,6 +53,7 @@ for _path in (BACKEND_DIR, DEPLOY_DIR):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
+from app.services import cedula_utils  # noqa: E402
 from app.services import inspectores_referencia as referencia_svc  # noqa: E402
 from app.services.inspectores_depuracion import (  # noqa: E402
     es_cuenta_no_persona,
@@ -81,17 +81,15 @@ def _limpiar(value: object) -> str:
     return str(value).strip()
 
 
-_SUFIJO_DECIMAL_CERO = re.compile(r"^(\d+)\.0+$")
-
-
 def _sin_sufijo_decimal(texto: str) -> str:
     """Turns "31837630.0" into "31837630". A float-typed cell (Excel numeric, or a
     pandas column inferred as float64 because of one blank) stringifies with a
     ".0" tail; stripping non-digits from that would append a spurious "0".
-    Only a PURE decimal-zero tail is dropped: "1.234.567" and "3.5" are left
-    untouched. Leading zeros are never added or removed here."""
-    coincidencia = _SUFIJO_DECIMAL_CERO.match(texto)
-    return coincidencia.group(1) if coincidencia else texto
+    Only a lone ".0" at the end (the shared `cedula_utils` rule, review C3) is
+    dropped: "166.000", "12345.00", "1.234.567" and "3.5" are left untouched (a
+    dotted cédula is a thousands separator, not a float). Leading zeros are never
+    added or removed here."""
+    return cedula_utils.quitar_cola_flotante(texto)
 
 
 def _campo_id(row: dict, columna: str) -> str:
@@ -102,7 +100,7 @@ def _campo_id(row: dict, columna: str) -> str:
 
 
 def _solo_digitos(value: object) -> str:
-    return re.sub(r"\D", "", _sin_sufijo_decimal(_limpiar(value)))
+    return cedula_utils.solo_digitos(_limpiar(value))
 
 
 def _cedula_key(row: dict, *columnas: str) -> str:
@@ -159,7 +157,7 @@ def _fila_main(row: dict) -> dict[str, Any] | None:
         "nombre": nombre,
         "telefono": _campo_id(row, "telefono"),
         "codigo": _campo_id(row, "codigoInspector"),
-        "creado_en": _limpiar(row.get("creadoEn")),
+        "creado_en": _campo_id(row, "creadoEn"),
         "id": _campo_id(row, "id"),
         # Precomputed at publish time (design's bundle JSON note): the
         # depuración pipeline never needs the raw correo for classification,
@@ -202,6 +200,15 @@ def construir_bundle(
         "schema": SCHEMA_VERSION,
         "generado_en": generado_en,
         "origen": origen,
+        # Optional, additive (schema stays 1; `parse_bundle` ignores it): how many
+        # source rows were dropped for lacking ANY digit in their cédula. Counts
+        # only — a dropped row is never echoed (no PII). The parser drops blank
+        # `cedula_key` rows too, so this count is the only trace of them.
+        "descartados_sin_cedula": {
+            "main": len(main_records) - len(main_rows),
+            "vercel": len(vercel_records) - len(vercel_rows),
+            "fase2": len(fase2_records) - len(fase2_rows),
+        },
         "codigos_duplicados": _codigos_duplicados(vercel_rows),
         "vercel": vercel_rows,
         "fase2": fase2_rows,
@@ -233,6 +240,13 @@ def publicar(bundle: dict[str, Any], *, dry_run: bool, upload=blob_sync.upload) 
         f"Bundle valido: {len(bundle['vercel'])} vercel, {len(bundle['fase2'])} fase2, "
         f"{len(bundle['main'])} main, {len(bundle['codigos_duplicados'])} codigos_duplicados."
     )
+    descartados = bundle.get("descartados_sin_cedula")
+    if isinstance(descartados, dict):
+        print(
+            "Filas descartadas por no tener cedula (solo conteo): "
+            f"main={descartados.get('main', 0)} vercel={descartados.get('vercel', 0)} "
+            f"fase2={descartados.get('fase2', 0)}."
+        )
     if dry_run:
         print("--dry-run: no se sube nada.")
         return None

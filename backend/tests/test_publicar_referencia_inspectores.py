@@ -73,6 +73,67 @@ def test_construir_bundle_row_without_any_cedula_column_is_skipped():
     assert bundle["main"] == []
 
 
+# --- W1: rows dropped for lacking a cédula are counted, never silent -------
+
+
+def test_construir_bundle_counts_rows_dropped_for_lacking_a_cedula():
+    bundle = cli.construir_bundle(
+        vercel_records=[{"nombre_completo": "Sin Cedula", "NP": "P1"},
+                        {"identificacion": "1234567", "nombre_completo": "Con"}],
+        fase2_records=[{"nombre_completo": "Sin Cedula", "NP": "P1"},
+                       {"identificacion": "abc", "nombre_completo": "Junk"},
+                       {"identificacion": float("nan"), "nombre_completo": "Nan"}],
+        main_records=[{"nombre": "Sin Cedula"}, {"cedula": "", "nombre": "Blanco"},
+                      {"cedula": "N/A", "nombre": "Junk"}, {"cedula": 7654321, "nombre": "Ok"}],
+        generado_en="2026-09-16", origen={},
+    )
+    assert bundle["descartados_sin_cedula"] == {"main": 3, "vercel": 1, "fase2": 3}
+    assert len(bundle["main"]) == 1 and len(bundle["vercel"]) == 1 and bundle["fase2"] == []
+
+
+def test_construir_bundle_reports_zero_dropped_when_every_row_has_a_cedula():
+    bundle = cli.construir_bundle(
+        vercel_records=[], fase2_records=[], main_records=[{"cedula": "1234567"}],
+        generado_en="2026-09-16", origen={},
+    )
+    assert bundle["descartados_sin_cedula"] == {"main": 0, "vercel": 0, "fase2": 0}
+    assert bundle["schema"] == 1  # additive optional key: the schema does NOT bump
+
+
+def test_dropped_count_bundle_still_parses_and_carries_no_row_data():
+    bundle = cli.construir_bundle(
+        vercel_records=[], fase2_records=[],
+        main_records=[{"nombre": "Persona Secreta", "correo": "secreto@example.com"}],
+        generado_en="2026-09-16", origen={},
+    )
+    assert ir.parse_bundle(bundle) is not None
+    assert "Persona Secreta" not in json.dumps(bundle["descartados_sin_cedula"])
+
+
+def test_publicar_prints_the_dropped_count_without_pii(capsys):
+    bundle = cli.construir_bundle(
+        vercel_records=[], fase2_records=[],
+        main_records=[{"nombre": "Persona Secreta", "correo": "secreto@example.com"},
+                      {"cedula": "1234567", "nombre": "Otra Persona"}],
+        generado_en="2026-09-16", origen={},
+    )
+    cli.publicar(bundle, dry_run=True)
+    salida = capsys.readouterr().out
+    assert "descartadas" in salida.lower() and "main=1" in salida
+    assert "Persona Secreta" not in salida and "secreto@example.com" not in salida
+    assert "Otra Persona" not in salida
+
+
+def test_publicar_tolerates_a_bundle_without_the_dropped_count(capsys):
+    bundle = cli.construir_bundle(
+        vercel_records=[], fase2_records=[], main_records=[{"cedula": "1234567"}],
+        generado_en="2026-09-16", origen={},
+    )
+    del bundle["descartados_sin_cedula"]
+    cli.publicar(bundle, dry_run=True)  # must not raise
+    assert "Bundle valido" in capsys.readouterr().out
+
+
 # --- edge case: cedula fallback (identificacion blank, cedula present) ----
 
 
@@ -375,7 +436,11 @@ def test_leer_tabla_xlsx_float_cell_never_gains_a_trailing_zero(tmp_path):
     "crudo, esperado",
     [
         ("31837630.0", "31837630"),
-        ("31837630.00", "31837630"),
+        ("31837630.00", "3183763000"),  # C3: only a lone ".0" is a float artifact
+        ("12.000", "12000"),           # C3: thousands separator, dots simply removed
+        ("166.000", "166000"),
+        ("1234567.0.0", "123456700"),
+        ("١٢٣٤٥٦٧", ""),                # non-ASCII digits are not digits (mirrors the JS \d)
         (31837630.0, "31837630"),
         ("0012345", "0012345"),
         ("1.234.567", "1234567"),  # thousands separators still stripped
@@ -401,7 +466,8 @@ def test_fila_vercel_blank_or_junk_identificacion_is_dropped():
 @pytest.mark.parametrize(
     "crudo, esperado",
     [("021", "021"), ("21.0", "21"), ("021.0", "021"), (21.0, "21"), ("  041 ", "041"),
-     ("A-12", "A-12"), (None, ""), (float("nan"), ""), ("3.5", "3.5")],
+     ("A-12", "A-12"), (None, ""), (float("nan"), ""), ("3.5", "3.5"),
+     ("21.00", "21.00"), ("12.000", "12.000")],  # C3: only a lone ".0" is dropped, `.00`/`.000` stay text
 )
 def test_fila_vercel_codigo_float_suffix_is_dropped_leading_zeros_kept(crudo, esperado):
     fila = cli._fila_vercel({"identificacion": "111", "nombre_completo": "A", "codigo": crudo})
@@ -578,6 +644,7 @@ def test_cli_existing_main_fields_unchanged_regression():
 @pytest.mark.parametrize(
     "crudo",
     ["21.0", "21.00", " 21.0 ", "021", "021.0", "0.0", "3.0e9", "3.5", "1.234.567", ".0",
+     "12.000", "166.000", "1.0", "1.0.0",
      "21.0a", "", "   ", 21.0, 21, 3001234567.0, float("nan"), None],
 )
 def test_campo_id_and_texto_opcional_agree(crudo):
@@ -665,3 +732,28 @@ def test_main_codigo_colliding_with_vercel_codigo_not_in_codigos_duplicados():
 
     assert bundle["codigos_duplicados"] == []
     assert [f["codigo"] for f in bundle["main"]] == ["097", "097"]
+
+
+# ── Review 2026-09-19 round 3 — S1: `creado_en` round-trips publish -> parse ─
+
+
+def test_cli_creado_en_float_tail_is_dropped_at_publish_so_round_trip_is_idempotent():
+    bundle = cli.construir_bundle(
+        vercel_records=[], fase2_records=[],
+        main_records=[{"cedula": "1234567", "creadoEn": "1735689600.0"}],
+        generado_en="2026-09-16", origen={},
+    )
+    publicado = bundle["main"][0]["creado_en"]
+    assert publicado == "1735689600"
+    assert ir.parse_bundle(bundle).main[0].creado_en == publicado
+
+
+@pytest.mark.parametrize("fecha", ["2026-01-05T10:00:00.000Z", "2026-01-05", "2026-01-05 10:00:00"])
+def test_cli_creado_en_iso_dates_stay_byte_identical_through_round_trip(fecha):
+    bundle = cli.construir_bundle(
+        vercel_records=[], fase2_records=[],
+        main_records=[{"cedula": "1234567", "creadoEn": fecha}],
+        generado_en="2026-09-16", origen={},
+    )
+    assert bundle["main"][0]["creado_en"] == fecha
+    assert ir.parse_bundle(bundle).main[0].creado_en == fecha

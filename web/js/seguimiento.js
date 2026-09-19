@@ -227,17 +227,27 @@ function surveyIncluded(survey, from, to) {
 // professionalKeyOf ('ced:...' | 'nom:...'), nunca un normalizeName() a
 // secas — cambio de contrato deliberado, ver los tests actualizados.
 
-/** Digits-only join key for a cédula — mirrors the backend's `cedula_key`
- *  (stickers_atencionsismo.py:220) EXACTLY: strips every non-digit
- *  character (dots, spaces, dashes, …) so "1.234.567", 1234567 (number) and
- *  " 1234567 " all resolve to the same key. Decision (leading zeros): kept
- *  VERBATIM, never stripped — same as the backend, which only does
- *  `re.sub(r"\D", "", ...)` and nothing else; a cédula that legitimately
- *  starts with "0" must not collide with one that doesn't. Returns "" when
- *  nothing digit-like remains (blank/non-numeric input, e.g. "CC" typed into
- *  the cédula field by mistake) — callers treat "" as "no cédula". */
+/** Digits-only join key for a cédula — mirrors the backend's
+ *  `cedula_utils.solo_digitos` (used by `inspectores_depuracion._cedula_key`):
+ *  the digit extraction and the float-artifact rule are the same (known,
+ *  accepted divergence: exotic whitespace around a ".0" tail — BOM, NEL,
+ *  control chars — where JS `\s` and Python differ; design D-CEDDEC). A
+ *  float-artifact tail is dropped first — ONLY a lone ".0" at the end
+ *  of an otherwise digit-only string ("1234567.0" -> "1234567", what a float
+ *  cell stringifies to) — then every non-digit (dots, spaces, dashes, …) is
+ *  stripped, so "1.234.567", 1234567 (number) and " 1234567 " all resolve to
+ *  the same key. "166.000" and "12.000" are thousands-separated cédulas, NOT
+ *  float artifacts: they become "166000" / "12000" (design D-CEDDEC). The regex
+ *  below is embedded verbatim by a backend test that compares it with
+ *  `COLA_FLOTANTE_PATRON`. Decision (leading zeros): kept VERBATIM, never
+ *  stripped; a cédula that legitimately starts with "0" must not collide with
+ *  one that doesn't. Returns "" when nothing digit-like remains (blank/
+ *  non-numeric input, e.g. "CC" typed into the cédula field by mistake) —
+ *  callers treat "" as "no cédula". */
 export function cedulaKey(raw) {
-  return String(raw === null || raw === undefined ? '' : raw).replace(/\D/g, '');
+  const text = String(raw === null || raw === undefined ? '' : raw);
+  const artifact = /^\s*(\d+)\.0\s*$/.exec(text);
+  return (artifact ? artifact[1] : text).replace(/\D/g, '');
 }
 
 const EMPTY_IDENTITY = Object.freeze({ eligibleCedulas: new Set(), nameToCedula: new Map() });

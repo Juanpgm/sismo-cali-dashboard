@@ -17,13 +17,11 @@ seam signatures as sketches for `sdd-apply` to flesh out)
                                         # `stickers_atencionsismo.normalize_sticker`
                                         # emits today).
         "inspector": {
-            "identificacion": str,     # Firestore identity anchor (spec:
-                                        # "Identity Anchor Is Firestore
-                                        # identificacion") — MUST match a
-                                        # `roster_by_cedula` entry's own
-                                        # `identificacion` to be attributed;
-                                        # unattributable stickers are
-                                        # silently skipped, never raised.
+            "identificacion": str,     # professional cédula; resolved to a
+                                        # profile through the cédula alias
+                                        # index (dots/zeros/float tails are
+                                        # normalized). Unattributable stickers
+                                        # are silently skipped, never raised.
             "codigo": str,
             "nombre_completo": str,
         },
@@ -36,13 +34,13 @@ wiring owns translating the live `evaluaciones[]` shape (today: `origen` +
 equal the raw `fechaCreacion` — a real integration gap flagged for Phase 3,
 see the apply report's Deviations section) into this contract.
 
-`roster_by_cedula: dict[str, dict]` — Firestore `inspector_profiles()`,
-keyed by the SAME digits-only `cedula_key` join key
-`stickers_atencionsismo.cedula_key()` already uses. Each value:
+`roster_by_cedula: dict[str, dict]` — Firestore `inspector_profiles()`.
+Each value:
 
     {
-        "identificacion": str,   # identity anchor (spec) — REQUIRED to be
-                                  # represented at all; blank -> skipped.
+        "identificacion": str,   # REQUIRED to be represented at all; blank
+                                  # -> skipped. Profiles are deduplicated by
+                                  # the digits-only `_cedula_key` of it.
         "nombre_completo": str,
         "correo": str,
         "codigo": str,            # existing brigade code assignment, if any
@@ -56,12 +54,18 @@ keyed by the SAME digits-only `cedula_key` join key
 `nombres_survey: Iterable[str]` — raw `survey_cali` person names (any case/
 accents); normalized internally via `normalizar_nombre`.
 
-`referencia: ReferenciaBundle` — `app.services.inspectores_referencia`
-(Phase 1). Note: Phase 1's `EntradaReferencia` does not carry `correo`/
-`tarjeta_profesional` (design's bundle JSON example shows them on `main`
-rows, but `parse_bundle` never parses them) — a documented Phase 1/design
-gap, out of scope here; this module only reads `EntradaReferencia`'s actual
-fields (`cedula_key`, `nombre_norm`, `np`, `entidad`, `codigo`, `no_persona`).
+`referencia: ReferenciaBundle` — `app.services.inspectores_referencia`. Its
+`main` section is a UNIVERSE source (extension 2026-09-19, D9): one Perfil per
+distinct cédula, Firestore first. `vercel`/`fase2` stay overlays.
+
+## Pipeline (design.md "Pipeline Order")
+
+1. `fusionar_identidad` = universe (roster, then `main`) + overlays + sticker
+   attribution through the cédula alias index. Returns `(perfiles, revision)`.
+2. `remapear_codigos`, 3. `unificar_duplicados` (D-P2, AFTER the overlays and
+   the sticker attribution so the survivor score sees populated flags, D10),
+4. `entidad` / `np` / `fase` / `estado_sugerido` / `fuente_dato`,
+5. `colapsar_externos`, 6. `alias_nombres` (redacted logging).
 
 `hoy: date` — Bogotá "today" (design D6: cache-key input, not computed here).
 """
@@ -69,6 +73,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import math
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -77,7 +82,10 @@ from typing import Iterable
 
 from rapidfuzz import fuzz
 
+from app.services import cedula_utils
 from app.services.inspectores_referencia import EntradaReferencia, ReferenciaBundle
+
+_LOG = logging.getLogger(__name__)
 
 # ── Constants (explore.md Q4/Q6) ────────────────────────────────────────────
 
@@ -110,19 +118,66 @@ def es_cuenta_no_persona(correo: object, nombre: object) -> bool:
     return any(p in nombre_norm for p in PATRONES_NOMBRE_NO_PERSONA)
 
 
+def _txt(value: object) -> str:
+    """Tolerant scalar -> stripped text. `None` and non-finite floats (NaN/inf)
+    become `""`, never the literal "nan"/"None". Never raises."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and not math.isfinite(value):
+        return ""
+    return str(value).strip()
+
+
+def _digitos(value: object) -> str:
+    """Digits-only form of a cédula via the shared rule (`cedula_utils`): a lone
+    float-artifact ".0" tail ("12345.0", a float that went through pandas/JSON)
+    is dropped first so it never appends a spurious trailing zero; every other
+    dot/space/dash is a plain separator ("12.345.678" -> "12345678", "166.000"
+    -> "166000": a thousands separator is NOT a float artifact, design
+    D-CEDDEC). Leading zeros are kept (this is the value a profile is keyed and
+    displayed by)."""
+    return cedula_utils.solo_digitos(_txt(value))
+
+
+def _cedula_key(value: object) -> str:
+    """The module's ONE identity key for a cédula: digits only, a lone ".0"
+    float artifact dropped, NOTHING else. Leading zeros are KEPT, exactly like
+    the frontend's `cedulaKey` (web/js/seguimiento.js), an EXACT mirror of this
+    function (same regex, `cedula_utils.COLA_FLOTANTE_PATRON`, pinned by a
+    test): "0123456" and "123456" are two different keys, so the row keys the
+    backend emits are the ones the frontend derives. Used by the universe, the
+    overlays, the remap, `identidad_key`/`identificacion`, `cedula_sospechosa`
+    and the exported `cedulas_unificadas`."""
+    return _digitos(value)
+
+
+def _cedula_alias_key(value: object) -> str:
+    """The zero-STRIPPED form ("0012345" -> "12345"), used ONLY as the fallback
+    of the sticker alias index (`atribuir_stickers`, spec "Exact-string
+    identificacion lookup is not the path"). It never keys a profile: when it
+    is what resolves a sticker, the sticker's own `_cedula_key` form is exported
+    in `cedulas_unificadas` so the frontend can still route it. An all-zero
+    value keeps its zeros (a placeholder must not collapse into "" = no key)."""
+    digitos = _cedula_key(value)
+    return digitos.lstrip("0") or digitos
+
+
 def cedula_sospechosa(cedula: object) -> bool:
     """explore.md Q4 — digit-only length outside 6-10, or exactly 10 digits
-    not starting with "1". Also a PRIORITIZATION-only heuristic."""
-    digits = re.sub(r"\D", "", str(cedula or ""))
+    not starting with "1". Also a PRIORITIZATION-only heuristic.
+
+    Reads the SAME zero-preserving digits as the join key (`_cedula_key`), so
+    "0012345678" is 10 digits starting with "0" (suspicious) and a lone ".0"
+    float artifact is dropped ("1234567890.0" is fine, "12345.0" is 5 digits)
+    while a thousands-separated one keeps all its digits ("166.000" is the
+    6-digit 166000). Only divergence from the 04fbf2e behaviour: design.md
+    D-CEDDEC."""
+    digits = _cedula_key(cedula)
     if not digits:
         return True
     if not (6 <= len(digits) <= 10):
         return True
     return len(digits) == 10 and not digits.startswith("1")
-
-
-def _cedula_key(value: object) -> str:
-    return re.sub(r"\D", "", str(value or ""))
 
 
 def _parse_fecha(value: object) -> datetime | None:
@@ -168,11 +223,18 @@ class Perfil:
     nombre_norm: str
     correo: str = ""
     codigo: str = ""
+    # DERIVED, never set by a builder: the RESOLVED value (`resolver_entidad`)
+    # computed from the three `entidad_*` source fields below, after the overlays.
     entidad: str = ""
+    entidad_firestore: str = ""
+    entidad_vercel: str = ""  # only ever set by a Vercel match BY CÉDULA (D12)
+    entidad_main: str = ""
     tarjeta_profesional: str = ""
     num_telefono: str = ""
     correo_contacto: str = ""
     creado_en: str = ""
+    id: str = ""  # `main` row uuid; carried for review/audit, not part of the response
+    firestore_backed: bool = False  # last tie-break of the D-P2 survivor score (D10)
     cedulas_unificadas: tuple[str, ...] = ()
     en_vercel: bool = False
     en_fase2: bool = False
@@ -202,17 +264,21 @@ class Depuracion:
     inspectores: tuple[dict, ...]
     grupo_externos: dict | None
     alias_nombres: dict[str, str]
+    # Carries cédulas and person names (PII): it must stay admin-gated, exactly
+    # like `inspectores` (the router only ships it under the admin role).
     revision_manual: tuple[dict, ...]
 
 
-# ── Survivor scoring, shared by stage 1's D-P2 fix and stage 3 ─────────────
+# ── Survivor scoring, used by the D-P2 unification (stage 3) ────────────────
 
 
 def _survivor_score(p: Perfil) -> tuple:
     """has_sticker > has_codigo > en_vercel > en_fase2 > not_no_persona >
-    not_cedula_sospechosa (design's Interfaces/Contracts, stage 3 row)."""
+    not_cedula_sospechosa (spec: "Code Remap And Duplicate Unification").
+    `has_sticker` is `n_stickers > 0` (notebook) — the `ultimo_sticker` check
+    only covers a profile built without an aggregate count."""
     return (
-        bool(p.ultimo_sticker),
+        p.n_stickers > 0 or p.ultimo_sticker is not None,
         bool(p.codigo),
         p.en_vercel,
         p.en_fase2,
@@ -221,25 +287,62 @@ def _survivor_score(p: Perfil) -> tuple:
     )
 
 
+_SIN_FECHA = datetime.max.replace(tzinfo=timezone.utc)
+
+
 def _elegir_survivor(candidatos: list[Perfil]) -> Perfil:
-    """Tie -> oldest `creado_en`. A blank `creado_en` never wins a tie over
-    a real date; if every tied candidate is blank, the first-seen
-    (insertion order) wins deterministically."""
-    max_score = max(_survivor_score(c) for c in candidatos)
-    empatados = [c for c in candidatos if _survivor_score(c) == max_score]
-    if len(empatados) == 1:
-        return empatados[0]
-    con_fecha = [c for c in empatados if c.creado_en]
-    pool = con_fecha or empatados
-    return min(pool, key=lambda c: (c.creado_en or "", candidatos.index(c)))
+    """Highest score wins. Ties break on the oldest `creado_en` (a blank or
+    unparseable one never beats a real date), then on Firestore-backed before
+    main-only (D10: kept LAST so it never displaces the notebook's
+    parity-bearing rules), then first-seen (insertion order) so the outcome is
+    deterministic."""
+    puntajes = [_survivor_score(c) for c in candidatos]
+    max_score = max(puntajes)
+
+    def desempate(indice: int) -> tuple:
+        fecha = _parse_fecha(candidatos[indice].creado_en)
+        return (fecha is None, fecha or _SIN_FECHA, not candidatos[indice].firestore_backed, indice)
+
+    mejor = min((i for i, score in enumerate(puntajes) if score == max_score), key=desempate)
+    return candidatos[mejor]
+
+
+# `creado_en` is deliberately NOT here: it is the survivor tie-break input, not
+# an output field, and the survivor keeps its own date (a loser's date must not
+# rewrite the survivor's history).
+_CAMPOS_TEXTO_BACKFILL = (
+    "correo", "codigo", "tarjeta_profesional", "num_telefono", "correo_contacto",
+    "rango_main", "id", "entidad_firestore", "entidad_vercel", "entidad_main",
+)
+
+
+def _recalcular_no_persona(perfil: Perfil) -> None:
+    """`es_cuenta_no_persona` from the profile's CURRENT correo / nombre /
+    `no_persona_ref` (bundle-precomputed flag). Called by the overlay pass and
+    again after a D-P2 merge, whose backfilled correo / ORed `no_persona_ref`
+    would otherwise leave the flag stale (the overlays already ran)."""
+    perfil.es_cuenta_no_persona = perfil.no_persona_ref or es_cuenta_no_persona(
+        perfil.correo, perfil.nombre_completo
+    )
 
 
 def _fusionar_en_survivor(survivor: Perfil, perdedor: Perfil) -> None:
-    """Backfill = "primero no vacío gana", NOT a sum (explore.md §6.5/§8.1
-    'B' — e.g. `n_stickers` is intentionally never summed, matching the
-    notebook's documented silent-discard of the loser's own counts)."""
-    for campo in ("correo", "codigo", "entidad", "tarjeta_profesional",
-                  "num_telefono", "correo_contacto", "rango_main"):
+    """Backfill = "first non-empty wins" for every text field (losers are
+    visited in roster order), NOT a sum. The sticker aggregates ARE absorbed
+    (count summed, `ultimo_sticker` the later one, `tiene_sticker_valido`
+    OR-ed), and every key the loser answered to — its own cédula and any it had
+    already absorbed — is registered in `cedulas_unificadas` so later lookups
+    resolve to the survivor (compared by `_cedula_key`, never by raw string).
+    `es_cuenta_no_persona` is NOT a pure recompute of the merged fields: it is
+    the survivor's own flag OR-ed with a fresh evaluation of the survivor's
+    CURRENT correo / nombre / `no_persona_ref`. Only the bundle flag
+    `no_persona_ref` is OR-ed from the loser; the loser's HEURISTIC flag (its
+    own `@import.local` correo, say) is dropped whenever the survivor already
+    has a non-empty correo (backfill never overwrites), so a real survivor never
+    becomes a "non-person" because of a loser. That is the notebook's rule:
+    "survivor keeps its own flags, backfill first-non-empty". `cedula_sospechosa`
+    stays the survivor's, computed from its ORIGINAL cédula (D18)."""
+    for campo in _CAMPOS_TEXTO_BACKFILL:
         if not getattr(survivor, campo):
             setattr(survivor, campo, getattr(perdedor, campo))
     if not survivor.en_vercel and perdedor.en_vercel:
@@ -248,21 +351,42 @@ def _fusionar_en_survivor(survivor: Perfil, perdedor: Perfil) -> None:
         survivor.en_fase2, survivor.np_fase2 = True, perdedor.np_fase2
     if not survivor.no_persona_ref and perdedor.no_persona_ref:
         survivor.no_persona_ref = True
+    survivor.n_stickers += perdedor.n_stickers
     if perdedor.ultimo_sticker and (
         not survivor.ultimo_sticker or perdedor.ultimo_sticker > survivor.ultimo_sticker
     ):
         survivor.ultimo_sticker = perdedor.ultimo_sticker
     survivor.tiene_sticker_valido = survivor.tiene_sticker_valido or perdedor.tiene_sticker_valido
-    survivor.cedulas_unificadas = tuple(
-        dict.fromkeys((*survivor.cedulas_unificadas, perdedor.identificacion))
-    )
+    survivor.firestore_backed = survivor.firestore_backed or perdedor.firestore_backed
+    propia = _cedula_key(survivor.identificacion) or _txt(survivor.identificacion)
+    vistas = {propia}
+    unificadas: list[str] = []
+    # Forms the survivor ALREADY exports are kept verbatim (this includes the raw
+    # roster form of its own cédula, e.g. "1234567.0"); only exact repeats and its
+    # own key are dropped. The loser's forms are then filtered by cédula key.
+    for clave in survivor.cedulas_unificadas:
+        texto = _txt(clave)
+        if texto and texto != propia and clave not in unificadas:
+            vistas.add(_cedula_key(texto) or texto)
+            unificadas.append(clave)
+    for clave in (perdedor.identificacion, *perdedor.cedulas_unificadas):
+        normalizada = _cedula_key(clave) or _txt(clave)
+        if normalizada and normalizada not in vistas:
+            vistas.add(normalizada)
+            unificadas.append(clave)
+    survivor.cedulas_unificadas = tuple(unificadas)
+    previo = survivor.es_cuenta_no_persona
+    _recalcular_no_persona(survivor)
+    survivor.es_cuenta_no_persona = survivor.es_cuenta_no_persona or previo
 
 
 def _unificar_por_nombre(perfiles: dict[str, Perfil]) -> tuple[dict[str, Perfil], tuple[dict, ...]]:
     """Exact `nombre_norm` match only (spec: "Exact-name duplicate merge
     never deletes the losing record" — excluded from the OUTPUT dict, never
     mutated/removed from the CALLER's input `perfiles`: every merge works on
-    a deep copy of the survivor, so `perfiles`'s own objects are untouched)."""
+    a deep copy of the survivor, so `perfiles`'s own objects are untouched).
+    An empty `nombre_norm` never groups (two nameless profiles are two
+    people)."""
     grupos: dict[str, list[str]] = {}
     for key, perfil in perfiles.items():
         if not perfil.nombre_norm:
@@ -291,121 +415,305 @@ def _unificar_por_nombre(perfiles: dict[str, Perfil]) -> tuple[dict[str, Perfil]
     return resultado, tuple(fusiones)
 
 
-# ── Stage 1: fusionar_identidad ─────────────────────────────────────────────
+# ── Stage 1: fusionar_identidad — universe, overlays, sticker attribution ────
 
 
-def _buscar_entrada(
-    entradas: tuple[EntradaReferencia, ...], cedula_key: str, nombre_norm: str
-) -> EntradaReferencia | None:
-    """Q1: cédula match first, `nombre_norm` fallback."""
-    if cedula_key:
-        for entrada in entradas:
-            if entrada.cedula_key == cedula_key:
-                return entrada
-    if nombre_norm:
-        for entrada in entradas:
-            if entrada.nombre_norm == nombre_norm:
-                return entrada
-    return None
+class _IndiceReferencia:
+    """One reference section indexed ONCE by `_cedula_key` and by
+    `nombre_norm` (D14: replaces the O(n·m) linear scan). First row wins on a
+    repeated key, exactly like the scan it replaces; an empty key is never
+    indexed, so an empty name/cédula can never match another empty one."""
+
+    __slots__ = ("por_cedula", "por_nombre")
+
+    def __init__(self, entradas: Iterable[EntradaReferencia]) -> None:
+        self.por_cedula: dict[str, EntradaReferencia] = {}
+        self.por_nombre: dict[str, EntradaReferencia] = {}
+        for entrada in entradas or ():
+            cedula = _cedula_key(entrada.cedula_key)
+            if cedula:
+                self.por_cedula.setdefault(cedula, entrada)
+            nombre = _nombre_norm_de_entrada(entrada)
+            if nombre:
+                self.por_nombre.setdefault(nombre, entrada)
+
+    def buscar(self, cedula_k: str, nombre_norm: str) -> tuple[EntradaReferencia | None, bool]:
+        """Q1: cédula match first, exact `nombre_norm` fallback. The bool says
+        whether the hit was BY CÉDULA (D12 needs that distinction)."""
+        if cedula_k:
+            entrada = self.por_cedula.get(cedula_k)
+            if entrada is not None:
+                return entrada, True
+        if nombre_norm:
+            entrada = self.por_nombre.get(nombre_norm)
+            if entrada is not None:
+                return entrada, False
+        return None, False
 
 
-def _overlay_vercel(perfil: Perfil, entradas: tuple[EntradaReferencia, ...], cedula_k: str) -> None:
-    entrada = _buscar_entrada(entradas, cedula_k, perfil.nombre_norm)
-    if entrada is None:
-        return
-    perfil.en_vercel = True
-    perfil.np_vercel = entrada.np
-    if not perfil.entidad:
-        perfil.entidad = entrada.entidad
+def _nombre_de_entrada(entrada: EntradaReferencia) -> str:
+    return _txt(entrada.nombre) or _txt(entrada.nombre_norm)
 
 
-def _overlay_fase2(perfil: Perfil, entradas: tuple[EntradaReferencia, ...], cedula_k: str) -> None:
-    entrada = _buscar_entrada(entradas, cedula_k, perfil.nombre_norm)
-    if entrada is None:
-        return
-    perfil.en_fase2 = True
-    perfil.np_fase2 = entrada.np
+def _nombre_norm_de_entrada(entrada: EntradaReferencia) -> str:
+    """The ONE `nombre_norm` of a reference row: its own `nombre_norm` when
+    present (the publisher already normalized it), else `nombre` normalized
+    (an old bundle carries no `nombre`; a new one may carry no `nombre_norm`).
+    Shared by the reference indexes and the `main` profile builders."""
+    return normalizar_nombre(_txt(entrada.nombre_norm)) or normalizar_nombre(_txt(entrada.nombre))
 
 
-def _overlay_main(perfil: Perfil, entradas: tuple[EntradaReferencia, ...], cedula_k: str) -> None:
-    entrada = _buscar_entrada(entradas, cedula_k, perfil.nombre_norm)
-    if entrada is None:
-        return
-    if not perfil.rango_main:
-        perfil.rango_main = entrada.np
-    if entrada.no_persona:
-        perfil.no_persona_ref = True
-    if not perfil.entidad:
-        perfil.entidad = entrada.entidad
+def _perfil_desde_main(entrada: EntradaReferencia, cedula_id: str) -> Perfil:
+    """A `main`-only profile (D9). `nombre_completo` falls back to the title-
+    cased `nombre_norm` when an OLD bundle carries no `nombre`; the notebook
+    also title-cases. `correo` feeds `es_cuenta_no_persona` (notebook input);
+    `correo_contacto` is the lowercased contact copy."""
+    nombre = _txt(entrada.nombre)
+    nombre_norm = _nombre_norm_de_entrada(entrada)
+    correo = _txt(entrada.correo)
+    return Perfil(
+        identidad_key=cedula_id,
+        identificacion=cedula_id,
+        nombre_completo=nombre or nombre_norm.title(),
+        nombre_norm=nombre_norm,
+        correo=correo,
+        codigo=_txt(entrada.codigo),
+        tarjeta_profesional=_txt(entrada.tarjeta_profesional),
+        num_telefono=re.sub(r"\D", "", _txt(entrada.telefono), flags=re.ASCII),
+        correo_contacto=correo.lower(),
+        creado_en=_txt(entrada.creado_en),
+        id=_txt(entrada.id),
+    )
 
 
-def fusionar_identidad(
-    stickers: list[dict],
-    roster_by_cedula: dict[str, dict],
-    referencia: ReferenciaBundle,
-) -> dict[str, Perfil]:
-    """Stage 1 (design's Interfaces/Contracts table). Builds the initial
-    identity index keyed by Firestore `identificacion` (spec: Identity
-    Anchor), applies the D-P2 cédula-typo fix (unify only on exact
-    `nombre_norm` match — `_unificar_por_nombre`, shared with stage 3),
-    overlays the reference bundle (Q1), computes the two priority heuristics,
-    then aggregates sticker activity per identity."""
+def _rellenar_desde_main(perfil: Perfil, entrada: EntradaReferencia) -> None:
+    """Firestore-first: a `main` row that matches an existing profile by
+    cédula only FILLS what is still empty — it never overwrites."""
+    nombre = _txt(entrada.nombre)
+    if not perfil.nombre_norm:
+        nombre_norm = _nombre_norm_de_entrada(entrada)
+        if nombre_norm:
+            perfil.nombre_norm = nombre_norm
+            perfil.nombre_completo = perfil.nombre_completo or nombre or nombre_norm.title()
+    correo = _txt(entrada.correo)
+    for campo, valor in (
+        ("correo", correo),
+        ("codigo", _txt(entrada.codigo)),
+        ("tarjeta_profesional", _txt(entrada.tarjeta_profesional)),
+        ("num_telefono", re.sub(r"\D", "", _txt(entrada.telefono), flags=re.ASCII)),
+        ("correo_contacto", correo.lower()),
+        ("creado_en", _txt(entrada.creado_en)),
+        ("id", _txt(entrada.id)),
+    ):
+        if valor and not getattr(perfil, campo):
+            setattr(perfil, campo, valor)
+
+
+def construir_universo(
+    roster_by_cedula: dict[str, dict], referencia: ReferenciaBundle
+) -> tuple[dict[str, Perfil], tuple[dict, ...]]:
+    """D9/D19: one profile per distinct `_cedula_key`, Firestore roster first,
+    then `referencia.main`. Returns `(perfiles, revision_manual)`.
+
+    - A `main` row whose cédula already has a profile only backfills empty
+      fields; it never creates a second profile.
+    - Two `main` rows with the same cédula: the FIRST wins, the second changes
+      nothing and is reported (`cedula_duplicada_main`), never silently dropped.
+    - A `main` row without a single digit in its cédula creates no profile and
+      is reported (`main_sin_cedula`).
+    Email-derived cédulas are never used as a key."""
     perfiles: dict[str, Perfil] = {}
+    por_cedula: dict[str, Perfil] = {}
+    revision: list[dict] = []
+
     for roster_entry in (roster_by_cedula or {}).values():
         if not isinstance(roster_entry, dict):
             continue
-        identificacion = str(roster_entry.get("identificacion") or "").strip()
+        identificacion = _txt(roster_entry.get("identificacion"))
         if not identificacion:
             continue  # no identity anchor at all -> cannot be represented
-        if identificacion in perfiles:
-            # Two `cedula_key` dict entries already collapse to the SAME
-            # identificacion -> trivially one person; keep first-seen, note
-            # a name discrepancy if the duplicate carries a different name.
-            existente = perfiles[identificacion]
-            nombre_dup = normalizar_nombre(roster_entry.get("nombre_completo"))
-            if nombre_dup and nombre_dup != existente.nombre_norm:
-                existente.cedulas_unificadas = tuple(
-                    dict.fromkeys((*existente.cedulas_unificadas, identificacion))
-                )
+        # Keyed by the normalized cédula exactly like `_perfil_desde_main` (C3): the
+        # join key never depends on how the roster spelled it ("1.234.567",
+        # "1234567.0"). The RAW roster text is exported in `cedulas_unificadas`
+        # (once, never the row's own key) so any form the API/frontend carries maps
+        # to the row.
+        clave = _cedula_key(identificacion) or identificacion
+        existente = por_cedula.get(clave)
+        if existente is not None:
+            # Two roster entries collapse to the SAME cédula -> one person; keep
+            # first-seen and ALWAYS register the absorbed cédula (same name or
+            # not) so the frontend can still resolve a sticker carrying it.
+            if identificacion != existente.identificacion and identificacion not in existente.cedulas_unificadas:
+                existente.cedulas_unificadas = (*existente.cedulas_unificadas, identificacion)
             continue
-        nombre_completo = str(roster_entry.get("nombre_completo") or "")
-        perfiles[identificacion] = Perfil(
-            identidad_key=identificacion,
-            identificacion=identificacion,
+        nombre_completo = _txt(roster_entry.get("nombre_completo"))
+        perfil = Perfil(
+            identidad_key=clave,
+            identificacion=clave,
             nombre_completo=nombre_completo,
             nombre_norm=normalizar_nombre(nombre_completo),
-            correo=str(roster_entry.get("correo") or ""),
-            codigo=str(roster_entry.get("codigo") or "").strip(),
-            entidad=str(roster_entry.get("entidad") or ""),
-            tarjeta_profesional=str(roster_entry.get("tarjeta_profesional") or ""),
-            num_telefono=str(roster_entry.get("num_telefono") or ""),
-            correo_contacto=str(roster_entry.get("correo_contacto") or ""),
-            creado_en=str(roster_entry.get("creado_en") or ""),
+            correo=_txt(roster_entry.get("correo")),
+            codigo=_txt(roster_entry.get("codigo")),
+            entidad_firestore=_txt(roster_entry.get("entidad")),
+            tarjeta_profesional=_txt(roster_entry.get("tarjeta_profesional")),
+            num_telefono=_txt(roster_entry.get("num_telefono")),
+            correo_contacto=_txt(roster_entry.get("correo_contacto")),
+            creado_en=_txt(roster_entry.get("creado_en")),
+            firestore_backed=True,
+            cedulas_unificadas=(identificacion,) if identificacion != clave else (),
         )
+        perfiles[clave] = perfil
+        por_cedula[clave] = perfil
 
-    # D-P2 fix: different identificacion, EXACT same normalized name.
-    perfiles, _ = _unificar_por_nombre(perfiles)
+    vistos_main: dict[str, EntradaReferencia] = {}
+    for entrada in referencia.main:
+        clave = _cedula_key(entrada.cedula_key)
+        if not clave:
+            revision.append({
+                "motivo": "main_sin_cedula",
+                "cedula_key": _txt(entrada.cedula_key),
+                "nombre_completo": _nombre_de_entrada(entrada),
+                "id": _txt(entrada.id),
+            })
+            continue
+        primera = vistos_main.get(clave)
+        if primera is not None:
+            nombre_a, nombre_b = _nombre_de_entrada(primera), _nombre_de_entrada(entrada)
+            revision.append({
+                "motivo": "cedula_duplicada_main",
+                "cedula_key": clave,
+                "nombre_completo": nombre_a,
+                "nombre_completo_duplicado": nombre_b,
+                "id": _txt(primera.id),
+                "id_duplicado": _txt(entrada.id),
+                "mismo_nombre": bool(nombre_a) and normalizar_nombre(nombre_a) == normalizar_nombre(nombre_b),
+            })
+            continue
+        vistos_main[clave] = entrada
+        perfil = por_cedula.get(clave)
+        if perfil is None:
+            perfil = _perfil_desde_main(entrada, clave)
+            perfiles[clave] = perfil
+            por_cedula[clave] = perfil
+        else:
+            _rellenar_desde_main(perfil, entrada)
 
+    return perfiles, tuple(revision)
+
+
+def superponer_referencia(perfiles: dict[str, Perfil], referencia: ReferenciaBundle) -> None:
+    """Overlays Vercel / Fase 2 / `main` onto every profile by `_cedula_key`,
+    else by exact `nombre_norm`; first row wins (D14 indexes, built once). They
+    never create profiles. `entidad_vercel` is only taken from a match BY
+    CÉDULA (D12), then the two priority heuristics are computed."""
+    vercel = _IndiceReferencia(referencia.vercel)
+    fase2 = _IndiceReferencia(referencia.fase2)
+    main = _IndiceReferencia(referencia.main)
     for perfil in perfiles.values():
         cedula_k = _cedula_key(perfil.identificacion)
-        _overlay_vercel(perfil, referencia.vercel, cedula_k)
-        _overlay_fase2(perfil, referencia.fase2, cedula_k)
-        _overlay_main(perfil, referencia.main, cedula_k)
-        perfil.cedula_sospechosa = cedula_sospechosa(perfil.identificacion)
-        perfil.es_cuenta_no_persona = perfil.no_persona_ref or es_cuenta_no_persona(
-            perfil.correo, perfil.nombre_completo
-        )
 
+        entrada, por_cedula = vercel.buscar(cedula_k, perfil.nombre_norm)
+        if entrada is not None:
+            perfil.en_vercel = True
+            perfil.np_vercel = _txt(entrada.np)
+            if por_cedula and not perfil.entidad_vercel:
+                perfil.entidad_vercel = _txt(entrada.entidad)
+
+        entrada, _ = fase2.buscar(cedula_k, perfil.nombre_norm)
+        if entrada is not None:
+            perfil.en_fase2 = True
+            perfil.np_fase2 = _txt(entrada.np)
+
+        entrada, _ = main.buscar(cedula_k, perfil.nombre_norm)
+        if entrada is not None:
+            if not perfil.rango_main:
+                perfil.rango_main = _txt(entrada.np)
+            if entrada.no_persona:
+                perfil.no_persona_ref = True
+            if not perfil.entidad_main:
+                perfil.entidad_main = _txt(entrada.entidad)
+
+        perfil.cedula_sospechosa = cedula_sospechosa(perfil.identificacion)
+        _recalcular_no_persona(perfil)
+
+
+class _IndiceAlias:
+    """D11: cédula -> profile for sticker attribution. Two levels:
+
+    - `exacto`: `_cedula_key` (zero-preserving) of each profile's OWN cédula and
+      of every cédula unified into it. Own keys are registered first so a profile
+      always owns its cédula over another profile's alias claim.
+    - `sin_ceros`: the zero-STRIPPED fallback (`_cedula_alias_key`) so "0012345"
+      and "12345" still resolve (spec: "Exact-string identificacion lookup is not
+      the path"). A stripped key claimed by two DIFFERENT profiles is ambiguous
+      (`None`): a sticker is never guessed onto either, which also keeps the
+      outcome independent of input order."""
+
+    __slots__ = ("exacto", "sin_ceros")
+
+    def __init__(self, perfiles: dict[str, Perfil]) -> None:
+        self.exacto: dict[str, Perfil] = {}
+        for perfil in perfiles.values():
+            clave = _cedula_key(perfil.identificacion)
+            if clave:
+                self.exacto.setdefault(clave, perfil)
+        for perfil in perfiles.values():
+            for alias in perfil.cedulas_unificadas:
+                clave = _cedula_key(alias)
+                if clave:
+                    self.exacto.setdefault(clave, perfil)
+        self.sin_ceros: dict[str, Perfil | None] = {}
+        for clave, perfil in self.exacto.items():
+            self._reclamar_sin_ceros(clave, perfil)
+
+    def _reclamar_sin_ceros(self, clave: str, perfil: Perfil) -> None:
+        """`perfil` claims the zero-stripped form of `clave`; a form already
+        claimed by a DIFFERENT profile becomes ambiguous (`None`) and stays so."""
+        despojada = _cedula_alias_key(clave)
+        if despojada in self.sin_ceros and self.sin_ceros[despojada] is not perfil:
+            self.sin_ceros[despojada] = None
+        else:
+            self.sin_ceros[despojada] = perfil
+
+    def resolver(self, cedula_sticker: object) -> tuple[Perfil | None, str]:
+        """`(profile, sticker_key)`; the key is `""` when the value has no digits."""
+        clave = _cedula_key(cedula_sticker)
+        if not clave:
+            return None, ""
+        perfil = self.exacto.get(clave)
+        if perfil is not None:
+            return perfil, clave
+        return self.sin_ceros.get(_cedula_alias_key(clave)), clave
+
+    def registrar(self, perfil: Perfil, clave: str) -> None:
+        """A sticker resolved through the zero-stripped fallback: export the form
+        it carried in `cedulas_unificadas` (the frontend routes by its own
+        `cedulaKey`, which keeps zeros) and make the next identical form exact."""
+        perfil.cedulas_unificadas = (*perfil.cedulas_unificadas, clave)
+        self.exacto[clave] = perfil
+        self._reclamar_sin_ceros(clave, perfil)
+
+
+def atribuir_stickers(perfiles: dict[str, Perfil], stickers: list[dict]) -> None:
+    """Aggregates sticker activity onto the profile the sticker's professional
+    cédula resolves to THROUGH the alias index (D11) — never by exact-string
+    `identificacion`. Resolution is exact-key first, then zero-stripped; when
+    only the stripped form matched, the sticker's own cédula form is registered
+    in that profile's `cedulas_unificadas` (frontend payload contract). An
+    unresolvable/blank cédula or a malformed sticker is skipped, never raised.
+    Mutates the profiles in place."""
+    indice = _IndiceAlias(perfiles)
     for sticker in (stickers or []):
         if not isinstance(sticker, dict):
             continue
         inspector = sticker.get("inspector")
         if not isinstance(inspector, dict):
             continue
-        identificacion = str(inspector.get("identificacion") or "").strip()
-        perfil = perfiles.get(identificacion)
+        perfil, clave = indice.resolver(inspector.get("identificacion"))
         if perfil is None:
             continue  # unattributable sticker -> skipped, never raised
+        if clave not in indice.exacto:
+            indice.registrar(perfil, clave)
         perfil.n_stickers += 1
         fecha = _parse_fecha(sticker.get("fecha_creacion"))
         if fecha is not None:
@@ -415,7 +723,21 @@ def fusionar_identidad(
         if _sticker_es_valido(sticker):
             perfil.tiene_sticker_valido = True
 
-    return perfiles
+
+def fusionar_identidad(
+    stickers: list[dict],
+    roster_by_cedula: dict[str, dict],
+    referencia: ReferenciaBundle,
+) -> tuple[dict[str, Perfil], tuple[dict, ...]]:
+    """Stage 1: universe (Firestore roster ∪ `referencia.main`, D9) + Vercel /
+    Fase 2 / `main` overlays + priority heuristics + sticker attribution
+    (D11). Returns `(perfiles, revision_manual)`. It does NOT unify name
+    duplicates: D-P2 runs later (`unificar_duplicados`, D10) so its survivor
+    score is evaluated on populated flags."""
+    perfiles, revision = construir_universo(roster_by_cedula, referencia)
+    superponer_referencia(perfiles, referencia)
+    atribuir_stickers(perfiles, stickers)
+    return perfiles, revision
 
 
 # ── Stage 2: remapear_codigos ────────────────────────────────────────────────
@@ -442,12 +764,15 @@ def remapear_codigos(
             excluidos.add(codigo)
             revision_manual.append({"motivo": "codigo_vercel_duplicado", "codigo": codigo})
 
-    perfiles_por_cedula = {_cedula_key(p.identificacion): p for p in perfiles.values() if p.identificacion}
+    perfiles_por_cedula = {
+        clave: p for p in perfiles.values() if (clave := _cedula_key(p.identificacion))
+    }
 
     for entrada in referencia.vercel:
         if not entrada.codigo or entrada.codigo in excluidos:
             continue
-        titular = perfiles_por_cedula.get(entrada.cedula_key) if entrada.cedula_key else None
+        clave_vercel = _cedula_key(entrada.cedula_key)
+        titular = perfiles_por_cedula.get(clave_vercel) if clave_vercel else None
         if titular is not None:
             titular.codigo = entrada.codigo
             continue
@@ -477,10 +802,13 @@ def remapear_codigos(
 
 
 def unificar_duplicados(perfiles: dict[str, Perfil]) -> tuple[dict[str, Perfil], tuple[dict, ...]]:
-    """General post-remap exact-name dedup pass — same survivor scoring as
-    stage 1's D-P2 fix (`_unificar_por_nombre`), run again here since remap
-    (stage 2) may reassign a `codigo` in a way that changes survivor
-    scoring for a name-duplicate pair stage 1 already saw."""
+    """D-P2 exact-name dedup (`_unificar_por_nombre`). Runs AFTER the
+    overlays, the sticker attribution and the remap (D10, notebook order) so
+    the survivor score (`n_stickers>0 > has_codigo > en_vercel > en_fase2 >
+    not no_persona > not cedula_sospechosa`, then oldest `creado_en`, then
+    Firestore-backed) is evaluated on populated flags. The survivor absorbs
+    the losers' sticker aggregates and every loser cédula is registered in
+    `cedulas_unificadas`."""
     return _unificar_por_nombre(perfiles)
 
 
@@ -523,6 +851,14 @@ def colapsar_externos(
 
 
 # ── Stage 5: np / fase / estado / fuente ────────────────────────────────────
+
+
+def resolver_entidad(perfil: Perfil) -> str:
+    """D12: first non-empty of the Vercel entry matched BY CÉDULA, the
+    Firestore roster value, the `main` value. `""` when no source has one —
+    never invented. (`entidad_vercel` is only ever filled by a cédula match,
+    so a name-only Vercel hit cannot leak in through here.)"""
+    return perfil.entidad_vercel or perfil.entidad_firestore or perfil.entidad_main
 
 
 def resolver_np(perfil: Perfil) -> tuple[str, str]:
@@ -597,22 +933,26 @@ def alias_nombres(perfiles: dict[str, Perfil], nombres_survey: Iterable[str]) ->
     `identidad_key` it corresponds to — spec: "a survey name that maps to a
     real person's key never lands in GRUPO-EXTERNOS". Deterministic
     first-wins on a name collision (two different perfiles sharing the
-    exact same `nombre_norm`), with the discarded candidate logged, never
-    silently dropped without a trace."""
+    exact same `nombre_norm`). A collision is reported as a COUNT only: an
+    `identidad_key` is now a cédula and `nombre_norm` a person's name, so
+    neither may reach a log line at any level (spec: "Contact Fields Are
+    Admin-Only And Never Logged In Clear")."""
     survey_norm = {normalizar_nombre(n) for n in (nombres_survey or [])}
     survey_norm.discard("")
     alias: dict[str, str] = {}
+    colisiones = 0
     for key, perfil in perfiles.items():
         if not perfil.nombre_norm or perfil.nombre_norm not in survey_norm:
             continue
         if perfil.nombre_norm in alias:
-            logging.info(
-                "inspectores_depuracion.alias_nombres: nombre_norm=%r ya mapeado a "
-                "identidad_key=%r; se descarta el candidato identidad_key=%r (first-wins)",
-                perfil.nombre_norm, alias[perfil.nombre_norm], key,
-            )
+            colisiones += 1
             continue
         alias[perfil.nombre_norm] = key
+    if colisiones:
+        _LOG.info(
+            "inspectores_depuracion.alias_nombres: %d colision(es) de nombre resueltas "
+            "first-wins (detalle omitido: PII)", colisiones,
+        )
     return alias
 
 
@@ -672,13 +1012,14 @@ def depurar(
     """The one public entry point (design's Interfaces/Contracts). Advisory
     only: returns a value, takes no mutable Firestore handle, calls no write
     API (spec: "Classification never writes to the inspector record")."""
-    perfiles = fusionar_identidad(stickers, roster_by_cedula, referencia)
+    perfiles, revision_universo = fusionar_identidad(stickers, roster_by_cedula, referencia)
     perfiles, revision_remap = remapear_codigos(perfiles, referencia)
     perfiles, _fusiones = unificar_duplicados(perfiles)
     alias = alias_nombres(perfiles, nombres_survey)
     perfiles, detalle_externos = colapsar_externos(perfiles, hoy, exentos=frozenset(alias.values()))
 
     for perfil in perfiles.values():
+        perfil.entidad = resolver_entidad(perfil)
         perfil.np, perfil.np_fuente = resolver_np(perfil)
         perfil.fase, perfil.fase_np_faltante = calcular_fase(perfil.np)
         perfil.fuente_dato = fuente_dato(perfil)
@@ -694,5 +1035,5 @@ def depurar(
         inspectores=inspectores,
         grupo_externos=grupo_externos,
         alias_nombres=alias,
-        revision_manual=revision_remap,
+        revision_manual=(*revision_universo, *revision_remap),
     )

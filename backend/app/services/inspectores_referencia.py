@@ -18,10 +18,9 @@ from __future__ import annotations
 
 import logging
 import math
-import re
 from dataclasses import dataclass, field
 
-from app.services import blob_lkg
+from app.services import blob_lkg, cedula_utils
 
 # `blob_lkg` puts deploy/ on sys.path; same module object it uses.
 import blob_sync  # noqa: E402
@@ -84,20 +83,16 @@ def _norm_str(value: object) -> str:
     return str(value).strip()
 
 
-_SUFIJO_DECIMAL_CERO = re.compile(r"^(\d+)\.0+$")
-
-
 def _texto_opcional(value: object) -> str:
     """Tolerant coercion for the optional bundle fields: strings are stripped
-    (and a PURE decimal-zero tail such as "21.0" is dropped, exactly like the
-    publisher's `_campo_id`; "021" and "3.0e9" are untouched), ints/finite
+    (and a lone float-artifact ".0" tail such as "21.0" is dropped through the
+    shared `cedula_utils` rule, exactly like the publisher's `_campo_id`; "021",
+    "21.00", "12.000" and "3.0e9" are untouched), ints/finite
     floats become their digits (an integral float drops the ".0"), and
     everything else (None, bool, NaN/inf, list, dict...) is "" — never raises
     and never `str()`s a container that could smuggle PII into a value."""
     if isinstance(value, str):
-        texto = value.strip()
-        coincidencia = _SUFIJO_DECIMAL_CERO.match(texto)
-        return coincidencia.group(1) if coincidencia else texto
+        return cedula_utils.quitar_cola_flotante(value.strip())
     if isinstance(value, bool):
         return ""
     if isinstance(value, int):

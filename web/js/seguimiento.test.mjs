@@ -62,6 +62,22 @@ assert.equal(cedulaKey(undefined), '');
 // collide with one that doesn't).
 assert.equal(cedulaKey('0123'), '0123');
 assert.notEqual(cedulaKey('0123'), cedulaKey('123'));
+// Float artifact (review 2026-09-19 C3, design D-CEDDEC): ONLY a lone ".0" at the
+// end of an otherwise digit-only string is dropped (a float cell stringified);
+// every other dot — "166.000", "12.000", "12345.00" — is a thousands separator
+// or noise and is stripped like any non-digit. Identical to the backend
+// `cedula_utils.COLA_FLOTANTE_PATRON`.
+assert.equal(cedulaKey('1234567.0'), '1234567');
+assert.equal(cedulaKey(' 1234567.0 '), '1234567');
+assert.equal(cedulaKey(1234567.0), '1234567');
+assert.equal(cedulaKey('0.0'), '0');
+assert.equal(cedulaKey('166.000'), '166000');
+assert.equal(cedulaKey('12.000'), '12000');
+assert.equal(cedulaKey('1.234.567'), '1234567');
+assert.equal(cedulaKey('12345.00'), '1234500');
+assert.equal(cedulaKey('1234567.0.0'), '123456700');
+assert.equal(cedulaKey('12345.0a'), '123450');
+assert.equal(cedulaKey('١٢٣٤٥٦٧'), '');
 console.log('cedulaKey OK');
 
 // ── buildIdentityIndex / professionalKeyOf: the single identity resolver ──

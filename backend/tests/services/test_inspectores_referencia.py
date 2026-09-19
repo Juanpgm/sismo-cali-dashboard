@@ -585,6 +585,23 @@ def test_parse_bundle_schema_2_still_none():
     assert ir._SCHEMA_VERSION == 1
 
 
+@pytest.mark.parametrize("descartados", [
+    {"main": 3, "vercel": 1, "fase2": 0}, 5, "n/a", None, [], {"main": "x"}, {"desconocido": float("nan")},
+])
+def test_parse_bundle_tolerates_the_optional_descartados_sin_cedula_key(descartados):
+    # Publisher-side diagnostic only (W1): the parser ignores it whatever its
+    # shape, the schema stays 1 and the entries are unaffected.
+    bundle = ir.parse_bundle({**VALID_RAW, "main": [_MAIN_COMPLETA], "descartados_sin_cedula": descartados})
+    assert bundle is not None and bundle.activa is True
+    assert len(bundle.main) == 1
+
+
+def test_parse_bundle_still_drops_blank_cedula_rows_so_the_publisher_count_is_the_only_trace():
+    filas = [{"cedula_key": "", "nombre_norm": "x"}, {"cedula_key": "   ", "nombre_norm": "y"},
+             {"cedula_key": None, "nombre_norm": "z"}, {"cedula_key": 123, "nombre_norm": "w"}]
+    assert ir.parse_bundle({**VALID_RAW, "main": filas}).main == ()
+
+
 def test_parse_bundle_vercel_fase2_sections_accept_new_fields_too():
     fila = {"cedula_key": "9", "nombre_norm": "ana", "np": "P3", "telefono": "3111111111",
             "correo": "ana@example.com", "creado_en": "2026-02-02", "id": "abc"}
@@ -655,7 +672,9 @@ def test_entrada_repr_and_bundle_repr_hide_pii_fields():
     "crudo, esperado",
     [
         ("21.0", "21"),
-        ("21.00", "21"),
+        ("21.00", "21.00"),  # C3: only a lone ".0" is a float artifact
+        ("12.000", "12.000"),
+        ("166.000", "166.000"),
         (" 21.0 ", "21"),
         ("0.0", "0"),
         ("021", "021"),
@@ -704,7 +723,7 @@ def test_remapear_codigos_honors_numeric_codigos_duplicados_from_bundle():
         for c, n in (("1111111", "Ana Uno"), ("2222222", "Beto Dos"),
                      ("3333333", "Carla Tres"), ("4444444", "Dario Cuatro"))
     }
-    perfiles = dep.fusionar_identidad([], roster, bundle)
+    perfiles, _ = dep.fusionar_identidad([], roster, bundle)
     perfiles, revision = dep.remapear_codigos(perfiles, bundle)
 
     assert perfiles["1111111"].codigo == ""   # 21.0 (float) excludes "21"

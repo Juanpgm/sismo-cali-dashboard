@@ -265,7 +265,11 @@ profile.)
 - GIVEN a `main` row whose cédula is empty or has no digits
 - WHEN the universe is built
 - THEN the row does not create a profile and does not raise
-- AND a `revision_manual` entry with `motivo="main_sin_cedula"` records it
+- AND it is reported, never silently lost: rows with no digits at all are counted by the
+  publisher (`descartados_sin_cedula`, printed and stored as an optional top-level bundle key; the
+  parser drops blank `cedula_key` rows), and the engine records a `revision_manual` entry with
+  `motivo="main_sin_cedula"` when such a row arrives as a non-empty, non-digit string (or is built
+  directly, e.g. in tests)
 
 #### Scenario: Empty normalized name does not block a profile
 - GIVEN a `main` row with a valid `cedula_key` and an empty `nombre`
@@ -447,6 +451,10 @@ untouched rather than raise.
   normalizes to the same `cedula_key`
 - WHEN attribution runs
 - THEN the sticker is attributed to that profile
+- AND the sticker's own form (`"12345"`) is exported in that profile's `cedulas_unificadas`, so the
+  frontend (whose `cedulaKey` keeps leading zeros) routes it to the same row
+- AND an exact `cedula_key` match always wins; a zero-stripped match claimed by two different
+  profiles is ambiguous and attributes nothing
 
 ### Requirement: Entidad Precedence Is Vercel > Firestore > main, By Cédula Only
 
