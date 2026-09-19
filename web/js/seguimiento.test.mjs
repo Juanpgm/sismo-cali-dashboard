@@ -3738,7 +3738,7 @@ named('test_estado_column_only_with_depuracion_and_options_default_all', () => {
   assert.equal(withEstado.length, COLUMNS_TOTALES.length + 1);
   assert.ok(withEstado.includes('estadoSugerido'));
   assert.equal(withEstado[withEstado.indexOf('np') + 1], 'estadoSugerido', 'right after "Clase (P)"');
-  assert.deepEqual(columnsFor('temporales', { withEstado: true }), COLUMNS_TEMPORALES, 'temporales sub-tab unchanged');
+  assert.equal(columnsFor('temporales'), COLUMNS_TEMPORALES, 'legacy temporales sub-tab (no flags) unchanged');
   const values = SEG.ESTADO_FILTER_OPTIONS.map((o) => o.value);
   assert.equal(values[0], 'all');
   for (const v of ['activo', 'revisar', 'candidato_desactivacion', 'no_persona']) assert.ok(values.includes(v), v);
@@ -4801,7 +4801,7 @@ named('test_enfasis_column_only_when_seeded_and_right_after_tarjeta_profesional'
   assert.equal(both[both.indexOf('tarjetaProfesional') + 1], 'enfasis');
   assert.equal(both[both.indexOf('np') + 1], 'estadoSugerido', 'the estado column keeps its own place');
   assert.equal(both.length, COLUMNS_TOTALES.length + 2);
-  assert.deepEqual(columnsFor('temporales', { withEnfasis: true }), COLUMNS_TEMPORALES, 'temporales sub-tab unchanged');
+  assert.equal(columnsFor('temporales'), COLUMNS_TEMPORALES, 'legacy temporales sub-tab (no flags) unchanged');
   assert.ok(!COLUMNS_TOTALES.some((c) => c.key === 'enfasis'), 'the exported legacy array is never mutated');
 });
 
@@ -4866,8 +4866,8 @@ named('test_enfasis_xlsx_column_only_when_requested_legacy_sheet_untouched', () 
   assert.deepEqual(keys.filter((k) => k !== 'enfasis'), legacyKeys, 'every other column is exactly the legacy set, in order');
   const [blank] = xlsxRowsFor([{ ...row, enfasis: undefined }], { withEnfasis: true });
   assert.equal(blank.enfasis, '', 'a missing value is an empty cell, never "undefined"');
-  assert.deepEqual(xlsxRowsFor([row], { subTab: 'temporales', withEnfasis: true }), xlsxRowsFor([row], { subTab: 'temporales' }),
-    'the temporales sheet never carries it');
+  assert.deepEqual(xlsxRowsFor([row], { subTab: 'temporales', withEnfasis: false }), xlsxRowsFor([row], { subTab: 'temporales' }),
+    'the legacy temporales sheet is unchanged (the flag now adds enfasis there, see D-TEMPORALES-COLS)');
   const [hostil] = xlsxRowsFor([{ ...row, enfasis: ENFASIS_HOSTIL }], { withEnfasis: true });
   assert.equal(hostil.enfasis, ENFASIS_HOSTIL, 'a spreadsheet cell keeps the raw text (typed text cell, never HTML)');
 });
@@ -4998,7 +4998,7 @@ named('test_profesion_column_only_when_requested_between_tarjeta_profesional_and
   assert.equal(both.length, COLUMNS_TOTALES.length + 3);
   const noProfesion = columnsFor('totales', { withEstado: true, withEnfasis: true }).map((c) => c.key);
   assert.ok(!noProfesion.includes('profesion'), 'énfasis alone never brings the Profesión column');
-  assert.deepEqual(columnsFor('temporales', { withProfesion: true }), COLUMNS_TEMPORALES, 'temporales sub-tab unchanged');
+  assert.equal(columnsFor('temporales'), COLUMNS_TEMPORALES, 'legacy temporales sub-tab (no flags) unchanged');
   assert.ok(!COLUMNS_TOTALES.some((c) => c.key === 'profesion'), 'the exported legacy array is never mutated');
 });
 
@@ -5082,8 +5082,8 @@ named('test_profesion_xlsx_column_only_when_requested_legacy_sheet_untouched', (
     ['tarjeta_profesional', 'profesion', 'enfasis'], 'profesión sits next to (right before) énfasis');
   const [blank] = xlsxRowsFor([{ ...row, profesion: undefined }], { withProfesion: true });
   assert.equal(blank.profesion, '', 'a missing value is an empty cell, never "undefined"');
-  assert.deepEqual(xlsxRowsFor([row], { subTab: 'temporales', withProfesion: true }), xlsxRowsFor([row], { subTab: 'temporales' }),
-    'the temporales sheet never carries it');
+  assert.deepEqual(xlsxRowsFor([row], { subTab: 'temporales', withProfesion: false }), xlsxRowsFor([row], { subTab: 'temporales' }),
+    'the legacy temporales sheet is unchanged (the flag now adds profesion there, see D-TEMPORALES-COLS)');
   const [hostil] = xlsxRowsFor([{ ...row, profesion: PROFESION_HOSTIL }], { withProfesion: true });
   assert.equal(hostil.profesion, PROFESION_HOSTIL, 'a spreadsheet cell keeps the raw text (typed text cell, never HTML)');
 });
@@ -5150,6 +5150,208 @@ named('test_profesion_dom_wiring_passes_the_seeded_flag_to_the_table_and_the_exp
   const xlsx = /xlsxRowsFor\(sorted, \{[^}]*\}\)/.exec(js);
   assert.ok(xlsx && /withProfesion:\s*currentIdentity\.depuracionActiva/.test(xlsx[0]) && /withEnfasis:\s*currentIdentity\.depuracionActiva/.test(xlsx[0]),
     'the export feeds both flags from the depurado base');
+});
+
+// ── D-TEMPORALES-COLS: the depurado columns (Profesión, Énfasis, Estado sugerido) also live in "Análisis temporales" ─────
+
+const TEMP_ALL = { withEstado: true, withEnfasis: true, withProfesion: true };
+const TEMP_REST = ['codigo', 'firstDate', 'lastDate', 'activeDays', 'daysSinceFirst',
+  'prevDayFirstMinutes', 'prevDayLastMinutes', 'avgFirstMinutes', 'avgLastMinutes'];
+const tempKeys = (flags) => columnsFor('temporales', flags).map((c) => c.key);
+
+named('test_temporales_columns_legacy_path_returns_the_very_same_array', () => {
+  assert.equal(columnsFor('temporales'), COLUMNS_TEMPORALES, 'no options: identity');
+  assert.equal(columnsFor('temporales', {}), COLUMNS_TEMPORALES, 'empty options: identity');
+  assert.equal(columnsFor('temporales', { withEstado: false, withEnfasis: false, withProfesion: false }), COLUMNS_TEMPORALES,
+    'every flag false: identity, so the legacy table stays byte-identical');
+  assert.deepEqual(COLUMNS_TEMPORALES.map((c) => c.key), ['name', 'cedula', 'np', 'codigo', 'firstDate', 'lastDate', 'activeDays',
+    'daysSinceFirst', 'prevDayFirstMinutes', 'prevDayLastMinutes', 'avgFirstMinutes', 'avgLastMinutes'], 'the legacy array itself is untouched');
+});
+
+named('test_temporales_columns_with_every_flag_follow_the_totales_order', () => {
+  assert.deepEqual(tempKeys(TEMP_ALL), ['name', 'cedula', 'profesion', 'enfasis', 'np', 'estadoSugerido', ...TEMP_REST],
+    'Nombre, Cédula, Profesión, Énfasis, Clase (P), Estado sugerido, Código, then the date/hours columns');
+  assert.equal(columnsFor('temporales', TEMP_ALL).length, COLUMNS_TEMPORALES.length + 3);
+  assert.ok(!tempKeys(TEMP_ALL).includes('tarjetaProfesional'), 'Temporales never had Tarjeta profesional and must not gain it');
+  const totales = columnsFor('totales', TEMP_ALL);
+  for (const key of ['profesion', 'enfasis', 'estadoSugerido']) {
+    assert.equal(columnsFor('temporales', TEMP_ALL).find((c) => c.key === key), totales.find((c) => c.key === key),
+      `${key}: the SAME column object as Totales (label, sorting, rendering shared)`);
+  }
+  assert.deepEqual(columnsFor('temporales', TEMP_ALL).filter((c) => c.title).map((c) => c.key),
+    COLUMNS_TEMPORALES.filter((c) => c.title).map((c) => c.key), 'the range-aware hour titles survive');
+});
+
+named('test_temporales_columns_each_flag_adds_only_its_own_column', () => {
+  assert.deepEqual(tempKeys({ withProfesion: true }), ['name', 'cedula', 'profesion', 'np', ...TEMP_REST]);
+  assert.deepEqual(tempKeys({ withEnfasis: true }), ['name', 'cedula', 'enfasis', 'np', ...TEMP_REST]);
+  assert.deepEqual(tempKeys({ withEstado: true }), ['name', 'cedula', 'np', 'estadoSugerido', ...TEMP_REST]);
+  assert.deepEqual(tempKeys({ withProfesion: true, withEnfasis: true }), ['name', 'cedula', 'profesion', 'enfasis', 'np', ...TEMP_REST]);
+  assert.deepEqual(tempKeys({ withEnfasis: true, withEstado: true }), ['name', 'cedula', 'enfasis', 'np', 'estadoSugerido', ...TEMP_REST]);
+  assert.deepEqual(tempKeys({ withProfesion: true, withEstado: true }), ['name', 'cedula', 'profesion', 'np', 'estadoSugerido', ...TEMP_REST]);
+  assert.deepEqual(tempKeys({ withEstado: 0, withEnfasis: '', withProfesion: null }), COLUMNS_TEMPORALES.map((c) => c.key), 'falsy flags are off');
+});
+
+named('test_temporales_columns_do_not_mutate_the_shared_arrays_and_unknown_subtab_stays_totales', () => {
+  const before = JSON.stringify(COLUMNS_TEMPORALES);
+  const a = columnsFor('temporales', TEMP_ALL);
+  a.push({ key: 'x', label: 'x' });
+  assert.equal(JSON.stringify(COLUMNS_TEMPORALES), before, 'mutating a returned array never touches the exported constant');
+  assert.equal(columnsFor('temporales', TEMP_ALL).length, COLUMNS_TEMPORALES.length + 3, 'a second call is unaffected by the first');
+  assert.deepEqual(columnsFor('bogus', TEMP_ALL), columnsFor('totales', TEMP_ALL), 'an unknown subTab still falls back to totales');
+  assert.deepEqual(columnsFor(undefined, TEMP_ALL), columnsFor('totales', TEMP_ALL));
+  assert.deepEqual(columnsFor(null, TEMP_ALL), columnsFor('totales', TEMP_ALL));
+  assert.deepEqual(columnsFor('TEMPORALES', TEMP_ALL), columnsFor('totales', TEMP_ALL), 'sub-tab ids are case-sensitive');
+  assert.ok(!COLUMNS_TOTALES.some((c) => c.key === 'estadoSugerido'), 'the totales constant is untouched too');
+});
+
+function temporalesSeeded() {
+  // 1: has stickers (activity). 2: padrón only (zero activity), blank profesión/énfasis.
+  // 3: zero activity WITH registry text. 4: hostile text. 5: very long text.
+  const dep = depuracionOf([
+    depInspector(1, { profesion: 'Arquitecto', enfasis: 'Estructuras', estado_sugerido: 'activo' }),
+    depInspector(2, { profesion: '', enfasis: '', estado_sugerido: 'candidato_desactivacion' }),
+    depInspector(3, { profesion: 'Ingeniero civil', enfasis: 'Geotecnia', estado_sugerido: 'revisar' }),
+    depInspector(4, { profesion: PROFESION_HOSTIL, enfasis: ENFASIS_HOSTIL, estado_sugerido: 'no_persona' }),
+    depInspector(5, { profesion: PROFESION_LARGA, enfasis: ENFASIS_LARGO }),
+  ]);
+  const stickers = [
+    stickerFor('1000001', 'Profesional 1', '2026-09-10T15:00:00+00:00'),
+    stickerFor('1000001', 'Profesional 1', '2026-09-11T16:00:00+00:00'),
+  ];
+  return rowsFor({ stickers, depuracion: dep }).rows;
+}
+
+named('test_temporales_header_renders_the_new_columns_in_order_and_sortable', () => {
+  const html = SEG.headerRowHtml({ column: 'firstDate', dir: 'desc' }, columnsFor('temporales', TEMP_ALL));
+  const labels = [...html.matchAll(/<th scope="col">(?:<button[^>]*>(.*?)<\/button>|(Acciones))<\/th>/g)]
+    .map((m) => (m[1] ?? m[2]).replace(/ [▲▼]$/, ''));
+  assert.deepEqual(labels, ['Nombre', 'Cédula', 'Profesión', 'Énfasis', 'Clase (P)', 'Estado sugerido', 'Código',
+    'Fecha primer registro', 'Fecha último registro', 'Días activo', 'Días desde 1ª actividad',
+    'Hora 1er registro (día ant.)', 'Hora últ. registro (día ant.)', 'Hora prom. 1er registro', 'Hora prom. últ. registro', 'Acciones']);
+  for (const key of ['profesion', 'enfasis', 'estadoSugerido']) assert.match(html, new RegExp(`data-seg-sort="${key}"`), `${key} is a sort button`);
+  assert.match(html, /data-seg-sort="firstDate"[^>]*>Fecha primer registro ▼/, 'the current sort indicator is unaffected');
+  const legacy = SEG.headerRowHtml({ column: 'firstDate', dir: 'desc' }, columnsFor('temporales'));
+  assert.equal(legacy, SEG.headerRowHtml({ column: 'firstDate', dir: 'desc' }, COLUMNS_TEMPORALES), 'legacy header markup is unchanged');
+  assert.ok(!/Profesión|Énfasis|Estado sugerido/.test(legacy));
+  const sorted = SEG.headerRowHtml({ column: 'enfasis', dir: 'asc' }, columnsFor('temporales', TEMP_ALL));
+  assert.match(sorted, /data-seg-sort="enfasis"[^>]*>Énfasis ▲/, 'the sort indicator lands on a new column');
+});
+
+named('test_temporales_body_shows_registry_text_for_seeded_zero_activity_people', () => {
+  const rows = temporalesSeeded();
+  const columns = columnsFor('temporales', TEMP_ALL);
+  const html = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columns, false);
+  const trs = html.split('<tr>').slice(1);
+  assert.equal(trs.length, 5, 'every seeded person is a row, active or not');
+  const cellsOf = (tr) => [...tr.matchAll(/<td(?: class="seg-td-text")?>(.*?)<\/td>/g)].map((m) => m[1]);
+  const p1 = cellsOf(trs[0]);
+  assert.equal(p1[0], 'Profesional 1'); assert.equal(p1[1], '1000001');
+  assert.ok(p1[2].includes('Arquitecto') && p1[3].includes('Estructuras'), 'active person: profesión + énfasis');
+  assert.equal(p1[5], 'activo', 'estado sugerido sits between Clase (P) and Código');
+  const p2 = cellsOf(trs[1]); // zero activity, blank registry text
+  assert.equal(p2[2], 'Sin dato'); assert.equal(p2[3], 'Sin dato');
+  assert.equal(p2[5], 'candidato_desactivacion', 'a zero-activity person still shows their estado');
+  const p3 = cellsOf(trs[2]); // zero activity WITH registry text
+  assert.ok(p3[2].includes('Ingeniero civil') && p3[3].includes('Geotecnia'), 'a zero-activity person shows their profesión/énfasis');
+  assert.equal(p3[5], 'revisar');
+  assert.equal(rows.find((r) => r.name === 'Profesional 3').activeDays, 0);
+});
+
+named('test_temporales_body_text_cells_are_left_aligned_escaped_and_truncated', () => {
+  const rows = temporalesSeeded();
+  const html = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columnsFor('temporales', TEMP_ALL), false);
+  assert.equal([...html.matchAll(/<td class="seg-td-text">/g)].length, 10, 'Profesión and Énfasis cells only, two per row, five rows');
+  assert.ok([...html.matchAll(/<td class="seg-td-text">Sin dato<\/td>/g)].length >= 2, 'the plain "Sin dato" cells carry the alignment class too');
+  for (const raw of ['<script', '<img', 'onerror=1>']) assert.ok(!html.includes(raw), `raw ${raw} never survives`);
+  assert.ok(html.includes('&lt;script&gt;') && html.includes('&quot;q&quot;'), 'hostile text is escaped');
+  assert.ok(html.includes(PROFESION_LARGA) && html.includes(ENFASIS_LARGO), 'long text stays whole (tooltip/copy), never sliced');
+  assert.match(html, /class="seg-profesion"/); assert.match(html, /class="seg-enfasis"/);
+  const legacy = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, COLUMNS_TEMPORALES, false);
+  assert.equal(legacy.includes('seg-td-text'), false, 'the legacy temporales markup has no text class');
+  assert.equal(legacy, SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columnsFor('temporales'), false), 'legacy path is byte-identical');
+});
+
+named('test_temporales_body_masks_while_loading_and_keeps_the_mobile_hooks_and_colspan', () => {
+  const rows = temporalesSeeded();
+  const columns = columnsFor('temporales', TEMP_ALL);
+  const loading = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), false, false, columns, false);
+  assert.ok(!loading.includes('Arquitecto') && !loading.includes('Sin dato'), 'masked behind the dash until stickers load');
+  const html = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columns, false);
+  assert.equal((html.match(/seg-report-btn/g) || []).length, 5, 'the per-row report button hook is intact');
+  assert.equal((html.match(/<td/g) || []).length, 5 * (columns.length + 1), 'one td per column plus the actions cell, per row');
+  assert.equal(columns.length + 1, 16);
+  assert.match(SEG.tableBodyHtml([], true, false, columns, false), /colspan="16"[^>]*eval-empty/, 'empty-state colspan is the real column count');
+  assert.match(SEG.tableBodyHtml([], true, false, COLUMNS_TEMPORALES, false), /colspan="13"[^>]*eval-empty/, 'legacy colspan unchanged');
+  assert.match(grupoExternosRowHtml({ n_colapsados: 1, detalle: [] }, columns.length + 1), /colspan="16"/, 'the externos row spans the real count');
+});
+
+named('test_temporales_sorting_by_each_new_column_orders_the_rows', () => {
+  const rows = temporalesSeeded();
+  const names = (col, dir) => sortRows(rows, col, dir).map((r) => r.name);
+  assert.equal(names('profesion', 'asc')[0], 'Profesional 2', 'blank profesión sorts first ascending');
+  assert.equal(names('profesion', 'desc')[4], 'Profesional 2', 'and last descending');
+  assert.equal(names('enfasis', 'asc')[0], 'Profesional 2');
+  const enfasisAsc = sortRows(rows, 'enfasis', 'asc').map((r) => r.enfasis);
+  assert.deepEqual(enfasisAsc, [...enfasisAsc].sort((a, b) => a.localeCompare(b, 'es')), 'ascending by énfasis text');
+  assert.notDeepEqual(names('enfasis', 'desc'), names('enfasis', 'asc'), 'the direction flips the order');
+  const estadoAsc = sortRows(rows, 'estadoSugerido', 'asc').map((r) => r.estadoSugerido);
+  assert.deepEqual(estadoAsc, [...estadoAsc].sort((a, b) => a.localeCompare(b, 'es')), 'ascending by estado');
+  assert.notDeepEqual(names('estadoSugerido', 'desc'), names('estadoSugerido', 'asc'));
+  for (const col of ['profesion', 'enfasis', 'estadoSugerido']) assert.equal(names(col, 'asc').length, 5, `${col}: sorting never drops rows`);
+});
+
+named('test_temporales_subtab_switch_keeps_or_falls_back_the_sort_like_before', () => {
+  // Mirrors activateSubTab's rule: keep the sort only when its column exists in the NEW sub-tab's columns.
+  const stays = (sub, flags, column) => columnsFor(sub, flags).some((c) => c.key === column);
+  for (const column of ['profesion', 'enfasis', 'estadoSugerido']) {
+    assert.equal(stays('temporales', TEMP_ALL, column), true, `${column} sort is kept when switching Totales -> Temporales (depurado)`);
+    assert.equal(stays('temporales', {}, column), false, `${column} falls back on the legacy path (column absent)`);
+    assert.equal(stays('totales', TEMP_ALL, column), true, `${column} sort survives Temporales -> Totales`);
+  }
+  assert.equal(stays('temporales', TEMP_ALL, 'tarjetaProfesional'), false, 'a totales-only column still falls back');
+  assert.equal(stays('temporales', TEMP_ALL, 'stickersFase1'), false);
+  assert.equal(stays('totales', TEMP_ALL, 'firstDate'), false, 'a temporales-only column falls back to totales');
+  assert.deepEqual(defaultSortFor('temporales'), { column: 'firstDate', dir: 'desc' });
+  assert.deepEqual(defaultSortFor('totales'), { column: 'stickersFase1', dir: 'desc' });
+  assert.ok(stays('temporales', TEMP_ALL, defaultSortFor('temporales').column), 'the temporales default sort column exists with every flag');
+  assert.ok(stays('totales', TEMP_ALL, defaultSortFor('totales').column));
+});
+
+named('test_temporales_xlsx_gets_profesion_and_enfasis_right_after_cedula_but_never_estado', () => {
+  const row = { ...profesionReportRow({ profesion: PROFESION_TEXTO, enfasis: ENFASIS_TEXTO }), key: 'ced:1', estadoSugerido: 'activo' };
+  const legacyKeys = Object.keys(xlsxRowsFor([row], { subTab: 'temporales' })[0]);
+  assert.deepEqual(legacyKeys, ['profesional', 'cedula', 'clase_p', 'codigo', 'fecha_primer_registro', 'fecha_ultimo_registro', 'dias_activo',
+    'dias_desde_primera_actividad', 'hora_1er_registro_dia_ant', 'hora_ult_registro_dia_ant', 'hora_prom_1er_registro', 'hora_prom_ult_registro']);
+  assert.deepEqual(Object.keys(xlsxRowsFor([row], { subTab: 'temporales', withProfesion: false, withEnfasis: false })[0]), legacyKeys, 'both flags off: legacy key set');
+  const [both] = xlsxRowsFor([row], { subTab: 'temporales', withEnfasis: true, withProfesion: true });
+  assert.deepEqual(Object.keys(both), ['profesional', 'cedula', 'profesion', 'enfasis', ...legacyKeys.slice(2)], 'profesion then enfasis right after cedula');
+  assert.equal(both.profesion, PROFESION_TEXTO); assert.equal(both.enfasis, ENFASIS_TEXTO);
+  assert.ok(!('estado_sugerido' in both) && !('estadoSugerido' in both), 'the sheet never carries estado (the Totales sheet does not either)');
+  assert.deepEqual(Object.keys(xlsxRowsFor([row], { subTab: 'temporales', withProfesion: true })[0]),
+    ['profesional', 'cedula', 'profesion', ...legacyKeys.slice(2)], 'profesión alone');
+  assert.deepEqual(Object.keys(xlsxRowsFor([row], { subTab: 'temporales', withEnfasis: true })[0]),
+    ['profesional', 'cedula', 'enfasis', ...legacyKeys.slice(2)], 'énfasis alone');
+  const [blank] = xlsxRowsFor([{ ...row, profesion: undefined, enfasis: null }], { subTab: 'temporales', withEnfasis: true, withProfesion: true });
+  assert.equal(blank.profesion, ''); assert.equal(blank.enfasis, '', 'missing values are empty cells, never "undefined"/"null"');
+  const [hostil] = xlsxRowsFor([{ ...row, profesion: PROFESION_HOSTIL, enfasis: ENFASIS_HOSTIL }], { subTab: 'temporales', withEnfasis: true, withProfesion: true });
+  assert.equal(hostil.profesion, PROFESION_HOSTIL); assert.equal(hostil.enfasis, ENFASIS_HOSTIL);
+  const shapes = new Set(xlsxRowsFor([row, { ...row, profesion: undefined }, { name: 'Sparse' }], { subTab: 'temporales', withEnfasis: true, withProfesion: true })
+    .map((r) => Object.keys(r).join('|')));
+  assert.equal(shapes.size, 1, 'every row carries the exact same key set, sparse or not');
+  assert.deepEqual(xlsxRowsFor([], { subTab: 'temporales', withEnfasis: true, withProfesion: true }), []);
+  assert.deepEqual(xlsxRowsFor(undefined, { subTab: 'temporales', withEnfasis: true, withProfesion: true }), []);
+  const totalesKeys = Object.keys(xlsxRowsFor([row], { subTab: 'totales', withEnfasis: true, withProfesion: true })[0]);
+  assert.ok(totalesKeys.includes('profesion') && totalesKeys.includes('enfasis'), 'the totales sheet is unchanged');
+});
+
+named('test_temporales_xlsx_handler_feeds_the_flags_to_both_sheets_and_filtros_is_independent', () => {
+  const js = readFileSync(new URL('./seguimiento.js', import.meta.url), 'utf8');
+  const loop = /for \(const sheetSubTab of \['totales', 'temporales'\]\) \{[\s\S]*?xlsxRowsFor\(sorted, \{[^}]*\}\)/.exec(js);
+  assert.ok(loop, 'one loop builds BOTH sheets through the same xlsxRowsFor call');
+  assert.ok(/subTab:\s*sheetSubTab/.test(loop[0]) && /withEnfasis:\s*currentIdentity\.depuracionActiva/.test(loop[0]) && /withProfesion:\s*currentIdentity\.depuracionActiva/.test(loop[0]),
+    'the temporales sheet gets the same flags as the totales sheet');
+  assert.equal(xlsxFiltersSummary({ search: '', from: null, to: null, professionalName: '', estado: 'all' }), xlsxFiltersSummary({}), 'Filtros summary knows nothing of columns');
 });
 
 if (phase11Failures.length) {

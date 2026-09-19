@@ -2122,19 +2122,25 @@ export const COLUMNS_TEMPORALES = [
 /** Which column set a sub-tab shows — an unrecognized/missing `subTab` falls
  *  back to 'totales' (never throws, never renders a headerless table). */
 export function columnsFor(subTab, { withEstado = false, withEnfasis = false, withProfesion = false } = {}) {
-  if (subTab === 'temporales') return COLUMNS_TEMPORALES;
-  if (!withEstado && !withEnfasis && !withProfesion) return COLUMNS_TOTALES;
+  const temporales = subTab === 'temporales';
+  const base = temporales ? COLUMNS_TEMPORALES : COLUMNS_TOTALES;
+  // Legacy path: every flag off returns the very same constant array (identity), so the legacy table is untouched.
+  if (!withEstado && !withEnfasis && !withProfesion) return base;
   // Phase 11: the estado_sugerido column exists only when the table is fed by
   // an active depuracion (on the legacy path every estado is '' — a column of
   // "Sin dato" would be noise). Right after "Clase (P)". D-ENFASIS: same gate
   // for the registry's "Énfasis" (a separate flag, same caller value), right
   // after "Tarjeta profesional". D-PROFESION: the registry's "Profesión" (its own
   // flag, same caller value) goes between "Tarjeta profesional" and "Énfasis".
+  // D-TEMPORALES-COLS: "Análisis temporales" gets the SAME three column objects
+  // in the same relative order; it has no "Tarjeta profesional", so the two
+  // registry text columns follow "Cédula" there.
+  const anchor = temporales ? 'cedula' : 'tarjetaProfesional';
   const columns = [];
-  for (const column of COLUMNS_TOTALES) {
+  for (const column of base) {
     columns.push(column);
-    if (withProfesion && column.key === 'tarjetaProfesional') columns.push(COLUMN_PROFESION);
-    if (withEnfasis && column.key === 'tarjetaProfesional') columns.push(COLUMN_ENFASIS);
+    if (withProfesion && column.key === anchor) columns.push(COLUMN_PROFESION);
+    if (withEnfasis && column.key === anchor) columns.push(COLUMN_ENFASIS);
     if (withEstado && column.key === 'np') columns.push(COLUMN_ESTADO);
   }
   return columns;
@@ -2201,6 +2207,10 @@ export function xlsxRowsFor(rows, { subTab = 'totales', withEnfasis = false, wit
     return list.map((r) => ({
       profesional: r.name ?? '',
       cedula: r.cedula ?? '',
+      // D-TEMPORALES-COLS: the registry text columns, only in a sheet exported from the depurado base (same gate and
+      // order as the Totales sheet: profesion before enfasis). No estado here, like the Totales sheet.
+      ...(withProfesion ? { profesion: r.profesion ?? '' } : {}),
+      ...(withEnfasis ? { enfasis: r.enfasis ?? '' } : {}),
       clase_p: r.np ?? '',
       codigo: r.codigo ?? '',
       fecha_primer_registro: r.firstDate ?? '',
@@ -3096,7 +3106,7 @@ export function kpisHtml(rowsResult, stickersLoaded) {
  *  — no more hardcoded module-level COLUMNS; "Acciones" stays appended here,
  *  never part of either COLUMNS_TOTALES/COLUMNS_TEMPORALES array (see their
  *  own doc comment). */
-function headerRowHtml(sortState, columns) {
+export function headerRowHtml(sortState, columns) {
   const sortable = columns.map((c) => {
     const active = sortState.column === c.key;
     const arrow = active ? (sortState.dir === 'asc' ? ' ▲' : ' ▼') : '';
