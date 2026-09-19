@@ -9,8 +9,9 @@ result to Vercel Blob at `referencia/inspectores/bundle.json` with
 `access: 'private'` — never a public URL (D8).
 
 Manual, NOT a cron job (design's Migration/Rollout: run once before flipping
-`SEGUIMIENTO_DEPURACION`). Requires `BLOB_READ_WRITE_TOKEN` in the
-environment for a real publish; `--dry-run` needs no token at all (it never
+`SEGUIMIENTO_DEPURACION`). Uses `BLOB_PRIVATE_TOKEN` (falls back to
+`BLOB_READ_WRITE_TOKEN`) from the environment for a real publish — the same
+variable the backend reads the bundle with; `--dry-run` needs no token at all (it never
 reaches the upload step).
 
 Usage:

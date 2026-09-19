@@ -59,6 +59,7 @@ import blob_sync  # noqa: E402  (path must be set up first)
 _TIMEOUT_S = 30
 
 _warned_no_token = False
+_warned_no_private_token = False
 
 
 def _token_available() -> bool:
@@ -73,6 +74,23 @@ def _token_available() -> bool:
             "blob_lkg: BLOB_READ_WRITE_TOKEN ausente; fallback/persistencia Blob deshabilitados"
         )
         _warned_no_token = True
+    return False
+
+
+def _private_token_available() -> bool:
+    """Gate for the PRIVATE-store read (`load_json_private`): the token
+    resolved by `blob_sync.private_token()` (BLOB_PRIVATE_TOKEN, else
+    BLOB_READ_WRITE_TOKEN). The one presence check every private-read caller
+    (incl. `inspectores_referencia`) shares. Logs once, like
+    `_token_available`."""
+    global _warned_no_private_token
+    if blob_sync.private_token():
+        return True
+    if not _warned_no_private_token:
+        logging.warning(
+            "blob_lkg: BLOB_PRIVATE_TOKEN/BLOB_READ_WRITE_TOKEN ausentes; lectura privada deshabilitada"
+        )
+        _warned_no_private_token = True
     return False
 
 
@@ -146,7 +164,7 @@ def load_json_private(pathname: str, expected_type: type) -> Any | None:
     bundle is the only caller of this today). `load_json` itself is left
     untouched: every other Blob-backed cache in this repo reads a PUBLIC
     blob and must keep the unauthenticated path."""
-    if not _token_available():
+    if not _private_token_available():
         return None
     tmp = None
     try:
