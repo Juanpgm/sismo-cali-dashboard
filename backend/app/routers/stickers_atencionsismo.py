@@ -44,6 +44,7 @@ from app.services import atencionsismo, blob_lkg, fechas_es_co
 from app.services import inspectores_depuracion as depuracion_svc
 from app.services import inspectores_referencia as referencia_svc
 from app.services import survey_cali as survey_cali_svc
+from app.services.probed_scan import ProbedScan
 from app.services.versioned_cache import VersionedCache
 from app.services.stickers_atencionsismo import build_evaluaciones
 
@@ -286,6 +287,21 @@ def _hoy() -> date:
     the midnight rollover costs exactly one recompute. Module-level so tests
     can pin it."""
     return datetime.now(fechas_es_co.BOGOTA).date()
+
+
+def new_survey_names_source() -> ProbedScan[list[str]]:
+    """Probe-gated source of the `survey_cali` names (D34). Every write to
+    `survey_cali` goes through `survey_cali.apply_mutation`, which stamps
+    `_updated_at` with the write time on every effective change (a no-op write
+    stamps nothing and changes nothing), so `(count, newest _updated_at)` moves
+    on any edit, create or revert; deletions move the count. NOT
+    `_meta/survey_cali_ingest_state.last_run_at`: that changes every ingest run."""
+    return ProbedScan(
+        name="survey_names",
+        collection=survey_cali_svc.SURVEY_CALI_COLLECTION,
+        order_field="_updated_at",
+        probe_failure_grace_s=SURVEY_NAMES_CACHE_TTL_SECONDS,
+    )
 
 
 def _nombres_survey(db: Any) -> list[str]:
@@ -770,6 +786,7 @@ def build_payload(
     *,
     roster_cache: VersionedCache | None = None,
     evaluaciones_fs_cache: VersionedCache | None = None,
+    evaluaciones_source: ProbedScan | None = None,
 ) -> list[dict[str, Any]]:
     """`roster_cache` / `evaluaciones_fs_cache` (D22, optional and additive):
     when given, the two Firestore reads go through those versioned component
@@ -784,7 +801,9 @@ def build_payload(
         return roster_cache.get(lambda: stickers.inspector_profiles(db)).value
 
     def _read_evaluaciones() -> list[dict[str, Any]]:
-        evaluaciones = evaluaciones_cache.get_or_fetch(lambda: stickers.list_evaluaciones(db))
+        # D33: the evaluación NP join comes from the roster component (the SAME
+        # snapshot `_read_roster` uses, single-flight), not one read per uid.
+        evaluaciones = evaluaciones_cache.get_or_fetch(lambda: stickers.scan_evaluaciones(db, roster_cache, evaluaciones_source))
         if evaluaciones_cache.degraded:
             # design D4: "si Firestore falla, el fetch falla completo" — a
             # Blob-restored evaluaciones payload has `inspector.np`,
@@ -928,6 +947,7 @@ def get_stickers_atencionsismo(
             lambda: build_payload(
                 db, evaluaciones_cache,
                 roster_cache=state.roster_cache, evaluaciones_fs_cache=state.evaluaciones_fs_cache,
+                evaluaciones_source=state.evaluaciones_source,
             )
         )
         payload = snapshot.payload
@@ -988,7 +1008,11 @@ def get_stickers_atencionsismo(
                 # request pays O(1) here. `build_payload` already shares the SAME
                 # roster snapshot, so one window costs one `inspectores` scan.
                 roster = state.roster_cache.get(lambda: stickers.inspector_profiles(db))
-                survey = state.survey_names_cache.get(lambda: sorted(_nombres_survey(db)))
+                # D34: on TTL expiry a count() + newest-`_updated_at` probe replaces the
+                # full `survey_cali` scan while nothing moved (forced reconcile every 6 h).
+                survey = state.survey_names_cache.get(
+                    lambda: state.survey_names_source.fetch(db, lambda: sorted(_nombres_survey(db)))
+                )
 
                 # The cache key carries the PROJECTED fingerprint of what `depurar`
                 # reads (W5), not `snapshot.version` (a new photo must not force a

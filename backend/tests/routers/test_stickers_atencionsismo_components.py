@@ -8,7 +8,8 @@ only asserts the unit-level mechanisms through the real route."""
 from __future__ import annotations
 
 import threading
-from datetime import date
+from datetime import date, datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -18,7 +19,7 @@ from app.routers import stickers
 from app.routers import stickers_atencionsismo as router_mod
 from app.services import atencionsismo
 from app.services.inspectores_referencia import EntradaReferencia, ReferenciaBundle
-from tests.ledger_fakes import CallLedger, FakeClock
+from tests.ledger_fakes import CallLedger, FakeClock, LedgerFirestore
 from tests.routers.test_stickers import FAKE_CLAIMS_ADMIN, FAKE_CLAIMS_INSTITUCIONAL, _app, _FakeAuth
 
 ROWS = [
@@ -76,11 +77,11 @@ class Rig:
                 raise RuntimeError("roster 429")
             return real_profiles(db)
 
-        def evals(db):
+        def evals(db, **kw):
             self.ledger.hit("evals")
             if "evals" in self.fail:
                 raise RuntimeError("evals 429")
-            return real_evals(db)
+            return real_evals(db, **kw)
 
         real_survey = router_mod._nombres_survey
 
@@ -119,6 +120,11 @@ class Rig:
         self.auth = _FakeAuth()
         self.app = _app(monkeypatch, self.auth, self.stores)
         self.app.dependency_overrides[current_claims] = lambda: FAKE_CLAIMS_ADMIN if admin else FAKE_CLAIMS_INSTITUCIONAL
+        # The route reads Firestore through a read-BILLING fake (`reads:<collection>`,
+        # `scan:`/`count:`/`newest:` calls, `get_all_calls`) that also supports the
+        # count()/order_by().limit() probes; it shares the rig's ledger and stores.
+        self.db = LedgerFirestore(self.stores, self.ledger)
+        monkeypatch.setattr(router_mod.credentials, "sismo", lambda: SimpleNamespace(firestore=self.db, app=object()))
 
         def load_referencia():
             self.ledger.hit("referencia")
@@ -132,6 +138,9 @@ class Rig:
             cache._clock = self.clock
         for cache in (state.roster_cache, state.survey_names_cache, state.evaluaciones_fs_cache):
             cache._clock = self.clock
+        # The probe-gated sources (D34) measure their forced-reconcile interval on the same clock.
+        for source in (state.survey_names_source, state.evaluaciones_source):
+            source._clock = self.clock
         self.client = TestClient(self.app)
 
     def get(self, params: dict | None = OPT_IN):
@@ -347,6 +356,7 @@ def test_20_threads_at_expiry_one_compute_at_most_one_scan_per_component(rig):
     rig.get()
     rig.clock.advance(max(SURVEY_TTL, ROSTER_TTL, REF_TTL) + 1)  # every component expires at once
     before = rig.counts()
+    probes_before = (rig.ledger["count:survey_cali"], rig.ledger["count:evaluaciones"])
     barrier = threading.Barrier(20)
     statuses: list[int] = []
 
@@ -362,11 +372,15 @@ def test_20_threads_at_expiry_one_compute_at_most_one_scan_per_component(rig):
     assert statuses == [200] * 20
     after = rig.counts()
     assert after["walk"] - before["walk"] == 1
-    # Every TTL expired at once, so each component MUST rescan exactly once (a cache
+    # Every TTL expired at once, so each component MUST refresh exactly once (a cache
     # that served stale forever would pass `<= 1`), and 20 threads never make it two.
     assert after["roster"] - before["roster"] == 1
-    assert after["survey"] - before["survey"] == 1
-    assert after["evals"] - before["evals"] == 1
+    # D34: the survey and evaluaciones components refresh through a probe; static
+    # content means ONE probe each and no scan.
+    assert rig.ledger["count:survey_cali"] - probes_before[0] == 1
+    assert rig.ledger["count:evaluaciones"] - probes_before[1] == 1
+    assert after["survey"] - before["survey"] == 0
+    assert after["evals"] - before["evals"] == 0
     assert after["depurar"] - before["depurar"] == 0  # identical content: nothing to recompute
     assert after["referencia"] - before["referencia"] == 1
 
@@ -387,13 +401,32 @@ def test_roster_upstream_error_serves_stale_no_recompute_at_most_one_retry_per_t
 
 def test_survey_upstream_error_serves_stale_no_recompute_at_most_one_retry_per_ttl(rig):
     first = rig.get()
+    # The survey content moved (D34: the probe sees it), so the refresh needs a real
+    # scan; that scan fails. Serve the last-good names, retry at most once per TTL.
+    rig.stores["survey_cali"]["s3"] = {"nombre_evaluador": "Tercero", "_updated_at": datetime(2026, 9, 19, tzinfo=timezone.utc)}
     rig.fail.add("survey")
     rig.clock.advance(SURVEY_TTL + 1)
     for _ in range(10):
         body = rig.get()
     assert body["depuracion"] == first["depuracion"]
     assert rig.ledger["depurar"] == 1
-    assert rig.ledger["survey"] == 2
+    assert rig.ledger["survey"] == 2  # the single failed scan retry
+
+
+def test_survey_probe_error_serves_stale_no_recompute_at_most_one_retry_per_ttl(rig):
+    # One failed probe = the transient contract. Widened on purpose (D34 / C1): with the default policy the first
+    # failed refresh past the survey TTL falls through to the scan (`test_stickers_probed_components.py`).
+    source = rig.app.state.survey_names_source
+    source._probe_failure_grace_s, source._max_probe_failures = 10 * 3600.0, 10**6
+    first = rig.get()
+    rig.db.fail_on.add(("count", "survey_cali"))
+    rig.clock.advance(SURVEY_TTL + 1)
+    for _ in range(10):
+        body = rig.get()
+    assert body["depuracion"] == first["depuracion"]
+    assert rig.ledger["depurar"] == 1
+    assert rig.ledger["survey"] == 1  # no scan: the probe failed and the last-good names were served
+    assert rig.ledger["attempt:count:survey_cali"] == 2  # the cold signature probe + the single failed retry
 
 
 def test_cold_start_survey_error_omits_depuracion_but_keeps_the_stickers_200(rig):

@@ -36,7 +36,7 @@ from app.routers import (
 )
 from app.routers.planeacion_asignaciones import PlaneacionAggregatesCache, PlaneacionPuntosSnapshot
 from app.routers.puntos_solicitados import BuscarCache, PuntosSolicitadosCache
-from app.routers.stickers import EvaluacionesCache, InspectoresCache
+from app.routers.stickers import EvaluacionesCache, InspectoresCache, new_evaluaciones_source
 from app.services.versioned_cache import VersionedCache
 from app.routers.sticker_status import StickerStatusCache
 from app.services.snapshot import ReportadosSnapshot, refresh_loop, seed_from_blob
@@ -173,6 +173,11 @@ def create_app() -> FastAPI:
     app.state.evaluaciones_fs_cache = VersionedCache(
         name="evaluaciones_fs", ttl_s=stickers_atencionsismo.EVALUACIONES_FS_CACHE_TTL_SECONDS
     )
+    # Probe-gated sources (D34): on a TTL expiry a count() + newest-timestamp probe
+    # replaces the full scan of `survey_cali` / `evaluaciones` while nothing moved,
+    # with one forced full reconcile every 6 h (`services/probed_scan.py`).
+    app.state.survey_names_source = stickers_atencionsismo.new_survey_names_source()
+    app.state.evaluaciones_source = new_evaluaciones_source()
 
     # Same convention, `planeacion_asignaciones.py`'s own `resumen`/
     # `metricasProgreso` aggregate cache (speed follow-up, 2026-08-27).

@@ -615,9 +615,9 @@ def test_get_evaluaciones_is_cached_across_consecutive_calls(monkeypatch):
     calls = {"n": 0}
     original = stickers.list_evaluaciones
 
-    def counting_stub(db):
+    def counting_stub(db, **kw):
         calls["n"] += 1
-        return original(db)
+        return original(db, **kw)
 
     monkeypatch.setattr(stickers, "list_evaluaciones", counting_stub)
 
@@ -639,7 +639,7 @@ def test_get_evaluaciones_firestore_exception_becomes_502_not_a_bare_crash(monke
     fake_auth = _FakeAuth()
     client = _admin_client(monkeypatch, fake_auth)
 
-    def boom(db):
+    def boom(db, **kw):
         raise RuntimeError("429 Quota exceeded.")
 
     monkeypatch.setattr(stickers, "list_evaluaciones", boom)
@@ -940,7 +940,7 @@ def test_get_evaluaciones_route_reports_degraded_after_blob_restore(monkeypatch)
     monkeypatch.setattr(stickers.blob_lkg, "load_json",
                         lambda pathname, expected_type: blob_payload)
 
-    def boom(db):
+    def boom(db, **kw):
         raise RuntimeError("429 Quota exceeded.")
 
     monkeypatch.setattr(stickers, "list_evaluaciones", boom)

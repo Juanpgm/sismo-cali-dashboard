@@ -45,6 +45,7 @@ from pydantic import BaseModel
 from app.auth.deps import require_role
 from app.credentials import clients as credentials
 from app.services import blob_lkg
+from app.services.probed_scan import ProbedScan
 from app.services.roster_invalidation import invalidate_inspectores_roster
 from app.services.stickers_atencionsismo import cedula_key
 
@@ -66,6 +67,10 @@ _CEDULA_RE = re.compile(r"^\d{5,12}$")
 _CODIGO_RE = re.compile(r"^\d{3}$")
 
 EVALUACIONES_CACHE_TTL_SECONDS = 5 * 60
+# Longest a FAILING probe may hide a change of the evaluaciones collection (D34, C1): the
+# 15-minute evaluaciones component TTL (`stickers_atencionsismo.EVALUACIONES_FS_CACHE_TTL_SECONDS`,
+# asserted equal in the tests; it cannot be imported from here without a cycle).
+EVALUACIONES_PROBE_FAILURE_GRACE_S = 15 * 60.0
 EVALUACIONES_LKG_BLOB = "data/evaluaciones_last_good.json"  # last-known-good payload, see services/blob_lkg.py
 
 INSPECTORES_CACHE_TTL_SECONDS = 5 * 60
@@ -495,6 +500,44 @@ def _np_by_uid(db: Any, uids: set[str]) -> dict[str, str]:
     return out
 
 
+def roster_np_lookup(db: Any, get_roster: Callable[[], Any]) -> Callable[[set[str]], dict[str, str]]:
+    """uid -> `NP` lookup for `list_evaluaciones` served from the roster
+    snapshot (`inspector_profiles`' two maps, which the 30-minute `roster_cache`
+    component already holds) instead of one `inspectores/{uid}` read per
+    distinct evaluación uid on EVERY scan (design D33).
+
+    Every roster profile carries its Firestore doc id as `uid` and its NP
+    already stripped, exactly like `_np_by_uid` computes it, so a uid found here
+    resolves to the byte-identical value. A uid the roster cannot resolve — a
+    doc with neither `codigo` nor `identificacion` (invisible to both maps),
+    one that lost a duplicate-key collision, a profile without an `np` key, or
+    no doc at all — is read in ONE batched `get_all` (the old path, for those
+    uids only). An unavailable roster falls back to the old path for every uid.
+    Staleness: the NP shown is at most one roster TTL old, plus the existing
+    evaluaciones caches; an admin roster write invalidates the roster."""
+
+    def lookup(uids: set[str]) -> dict[str, str]:
+        if not uids:
+            return {}
+        try:
+            by_codigo, by_identificacion = get_roster()
+        except Exception as exc:  # noqa: BLE001 - never worse than the old path
+            logging.warning("evaluaciones np: roster unavailable (%s); reading inspectores/{uid} directly", type(exc).__name__)
+            return _np_by_uid(db, uids)
+        known: dict[str, str] = {}
+        for profiles in (by_identificacion, by_codigo):
+            for profile in profiles.values():
+                uid = profile.get("uid")
+                if uid in uids and "np" in profile and uid not in known:
+                    known[uid] = profile["np"]
+        missing = uids - known.keys()
+        if missing:
+            known.update(_np_by_uid(db, missing))
+        return known
+
+    return lookup
+
+
 def inspector_profiles(db: Any) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]]:
     """ONE Firestore read of the `inspectores` collection, projected into
     the two roster lookup shapes callers need — by 3-digit brigade `codigo`
@@ -600,8 +643,13 @@ def inspector_profile_by_identificacion(db: Any) -> dict[str, dict[str, str]]:
     return inspector_profiles(db)[1]
 
 
-def list_evaluaciones(db: Any) -> list[dict[str, Any]]:
+def list_evaluaciones(
+    db: Any, *, np_lookup: Callable[[set[str]], dict[str, str]] | None = None
+) -> list[dict[str, Any]]:
     """Every ATC-20 evaluation, flattened for the dashboard's Stickers tab.
+    `np_lookup` (`roster_np_lookup`, D33) replaces the per-uid `inspectores`
+    reads with the roster snapshot; omitted -> the original batched `get_all`.
+
     Verbatim port of `api/stickers.js`'s `listEvaluaciones` — read here
     (Admin SDK, bypasses Firestore rules) rather than straight from the
     browser, mirroring the legacy handler's own comment: `evaluaciones` is
@@ -619,7 +667,7 @@ def list_evaluaciones(db: Any) -> list[dict[str, Any]]:
     docs = list(db.collection(EVALUACIONES_COLLECTION).get())
     uids = {str(((doc.to_dict() or {}).get("inspector") or {}).get("uid") or "").strip() for doc in docs}
     uids.discard("")
-    np_by_uid = _np_by_uid(db, uids)
+    np_by_uid = np_lookup(uids) if np_lookup is not None else _np_by_uid(db, uids)
 
     result: list[dict[str, Any]] = []
     for doc in docs:
@@ -669,6 +717,61 @@ def list_evaluaciones(db: Any) -> list[dict[str, Any]]:
         )
     result.sort(key=lambda r: str(r.get("fecha") or ""), reverse=True)
     return result
+
+
+def new_evaluaciones_source() -> ProbedScan[list[dict[str, Any]]]:
+    """Probe-gated source of the Firestore evaluaciones list (D34). Evidence for
+    the ordering field: the only writer is the inspectors' form (create-only
+    transaction with `timestamp: serverTimestamp()`), the rules forbid client
+    updates and deletes, and nothing in the repo edits the collection through
+    the Admin SDK — so every mutation either bumps `timestamp` or changes the
+    count. An out-of-band edit is the documented blind spot (forced reconcile)."""
+    return ProbedScan(
+        name="evaluaciones",
+        collection=EVALUACIONES_COLLECTION,
+        order_field="timestamp",
+        probe_failure_grace_s=EVALUACIONES_PROBE_FAILURE_GRACE_S,
+    )
+
+
+def scan_evaluaciones(
+    db: Any, roster_cache: Any | None = None, source: ProbedScan[list[dict[str, Any]]] | None = None
+) -> list[dict[str, Any]]:
+    """The Firestore scan the cached evaluaciones routes run. With the roster
+    component (`VersionedCache`, D22) the NP join is served from its snapshot
+    (D33; the SAME snapshot the depuración roster read uses, single-flight);
+    without it, the original per-uid lookup.
+
+    `source` (D34, only together with the roster component): the scan is replaced
+    by a `count()` + newest-`timestamp` probe while nothing moved. The roster's
+    content version is part of the probe signature, because the flattened rows
+    embed the roster-derived NP: a changed roster is a changed input."""
+    if roster_cache is None:
+        return list_evaluaciones(db)
+
+    def read_roster() -> Any:
+        return roster_cache.get(lambda: inspector_profiles(db))
+
+    if source is None:
+        return list_evaluaciones(db, np_lookup=roster_np_lookup(db, lambda: read_roster().value))
+    # ONE roster snapshot (`Versioned`) feeds both the probe signature (`.version`) and the NP
+    # join of the scan (`.value`): a roster that changes while the scan runs can never leave
+    # rows joined with version B recorded under version A (a later revert to A's content would
+    # then keep B's NPs).
+    try:
+        roster = read_roster()
+    except Exception as exc:  # noqa: BLE001 - an unreadable roster just means "always rescan"
+        logging.warning("evaluaciones probe: roster unavailable (%s); scanning", type(exc).__name__)
+        roster_version = "roster-unavailable"
+        lookup = roster_np_lookup(db, lambda: read_roster().value)  # no snapshot to inject: the lookup retries/falls back
+    else:
+        roster_version = roster.version
+        lookup = roster_np_lookup(db, lambda: roster.value)
+
+    def scan() -> list[dict[str, Any]]:
+        return list_evaluaciones(db, np_lookup=lookup)
+
+    return source.fetch(db, scan, extra=roster_version)
 
 
 def _allocate_codigo(db: Any, uid: str, perfil: dict[str, Any], codigo_pedido: str) -> str:
@@ -816,8 +919,10 @@ def get_evaluaciones(
     a 5-min TTL cache on app.state. Reuses `list_evaluaciones` verbatim."""
     cache: EvaluacionesCache = request.app.state.stickers_evaluaciones_cache
     db = credentials.sismo().firestore
+    roster_cache = getattr(request.app.state, "roster_cache", None)
+    source = getattr(request.app.state, "evaluaciones_source", None)
     try:
-        evaluaciones = cache.get_or_fetch(lambda: list_evaluaciones(db))
+        evaluaciones = cache.get_or_fetch(lambda: scan_evaluaciones(db, roster_cache, source))
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - fail-open surface, mirrors
