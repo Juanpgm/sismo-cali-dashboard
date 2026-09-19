@@ -154,3 +154,91 @@ No data migration. Order: (1) publish the bundle with the CLI, (2) deploy the ba
 - [x] **RESOLVED.** Vercel Blob reads for the *sticker/roster* cache are public (`blob_sync.py:71`), which is why `InspectoresCache` deliberately avoids Blob. For the reference bundle specifically, the user chose **Vercel Blob with `access: 'private'`** over Firestore or public-with-obscurity — confirmed via the `vercel-storage` skill that private access requires an authenticated `get()`/token read, never a public URL, so this is real access control, not obscurity.
 - [x] Decision 8 (proposal) confirmed by the user when approving the proposal as a whole: the backend owns `np`/`np_fuente` and the front stops filling from `rango`.
 - [x] `correo_contacto`: no longer blocked by exposure risk now that the bundle is private. It ships from the `main` snapshot into `correo_contacto`. Only remaining open item: confirm with the user whether `correo_contacto` is actually in scope for this delivery, since it wasn't part of the original 8 decisions.
+
+---
+
+# Addendum — Extension 2026-09-19 (complete base)
+
+Baseline: backend HEAD `ccbc71e`. Source of truth: `explore-extension.md`. Nothing above is deleted;
+D9-D20 extend D1-D8 and, where stated, supersede parts of them. **No open questions remain.**
+
+## Architecture Decisions D9-D20
+
+| # | Decision | Rejected alternative | Rationale |
+|---|---|---|---|
+| D9 | Universe = Firestore roster ∪ `referencia.main`, keyed by `cedula_key`. Firestore first; a `main` row with an existing key only backfills empty fields | Keep `main` as a pure overlay (status quo) | The shipped engine serves 129 of 373 rows and `n_colapsados=0`. The user's decision is a complete base. **Supersedes** the spec requirement "Identity Anchor Is Firestore `identificacion`" and the proposal's "Identidad única" scope line — NOT design D1 (index, not counts) nor the "Criterio humano" D1 row (current titular, no history). The email-derived-cédula prohibition is unchanged |
+| D10 | Run D-P2 unification AFTER overlays, the Fase 2 cédula fix, sticker attribution and remap (notebook order) | Keep unification first and rank "Firestore-backed" first | Before overlays, `en_vercel`/`en_fase2`/`n_stickers`/`has_codigo` are all false, so the survivor score is degenerate and the winner is effectively arbitrary — a `main` row can beat the Firestore row. A Firestore-first ranking would fix *that* symptom but diverge from the notebook on `identificacion` and `nombre_completo`, which are exactly two of the ≥99% parity columns. Notebook order makes the score meaningful AND parity-checkable. Firestore-backed is kept as the LAST tie-break (after the notebook's `creado_en`) so determinism is added without displacing a parity-bearing rule |
+| D11 | Sticker attribution resolves the professional cédula through a `cedula_key` alias index (current key + pre-Fase-2-fix keys + `cedulas_unificadas`) | `perfiles.get(identificacion)` exact-string lookup (status quo) | With the full universe an unresolved cédula leaves `ultimo_sticker=None`, which makes active people match the collapse predicate and disappear into GRUPO-EXTERNOS. Attribution happens on the pre-fix cédula (notebook step 3) and must survive both the fix and unification |
+| D12 | `entidad` = first non-empty of Vercel-matched-by-cédula, Firestore, `main` | Vercel by any match (cédula or name) | The notebook maps `entidad` from `dict(zip(vercel.cedula_key, vercel.entidad))` only. Live parity already showed 1 mismatching row from a name-only match. A name-only Vercel hit must not carry `entidad` |
+| D13 | Remap clears the código from the wrong current holder; new `revision_manual` motivos `remap_sin_duenio` and `remap_conflicto` | Assign to the rightful owner and leave the duplicate in place | Two profiles holding the same código break the "Vercel is the golden rule" invariant and inflate `activo` (código presence alone drives `activo`, per D7). Clearing first makes the código single-valued by construction; the two motivos surface the cases a machine must not decide |
+| D14 | Index `main`/`vercel`/`fase2` by `cedula_key` and by `nombre_norm` in dicts built once | Keep the linear `_buscar_entrada` scan | The universe goes from ~129 to ~373 profiles over a 743-row `main`; the linear scan is O(n·m) on every stage. Dict indexes make it O(n) and are a prerequisite for the payload/latency budget in D16 |
+| D15 | Reference bundle stays `schema: 1`; the seven new fields are optional with empty defaults and a tolerant parse in both directions | Bump to `schema: 2` | The DEPLOYED `parse_bundle` returns `None` for any unknown `schema`, so a bump silently disables depuración in production for the whole window between republish and deploy. Additive optional keys are compatible both ways; deploy-then-republish is kept as a safety margin, not a correctness gate |
+| D16 | `depuracion.activa=false`, `motivo="stickers_degradados"`, empty `inspectores`, when the sticker snapshot is the redacted LKG restore | Compute anyway and let the front show it | In degraded mode stickers are unattributable, so with the full universe every code-less profile becomes `candidato_desactivacion` and every suspicious one is wrongly collapsed — a confidently wrong table is worse than a declared gap. Distinct from a missing REFERENCE bundle, which still computes (D5) |
+| D17 | Front seeds rows from `depuracion.inspectores`; KPIs compute over rows WITH activity; mass PDF export defaults to rows with activity | Show only rows with activity (status quo), or let KPIs count seeded rows | Decision 1 of `explore-extension.md` is "show all zero-activity people, with an estado filter". Seeding without changing KPI semantics would move "profesionales activos" from 116 to 373 and divide every average by the wrong denominator; the 200-row PDF cap would also start truncating silently |
+| D18 | The Fase 2 cédula fix adopts the Fase 2 cédula but keeps `cedula_sospechosa` computed from the ORIGINAL `main` cédula | Recompute the flag after the fix | Recomputing clears the flag on exactly the rows that most need review, and changes collapse membership away from notebook parity. The original key stays resolvable (D11) so attributed stickers survive |
+| D19 | Duplicate `cedula_key` across two `main` rows: first-wins, no field overwrite, `revision_manual` entry `cedula_duplicada_main`; a `main` row without digits yields `main_sin_cedula` | Last-wins, or silent drop | A silent overwrite makes the universe non-deterministic in row order and loses a person. First-wins plus a revision item is deterministic and auditable |
+| D20 | Parity is measured against an explicit divergence register: D7, D-REMAP and D-EXENTOS. Anything outside the register is a failure | Accept an aggregate ≥99% score | The engine intentionally differs from the notebook in three places; without an enumerated register a real regression can hide inside the 1% tolerance. `exentos` (the `survey_cali` exemption the notebook does not have) is registered as D-EXENTOS: `n_colapsados` MUST be 252 minus the enumerated exempt survivors, and each survivor MUST be listed by key in the harness report |
+
+## Pipeline Order (authoritative, supersedes the Interfaces stage table's implied order)
+
+1. Build universe — Firestore roster profiles, then `main` profiles for unseen `cedula_key` (D9, D19).
+2. Overlay Vercel and Fase 2 by `cedula_key`, else by exact `nombre_norm`; first wins (D14 indexes).
+3. Attribute sticker aggregates by the pre-fix cédula through the alias index (D11).
+4. Fase 2 cédula fix for name-only matches; keep `cedula_sospechosa` from the original cédula; register the old key (D18).
+5. `remapear_codigos` — clear the wrong holder, emit `remap_sin_duenio` / `remap_conflicto` (D13).
+6. `unificar_duplicados` — exact `nombre_norm`, full survivor score, register `cedulas_unificadas` (D10).
+7. `entidad` (D12), `resolver_np`, `calcular_fase`, `estado_sugerido` (D7 unchanged), `fuente_dato`.
+8. `colapsar_externos` (+ `exentos`, D20).
+9. `alias_nombres` — built last, logged redacted at INFO.
+
+## File Changes Per Slice
+
+| Slice | File | Action | Description |
+|---|---|---|---|
+| 06 | `backend/app/services/inspectores_referencia.py` | Modify | Seven optional fields on `EntradaReferencia`; tolerant `_parse_entrada` (D15) |
+| 06 | `scripts/publicar_referencia_inspectores.py` | Modify | Emit the new fields; string dtypes already fixed in `ccbc71e` |
+| 06 | `backend/tests/services/test_inspectores_referencia.py` | Modify | Old-bundle / new-bundle / wrong-typed-field cases |
+| 06 | `backend/tests/test_publicar_referencia_inspectores.py` | Modify | Leading zeros, long numerics, new fields present |
+| 07 | `backend/app/services/inspectores_depuracion.py` | Modify | Universe from `main`, alias index, unify-after-overlays, `entidad`, dict indexes (D9-D12, D14) |
+| 07 | `backend/tests/services/test_inspectores_depuracion.py` | Modify | Universe, attribution, unification-order and `entidad` units |
+| 08 | `backend/app/services/inspectores_depuracion.py` | Modify | Remap holder-clearing, new motivos, Fase 2 cédula fix (D13, D18, D19) |
+| 08 | `backend/tests/services/test_inspectores_depuracion.py` | Modify | Remap and cédula-fix units |
+| 09 | `backend/app/routers/stickers_atencionsismo.py` | Modify | Degraded gate, admin-only gate assertions, `alias_nombres` log redaction (D16) |
+| 09 | `backend/tests/routers/test_stickers_atencionsismo.py` | Modify | Degraded, admin-vs-viewer, PII-not-in-Blob, payload-size |
+| 10 | `web/js/seguimiento.js` | Modify | Row seeding, KPI denominators, estado filter, export scope, motivos, banner (D17) |
+| 10 | `web/js/seguimiento.test.mjs` | Modify | Seeding, KPI, filter, export, motivos, banner cases |
+| 10 | `web/js/seguimiento-perf.test.mjs` | Modify | 400-row render/filter/sort case |
+| 11 | `scripts/parity_inspectores_depurado.py` | Create | Compare `depurar()` output with the xlsx; per-column mismatch lists + divergence register (D20) |
+| 11 | `backend/tests/services/test_inspectores_depuracion_parity.py` | Modify | Assert the register, not just an aggregate score |
+
+## Rollout Order
+
+1. **Deploy** each backend slice (06→09) to production with `SEGUIMIENTO_DEPURACION` unset/`0`. The
+   response stays byte-identical, so every merge is invisible to users.
+2. **Republish** the bundle with `scripts/publicar_referencia_inspectores.py` once slice 06 is
+   deployed. Record the resulting `generado_en`.
+3. **Live parity** — run slice 11's harness against the live `depurar()` output and the xlsx.
+   The acceptance criteria below are the gate.
+4. **Flip the flag** to `SEGUIMIENTO_DEPURACION=1` only after step 3 passes.
+5. **Merge the chain** — slice 10 (frontend) merges into the tracker last; the tracker
+   `feat/seguimiento-inspectores-depurado` is the only branch that merges to `main`.
+
+Rollback at any point = set `SEGUIMIENTO_DEPURACION=0`. The bundle and the merged code go inert.
+
+## Parity Acceptance Criteria
+
+| Check | Threshold |
+|---|---|
+| `np`, `np_fuente`, `fase`, `fase_np_faltante`, `codigo`, `fuente_dato`, `identificacion`, `entidad` | ≥ 99% on matched keys |
+| `estado_sugerido` | ≥ 99% excluding the enumerated D7 / D-REMAP divergences |
+| `tarjeta_profesional`, `num_telefono`, `correo_contacto` | ≥ 99% where the source is non-empty |
+| `nombre_completo` | compared through `normalizar_nombre` |
+| Row count | 373 ± the enumerated Firestore-only extras (13 today) |
+| `n_colapsados` | 252, with the same 3 código-holding exclusions, minus the enumerated D-EXENTOS survivors |
+
+Every shortfall MUST be reported as an explicit list of mismatching keys per column — an aggregate
+percentage alone does not satisfy the gate (D20).
+
+## Open Questions
+
+None. The five decisions in `explore-extension.md` are final and are encoded as D9-D20 above.

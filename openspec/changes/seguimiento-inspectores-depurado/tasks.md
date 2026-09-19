@@ -176,3 +176,169 @@ only.
 
 - [ ] 6.1 Run `python -m pytest backend/tests/ -q` — all 1442+ existing tests plus new ones green.
 - [ ] 6.2 Run `node --test "web/js/*.test.mjs"` — all existing tests plus new `seguimiento.test.mjs` cases green.
+
+---
+
+# Extension 2026-09-19 — Phases 7-12 (complete base)
+
+Source: `explore-extension.md` + `design.md` addendum (D9-D20). STRICT TDD is active
+(`openspec/config.yaml: strict_tdd: true`) — every behavior change is RED → GREEN → REFACTOR.
+Test commands: `python -m pytest backend/tests/ -q` and `node --test "web/js/*.test.mjs"`.
+
+## Extension Review Workload Forecast
+
+| Field | Value |
+|-------|-------|
+| Estimated changed lines | ~1500-1750 across 6 slices (each slice ≤ 400) |
+| 400-line budget risk | High (as a single PR) / Low per slice |
+| Chained PRs recommended | Yes |
+| Suggested split | PR 06 → PR 07 → PR 08 → PR 09 → PR 10 → PR 11 |
+| Delivery strategy | auto-chain |
+| Chain strategy | feature-branch-chain |
+
+Decision needed before apply: No
+Chained PRs recommended: Yes
+Chain strategy: feature-branch-chain
+400-line budget risk: High
+
+### Suggested Work Units (extension)
+
+| Unit | Slice | Branch | Base (PR target) | Est. lines |
+|------|-------|--------|------------------|-----------|
+| 6 | 06 referencia contract | `feat/seguimiento-inspectores-depurado-06-referencia-contract` | `feat/seguimiento-inspectores-depurado-05-mobile-overflow` | ~200 |
+| 7 | 07 engine universe | `feat/seguimiento-inspectores-depurado-07-engine-universe` | unit 6's branch | ~350-400 |
+| 8 | 08 engine remap | `feat/seguimiento-inspectores-depurado-08-engine-remap` | unit 7's branch | ~300 |
+| 9 | 09 router | `feat/seguimiento-inspectores-depurado-09-router` | unit 8's branch | ~150 |
+| 10 | 10 frontend | `feat/seguimiento-inspectores-depurado-10-frontend` | unit 9's branch | ~350-400 |
+| 11 | 11 parity harness | `feat/seguimiento-inspectores-depurado-11-parity-harness` | unit 10's branch | ~150 |
+
+Tracker branch: `feat/seguimiento-inspectores-depurado` — the ONLY branch that merges to `main`.
+If a child PR's diff shows a previous slice's changes, its base is wrong: retarget/rebase before review.
+`SEGUIMIENTO_DEPURACION` stays unset/`0` through every slice; it is flipped only after Phase 12 passes.
+
+## Phase 7: Reference Contract — Optional Fields (PR 06)
+
+Slice forecast: ~200 lines · risk Low · base `…-05-mobile-overflow`.
+
+- [ ] 7.1 RED: `backend/tests/services/test_inspectores_referencia.py::test_parse_entrada_new_optional_fields` — a `main` row with `nombre`/`telefono`/`codigo`/`creado_en`/`id`/`correo`/`tarjeta_profesional` exposes all seven.
+- [ ] 7.2 GREEN: add the seven optional fields with empty defaults to `EntradaReferencia` and `_parse_entrada` in `backend/app/services/inspectores_referencia.py`.
+- [ ] 7.3 RED+GREEN edge: `test_parse_bundle_old_bundle_yields_empty_contact_fields` — a `schema:1` bundle without the new keys parses to entries with all seven empty, `activa=true`.
+- [ ] 7.4 RED+GREEN edge: `test_parse_bundle_wrong_typed_optional_fields` — numeric `telefono`, `null` `creado_en`, list-valued `correo` → coerced to string / empty, never raises.
+- [ ] 7.5 RED+GREEN edge: `test_parse_bundle_schema_2_still_none` — regression guard that `schema` stays `1` and an unknown value still returns `None` (D15).
+- [ ] 7.6 RED+GREEN edge: `test_parse_bundle_vercel_fase2_sections_accept_new_fields_too` — the optional fields are accepted (and ignored when absent) on all three sections, not only `main`.
+- [ ] 7.7 RED: `backend/tests/test_publicar_referencia_inspectores.py::test_cli_emits_optional_fields` — the produced JSON carries the seven fields for a fixture source row.
+- [ ] 7.8 GREEN: emit the seven fields from `scripts/publicar_referencia_inspectores.py`.
+- [ ] 7.9 RED+GREEN edge: `test_cli_preserves_leading_zeros_and_long_numerics` — `codigoInspector="041"`, 10-digit cédula, 11-digit `telefono` survive as exact strings (guards the `ccbc71e` string-dtype fix).
+- [ ] 7.10 RED+GREEN edge: `test_cli_missing_optional_columns_yield_empty_not_nan` — a source file lacking `correo`/`matricula` produces `""`, never `"nan"`/`"None"`.
+- [ ] 7.11 REFACTOR: extract the per-field coercion into one helper; assert no behavior change by re-running `python -m pytest backend/tests/services/test_inspectores_referencia.py backend/tests/test_publicar_referencia_inspectores.py -q`.
+- [ ] 7.12 Gate: `python -m pytest backend/tests/ -q` green; open PR 06 against `…-05-mobile-overflow`.
+
+## Phase 8: Engine — Full Universe (PR 07)
+
+Slice forecast: ~350-400 lines · risk Medium · base PR 06's branch.
+
+- [ ] 8.1 RED: `test_fusionar_identidad_main_row_creates_perfil` — a `main` `cedula_key` with no roster entry produces a profile (D9).
+- [ ] 8.2 GREEN: add the `referencia.main` pass after the roster loop in `fusionar_identidad`, keyed by `cedula_key`.
+- [ ] 8.3 RED+GREEN: `test_fusionar_identidad_firestore_first_main_backfills_empty_only` — matching key → one profile, Firestore `nombre` kept, empty `tarjeta_profesional` backfilled.
+- [ ] 8.4 RED+GREEN edge: `test_fusionar_identidad_main_duplicate_cedula_first_wins` — two `main` rows share a key → first wins, no overwrite, `revision_manual` gets `cedula_duplicada_main` (D19).
+- [ ] 8.5 RED+GREEN edge: `test_fusionar_identidad_main_row_without_cedula_not_dropped_silently` — no digits → no profile, `revision_manual` gets `main_sin_cedula`.
+- [ ] 8.6 RED+GREEN edge: `test_fusionar_identidad_empty_nombre_survives` — a profile with an empty `nombre_norm` is created and never unified against another empty name.
+- [ ] 8.7 RED: `test_atribuir_stickers_resolves_through_alias_index` — a sticker cédula matching a unified-away key lands on the survivor (D11).
+- [ ] 8.8 GREEN: build the `cedula_key` alias index (current + pre-fix + `cedulas_unificadas`) and route sticker attribution through it, replacing the exact-string `perfiles.get(identificacion)`.
+- [ ] 8.9 RED+GREEN edge: `test_atribuir_stickers_unknown_cedula_is_noop` — an unresolvable cédula changes no profile and raises nothing.
+- [ ] 8.10 RED+GREEN edge: `test_atribuir_stickers_normalizes_leading_zeros` — `"0012345"` and `"12345"` resolve to the same profile.
+- [ ] 8.11 RED: `test_unificar_duplicados_runs_after_overlays_scores_populated_flags` — a D-P2 pair where only one side is in Vercel and only the other has stickers → the sticker-bearing profile survives and inherits `en_vercel`/`np`/`codigo` (D10).
+- [ ] 8.12 GREEN: move `unificar_duplicados` after the overlays, the cédula fix and sticker attribution; register every loser key in `cedulas_unificadas`; backfill empty fields from the first non-empty loser.
+- [ ] 8.13 RED+GREEN edge: `test_unificar_duplicados_tiebreak_creado_en_then_firestore_backed` — full score tie → oldest `creado_en` wins; equal/empty `creado_en` → the Firestore-backed profile wins.
+- [ ] 8.14 RED+GREEN edge: `test_unificar_duplicados_absorbs_loser_sticker_aggregates` — survivor's `n_stickers`/`ultimo_sticker` reflect both sides.
+- [ ] 8.15 RED: `test_entidad_precedence_vercel_by_cedula_then_firestore_then_main` (D12).
+- [ ] 8.16 GREEN: implement the `entidad` resolver.
+- [ ] 8.17 RED+GREEN edge: `test_entidad_name_only_vercel_match_does_not_supply_entidad` and `test_entidad_absent_everywhere_is_empty_string`.
+- [ ] 8.18 REFACTOR: replace `_buscar_entrada`'s linear scan with `cedula_key` and `nombre_norm` dict indexes built once per `depurar()` call (D14); keep the public signature unchanged.
+- [ ] 8.19 RED+GREEN: `test_depurar_universe_row_count_grows_without_duplicates` — full-pipeline assertion that every emitted `identidad_key` is unique and the count equals `|roster ∪ main|` minus unified and collapsed rows.
+- [ ] 8.20 Gate: `python -m pytest backend/tests/ -q` green; open PR 07 against PR 06's branch.
+
+## Phase 9: Engine — Remap And Cédula Fix (PR 08)
+
+Slice forecast: ~300 lines · risk Medium · base PR 07's branch.
+
+- [ ] 9.1 RED: `test_remapear_codigos_clears_wrong_current_holder` — Vercel gives `"041"` to A while B holds it → B's `codigo` becomes `""`, A's becomes `"041"` (D13).
+- [ ] 9.2 GREEN: clear the código from the wrong holder before assigning it in `remapear_codigos`.
+- [ ] 9.3 RED+GREEN edge: `test_remapear_codigos_sin_duenio` — the rightful owner has no profile → the wrong holder is still cleared and `revision_manual` gets `remap_sin_duenio`.
+- [ ] 9.4 RED+GREEN edge: `test_remapear_codigos_conflicto` — two Vercel-registered owners resolve to one profile → `codigo=""` and `revision_manual` gets `remap_conflicto`.
+- [ ] 9.5 RED+GREEN edge: `test_remapear_codigos_duplicado_vercel_still_excluded` — regression guard that `codigos_duplicados` (D-P1) still skips remap entirely and emits `codigo_vercel_duplicado`.
+- [ ] 9.6 RED+GREEN edge: `test_remapear_codigos_idempotent` — running the remap twice over its own output changes nothing and emits no duplicate revision entries.
+- [ ] 9.7 RED: `test_fase2_cedula_fix_name_only_match_keeps_cedula_sospechosa_from_original` (D18).
+- [ ] 9.8 GREEN: apply the Fase 2 cédula to name-only matches, keep `cedula_sospechosa` from the original `main` cédula, and register the original key in the alias index.
+- [ ] 9.9 RED+GREEN edge: `test_fase2_cedula_fix_preserves_previously_attributed_stickers` — aggregates attributed under the old key survive the fix.
+- [ ] 9.10 RED+GREEN edge: `test_fase2_cedula_fix_not_applied_on_cedula_match` — when the match was by cédula, no rewrite happens.
+- [ ] 9.11 RED+GREEN edge: `test_fase2_cedula_fix_collision_with_existing_perfil` — the fixed cédula already belongs to another profile → no silent merge; the pair goes to `revision_manual`.
+- [ ] 9.12 RED+GREEN: `test_colapsar_externos_cedula_sospechosa_or_no_persona` — `cedula_sospechosa` alone, inactive and code-less, collapses; the `dias_inactivo == 7` / `8` boundary and the código exclusion still hold.
+- [ ] 9.13 RED+GREEN: `test_grupo_externos_row_shape` — `np_fuente="ninguno"`, `fase="Fase I"`, `fase_np_faltante=true`, `activo=false`, `n_colapsados` present.
+- [ ] 9.14 REFACTOR: collapse the remap and cédula-fix revision emitters into one `_revision(motivo, **detalle)` helper; re-run the engine suite.
+- [ ] 9.15 Gate: `python -m pytest backend/tests/ -q` green; open PR 08 against PR 07's branch.
+
+## Phase 10: Router — Degraded Gate And PII (PR 09)
+
+Slice forecast: ~150 lines · risk Low · base PR 08's branch.
+
+- [ ] 10.1 RED: `backend/tests/routers/test_stickers_atencionsismo.py::test_depuracion_gated_off_when_snapshot_degraded` — degraded LKG restore → `activa=false`, `motivo="stickers_degradados"`, empty `inspectores`, HTTP 200 (D16).
+- [ ] 10.2 GREEN: add the `cache.degraded` gate before computing `depuracion` in `backend/app/routers/stickers_atencionsismo.py`.
+- [ ] 10.3 RED+GREEN edge: `test_depuracion_still_computed_when_only_referencia_missing` — reference unreadable but stickers live → a table is still produced with degraded `np_fuente`.
+- [ ] 10.4 RED+GREEN edge: `test_depuracion_absent_for_viewer_role` and `test_depuracion_present_with_contact_fields_for_admin` — admin vs viewer.
+- [ ] 10.5 RED+GREEN edge: `test_depuracion_pii_never_reaches_blob_persisted_evaluaciones_full_universe` — extend the existing capture-the-bytes test to the full universe with `telefono`/`tarjeta_profesional` injected.
+- [ ] 10.6 RED: `test_alias_nombres_info_log_is_redacted` — caplog at INFO contains neither a name nor a cédula.
+- [ ] 10.7 GREEN: redact or downgrade the `alias_nombres` INFO log.
+- [ ] 10.8 RED+GREEN: `test_depuracion_payload_size_within_budget` — serialized `depuracion` for a 400-profile fixture stays under the documented ceiling (assert an explicit byte budget, fail loudly above it).
+- [ ] 10.9 RED+GREEN edge: `test_depuracion_cache_still_keyed_by_snapshot_identity_with_full_universe` — same list object → no recompute; new `hoy`/`generado_en` → recompute (D4/D6 regression guard).
+- [ ] 10.10 RED+GREEN edge: `test_flag_off_response_still_byte_identical_with_full_universe` — `SEGUIMIENTO_DEPURACION` unset → the 4-key body shape.
+- [ ] 10.11 Gate: `python -m pytest backend/tests/ -q` green; open PR 09 against PR 08's branch.
+
+## Phase 11: Frontend — Seeding, KPIs, Filter, Export (PR 10)
+
+Slice forecast: ~350-400 lines · risk Medium · base PR 09's branch. Ships with the flag still off.
+
+- [ ] 11.1 RED: `web/js/seguimiento.test.mjs::test_rows_seeded_from_depuracion_inspectores` — a zero-activity person gets a row with zero counters (D17).
+- [ ] 11.2 GREEN: seed rows from `depuracion.inspectores` in `web/js/seguimiento.js` when `depuracionActiva`, before the sticker/survey enrichment pass.
+- [ ] 11.3 RED+GREEN edge: `test_sticker_for_unseeded_cedula_still_creates_row` — no record is dropped.
+- [ ] 11.4 RED+GREEN edge: `test_legacy_path_unchanged_when_depuracion_absent_or_inactive` — byte-identical rows on both fallbacks.
+- [ ] 11.5 RED: `test_kpis_use_rows_with_activity_as_denominator` — 373 seeded / 116 active → "profesionales activos" is 116 and averages divide by 116.
+- [ ] 11.6 GREEN: split the KPI denominator from the seeded row count; surface the total separately.
+- [ ] 11.7 RED+GREEN edge: `test_kpis_empty_range_no_nan` — a range with zero activity renders `0`/`—`, never `NaN`/`Infinity`.
+- [ ] 11.8 RED+GREEN edge: `test_timeline_and_charts_ignore_zero_activity_rows` — no zero-height series is injected per seeded row.
+- [ ] 11.9 RED: `test_estado_filter_narrows_table_and_composes_with_search`.
+- [ ] 11.10 GREEN: add the `estado_sugerido` column and filter control, defaulting to "all".
+- [ ] 11.11 RED+GREEN edge: `test_estado_filter_unknown_value_visible_under_all` — an unexpected `estado_sugerido` string is still listed.
+- [ ] 11.12 RED: `test_mass_pdf_export_defaults_to_rows_with_activity` — 373 visible / 116 active → 116 reports, scope stated in the UI first.
+- [ ] 11.13 GREEN: default the mass PDF export scope to rows with activity.
+- [ ] 11.14 RED+GREEN edge: `test_mass_pdf_export_over_cap_refuses_instead_of_truncating` — >200 selected → explicit refusal naming the cap and the count, no partial batch.
+- [ ] 11.15 RED+GREEN: `test_revision_manual_renders_new_motivos_with_name_and_cedula` and `test_revision_manual_unknown_motivo_shows_raw_string`.
+- [ ] 11.16 RED+GREEN edge: `test_revision_manual_identity_detail_admin_only` — a non-admin payload renders the section without names/cédulas.
+- [ ] 11.17 RED+GREEN: `test_degraded_banner_shown_with_motivo` and `test_active_shows_referencia_generada_en_no_banner`.
+- [ ] 11.18 RED+GREEN: `web/js/seguimiento-perf.test.mjs::test_400_row_render_filter_sort_within_budget` and `test_refilter_not_quadratic`.
+- [ ] 11.19 REFACTOR: extract the seeding + enrichment passes into one named builder so the legacy branch stays a single early return; re-run `node --test "web/js/*.test.mjs"`.
+- [ ] 11.20 Gate: `node --test "web/js/*.test.mjs"` green; open PR 10 against PR 09's branch. Do NOT merge into the tracker before Phase 12 passes.
+
+## Phase 12: Parity Harness And Rollout (PR 11)
+
+Slice forecast: ~150 lines · risk Low · base PR 10's branch.
+
+- [ ] 12.1 RED: `backend/tests/services/test_inspectores_depuracion_parity.py::test_parity_register_is_explicit` — the divergence register (D7, D-REMAP, D-EXENTOS) is asserted key-by-key, not as an aggregate score (D20).
+- [ ] 12.2 GREEN: create `scripts/parity_inspectores_depurado.py` — run `depurar()` over the snapshot, diff every acceptance column against `outputs/inspectores_depurado_seguimiento.xlsx`, print per-column mismatch key lists.
+- [ ] 12.3 RED+GREEN: `test_parity_np_fase_codigo_entidad_identificacion_fuente_dato` — ≥99% on matched keys, mismatches enumerated.
+- [ ] 12.4 RED+GREEN: `test_parity_contact_columns_where_source_non_empty` — `tarjeta_profesional`, `num_telefono`, `correo_contacto` ≥99%.
+- [ ] 12.5 RED+GREEN: `test_parity_nombre_completo_through_normalizar_nombre`.
+- [ ] 12.6 RED+GREEN edge: `test_parity_row_count_373_plus_enumerated_firestore_extras` — the 13 Firestore-only extras are listed by key, not absorbed into a tolerance.
+- [ ] 12.7 RED+GREEN edge: `test_parity_n_colapsados_252_with_three_codigo_exclusions` — the 3 código-holding exclusions are named; any D-EXENTOS survivor is listed by key.
+- [ ] 12.8 RED+GREEN edge: `test_parity_harness_fails_loudly_on_missing_xlsx` — the script exits non-zero with a clear message rather than reporting 100%.
+- [ ] 12.9 Document the rollout runbook (deploy → republish → live parity → flip flag → merge chain) in the PR description, mirroring `design.md`'s Rollout Order.
+- [ ] 12.10 Gate: `python -m pytest backend/tests/ -q` and `node --test "web/js/*.test.mjs"` both green; open PR 11 against PR 10's branch.
+
+## Phase 12b: Production Rollout (post-merge, not a PR)
+
+- [ ] 12b.1 Deploy slices 06-09 with `SEGUIMIENTO_DEPURACION` unset/`0`; confirm the payload is unchanged.
+- [ ] 12b.2 Run `scripts/publicar_referencia_inspectores.py`; record the resulting `generado_en`.
+- [ ] 12b.3 Run `scripts/parity_inspectores_depurado.py` against live output; attach the report.
+- [ ] 12b.4 Flip `SEGUIMIENTO_DEPURACION=1` only if 12b.3 meets every acceptance threshold.
+- [ ] 12b.5 Merge the tracker `feat/seguimiento-inspectores-depurado` into `main`.
+- [ ] 12b.6 Rollback drill: confirm setting the flag back to `0` restores the pre-extension payload and the frontend's legacy path.

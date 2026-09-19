@@ -73,3 +73,88 @@ pattern (last-known-good replace, `access: 'private'`), not a new bespoke upload
 - WHEN the CLI runs
 - THEN the new bundle replaces the previous one following the same last-known-good mechanism used by
   other `blob_lkg` datasets, in one atomic write
+
+---
+
+# Extension 2026-09-19 — Delta (complete base)
+
+Source: `explore-extension.md`. No requirement above is modified or removed; the blocks below APPEND.
+
+## ADDED Requirements
+
+### Requirement: Bundle Entries Carry Optional Identity And Contact Fields At Schema 1
+
+`EntradaReferencia` MUST accept, in addition to the existing fields, the optional
+`nombre`, `telefono`, `codigo`, `creado_en`, `id`, `correo` and `tarjeta_profesional`, each
+defaulting to an empty value when the source row omits it. The bundle's `schema` MUST stay `1`:
+adding these keys is purely additive, so a deployed backend that predates them ignores them and a
+new backend reads an old bundle without error. Bumping `schema` is forbidden for this change,
+because the deployed `parse_bundle` returns `None` for any unknown value and would silently disable
+depuración in production.
+
+#### Scenario: New bundle parsed by the tolerant backend
+- GIVEN a `schema: 1` bundle whose `main` rows carry `correo`, `telefono` and `tarjeta_profesional`
+- WHEN `parse_bundle` runs
+- THEN the resulting entries expose those values and `activa=true`
+
+#### Scenario: Old bundle yields empty contact fields, not an error
+- GIVEN a previously published `schema: 1` bundle with none of the new keys
+- WHEN `parse_bundle` runs
+- THEN it returns a valid bundle whose entries have empty `nombre`, `telefono`, `codigo`,
+  `creado_en`, `id`, `correo` and `tarjeta_profesional`
+
+#### Scenario: Unknown schema still degrades
+- GIVEN a bundle with `schema: 2`
+- WHEN `parse_bundle` runs
+- THEN it returns `None` (unchanged behavior)
+
+#### Scenario: A row with a wrong-typed optional field is coerced or skipped, never fatal
+- GIVEN a `main` row whose `telefono` is a number and whose `creado_en` is `null`
+- WHEN `parse_bundle` runs
+- THEN the entry is produced with a string `telefono` and an empty `creado_en`, and no exception
+  propagates
+
+### Requirement: Publisher Reads Source Files As Strings
+
+The publish CLI MUST read every source file with string dtypes so `cedula`, `codigo`,
+`tarjeta_profesional` and `telefono` keep their exact digits — no numeric coercion, no leading-zero
+loss, no scientific notation, no trailing `.0`. It MUST emit the optional fields defined above.
+
+#### Scenario: Leading zeros survive publication
+- GIVEN a source row with `codigoInspector="041"` and a 10-digit cédula starting with `1`
+- WHEN the CLI publishes the bundle
+- THEN the bundle carries `"041"` and the full cédula string, not `41` or a float
+
+#### Scenario: Long numeric identifiers are not rendered in scientific notation
+- GIVEN a source row with an 11-digit `telefono`
+- WHEN the CLI publishes the bundle
+- THEN the bundle carries all 11 digits as a string
+
+### Requirement: Rollout Order Is Deploy-Then-Republish
+
+A bundle carrying the new optional fields MUST NOT be published before the backend that parses them
+tolerantly is deployed. Because the additive change is backward compatible in both directions, the
+order is a safety margin, not a correctness gate — but the runbook MUST state it and the publish step
+MUST be recorded with its `generado_en`.
+
+#### Scenario: Republishing after deploy is a no-op for consumers on the old path
+- GIVEN the tolerant backend is deployed and the bundle is republished with the new fields
+- WHEN a request is served with `SEGUIMIENTO_DEPURACION` unset
+- THEN the response shape is unchanged and no error is raised
+
+### Requirement: Bundle PII Stays In The Private Store And Admin-Only In Responses
+
+The bundle carries personal data (`nombre`, `correo`, `telefono`, `tarjeta_profesional`,
+`identificacion`). It MUST remain in the `access: 'private'` Blob, MUST never be written to the
+public last-known-good copy of `evaluaciones`, and its values MUST reach a response only under the
+admin role. Log records naming a bundle entry MUST be redacted at INFO level.
+
+#### Scenario: Bundle values never reach the public Blob copy
+- GIVEN a bundle entry with a distinctive `correo` and `telefono`
+- WHEN the route persists `evaluaciones` to the public Blob
+- THEN neither value, nor the string `depuracion`, appears in the persisted bytes
+
+#### Scenario: Publish emits no public URL
+- GIVEN the CLI publishes the bundle
+- WHEN the upload completes
+- THEN it used `access: 'private'` and no public URL was minted or logged

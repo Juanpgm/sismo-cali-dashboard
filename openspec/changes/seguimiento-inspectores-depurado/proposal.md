@@ -90,3 +90,100 @@ Feature flag de entorno: apagado devuelve el payload actual sin depurar. Reverti
 - [ ] Sin conteos duplicados entre stickers y `survey_cali`.
 - [ ] Corte 20-ago aplicado solo a `origen=="sistema"`.
 - [ ] Respuesta cacheada bajo TTL sin degradar la pestaña.
+
+---
+
+# Extension 2026-09-19: complete base
+
+> Appended after PRs 1-5 shipped (backend HEAD `ccbc71e`). The original text above is
+> unchanged and remains the record of the first delivery. This section is written in English
+> per the artifact language contract. Source of truth: `explore-extension.md`.
+
+## Intent
+
+The delivered engine serves a **partial** depurado table: 129 rows against the notebook's 373,
+`GRUPO-EXTERNOS` empty (0 vs 252 collapsed), and every contact column at 0% fill. The live parity
+run shows the *rules* are right — `np`, `np_fuente`, `fase`, `fase_np_faltante`, `estado_sugerido`
+match 116/116 on keys present in both — but the *universe* is wrong. The backend must serve the
+COMPLETE depurado base, at notebook parity, integrated end to end in Seguimiento.
+
+## Scope
+
+### In
+
+- Universe = Firestore roster ∪ `referencia.main`, keyed by cédula (`cedula_key`).
+- Cédula-keyed sticker attribution through an alias index (original, Fase-2-fixed and unified-away keys).
+- D-P2 unification moved after overlays and sticker attribution (notebook order).
+- `entidad` precedence Vercel > Firestore > main, cédula match only.
+- Remap clears the código from the wrong current holder; new motivos `remap_sin_duenio`, `remap_conflicto`.
+- Fase 2 cédula fix when matched by name only, keeping `cedula_sospechosa` on the ORIGINAL cédula.
+- Reference bundle gains optional contact/identity fields (`nombre`, `telefono`, `codigo`,
+  `creado_en`, `id`, `correo`, `tarjeta_profesional`) at **`schema: 1`**, parsed tolerantly.
+- Router: `depuracion` gated off when the sticker snapshot is degraded (`motivo="stickers_degradados"`).
+- Frontend: seed rows from `depuracion.inspectores`, `estado_sugerido` filter, KPI semantics that
+  zero-activity rows do not dilute, mass PDF export defaulting to rows with activity, degraded banner.
+- A parity harness comparing `depurar()` against `outputs/inspectores_depurado_seguimiento.xlsx`.
+
+### Out
+
+- `pasos`, `activo`, `id`, `n_stickers`, `codigo_inspector_original` as exposed columns
+  (`codigo_original` only if it falls out for free) — decision 4 of `explore-extension.md`.
+- A `survey_cali` exemption inside the collapse rule beyond the already-shipped `exentos`
+  (the notebook has none; any resulting delta is registered as a documented divergence).
+- Upstream cleanup of Vercel/Fase 2; fuzzy auto-merge (D3 stands).
+- Any write to the live inspector record (D2 stands).
+
+## Approach
+
+Six chained slices, each a reviewable PR under the 400-line budget, continuing the existing
+`feature-branch-chain` from `feat/seguimiento-inspectores-depurado-05-mobile-overflow`:
+
+| Slice | Branch | Content |
+|---|---|---|
+| 06 | `…-06-referencia-contract` | optional bundle fields, tolerant parser, publisher emits them |
+| 07 | `…-07-engine-universe` | main Perfiles, cédula attribution, unify-after-overlays, `entidad`, dict indexes |
+| 08 | `…-08-engine-remap` | clear wrong holder, new motivos, Fase 2 cédula fix |
+| 09 | `…-09-router` | degraded gate, log redaction, PII/cache checks, payload-size test |
+| 10 | `…-10-frontend` | seed rows, KPI semantics, estado filter, export rule, motivos, perf test |
+| 11 | `…-11-parity-harness` | `depurar()` vs xlsx comparator + rollout runbook |
+
+## Supersedes D1
+
+The scope line *"Identidad única: `identificacion` de Firestore (`inspector_profiles()`); nunca la
+cédula derivada del email"* and the spec requirement **"Identity Anchor Is Firestore
+`identificacion`"** are superseded: `referencia.main` now DOES create a Perfil when its cédula has
+no Firestore counterpart. Two clarifications, because "D1" is overloaded in these artifacts:
+
+- The **prohibition still stands**: an email-derived cédula is never an identity key. The new anchor
+  is `cedula_key` (Firestore `identificacion` digits, else `main` cédula digits).
+- `design.md`'s **D1** (emit an index, not per-professional counts) is **not** superseded, nor is the
+  "Criterio humano" row D1 (attribute a sticker to the current titular, no ownership history).
+
+## Risks
+
+| Risk | Prob. | Mitigation |
+|---|---|---|
+| Republishing the bundle before the tolerant backend is deployed | Medium | Schema stays `1` and new keys are additive, so an old backend ignores them; rollout order is still deploy → republish |
+| Universe growth turns silent gaps into 244 extra `candidato_desactivacion` rows | High | Degraded gate (`activa=false`) + the estado filter + KPI rows-with-activity semantics |
+| Payload grows to ~200-300 KB | Medium | Cached by snapshot identity (D4); explicit payload-size test in slice 09 |
+| PII surface widens (`correo`, `telefono`, `tarjeta_profesional`) | Medium | Private Blob, `depuracion` only added to `body` for role admin, INFO-log redaction of `alias_nombres` |
+| Front rendering 400+ rows | Medium | `web/js/seguimiento-perf.test.mjs` 400-row case in slice 10 |
+| Parity regressions hidden by aggregate percentages | Medium | Harness reports per-column mismatch lists, not just a score |
+
+## Rollback
+
+`SEGUIMIENTO_DEPURACION` **stays off** (unset/`0`) until the parity harness passes live against the
+xlsx. With the flag off the response is byte-identical to the pre-change shape and the frontend takes
+its legacy path, so every slice is mergeable without user-visible effect. Rollback = flip the flag
+back to `0`; the bundle and the chain stay inert. Slice 10 (frontend) must not merge to the tracker
+before slice 11 confirms parity.
+
+## Success criteria (parity, live, against the xlsx)
+
+- [ ] `np`, `np_fuente`, `fase`, `fase_np_faltante`, `codigo`, `fuente_dato`, `identificacion`,
+      `entidad` ≥ 99% on matched keys.
+- [ ] `estado_sugerido` ≥ 99% excluding the enumerated D7 / D-REMAP divergences.
+- [ ] `tarjeta_profesional`, `num_telefono`, `correo_contacto` ≥ 99% where the source is non-empty.
+- [ ] `nombre_completo` compared through `normalizar_nombre`.
+- [ ] Row count 373 ± the enumerated Firestore-only extras (13 today).
+- [ ] `n_colapsados` = 252, with the same 3 código-holding exclusions.
