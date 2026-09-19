@@ -329,6 +329,8 @@ function buildIdentityIndexFromDepuracion(depuracion, depMeta) {
   // its own orphan `nom:` bucket. Keyed by the LOSING cédula, valued by the
   // survivor's own cédula.
   const cedulaFusionadaACedulaSurvivor = new Map();
+  // normalizedName -> Set<cédula> over the SEEDED profiles (W3, see below).
+  const seededNameCedulas = new Map();
 
   const inspectores = Array.isArray(depuracion.inspectores) ? depuracion.inspectores : [];
   for (const insp of inspectores) {
@@ -336,6 +338,11 @@ function buildIdentityIndexFromDepuracion(depuracion, depMeta) {
     const ced = cedulaKey(insp.identidad_key || insp.identificacion);
     if (!ced) continue;
     eligibleCedulas.add(ced);
+    const seededNameKey = normalizeName(insp.nombre_completo || '');
+    if (seededNameKey) {
+      if (!seededNameCedulas.has(seededNameKey)) seededNameCedulas.set(seededNameKey, new Set());
+      seededNameCedulas.get(seededNameKey).add(ced);
+    }
     const fusionadas = Array.isArray(insp.cedulas_unificadas) ? insp.cedulas_unificadas : [];
     for (const fusionadaRaw of fusionadas) {
       const cedFusionada = cedulaKey(fusionadaRaw);
@@ -372,6 +379,14 @@ function buildIdentityIndexFromDepuracion(depuracion, depMeta) {
     const ced = cedulaKey(identidadKey);
     if (nombreNorm && ced) nameToCedula.set(nombreNorm, ced);
   }
+  // Judgment-day W3: the seeded profiles feed the name index too, so a record
+  // with a name but a blank/unlisted cédula unifies to the padrón person instead
+  // of opening a second `nom:` row for the same human. ONLY a normalized name
+  // that belongs to exactly ONE seeded cédula is indexed (homonyms never
+  // unify), and the backend's own alias_nombres above always wins.
+  for (const [nameKey, cedulas] of seededNameCedulas) {
+    if (cedulas.size === 1 && !nameToCedula.has(nameKey)) nameToCedula.set(nameKey, [...cedulas][0]);
+  }
 
   const resolverCore = { eligibleCedulas, nameToCedula, cedulaFusionadaACedulaSurvivor };
   const keyForSticker = (record) => professionalKeyOf(record, resolverCore);
@@ -407,12 +422,23 @@ function buildIdentityIndexFromDepuracion(depuracion, depMeta) {
  *  is also the Blob-restored cold-start path and the feature-flag-off
  *  path — design D5/"Frontend Changes (minimal)"). */
 export function buildIdentityIndex({ stickers = [], surveys = [], depuracion = null } = {}) {
+  // A usable block is an object carrying a BOOLEAN `activa` (judgment-day S1):
+  // `{}`, `{ motivo }` or a non-boolean `activa` is malformed/absent, never a
+  // degradation announcement nor an active block.
+  const hasBlock = Boolean(depuracion) && typeof depuracion === 'object' && !Array.isArray(depuracion)
+    && typeof depuracion.activa === 'boolean';
+  const block = hasBlock ? depuracion : null;
   const depMeta = {
-    depuracionActiva: Boolean(depuracion && depuracion.activa),
-    depuracionMotivo: (depuracion && depuracion.motivo) || '',
-    referenciaGeneradaEn: (depuracion && depuracion.referencia_generada_en) || '',
-    grupoExternos: (depuracion && depuracion.grupo_externos) || null,
-    revisionManual: Array.isArray(depuracion && depuracion.revision_manual) ? depuracion.revision_manual : [],
+    depuracionActiva: Boolean(block && block.activa === true),
+    // true when the payload carried NO usable depuracion block at all (flag
+    // off, not requested, viewer, old backend, cold start) — distinct from a
+    // block that says activa:false. Only the latter is announced (banner); an
+    // absent block is the normal state and stays silent (depuracionBadgeHtml).
+    depuracionAusente: !hasBlock,
+    depuracionMotivo: (block && block.motivo) || '',
+    referenciaGeneradaEn: (block && block.referencia_generada_en) || '',
+    grupoExternos: (block && block.grupo_externos) || null,
+    revisionManual: Array.isArray(block && block.revision_manual) ? block.revision_manual : [],
   };
   if (depMeta.depuracionActiva) return buildIdentityIndexFromDepuracion(depuracion, depMeta);
 
@@ -515,27 +541,25 @@ export function buildIdentityIndex({ stickers = [], surveys = [], depuracion = n
   };
 }
 
-/** Per-professional rows joining stickers + Survey by identity
- *  (professionalKeyOf — cédula first, name as fallback; see the module note
- *  above), plus the "Sin profesional identificado" bucket and the
- *  sticker-without-fecha count the UI surfaces as its own KPI/note.
- *  `from`/`to` (YYYY-MM-DD, either may be null) filter both sources — Survey
- *  via fecha_inspeccion, stickers via fecha's Bogotá date part; see
- *  stickerIncluded/surveyIncluded above for the null-date edge case.
- *  `identity` defaults to a fresh buildIdentityIndex() over the SAME
- *  {stickers, surveys} (correct — identity must come from the whole
- *  dataset, which these already are); pass an explicitly pre-built one when
- *  calling this repeatedly so identity isn't recomputed every time (W6).
- *  `today` (YYYY-MM-DD, Bogotá) defaults to bogotaToday() and flows into
- *  buildBarriosActivos for the per-row "barrios activos (7 d)" derivation. */
-export function buildProfessionalRows({
-  stickers, surveys, from = null, to = null, identity, today,
-} = {}) {
-  const stickerList = Array.isArray(stickers) ? stickers : [];
-  const surveyList = Array.isArray(surveys) ? surveys : [];
-  const idx = identity || buildIdentityIndex({ stickers: stickerList, surveys: surveyList });
-  const todayStr = today || bogotaToday();
+/** D17 seeding step: with an ACTIVE depuracion, one row per profile built
+ *  from `depuracion.inspectores`; the legacy path (depuracion absent or
+ *  `activa:false`) is this single early return — rows come only from records,
+ *  byte-identical to before. Returns whether the table was seeded. */
+function seedRowsFromProfiles(idx, ensureRow) {
+  if (!idx.depuracionActiva) return false;
+  for (const key of idx.profiles.keys()) ensureRow(key);
+  return true;
+}
 
+/** The seeding + enrichment passes behind buildProfessionalRows (task 11.19):
+ *  seed the rows (seedRowsFromProfiles), then let every counted sticker/Survey
+ *  enrich its row — or create the row nobody seeded. Returns the raw
+ *  per-key accumulators plus the counters of the records that resolved to no
+ *  row at all. This is the ONE place rows come from, so a later change (a
+ *  retained snapshot, a skipped re-render) hooks around one call. */
+function accumulateRowActivity({
+  stickerList, surveyList, idx, from, to,
+}) {
   const rowsByKey = new Map();
   let unassignedStickers = 0;
   let unassignedSurveys = 0;
@@ -560,6 +584,19 @@ export function buildProfessionalRows({
     return row;
   }
 
+  // Phase 11 / D17: with an active depuracion every seeded person gets a row
+  // BEFORE the sticker/survey pass, so a zero-activity person still shows up
+  // (with zero counters); the loops below only enrich existing rows or add
+  // the ones nobody seeded — no record is ever dropped.
+  const seeded = seedRowsFromProfiles(idx, ensureRow);
+  // An unseeded row has no profile: borrow the first name/cédula its own
+  // records carry so it is identifiable instead of a blank "Sin dato" row.
+  function adoptFallbackIdentity(row, name, cedula) {
+    if (!seeded || idx.profiles.has(row.key)) return;
+    if (!row.fallbackName && name) row.fallbackName = name;
+    if (!row.fallbackCedula && cedula) row.fallbackCedula = cedula;
+  }
+
   for (const s of stickerList) {
     if (!s) continue;
     // Same rule as evaluaciones.js's Stickers tab (#29): a record whose Fase
@@ -577,6 +614,7 @@ export function buildProfessionalRows({
     if (dateVal === null) stickersWithoutDate += 1;
     if (!key) { unassignedStickers += 1; continue; }
     const row = ensureRow(key);
+    adoptFallbackIdentity(row, s.inspector && s.inspector.nombre_completo, s.inspector && s.inspector.identificacion);
     // Shared Fase I/II rule (utils.js's faseKeyDe) instead of a second,
     // independent `fase === 1/2` switch: for an atencionsismo sticker whose
     // `fase` isn't 1 or 2, this falls back to the inspector's NP category
@@ -597,10 +635,50 @@ export function buildProfessionalRows({
     const key = professionalKeyOf(sv, idx);
     if (!key) { unassignedSurveys += 1; continue; }
     const row = ensureRow(key);
+    adoptFallbackIdentity(row, sv.nombre_evaluador, '');
     row.surveyTotal += 1;
     const dateVal = dateOnly(sv.fecha_inspeccion);
     if (dateVal) row.dates.push(dateVal);
   }
+
+  return {
+    rowsByKey, unassignedStickers, unassignedSurveys, stickersWithoutDate, seeded,
+  };
+}
+
+/** Per-professional rows joining stickers + Survey by identity
+ *  (professionalKeyOf — cédula first, name as fallback; see the module note
+ *  above), plus the "Sin profesional identificado" bucket and the
+ *  sticker-without-fecha count the UI surfaces as its own KPI/note.
+ *  `from`/`to` (YYYY-MM-DD, either may be null) filter both sources — Survey
+ *  via fecha_inspeccion, stickers via fecha's Bogotá date part; see
+ *  stickerIncluded/surveyIncluded above for the null-date edge case.
+ *  `identity` defaults to a fresh buildIdentityIndex() over the SAME
+ *  {stickers, surveys} (correct — identity must come from the whole
+ *  dataset, which these already are); pass an explicitly pre-built one when
+ *  calling this repeatedly so identity isn't recomputed every time (W6).
+ *  `today` (YYYY-MM-DD, Bogotá) defaults to bogotaToday() and flows into
+ *  buildBarriosActivos for the per-row "barrios activos (7 d)" derivation.
+ *
+ *  Phase 11 / D17: when `identity` carries an ACTIVE depuracion, every
+ *  seeded person has a row even with zero activity in the range
+ *  (accumulateRowActivity); `totals.professionals` and every average count
+ *  only rows WITH activity, and `totals.padron` (present only then) is the
+ *  number of seeded profiles (range-independent). The legacy path is
+ *  byte-identical. */
+export function buildProfessionalRows({
+  stickers, surveys, from = null, to = null, identity, today,
+} = {}) {
+  const stickerList = Array.isArray(stickers) ? stickers : [];
+  const surveyList = Array.isArray(surveys) ? surveys : [];
+  const idx = identity || buildIdentityIndex({ stickers: stickerList, surveys: surveyList });
+  const todayStr = today || bogotaToday();
+
+  const {
+    rowsByKey, unassignedStickers, unassignedSurveys, stickersWithoutDate, seeded,
+  } = accumulateRowActivity({
+    stickerList, surveyList, idx, from, to,
+  });
 
   // B1: ONE pass over the whole sticker list for "barrios activos" across
   // EVERY professional, instead of buildBarriosActivos rescanning it once
@@ -616,7 +694,8 @@ export function buildProfessionalRows({
   });
 
   const rows = [...rowsByKey.values()].map((row) => {
-    const profile = idx.profiles.get(row.key) || {};
+    const profile = idx.profiles.get(row.key)
+      || (seeded ? { name: row.fallbackName, cedula: row.fallbackCedula } : {});
     const sortedDates = [...row.dates].sort();
     const activeDays = new Set(sortedDates).size;
     const datedRecords = sortedDates.length;
@@ -694,20 +773,40 @@ export function buildProfessionalRows({
 
   const stickersAssigned = rows.reduce((n, r) => n + r.stickersTotal, 0);
   const surveysAssigned = rows.reduce((n, r) => n + r.surveyTotal, 0);
+  // D17: "professionals" (and every average) counts rows WITH activity in the
+  // range; seeded zero-activity rows only add to the separate `padron` figure
+  // (present ONLY when seeded, so the legacy totals shape is untouched). On
+  // the legacy path a row exists only because it has activity, so
+  // `professionals === rows.length` exactly as before.
+  const activeRows = rows.filter(rowHasActivity).length;
+
+  const totals = {
+    professionals: activeRows,
+    stickers: stickersAssigned + unassignedStickers,
+    surveys: surveysAssigned + unassignedSurveys,
+    avgPerProfessional: activeRows ? Math.round(((stickersAssigned + surveysAssigned) / activeRows) * 100) / 100 : 0,
+    unassigned: unassignedStickers + unassignedSurveys,
+    stickersWithoutDate,
+  };
+  // The padrón is the depurado total: the number of SEEDED profiles, never
+  // `rows.length` (which also counts the orphan `nom:`/`ced:` rows that records
+  // resolving to nobody create, and so drifts with the date range).
+  if (seeded) totals.padron = idx.profiles.size;
 
   return {
     rows,
     unassigned: { stickers: unassignedStickers, surveys: unassignedSurveys },
     stickersWithoutDate,
-    totals: {
-      professionals: rows.length,
-      stickers: stickersAssigned + unassignedStickers,
-      surveys: surveysAssigned + unassignedSurveys,
-      avgPerProfessional: rows.length ? Math.round(((stickersAssigned + surveysAssigned) / rows.length) * 100) / 100 : 0,
-      unassigned: unassignedStickers + unassignedSurveys,
-      stickersWithoutDate,
-    },
+    totals,
   };
+}
+
+/** Whether a table row has any sticker/Survey activity in the selected range
+ *  (`total > 0`). Rows seeded from `depuracion.inspectores` without activity
+ *  are excluded from the KPIs and from the mass PDF export scope (D17). A
+ *  row without a finite `total` (malformed) counts as no activity. */
+export function rowHasActivity(row) {
+  return Boolean(row) && Number.isFinite(row.total) && row.total > 0;
 }
 
 /** Daily timeline of dated stickers + Survey records, gap-filled with zeros
@@ -1879,10 +1978,27 @@ export function buildMassReportDocDefinition(rowsWithPoints, ctx = {}) {
  *  is still excluded (never a data-narrowing filter). Exported so a
  *  self-check can cover the transitions without the DOM. */
 export function hasActiveSegFilters({
-  search = '', from = null, to = null, professional = null,
+  search = '', from = null, to = null, professional = null, estado = ESTADO_ALL,
 } = {}) {
-  return Boolean(search || from || to || professional);
+  // Phase 11: the estado_sugerido filter narrows the table too ("all" — or
+  // an empty value — is the no-op default).
+  return Boolean(search || from || to || professional || (estado && estado !== ESTADO_ALL));
 }
+
+/** The estado_sugerido filter's "no narrowing" value (its default). */
+export const ESTADO_ALL = 'all';
+
+/** Options of the estado_sugerido filter (Phase 11, spec "Estado Sugerido
+ *  Filter And Column"): "all" first (the default), then the four values the
+ *  backend emits. A value outside this list is still LISTED under "all" — the
+ *  table never hides a row because of an estado the frontend has no label for. */
+export const ESTADO_FILTER_OPTIONS = Object.freeze([
+  { value: ESTADO_ALL, label: 'Todos' },
+  { value: 'activo', label: 'Activo' },
+  { value: 'revisar', label: 'Revisar' },
+  { value: 'candidato_desactivacion', label: 'Candidato a desactivación' },
+  { value: 'no_persona', label: 'No es persona' },
+]);
 
 export function sortRows(rows, column, dir = 'asc') {
   const sign = dir === 'desc' ? -1 : 1;
@@ -1959,9 +2075,16 @@ export const COLUMNS_TEMPORALES = [
 
 /** Which column set a sub-tab shows — an unrecognized/missing `subTab` falls
  *  back to 'totales' (never throws, never renders a headerless table). */
-export function columnsFor(subTab) {
-  return subTab === 'temporales' ? COLUMNS_TEMPORALES : COLUMNS_TOTALES;
+export function columnsFor(subTab, { withEstado = false } = {}) {
+  if (subTab === 'temporales') return COLUMNS_TEMPORALES;
+  if (!withEstado) return COLUMNS_TOTALES;
+  // Phase 11: the estado_sugerido column exists only when the table is fed by
+  // an active depuracion (on the legacy path every estado is '' — a column of
+  // "Sin dato" would be noise). Right after "Clase (P)".
+  const at = COLUMNS_TOTALES.findIndex((c) => c.key === 'np') + 1;
+  return [...COLUMNS_TOTALES.slice(0, at), COLUMN_ESTADO, ...COLUMNS_TOTALES.slice(at)];
 }
+const COLUMN_ESTADO = { key: 'estadoSugerido', label: 'Estado sugerido' };
 
 /** The sort state a sub-tab opens with (D4: header-click sorting is
  *  preserved when the CURRENT sort column still exists in the new sub-tab's
@@ -2091,7 +2214,7 @@ export function xlsxRowsFor(rows, { subTab = 'totales' } = {}) {
  *  dataset. `professionalName` is the resolved display name (never the raw
  *  `ced:…`/`nom:…` key), so the cell reads meaningfully in a spreadsheet. */
 export function xlsxFiltersSummary({
-  search = '', from = null, to = null, professionalName = '',
+  search = '', from = null, to = null, professionalName = '', estado = ESTADO_ALL,
 } = {}) {
   const parts = [];
   const q = String(search || '').trim();
@@ -2100,6 +2223,13 @@ export function xlsxFiltersSummary({
   if (to) parts.push(`Hasta: ${to}`);
   const prof = String(professionalName || '').trim();
   if (prof) parts.push(`Profesional: ${prof}`);
+  // The estado_sugerido filter narrows the exported rows too (same test as
+  // hasActiveSegFilters/visibleRowsFor); its label, or the raw value when the
+  // frontend has no label for it.
+  if (estado && estado !== ESTADO_ALL) {
+    const option = ESTADO_FILTER_OPTIONS.find((o) => o.value === estado);
+    parts.push(`Estado sugerido: ${option ? option.label : estado}`);
+  }
   return parts.length ? parts.join('; ') : 'ninguno';
 }
 
@@ -2150,8 +2280,15 @@ export const DEGRADED_STICKERS_NOTE = 'Mostrando una copia de respaldo de los st
  *  `surveys` is the only tile that is genuinely never sticker-derived, so it
  *  alone stays unmasked. */
 export function kpiTotals(rowsResult, { stickersLoaded = true } = {}) {
-  const rows = (rowsResult && Array.isArray(rowsResult.rows)) ? rowsResult.rows : [];
+  const allRows = (rowsResult && Array.isArray(rowsResult.rows)) ? rowsResult.rows : [];
   const totals = (rowsResult && rowsResult.totals) || {};
+  // Phase 11 / D17: when the table is seeded (`totals.padron` is present) the
+  // averages and the barrios count run over rows WITH activity only — a
+  // seeded person with nothing in the range must not dilute them (barrios
+  // are last-7-days, NOT range-bound, so a zero-activity row could still
+  // carry some). Unseeded (legacy) rows all have activity: untouched.
+  const seeded = Number.isFinite(totals.padron);
+  const rows = seeded ? allRows.filter(rowHasActivity) : allRows;
   const professionals = totals.professionals || 0;
   const surveys = totals.surveys || 0;
   const stickersRaw = totals.stickers || 0;
@@ -2183,13 +2320,17 @@ export function kpiTotals(rowsResult, { stickersLoaded = true } = {}) {
     }
   }
 
-  return {
+  const result = {
     professionals: stickersLoaded ? professionals : DASH,
     stickers: stickersLoaded ? stickersRaw : DASH,
     surveys,
     avgStickersPerDayPerProfessional: stickersLoaded ? avgStickersPerDayPerProfessional : DASH,
     barriosActivos: stickersLoaded ? seenBarrios.size : DASH,
   };
+  // The seeded total ("padrón") is its own figure, never conflated with
+  // "profesionales activos"; absent (no key at all) on the legacy path.
+  if (seeded) result.padron = stickersLoaded ? totals.padron : DASH;
+  return result;
 }
 
 /** Whether `row` matches the free-text search box: a query with >=3 digits
@@ -2226,10 +2367,16 @@ export function matchesSearch(row, query) {
  *  strict equality — the identity resolver's own key, never a re-derived
  *  name) — both filters apply together (AND), not either/or. An empty/
  *  falsy `professionalKey` leaves every professional in. */
-export function visibleRowsFor(rows, { query = '', professionalKey = '' } = {}) {
+export function visibleRowsFor(rows, { query = '', professionalKey = '', estado = ESTADO_ALL } = {}) {
   const list = Array.isArray(rows) ? rows : [];
   const key = professionalKey || '';
-  return list.filter((r) => (!key || r.key === key) && matchesSearch(r, query));
+  // Phase 11: the estado_sugerido filter is one more AND term; "all" (or an
+  // empty value) leaves every row in — including one whose estado is an
+  // unexpected string. Exact string match otherwise.
+  const narrowEstado = Boolean(estado) && estado !== ESTADO_ALL;
+  return list.filter((r) => (!key || r.key === key)
+    && (!narrowEstado || (r && r.estadoSugerido === estado))
+    && matchesSearch(r, query));
 }
 
 /** The degraded-copy disclosure text (or `null`) — a dedicated pure function
@@ -2267,19 +2414,38 @@ export function unassignedNote(unassigned) {
  *  buildIdentityIndex's own doc comment). Plain text (assigned via
  *  `.textContent`, same convention as degradedStickerNote/unassignedNote
  *  above — never HTML, never escaped here). `null` when there is nothing to
- *  disclose: no identity at all, OR `depuracion` was never even present in
- *  the payload (cold start / `SEGUIMIENTO_DEPURACION` flag off) — the SAME
- *  "byte-identical, no new UI" contract buildIdentityIndex's non-depurado
- *  branch already guarantees. */
-export function depuracionBadgeHtml(identity) {
-  if (!identity) return null;
+ *  disclose: no identity at all, or `loaded === false` (the sticker fetch is
+ *  still in flight or failed: the depuracion block cannot be judged absent
+ *  yet).
+ *
+ *  Phase 11 (spec "Degraded Or Absent Depuración Is Announced", corrected in
+ *  PR 10 part 2): the degraded banner is driven ONLY by a depuracion block
+ *  the SERVER sent with `activa:false` (its `motivo` is named; a block with no
+ *  motivo names `sin_motivo`). A payload with NO block at all is SILENT — no
+ *  banner, legacy render — because "no block" is the NORMAL state (backend
+ *  flag off, request did not opt in, viewer role, older backend) and the
+ *  frontend cannot tell those apart; an error-style banner there would appear
+ *  for every admin the moment this ships, before anyone enabled anything.
+ *  `loaded` (default true) is passed as `stickersLoaded` by render(). */
+export function depuracionBadgeHtml(identity, { loaded = true } = {}) {
+  if (!identity || !loaded) return null;
   if (identity.depuracionActiva) {
     return `Identidad depurada · referencia generada el ${identity.referenciaGeneradaEn || 'fecha desconocida'}.`;
   }
   if (identity.depuracionMotivo) {
     return `Identidad sin depurar (${identity.depuracionMotivo}) — mostrando datos crudos de la API.`;
   }
+  if (identity.depuracionAusente === false) {
+    return 'Identidad sin depurar (sin_motivo) — mostrando datos crudos de la API.';
+  }
   return null;
+}
+
+/** Whether the depuracion badge is the DEGRADED banner (styled as a warning)
+ *  rather than the neutral freshness line of an active depuracion. An absent
+ *  block is neither: it renders no badge at all (see depuracionBadgeHtml). */
+export function depuracionBadgeIsDegraded(identity) {
+  return Boolean(identity) && !identity.depuracionActiva && identity.depuracionAusente !== true;
 }
 
 /** Task 4.4/4.5 (seguimiento-inspectores-depurado, Fase 4; spec: "Non-Person
@@ -2323,20 +2489,102 @@ export function grupoExternosRowHtml(grupoExternos, colspan = 1) {
  *  `inspectores_depuracion.py` could not resolve automatically. An empty
  *  list renders an EXPLICIT "nothing pending" state — this section must
  *  never look hidden/broken just because there is currently nothing to
- *  review (the spec scenario this literally guards). */
-export function revisionManualHtml(list) {
-  const items = Array.isArray(list) ? list : [];
+ *  review (the spec scenario this literally guards).
+ *
+ *  Phase 11 (tasks 11.15/11.15b/11.16; spec MODIFIED requirement): every
+ *  motivo the engine emits is listed WITH the affected people's name and
+ *  cédula — resolved from the item's own fields (`nombre_completo`,
+ *  `cedula_key`, …) or, for the `identidad_key*` fields, from `identity`
+ *  (`profiles`, then `grupoExternos.detalle`); a key that resolves to no one
+ *  still shows its cédula. Generic on the FIELDS, not on the motivo, so an
+ *  unrecognized motivo prints its raw string plus whatever fields it carries.
+ *  `n_ocurrencias` >= 2 renders "×N". `isAdmin: false` drops every name,
+ *  cédula and identidad key (they are PII; only motivo, código and the
+ *  counters remain). `isAdmin` defaults to true for the pre-Phase-11 callers:
+ *  initSeguimiento passes the real role. `null` entries are skipped. Every
+ *  interpolated value is escaped. */
+export function revisionManualHtml(list, { identity = null, isAdmin = true } = {}) {
+  const items = (Array.isArray(list) ? list : []).filter((it) => it !== null && it !== undefined);
   if (!items.length) {
     return '<p class="sticker-note" id="seg-revision-manual-empty">Sin pendientes de revisión manual.</p>';
   }
-  const rows = items.map((it) => {
-    const motivo = escapeHtml((it && it.motivo) || 'sin motivo');
-    const codigo = it && it.codigo ? ` · código ${escapeHtml(it.codigo)}` : '';
-    const candidato = it && it.identidad_key_candidato ? ` · candidato ${escapeHtml(it.identidad_key_candidato)}` : '';
-    const score = Number.isFinite(it && it.score) ? ` · score ${it.score}` : '';
-    return `<li>${motivo}${codigo}${candidato}${score}</li>`;
-  }).join('');
+  const label = isAdmin ? revisionPersonLabeler(identity) : null;
+  const rows = items.map((it) => `<li>${revisionItemText(it, label)}</li>`).join('');
   return `<ul class="seg-revision-manual-list">${rows}</ul>`;
+}
+
+/** Most keys/holders a single review entry lists before "+N más". */
+const REVISION_LIST_CAP = 25;
+
+/** `label(rawKey)` -> escaped "Name (cédula 123)" for a `revision_manual`
+ *  identity key, from the identity's profiles, then the GRUPO-EXTERNOS detail
+ *  (INV-2: a review key may be a collapsed member); an unresolvable key shows
+ *  just "cédula <key>". Empty key -> ''. */
+function revisionPersonLabeler(identity) {
+  const profiles = identity && identity.profiles instanceof Map ? identity.profiles : null;
+  const detalle = identity && identity.grupoExternos && Array.isArray(identity.grupoExternos.detalle)
+    ? identity.grupoExternos.detalle : [];
+  let externos = null;
+  return (rawKey) => {
+    const raw = String(rawKey === null || rawKey === undefined ? '' : rawKey);
+    const key = cedulaKey(raw);
+    let name = '';
+    let cedula = raw;
+    const profile = profiles && key ? profiles.get(`ced:${key}`) : null;
+    if (profile) {
+      name = profile.name || '';
+      cedula = profile.cedula || raw;
+    } else if (key && detalle.length) {
+      if (!externos) externos = new Map(detalle.filter(Boolean).map((d) => [cedulaKey(d.identificacion), d]));
+      const externo = externos.get(key);
+      if (externo) { name = externo.nombre_completo || ''; cedula = externo.identificacion || raw; }
+    }
+    if (!name && !cedula) return '';
+    return name ? `${escapeHtml(name)} (cédula ${escapeHtml(cedula)})` : `cédula ${escapeHtml(cedula)}`;
+  };
+}
+
+function revisionListText(rawValues, label) {
+  // A scalar where the backend should send a list (a string/number key) is one
+  // element, never silently dropped: `label` resolves it or prints the escaped
+  // raw text as "cédula <raw>".
+  const isScalar = (typeof rawValues === 'string' && rawValues.trim() !== '')
+    || (typeof rawValues === 'number' && Number.isFinite(rawValues));
+  const values = isScalar ? [rawValues] : rawValues;
+  if (!Array.isArray(values) || !values.length) return '';
+  const shown = values.slice(0, REVISION_LIST_CAP).map(label).filter(Boolean).join(', ');
+  const rest = values.length - REVISION_LIST_CAP;
+  return rest > 0 ? `${shown}, +${rest.toLocaleString('es-CO')} más` : shown;
+}
+
+/** One entry's text (already escaped): motivo, ×N, código(s), then — only when
+ *  `label` (admin) — the people involved. Fields keep the order of the
+ *  pre-Phase-11 render (motivo · código · candidato · score). */
+function revisionItemText(it, label) {
+  const src = (it && typeof it === 'object') ? it : {};
+  const n = typeof src.n_ocurrencias === 'number' && Number.isFinite(src.n_ocurrencias) && src.n_ocurrencias >= 2
+    ? ` ×${Math.trunc(src.n_ocurrencias)}` : '';
+  const parts = [`${escapeHtml(src.motivo || 'sin motivo')}${n}`];
+  if (src.codigo) parts.push(`código ${escapeHtml(src.codigo)}`);
+  if (src.codigo_anterior || src.codigo_nuevo) {
+    parts.push(`código ${escapeHtml(src.codigo_anterior || '—')} → ${escapeHtml(src.codigo_nuevo || '—')}`);
+  }
+  if (label) {
+    const one = (text, key) => { const who = key ? label(key) : ''; if (who) parts.push(`${text}: ${who}`); };
+    const many = (text, keys) => { const who = revisionListText(keys, label); if (who) parts.push(`${text}: ${who}`); };
+    one('persona', src.identidad_key);
+    one('conserva el código', src.identidad_key_conservado);
+    one('absorbido', src.identidad_key_absorbido);
+    one('ya existente', src.identidad_key_existente);
+    many('personas', src.identidad_keys);
+    many('titulares que conservan el código', src.identidad_keys_titulares);
+    if (src.cedula_key) parts.push(`cédula ${escapeHtml(src.cedula_key)}`);
+    if (src.nombre_completo) parts.push(`nombre: ${escapeHtml(src.nombre_completo)}`);
+    if (src.nombre_completo_duplicado) parts.push(`duplicado: ${escapeHtml(src.nombre_completo_duplicado)}`);
+    one('candidato', src.identidad_key_candidato);
+  }
+  if (Number.isFinite(src.score)) parts.push(`score ${escapeHtml(src.score)}`);
+  return parts.join(' · ');
 }
 
 // ── createSegCache: single-entry memo (W6) ──────────────────────────────────
@@ -2511,6 +2759,49 @@ export function massExportOverlayText(total) {
   return `Generando ${n} reportes… esto puede tardar unos segundos.`;
 }
 
+/** Hard cap of the mass PDF export (plan D5/W10): beyond it the document
+ *  risks the performance budget (< 20 s / < 700 MB for ~110 professionals). */
+export const MASS_EXPORT_CAP = 200;
+
+/** Phase 11 / D17 (spec "Table And Export Reflect Depurado Fields
+ *  Consistently"): the ONE decision behind the mass PDF export. `visibleRows`
+ *  are the rows currently on screen (search + range + estado + professional
+ *  narrowing); the export defaults to those WITH activity in the range —
+ *  seeding puts up to ~373 rows on screen and most of them have nothing to
+ *  report. When that scope still exceeds `cap` the export is REFUSED (no
+ *  partial batch, `rows: []`) with a message naming the cap and the count —
+ *  it never truncates. `status` is `'ok'` | `'refused'` | `'empty'` (nothing
+ *  with activity to export). Pure: the DOM layer only reads it. */
+export function massExportScope(visibleRows, { cap = MASS_EXPORT_CAP } = {}) {
+  const list = Array.isArray(visibleRows) ? visibleRows : [];
+  const withActivityRows = list.filter(rowHasActivity);
+  const base = { visible: list.length, withActivity: withActivityRows.length, cap };
+  if (!withActivityRows.length) return { ...base, status: 'empty', rows: [], message: '' };
+  if (withActivityRows.length > cap) {
+    return {
+      ...base,
+      status: 'refused',
+      rows: [],
+      message: `No se puede exportar: ${withActivityRows.length.toLocaleString('es-CO')} profesionales con actividad superan el máximo de ${cap.toLocaleString('es-CO')} por exportación. Acotá los filtros (búsqueda/estado/rango/profesional) antes de exportar.`,
+    };
+  }
+  return { ...base, status: 'ok', rows: withActivityRows, message: '' };
+}
+
+/** The scope statement shown in the UI BEFORE the mass export runs (and used
+ *  as the button's caption note): what will be exported, out of how many
+ *  visible rows, or the refusal message. Plain text (`.textContent`). */
+export function massExportScopeText(scope) {
+  if (!scope) return '';
+  if (scope.status === 'refused') return scope.message;
+  if (scope.status === 'empty') return 'Exportación masiva: ningún profesional visible con actividad en el rango.';
+  const n = scope.withActivity.toLocaleString('es-CO');
+  if (scope.withActivity === scope.visible) {
+    return `Exportación masiva: ${n} profesionales visibles, todos con actividad en el rango.`;
+  }
+  return `Exportación masiva: ${n} de ${scope.visible.toLocaleString('es-CO')} profesionales visibles (solo los profesionales con actividad en el rango).`;
+}
+
 /** L8: whether a NEW mass export may start — shared, module-level state
  *  (`exportInFlight`, read by the DOM section below) rather than the
  *  per-init `busy` closure variable it augments: re-opening the Seguimiento
@@ -2598,10 +2889,15 @@ function sectionHtml() {
             <span>Profesional (gráfico y tabla)</span>
             <select id="seg-chart-professional" aria-label="Profesional (gráfico y tabla)"><option value="">Todos</option></select>
           </label>
+          <label class="sticker-field asignacion-inline-field" id="seg-estado-field" hidden>
+            <span>Estado sugerido</span>
+            <select id="seg-estado" aria-label="Estado sugerido">${ESTADO_FILTER_OPTIONS.map((o) => `<option value="${escapeHtml(o.value)}">${escapeHtml(o.label)}</option>`).join('')}</select>
+          </label>
           <button type="button" class="sticker-action" id="seg-download">Exportar XLSX</button>
           <button type="button" class="sticker-action" id="seg-report-selected" disabled>Reporte PDF individual</button>
           <button type="button" class="sticker-action" id="seg-report-mass" disabled>Exportación masiva reportes</button>
         </div>
+        <p class="sticker-note" id="seg-report-scope" hidden></p>
       </div>
 
       <div class="kpi-row eval-kpis" id="seg-kpis"></div>
@@ -2676,6 +2972,12 @@ export function kpisHtml(rowsResult, stickersLoaded) {
       'Stickers por día con actividad de stickers, promedio entre profesionales (excluye a quien no tiene ningún día con stickers).',
     ),
     tile('barrios activos (7 d)', t.barriosActivos),
+    // Phase 11 / D17: only when the table is seeded from depuracion.inspectores.
+    ...(t.padron === undefined ? [] : [tile(
+      'profesionales en padrón',
+      t.padron,
+      'Total de profesionales del padrón depurado, con o sin actividad en el rango. No entra en los promedios.',
+    )]),
   ].join('');
 }
 
@@ -2720,6 +3022,7 @@ export function cellHtml(r, key, stickersLoaded) {
     case 'cedula': return stk(escapeHtml(r.cedula || 'Sin dato'));
     case 'tarjetaProfesional': return stk(escapeHtml(r.tarjetaProfesional || 'Sin dato'));
     case 'np': return stk(escapeHtml(r.np || 'Sin dato'));
+    case 'estadoSugerido': return stk(escapeHtml(r.estadoSugerido || 'Sin dato'));
     case 'codigo': return stk(escapeHtml(r.codigo || 'Sin dato'));
     case 'stickersFase1': return stk(r.stickersFase1);
     case 'stickersFase2': return stk(r.stickersFase2);
@@ -2741,6 +3044,17 @@ export function cellHtml(r, key, stickersLoaded) {
     case 'avgLastMinutes': return stk(formatMinutes(r.avgLastMinutes));
     default: return '';
   }
+}
+
+/** The `<tbody>` markup of the professionals table for already filtered and
+ *  sorted `sortedRows` (Phase 11: extracted from renderTable so the 400-row
+ *  perf test measures the real render path, and so a future caller — e.g. a
+ *  skipped re-render — has one pure function to reuse). An empty list renders
+ *  the "no match" placeholder row spanning `columns.length + 1` (Acciones). */
+export function tableBodyHtml(sortedRows, stickersLoaded, isDegraded, columns, busy) {
+  return sortedRows.length
+    ? sortedRows.map((r) => rowHtml(r, stickersLoaded, isDegraded, columns, busy)).join('')
+    : `<tr><td colspan="${columns.length + 1}" class="eval-empty">Ningún profesional coincide con los filtros aplicados.</td></tr>`;
 }
 
 /** `columns` (columnsFor(subTab)'s current result) drives which cells render
@@ -2943,16 +3257,166 @@ export function updateSeguimientoRecords(records) {
   if (activeUpdateRecords) activeUpdateRecords(records);
 }
 
-/** One-shot retry over a transient network blip — same recipe as stickers.js's
- *  own fetchEvaluaciones wrapper (used for the Evaluaciones section's fetch):
- *  a cold serverless connection or a dropped request shouldn't surface as a
- *  hard error when a second attempt half a second later would have worked. */
-async function fetchStickersWithRetry(getToken) {
+// ── Snapshot retention + background revalidation (PR 10 part 2, design D25/D28) ──
+//
+// The last `{ snapshotId, stickers, degraded, depuracion }` an ADMIN received is
+// kept in a module-level variable, MEMORY ONLY (it carries names, cédulas and
+// contact data: never written to any browser storage, asserted by a test).
+// `snapshotId` is the opaque response ETag (design D26/C-E3: the body has no
+// such key). On open the tab paints from it at once and revalidates in the
+// background with `If-None-Match`; a 304 or an equal ETag changes nothing (zero
+// extra render()), a different ETag replaces the retained value and re-renders
+// once. The retained value is dropped on 401/403, sign-out and role change
+// (clearSeguimientoSnapshot, wired from main.js), and never retained without a
+// usable ETag (nothing to validate against => a plain full render every time).
+//
+// Late answers cannot resurrect cleared data: every clear bumps `retainEpoch`
+// and aborts the in-flight request, and a flight only commits (and only reports
+// a result) while its epoch is still current.
+
+const SNAPSHOT_RETRY_DELAY_MS = 500;
+let retained = null; // { snapshotId, stickers, degraded, depuracion } | null
+let retainEpoch = 0;
+let inflightFlight = null; // { epoch, isAdmin, controller, promise, cancelWait }
+// The container the current init rendered into, so teardownSeguimiento() can
+// empty it. Reset to null there: nothing keeps the (PII-carrying) DOM reachable.
+let activeRoot = null;
+
+/** Drops the retained snapshot and cancels any in-flight revalidation. Called
+ *  on sign-out and on any role change (main.js), and on 401/403. */
+export function clearSeguimientoSnapshot() {
+  retained = null;
+  retainEpoch += 1;
+  const flight = inflightFlight;
+  inflightFlight = null;
+  if (flight && flight.controller) flight.controller.abort();
+  // A flight sleeping in its retry back-off wakes up now (its timer is cleared)
+  // and finds its epoch stale, so it ends as 'discarded' without a second request.
+  if (flight && flight.cancelWait) flight.cancelWait();
+}
+
+/** Ends the Seguimiento session's footprint (judgment-day C1): the retained
+ *  snapshot and any in-flight revalidation/retry timer are dropped, the epoch
+ *  and `loadSeq` are bumped (a late answer or a mid-flight export is never
+ *  delivered), every module-level handle onto the open init (search debounce,
+ *  chart redraw, store-update hook, memo caches) is released, and the rendered
+ *  view is emptied — the container this module last rendered into, plus `root`
+ *  when given. Idempotent, a no-op when nothing was ever opened, and each step
+ *  is contained so one failure never skips the rest. The module can
+ *  `initSeguimiento` again afterwards. */
+export function teardownSeguimiento(root) {
+  const attempt = (step) => { try { step(); } catch { /* keep tearing down */ } };
+  attempt(clearSeguimientoSnapshot);
+  loadSeq += 1;
+  attempt(() => { if (activeSearchDebounced) activeSearchDebounced.cancel(); });
+  activeSearchDebounced = null;
+  activeRenderChart = null;
+  activeUpdateRecords = null;
+  attempt(() => segCache.clear());
+  attempt(() => identityCache.clear());
+  const mounted = activeRoot;
+  activeRoot = null;
+  for (const container of new Set([mounted, root])) {
+    if (container) attempt(() => { container.innerHTML = ''; });
+  }
+}
+
+/** The retained snapshot (or null). Exposed for the open path and for tests. */
+export function peekSeguimientoSnapshot() {
+  return retained;
+}
+
+function isAuthError(err) {
+  return Boolean(err) && (err.status === 401 || err.status === 403);
+}
+
+/** Revalidates the retained snapshot (or does the first full fetch) and
+ *  resolves — NEVER rejects — to one of:
+ *   { outcome: 'unchanged', snapshot }  304 / equal ETag: nothing to redraw
+ *   { outcome: 'fresh', snapshot }      new data: the caller renders once
+ *   { outcome: 'denied', error }        401/403: retention cleared
+ *   { outcome: 'failed', error }        network/5xx/malformed: retention kept
+ *   { outcome: 'discarded' }            the session/role changed meanwhile
+ *  At most ONE flight is in progress: concurrent callers share its promise.
+ *  A non-admin never sends a validator and never retains. `fetchOnce` and the
+ *  retry delay are injectable for tests. */
+export function revalidateSnapshot({
+  getToken, isAdmin, fetchOnce = fetchEvaluacionesOnce, retryDelayMs = SNAPSHOT_RETRY_DELAY_MS,
+}) {
+  if (!isAdmin && retained) clearSeguimientoSnapshot(); // fail closed: admin data never serves a non-admin
+  if (inflightFlight && inflightFlight.epoch === retainEpoch && inflightFlight.isAdmin === Boolean(isAdmin)) {
+    return inflightFlight.promise;
+  }
+  const flight = {
+    epoch: retainEpoch,
+    isAdmin: Boolean(isAdmin),
+    controller: typeof AbortController === 'function' ? new AbortController() : null,
+    promise: null,
+    cancelWait: null,
+  };
+  flight.promise = runRevalidation(flight, { getToken, fetchOnce, retryDelayMs })
+    .finally(() => { if (inflightFlight === flight) inflightFlight = null; });
+  inflightFlight = flight;
+  return flight.promise;
+}
+
+async function runRevalidation(flight, { getToken, fetchOnce, retryDelayMs }) {
+  const current = () => flight.epoch === retainEpoch;
+  const held = flight.isAdmin ? retained : null;
+  const attempt = (extra) => fetchOnce(getToken, STICKERS_ENDPOINT, {
+    depuracion: true,
+    strictJson: true,
+    conditional: true,
+    signal: flight.controller ? flight.controller.signal : undefined,
+    ...extra,
+  });
+  // One retry over a transient blip (same recipe as the Stickers tab's read),
+  // but never for an authorization failure or a cancelled flight.
+  const withRetry = async (extra) => {
+    try {
+      return await attempt(extra);
+    } catch (err) {
+      if (isAuthError(err) || !current()) throw err;
+      if (retryDelayMs > 0) {
+        await new Promise((resolve) => {
+          const timer = setTimeout(() => { flight.cancelWait = null; resolve(); }, retryDelayMs);
+          flight.cancelWait = () => { clearTimeout(timer); flight.cancelWait = null; resolve(); };
+        });
+      }
+      if (!current()) throw err;
+      return await attempt(extra);
+    }
+  };
+
   try {
-    return await fetchEvaluacionesOnce(getToken, STICKERS_ENDPOINT);
+    let result = await withRetry({ ifNoneMatch: held ? held.snapshotId : null });
+    if (result.notModified && !(held && retained === held && current())) {
+      if (!current()) return { outcome: 'discarded' };
+      // A 304 with nothing to validate against: never a blank table — fetch in
+      // full, without a validator and bypassing any HTTP cache validator.
+      result = await withRetry({ ifNoneMatch: null, bypassCache: true });
+      if (result.notModified) throw new Error('El servidor respondió 304 sin datos que validar.');
+    }
+    if (!current()) return { outcome: 'discarded' };
+    if (result.notModified) return { outcome: 'unchanged', snapshot: held };
+
+    const snapshotId = result.etag || null;
+    if (held && snapshotId && snapshotId === held.snapshotId && retained === held) {
+      return { outcome: 'unchanged', snapshot: held };
+    }
+    const snapshot = {
+      snapshotId, stickers: result.evaluaciones, degraded: result.degraded, depuracion: result.depuracion,
+    };
+    // No usable ETag => no retention (and the older value's validator is stale).
+    retained = flight.isAdmin && snapshotId ? snapshot : null;
+    return { outcome: 'fresh', snapshot };
   } catch (err) {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    return await fetchEvaluacionesOnce(getToken, STICKERS_ENDPOINT);
+    if (!current()) return { outcome: 'discarded' };
+    if (isAuthError(err)) {
+      clearSeguimientoSnapshot();
+      return { outcome: 'denied', error: err };
+    }
+    return { outcome: 'failed', error: err };
   }
 }
 
@@ -3002,13 +3466,26 @@ async function fetchPendientes() {
 /** initSeguimiento(root, { getToken, records }) — renders the tab and wires
  *  its actions. `records` is store.records (Survey), passed in by main.js so
  *  this module never imports data.js directly (would pull in the Firebase
- *  chain and break the Node self-check). Stickers are fetched fresh on every
- *  open via fetchEvaluacionesOnce, same lifecycle as the Stickers tab. */
-export function initSeguimiento(root, { getToken, records }) {
+ *  chain and break the Node self-check). Stickers come from
+ *  fetchEvaluacionesOnce with the `depuracion=1` opt-in (this tab only): on a
+ *  re-open the admin's retained snapshot is painted first and revalidated in
+ *  the background (see revalidateSnapshot), so a re-open costs no re-render
+ *  unless the snapshot changed.
+ *  `isAdmin` (Phase 11, fail-closed default false) gates the names/cédulas of
+ *  the "Revisión manual" section AND the snapshot retention: main.js passes the
+ *  real role. `snapshotRetryDelayMs` only exists so tests need not wait 500 ms. */
+export function initSeguimiento(root, {
+  getToken, records, isAdmin = false, snapshotRetryDelayMs = SNAPSHOT_RETRY_DELAY_MS,
+}) {
   if (activeSearchDebounced) activeSearchDebounced.cancel();
   segCache.clear();
   identityCache.clear();
+  // The retained admin snapshot to paint from (D28); a non-admin never sees it.
+  // (The non-admin drop of a retained value lives in revalidateSnapshot, which
+  // this init calls synchronously below: a second copy of it here was dead code.)
+  const held = isAdmin ? retained : null;
   root.innerHTML = sectionHtml();
+  activeRoot = root;
 
   const $ = (id) => root.querySelector(`#${id}`);
   const kpisEl = $('seg-kpis');
@@ -3021,6 +3498,9 @@ export function initSeguimiento(root, { getToken, records }) {
   const fromEl = $('seg-from');
   const toEl = $('seg-to');
   const chartSelectEl = $('seg-chart-professional');
+  const estadoEl = $('seg-estado');
+  const estadoFieldEl = $('seg-estado-field');
+  const reportScopeEl = $('seg-report-scope');
   const resetFiltersBtn = $('seg-reset-filters');
   const downloadBtn = $('seg-download');
   const reportSelectedBtn = $('seg-report-selected');
@@ -3035,7 +3515,7 @@ export function initSeguimiento(root, { getToken, records }) {
   const exportOverlayEl = $('seg-export-overlay');
   const exportOverlayTextEl = $('seg-export-overlay-text');
 
-  let stickers = [];
+  let stickers = held ? held.stickers : [];
   // seguimiento-inspectores-depurado, Fase 4: the backend's `depuracion`
   // block (stickers.js's tagFuente now passes it through, defaulting to
   // `null`) — always reassigned together with `stickers` (same fetch, same
@@ -3043,7 +3523,7 @@ export function initSeguimiento(root, { getToken, records }) {
   // key (M4) still invalidates correctly whenever this changes; see
   // buildIdentityIndex's own doc comment for the `null`/`activa:false`
   // fallback contract.
-  let depuracion = null;
+  let depuracion = held ? held.depuracion : null;
   // `let`, not `const`: updateSeguimientoRecords() (module-level export,
   // called by main.js's onStoreChange) reassigns this in place on a store
   // refresh instead of tearing down and re-initializing the whole tab — see
@@ -3072,8 +3552,8 @@ export function initSeguimiento(root, { getToken, records }) {
   // resolved yet / failed" — see kpisHtml/rowHtml's DASH masking above.
   // `stickers` itself stays `[]` in both the "loading" and "failed" cases,
   // so this flag (not the array) is what the UI reads to tell them apart.
-  let stickersLoaded = false;
-  let isDegraded = false;
+  let stickersLoaded = Boolean(held);
+  let isDegraded = held ? held.degraded : false;
   let stickerFetchErrorMessage = '';
   // Identity index (W5/D7: cédula-first join) for the CURRENT stickers/
   // surveys — recomputed once per render() (not once per pure-function
@@ -3109,7 +3589,9 @@ export function initSeguimiento(root, { getToken, records }) {
       generatedAt: downloadStamp().legible,
       degraded: isDegraded,
       objetivoDiario: objetivoDiario({
-        pendientes: pendientesValue, profesionalesActivos: currentRows.length, today,
+        // D17: the per-professional daily target divides by professionals
+        // WITH activity, never by the seeded padrón (373 vs ~116).
+        pendientes: pendientesValue, profesionalesActivos: currentRows.filter(rowHasActivity).length, today,
       }),
       ...extra,
     };
@@ -3148,7 +3630,7 @@ export function initSeguimiento(root, { getToken, records }) {
     reportMassBtn.title = isDegraded ? DEGRADED_TITLE
       : !stickersLoaded ? loadingTitle
         : exportBusy ? busyTitle
-          : 'Generar un PDF con el informe de cada profesional visible (según los filtros aplicados)';
+          : 'Generar un PDF con el informe de cada profesional visible con actividad en el rango (según los filtros aplicados)';
 
     // L7: the per-row "📄 Reporte" buttons must reflect the SAME block
     // condition (rowReportButtonsBlocked) WITHOUT waiting for the next full
@@ -3188,18 +3670,21 @@ export function initSeguimiento(root, { getToken, records }) {
     // digits, otherwise name OR tarjeta profesional text, W-TP) — see
     // hasActiveSegFilters' own doc comment for why this is a genuine
     // contract change from before.
-    visibleRows = visibleRowsFor(rows, { query: searchEl.value, professionalKey: chartSelectEl.value || '' });
+    // Phase 11: estado_sugerido is one more AND term (composes with search,
+    // the professional select and — upstream, in buildProfessionalRows — the
+    // Desde/Hasta range); it only exists while a depuracion is active.
+    visibleRows = visibleRowsFor(rows, {
+      query: searchEl.value, professionalKey: chartSelectEl.value || '', estado: estadoEl.value,
+    });
     const sorted = sortRows(visibleRows, sortState.column, sortState.dir);
-    const columns = columnsFor(subTab);
+    const columns = columnsFor(subTab, { withEstado: currentIdentity.depuracionActiva });
     theadRow.innerHTML = headerRowHtml(sortState, columns);
     // L8: `busy || exportInFlight` — `busy` covers an export THIS init
     // started; `exportInFlight` (module-level) covers one still running
     // from an OLD, now-orphaned init after a mid-export tab re-open (see
     // canStartMassExport's own doc comment).
     const rowsBusy = busy || exportInFlight;
-    tbody.innerHTML = sorted.length
-      ? sorted.map((r) => rowHtml(r, stickersLoaded, isDegraded, columns, rowsBusy)).join('')
-      : `<tr><td colspan="${columns.length + 1}" class="eval-empty">Ningún profesional coincide con los filtros aplicados.</td></tr>`;
+    tbody.innerHTML = tableBodyHtml(sorted, stickersLoaded, isDegraded, columns, rowsBusy);
     // Task 4.4/4.5: GRUPO-EXTERNOS is NEVER one of `rows` (see
     // grupoExternosRowHtml's own doc comment) — appended as its own trailing
     // row, in EVERY sub-tab, regardless of search/professional filters (it
@@ -3213,10 +3698,28 @@ export function initSeguimiento(root, { getToken, records }) {
     // this one shared spot keeps it in sync without a parallel check that
     // could drift.
     const active = hasActiveSegFilters({
-      search: searchEl.value, from: fromEl.value || null, to: toEl.value || null, professional: chartSelectEl.value || null,
+      search: searchEl.value,
+      from: fromEl.value || null,
+      to: toEl.value || null,
+      professional: chartSelectEl.value || null,
+      estado: estadoEl.value,
     });
     resetFiltersBtn.disabled = !active;
     resetFiltersBtn.classList.toggle('is-filter-active', active);
+    renderMassExportScope();
+  }
+
+  // Phase 11 (spec "Table And Export Reflect Depurado Fields Consistently"):
+  // the mass PDF export's scope is stated BEFORE it runs — rows on screen
+  // WITH activity in the range — and an over-cap scope is announced up
+  // front. Only shown for a seeded (depuracion active) table: on the legacy
+  // path every visible row has activity, so the scope is just "what you see".
+  function renderMassExportScope() {
+    const text = currentIdentity.depuracionActiva && stickersLoaded
+      ? massExportScopeText(massExportScope(visibleRows))
+      : '';
+    reportScopeEl.hidden = !text;
+    reportScopeEl.textContent = text;
   }
 
   // W8: skips upsertChart entirely when the last successfully rendered
@@ -3372,10 +3875,20 @@ export function initSeguimiento(root, { getToken, records }) {
     // off currentIdentity (always present, see buildIdentityIndex's own doc
     // comment) — recomputed every render() pass, same as every other
     // identity-derived note above.
-    const depuracionBadgeText = depuracionBadgeHtml(currentIdentity);
+    const depuracionBadgeText = depuracionBadgeHtml(currentIdentity, { loaded: stickersLoaded });
     depuracionBadgeEl.hidden = !depuracionBadgeText;
     depuracionBadgeEl.textContent = depuracionBadgeText || '';
-    revisionManualEl.innerHTML = revisionManualHtml(currentIdentity.revisionManual);
+    // Phase 11: a degraded/absent depuracion is a banner (role=alert), the
+    // freshness line of an active one stays a neutral note.
+    depuracionBadgeEl.classList.toggle('seg-depuracion-banner', Boolean(depuracionBadgeText) && depuracionBadgeIsDegraded(currentIdentity));
+    if (depuracionBadgeText && depuracionBadgeIsDegraded(currentIdentity)) depuracionBadgeEl.setAttribute('role', 'alert');
+    else depuracionBadgeEl.removeAttribute('role');
+    // The estado filter only exists on top of an active depuracion; when it
+    // goes away (a re-open, a degraded refresh) a leftover selection must not
+    // keep silently narrowing the table.
+    estadoFieldEl.hidden = !currentIdentity.depuracionActiva;
+    if (!currentIdentity.depuracionActiva) estadoEl.value = ESTADO_ALL;
+    revisionManualEl.innerHTML = revisionManualHtml(currentIdentity.revisionManual, { identity: currentIdentity, isAdmin });
     renderChartOptions(rows);
     renderTable(rows);
     renderChart();
@@ -3407,7 +3920,8 @@ export function initSeguimiento(root, { getToken, records }) {
       // keyboard pattern for an ARIA tablist.
       b.tabIndex = active ? 0 : -1;
     }
-    const stillSortable = columnsFor(subTab).some((c) => c.key === sortState.column);
+    const stillSortable = columnsFor(subTab, { withEstado: currentIdentity.depuracionActiva })
+      .some((c) => c.key === sortState.column);
     sortState = stillSortable ? sortState : defaultSortFor(subTab);
     renderTable(currentRows);
   }
@@ -3484,11 +3998,17 @@ export function initSeguimiento(root, { getToken, records }) {
   // points at the CURRENTLY open init's controller.
   activeSearchDebounced = makeSearchController(() => renderTable(currentRows), 250);
   searchEl.addEventListener('input', () => {
-    activeSearchDebounced.trigger();
+    if (activeSearchDebounced) activeSearchDebounced.trigger(); // null after teardownSeguimiento()
   });
 
   fromEl.addEventListener('change', render);
   toEl.addEventListener('change', render);
+  // Phase 11: the estado filter narrows the TABLE only (rows/KPIs/chart are
+  // computed upstream of it), so a change re-runs renderTable, not render().
+  estadoEl.addEventListener('change', () => {
+    renderTable(currentRows);
+    updateDownloadAvailability();
+  });
   // W7: seg-chart-professional now narrows the TABLE too (visibleRowsFor),
   // not just which line the chart highlights — so its 'change' handler must
   // re-run renderTable (not just renderChart), and refresh the per-selection
@@ -3512,11 +4032,12 @@ export function initSeguimiento(root, { getToken, records }) {
   // claims to show "every professional" again. Sort order is still left
   // alone (never a data-narrowing filter).
   resetFiltersBtn.addEventListener('click', () => {
-    activeSearchDebounced.cancel();
+    if (activeSearchDebounced) activeSearchDebounced.cancel();
     searchEl.value = '';
     fromEl.value = '';
     toEl.value = '';
     chartSelectEl.value = '';
+    estadoEl.value = ESTADO_ALL;
     render();
   });
 
@@ -3565,15 +4086,18 @@ export function initSeguimiento(root, { getToken, records }) {
     if (!canStartMassExport({ exportInFlight })) return;
     if (isDegraded) { showToast('No se puede exportar: mostrando una copia de respaldo con datos incompletos.', 'error'); return; }
     if (!stickersLoaded) { showToast('Esperá a que carguen los stickers antes de exportar.', 'error'); return; }
-    const rowsToExport = visibleRows.slice();
-    if (!rowsToExport.length) { showToast('No hay profesionales para exportar.', 'error'); return; }
-    // Hard cap (plan D5/W10): a document beyond this size risks the
-    // performance budget (< 20 s / < 700 MB for ~110 profesionales) — acotar
-    // los filtros en vez de generar un archivo desmedido.
-    if (rowsToExport.length > 200) {
-      showToast('Máximo 200 profesionales por exportación — acotá los filtros (búsqueda/rango/profesional) antes de exportar.', 'error');
+    // Phase 11 / D17: the scope is the visible rows WITH activity in the range
+    // (seeded zero-activity people have nothing to report); over the cap
+    // (MASS_EXPORT_CAP, plan D5/W10 — a bigger document risks the performance
+    // budget, < 20 s / < 700 MB for ~110 profesionales) the export is REFUSED
+    // with the cap and the count, never truncated to a partial batch.
+    const scope = massExportScope(visibleRows);
+    if (scope.status === 'empty') {
+      showToast(scope.visible ? 'Ningún profesional visible tiene actividad en el rango: no hay nada que exportar.' : 'No hay profesionales para exportar.', 'error');
       return;
     }
+    if (scope.status === 'refused') { showToast(scope.message, 'error'); return; }
+    const rowsToExport = scope.rows;
     if (rowsToExport.length > 60) {
       const proceed = confirm(`Vas a generar el informe de ${rowsToExport.length} profesionales en un solo PDF. Esto puede tardar. ¿Continuar?`);
       if (!proceed) return;
@@ -3705,7 +4229,13 @@ export function initSeguimiento(root, { getToken, records }) {
         from: fromEl.value || null,
         to: toEl.value || null,
         professionalName: selectedProfessionalRow ? selectedProfessionalRow.name : '',
+        estado: estadoEl.value,
       });
+      // Formula injection (verified against SheetJS 0.20.3, the build loadXlsx
+      // loads): aoa_to_sheet/sheet_add_json store every JS string as a typed
+      // TEXT cell and the writer emits no formula element, so backend-supplied
+      // names/entidad/motivos starting with = + - @ are shown, never evaluated.
+      // Nothing to neutralize; a test guards against building formula cells.
       const wb = XLSX.utils.book_new();
       for (const sheetSubTab of ['totales', 'temporales']) {
         const sortSpec = defaultSortFor(sheetSubTab);
@@ -3743,28 +4273,44 @@ export function initSeguimiento(root, { getToken, records }) {
   // same as a genuinely missing one ("sin dato" in the report, never 0).
   fetchPendientes().then((value) => { pendientesValue = value; });
 
+  // PR 10 part 2 (D28): the sticker read is a revalidation of whatever was
+  // painted above (`held`), or the first full fetch. Only a CHANGED snapshot,
+  // a failure with nothing on screen, or a 401/403 touches the view.
   (async () => {
     const seq = ++loadSeq;
-    try {
-      const { evaluaciones, degraded, depuracion: depuracionResp } = await fetchStickersWithRetry(getToken);
-      if (seq !== loadSeq) return;
-      stickers = evaluaciones;
+    const result = await revalidateSnapshot({ getToken, isAdmin, retryDelayMs: snapshotRetryDelayMs });
+    if (seq !== loadSeq) return;
+    if (result.outcome === 'discarded') return;
+    if (result.outcome === 'unchanged') {
+      // Nothing changed: no state assignment, no render() (skip-render). Only
+      // a view that is NOT already showing this snapshot still needs it.
+      if (stickersLoaded && stickers === result.snapshot.stickers) return;
+    }
+    if (result.outcome === 'unchanged' || result.outcome === 'fresh') {
+      const { snapshot } = result;
+      stickers = snapshot.stickers;
       stickersLoaded = true;
-      isDegraded = degraded;
+      isDegraded = snapshot.degraded;
       stickerFetchErrorMessage = '';
       // seguimiento-inspectores-depurado, Fase 4: reassigned in the SAME
       // synchronous block as `stickers` above -- identityCache's own
       // stickers/surveys-only key (M4) still invalidates correctly (see
       // the `let depuracion` declaration's own doc comment).
-      depuracion = depuracionResp;
-    } catch (err) {
-      if (seq !== loadSeq) return;
-      // Survey half stays fully rendered (see the synchronous render() call
-      // above) — a sticker fetch failure only degrades the sticker-derived
-      // figures to DASH via renderStatusBanner/render() below, it never
-      // blanks the whole tab.
+      depuracion = snapshot.depuracion;
+    } else if (result.outcome === 'failed' && held) {
+      // A failed revalidation keeps the retained render: never a blank table,
+      // never an error banner over data that is still valid.
+      return;
+    } else {
+      // First-open failure, or a 401/403 (the retained PII must leave the
+      // view too): the Survey half stays fully rendered — the failure only
+      // degrades the sticker-derived figures to DASH via renderStatusBanner/
+      // render() below, it never blanks the whole tab.
+      stickers = [];
+      depuracion = null;
       stickersLoaded = false;
       isDegraded = false;
+      const err = result.error;
       stickerFetchErrorMessage = `Stickers no disponibles: ${err && err.message ? err.message : String(err)}`;
     }
     renderStatusBanner();

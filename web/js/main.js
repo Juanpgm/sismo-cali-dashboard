@@ -14,6 +14,7 @@ import { initVuelosUasTab } from './vuelos-uas.js';
 import { initStickers } from './stickers.js';
 import { initReportesCiudadanos } from './reportes-ciudadanos.js';
 import { initSeguimiento, updateSeguimientoRecords } from './seguimiento.js';
+import { wireSeguimientoSession } from './seguimiento-session.js';
 import { initUsuarios } from './usuarios.js';
 import { initAnalista } from './analista.js';
 import { initTheme } from './theme.js';
@@ -25,6 +26,18 @@ import {
 import { apiUrl } from './api-config.js';
 
 const el = (sel) => document.querySelector(sel);
+
+// Seguimiento renders and retains admin-only PII (names, cédulas). switchView
+// only hides its panel and auth.js boots the app once per tab, so on sign-out or
+// ANY role/user change the view is torn down (emptied, retained snapshot and
+// in-flight requests dropped); an admin signing in while Seguimiento is the
+// current tab gets a fresh init, a non-admin is moved to the Panel.
+wireSeguimientoSession({
+  getRoot: () => document.getElementById('view-seguimiento'),
+  isViewActive: () => currentView === 'seguimiento',
+  reopen: () => switchView('seguimiento'),
+  leave: () => switchView('panel'),
+});
 
 const kpiRow = el('#kpi-row');
 const activeChipsEl = el('#active-chips');
@@ -295,7 +308,7 @@ function switchView(view) {
   // closes the direct-console call, same defense-in-depth as the
   // acciones/reportes-ciudadanos guards above).
   if (view === 'seguimiento' && isAdmin()) {
-    initSeguimiento(document.getElementById('view-seguimiento'), { getToken: getIdToken, records: store.records });
+    initSeguimiento(document.getElementById('view-seguimiento'), { getToken: getIdToken, records: store.records, isAdmin: isAdmin() });
   }
   // Usuarios pulls live data from /api/usuarios — (re)load it each time it opens.
   if (view === 'usuarios') {

@@ -2142,6 +2142,14 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="sti
    bullet from its (far-right, unwrapped) text. This is free text, not a
    numeric cell — read left-to-right, wrap like normal prose. */
 .seg-grupo-externos-row td { text-align: left; white-space: normal; }
+/* Degraded/absent depuración banner (Phase 11): reuses .sticker-note, only the
+   warning accent is new; wraps like prose so it never widens the view. */
+.seg-depuracion-banner {
+  border-left: 3px solid var(--warning, #e0a020); padding-left: 10px;
+  color: var(--text-primary); overflow-wrap: anywhere;
+}
+/* Manual-review entries carry names and lists of cédulas: wrap, never widen. */
+.seg-revision-manual-list li { overflow-wrap: anywhere; }
 
 /* ============================================================
    ASIGNACIÓN — sub-section inside the Stickers tab (design.md

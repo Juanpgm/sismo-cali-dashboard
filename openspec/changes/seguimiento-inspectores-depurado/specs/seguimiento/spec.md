@@ -150,17 +150,40 @@ filter MUST compose with the existing search and date-range controls rather than
 - WHEN the filter is "all"
 - THEN the row is still listed
 
-### Requirement: Degraded Or Absent Depuración Is Announced
+### Requirement: Degraded Depuración Is Announced, An Absent Block Is Silent
 
-When `depuracion` is absent, or `activa:false` with any `motivo` (including
-`"stickers_degradados"`), Seguimiento MUST render an explicit banner stating that the depurado table
-is unavailable and naming the `motivo`, and MUST fall back to the legacy identity path rather than
-render an empty table. When `activa:true`, `referencia_generada_en` MUST remain visible.
+`[MODIFIED 2026-09-19, PR 10 part 2]` The banner is driven ONLY by a `depuracion` block the server
+SENT with `activa:false`. When such a block arrives with any `motivo` (`"sin_blob"`,
+`"stickers_degradados"`, `"calculo_fallido"`, `"referencia_timeout"`, or any other string; a block with
+no `motivo` is announced as `sin_motivo`), Seguimiento MUST render an explicit banner (`role="alert"`)
+stating that the depurado table is unavailable and naming the `motivo`, and MUST fall back to the
+legacy identity path rather than render an empty table.
+
+When the payload carries NO `depuracion` block at all (or a malformed, non-object one), Seguimiento MUST
+render the legacy path with NO banner and rows/KPIs byte-identical to the pre-feature render. An absent
+block is the NORMAL state — the backend flag is off, the request did not opt in, the caller is a viewer
+(who is never served the block), or the backend is older than this change — and the frontend cannot tell
+those cases apart; an error-style banner there would appear for every administrator the moment this
+ships, before anyone enabled anything, contradicting the promise that the flag-off state is invisible.
+Consequently a non-admin never sees the banner unless the server sends them a block. When
+`activa:true`, `referencia_generada_en` MUST remain visible (a neutral note, not an alert).
 
 #### Scenario: Degraded stickers show the banner
 - GIVEN `depuracion.activa=false` with `motivo="stickers_degradados"`
 - WHEN the tab renders
 - THEN a banner names the motivo and the legacy rows are still displayed
+
+#### Scenario: Each known motivo is named
+- GIVEN `depuracion.activa=false` with `motivo` in `sin_blob`, `stickers_degradados`, `calculo_fallido`,
+  `referencia_timeout` or an unknown string
+- WHEN the tab renders
+- THEN the banner names exactly that motivo
+
+#### Scenario: An absent block is silent
+- GIVEN a payload with no `depuracion` key (flag off, no opt-in, viewer, or an old backend), or with
+  `depuracion: null` or a non-object value
+- WHEN the tab renders
+- THEN no banner is shown, no role="alert" is set, and the rows and KPIs are those of the legacy path
 
 #### Scenario: Active depuración shows freshness instead of a banner
 - GIVEN `depuracion.activa=true` with `referencia_generada_en="2026-09-19"`

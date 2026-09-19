@@ -52,14 +52,57 @@ const ENDPOINT = 'stickersAtencionsismo';
 // passthrough with a `null` default (never `undefined`, matching every other
 // field's fixed-shape contract) keeps initStickers byte-identical while
 // finally letting the field reach seguimiento.js at all.
-export function tagFuente(data) {
+//
+// `etag` (seguimiento-inspectores-depurado PR 10 part 2, D28): the response's
+// ETag HEADER, surfaced additively as the 2nd argument (`null` when absent or
+// unusable, see usableEtag). It is the opaque `snapshot_id` Seguimiento
+// retains; the body never carries one (that would break the flag-off 4-key
+// byte-identity, design C-E3).
+export function tagFuente(data, etag = null) {
   const fuenteRespuesta = (data && data.fuente) || 'firestore';
   const list = Array.isArray(data && data.evaluaciones) ? data.evaluaciones : [];
   return {
     evaluaciones: list.map((e) => ({ fuente: fuenteRespuesta, ...e })),
     degraded: Boolean(data && data.degraded),
     depuracion: (data && data.depuracion) || null,
+    etag: usableEtag(etag),
   };
+}
+
+// Real ETags are ~50 characters; anything beyond this is not echoed back as an
+// If-None-Match request header (a huge header value risks a 431/400 that would
+// break every revalidation, so the frontend degrades to "full fetch instead").
+const MAX_ETAG_LENGTH = 512;
+
+// An ETag is an OPAQUE string: kept byte-for-byte (a weak `W/"..."` from an
+// intermediary included) and only ever compared / echoed, never parsed. This
+// only rejects what could not safely travel as a header value: non-strings,
+// blank, oversized, or anything outside printable ASCII (control characters,
+// CR/LF header injection, non-Latin1). `null` means "no usable validator" and
+// makes the caller fall back to a plain full fetch. Exported: pure.
+export function usableEtag(raw) {
+  if (typeof raw !== 'string') return null;
+  const value = raw.trim();
+  if (!value || value.length > MAX_ETAG_LENGTH) return null;
+  return /^[\x20-\x7e]+$/.test(value) ? value : null;
+}
+
+// The opt-in `depuracion=1` request parameter (design D25: EXACTLY that value,
+// never a truthy-ish variant). Appends with `?` or `&` as the base needs, drops
+// any `depuracion` the base already carried so exactly one survives, and keeps
+// a `#fragment` last. `depuracion` other than the boolean `true` -> unchanged
+// URL. Exported: pure.
+export function buildEvaluacionesUrl(base, { depuracion = false } = {}) {
+  if (depuracion !== true) return base;
+  const hashAt = base.indexOf('#');
+  const hash = hashAt >= 0 ? base.slice(hashAt) : '';
+  const beforeHash = hashAt >= 0 ? base.slice(0, hashAt) : base;
+  const queryAt = beforeHash.indexOf('?');
+  const path = queryAt >= 0 ? beforeHash.slice(0, queryAt) : beforeHash;
+  const kept = (queryAt >= 0 ? beforeHash.slice(queryAt + 1) : '')
+    .split('&')
+    .filter((part) => part && part.split('=')[0] !== 'depuracion');
+  return `${path}?${[...kept, 'depuracion=1'].join('&')}${hash}`;
 }
 
 // Error message for a failed fetch. Prefers a structured `error`, then a
@@ -76,13 +119,83 @@ export function errorMessageFor(data, status) {
 // Exported so seguimiento.js can pull the same stickersAtencionsismo feed
 // without duplicating the fetch/error-handling logic — just this same
 // one-shot authenticated read.
-export async function fetchEvaluacionesOnce(getToken, endpoint) {
+//
+// `opts` (all default OFF; seguimiento.js is the ONLY caller that sets them —
+// the Stickers tab passes none, so its request and result stay exactly as
+// before; design D25/D28):
+//  - `depuracion: true`  request the PII `depuracion` block (`?depuracion=1`)
+//    and pass it through. Without it the block is DROPPED from the result even
+//    if the server sent one: the Stickers tab must never receive or render it.
+//  - `ifNoneMatch`       a stored ETag, sent as `If-None-Match` when usable.
+//  - `conditional: true` a 304 resolves to `{ notModified: true, etag }`
+//    instead of an error. Without it a 304 is an Error (status 304): callers
+//    that never sent a validator destructure `{evaluaciones, degraded}` and
+//    must not receive a shapeless result.
+//  - `strictJson: true`  an unreadable/non-object 200 body is an Error instead
+//    of "zero stickers" (an unreadable body must never blank a retained table).
+//  - `signal`, `bypassCache` forwarded to fetch (`cache: 'no-store'`).
+// A failed HTTP answer throws an Error carrying `.status` (network failures
+// carry none), so callers can tell 401/403 (authorization) from 5xx.
+export async function fetchEvaluacionesOnce(getToken, endpoint, opts = {}) {
+  const {
+    depuracion = false, ifNoneMatch = null, conditional = false, strictJson = false, signal, bypassCache = false,
+  } = opts || {};
   const token = await getToken();
   if (!token) throw new Error('Sesión no válida. Volvé a iniciar sesión.');
-  const res = await fetch(apiUrl(endpoint), { headers: { Authorization: `Bearer ${token}` } });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(errorMessageFor(data, res.status));
-  return tagFuente(data);
+  const headers = { Authorization: `Bearer ${token}` };
+  const validator = usableEtag(ifNoneMatch);
+  if (validator) headers['If-None-Match'] = validator;
+  const init = { headers };
+  if (signal) init.signal = signal;
+  if (bypassCache) init.cache = 'no-store';
+  const res = await fetch(buildEvaluacionesUrl(apiUrl(endpoint), { depuracion }), init);
+  const etag = readEtag(res);
+  if (conditional && res.status === 304) return { notModified: true, etag };
+  let data;
+  let unreadable = false;
+  try {
+    data = await res.json();
+  } catch {
+    data = {};
+    unreadable = true;
+  }
+  if (!res.ok) {
+    const err = new Error(errorMessageFor(unreadable ? {} : data, res.status));
+    err.status = res.status;
+    throw err;
+  }
+  if (strictJson && (unreadable || !data || typeof data !== 'object' || Array.isArray(data))) {
+    const err = new Error('Respuesta inválida del servidor.');
+    err.status = res.status;
+    throw err;
+  }
+  const result = tagFuente(data, etag);
+  if (depuracion !== true) result.depuracion = null;
+  return result;
+}
+
+// The response's ETag, or null: a missing header, a header the browser does not
+// expose (CORS `expose_headers` not deployed) and any stub without a working
+// `headers.get` all read as "no validator" and never throw.
+function readEtag(res) {
+  try {
+    return usableEtag(res && res.headers && res.headers.get('ETag'));
+  } catch {
+    return null;
+  }
+}
+
+// The Stickers tab's read: one retry over a transient network blip (read-only,
+// safe to retry: a second attempt half a second later usually works), NEVER
+// opting in to `depuracion` and never conditional. Exported so a test can pin
+// that the tab's request has no `depuracion` parameter.
+export async function fetchEvaluacionesForTab(getToken, { retryDelayMs = 500 } = {}) {
+  try {
+    return await fetchEvaluacionesOnce(getToken, ENDPOINT);
+  } catch (err) {
+    await new Promise((r) => setTimeout(r, retryDelayMs));
+    return await fetchEvaluacionesOnce(getToken, ENDPOINT);
+  }
 }
 
 // Rendered once per tab open. No segments/tabs anymore — Evaluaciones ATC-20
@@ -102,17 +215,10 @@ export function initStickers(root, { getToken }) {
   root.innerHTML = shellHtml();
 
   const evaluacionesHandle = initEvaluaciones(root.querySelector('.eval-section'), {
-    // Read-only, safe to retry: intermittent "Failed to fetch" (network blip,
-    // cold serverless connection) shouldn't surface as an error when a second
-    // attempt half a second later would have worked.
-    fetchEvaluaciones: async () => {
-      try {
-        return await fetchEvaluacionesOnce(getToken, ENDPOINT);
-      } catch (err) {
-        await new Promise((r) => setTimeout(r, 500));
-        return await fetchEvaluacionesOnce(getToken, ENDPOINT);
-      }
-    },
+    // Read-only, safe to retry (see fetchEvaluacionesForTab): intermittent
+    // "Failed to fetch" shouldn't surface as an error when a second attempt
+    // half a second later would have worked. Never requests `depuracion`.
+    fetchEvaluaciones: () => fetchEvaluacionesForTab(getToken),
   });
 
   // Leaflet renders broken tiles when its container was hidden at build time

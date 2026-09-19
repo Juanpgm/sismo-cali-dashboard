@@ -1,6 +1,7 @@
 // Self-check for the pure aggregation helpers behind the Seguimiento tab.
 // Run: node web/js/seguimiento.test.mjs
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   normalizeName, cedulaKey, professionalKeyOf, buildIdentityIndex,
   buildProfessionalRows, buildTimeline, sortRows,
@@ -22,6 +23,7 @@ import {
   // row, the "Revisión manual" section, and the depuracion freshness badge.
   grupoExternosRowHtml, revisionManualHtml, depuracionBadgeHtml,
 } from './seguimiento.js';
+import * as SEG from './seguimiento.js';
 import { COLORS } from './utils.js';
 
 // Small test-local helper: the "no identity/no cédula at all" key shape a
@@ -3331,7 +3333,10 @@ assert.equal(depuracionBadgeHtml(null), null, 'no identity at all -> no badge');
 assert.equal(
   depuracionBadgeHtml({ depuracionActiva: false, depuracionMotivo: '' }),
   null,
-  'depuracion entirely absent (flag off / cold start with no motivo) -> no badge, byte-identical UI',
+  // A REAL identity built from an absent depuracion carries `depuracionAusente:
+  // true` and is silent too (test_absent_depuracion_block_is_silent_no_banner);
+  // this hand-built identity has no such flag, and the old contract holds.
+  'a hand-built identity without the depuracionAusente flag and with no motivo -> no badge',
 );
 {
   const badge = depuracionBadgeHtml({ depuracionActiva: false, depuracionMotivo: 'sin_blob' });
@@ -3342,5 +3347,936 @@ assert.equal(
   assert.match(badge, /2026-09-12/, 'activa:true must surface referencia_generada_en so the user knows how fresh it is');
 }
 console.log('depuracionBadgeHtml: activa:false surfaces the motivo, activa:true surfaces the freshness date OK');
+
+// ══ Phase 11 (PR 10, part 1) — seeding, KPIs, estado filter, mass export ═════
+// scope, manual review, degraded banner (design D17; spec "Extension
+// 2026-09-19 — Delta"). Each block is a NAMED test (tasks 11.1-11.17) run
+// through `named()`, which records a failure and keeps going so a RED run
+// lists EVERY missing behaviour at once; the file still throws at the end of
+// the block. Tests marked "characterization" pass on the pre-change code on
+// purpose: they pin behaviour the seeding must NOT alter.
+
+const phase11Failures = [];
+function named(name, fn) {
+  try {
+    fn();
+    console.log(`${name} OK`);
+  } catch (err) {
+    phase11Failures.push(name);
+    console.error(`${name} FAILED: ${err && err.message ? String(err.message).split('\n')[0] : err}`);
+  }
+}
+
+const P11_TODAY = '2026-09-19';
+
+function depInspector(i, extra = {}) {
+  const ced = String(1000000 + i);
+  return {
+    identidad_key: ced,
+    identificacion: ced,
+    nombre_completo: `Profesional ${i}`,
+    np: 'P2',
+    np_fuente: 'vercel',
+    fase: 'FASE_I',
+    estado_sugerido: 'revisar',
+    codigo: '',
+    entidad: '',
+    cedulas_unificadas: [],
+    ...extra,
+  };
+}
+function depuracionOf(inspectores, extra = {}) {
+  return {
+    activa: true,
+    motivo: '',
+    referencia_generada_en: '2026-09-19',
+    inspectores,
+    grupo_externos: null,
+    alias_nombres: {},
+    revision_manual: [],
+    ...extra,
+  };
+}
+function stickerFor(cedula, nombre, fecha = '2026-09-10T15:00:00+00:00', extra = {}) {
+  return {
+    inspector: { nombre_completo: nombre, identificacion: cedula },
+    inspector_fuente: 'evaluacion',
+    fuente: 'atencionsismo',
+    fase: 1,
+    fecha,
+    ...extra,
+  };
+}
+function rowsFor({
+  stickers = [], surveys = [], depuracion = null, from = null, to = null,
+} = {}) {
+  const identity = buildIdentityIndex({ stickers, surveys, depuracion });
+  return buildProfessionalRows({
+    stickers, surveys, from, to, identity, today: P11_TODAY,
+  });
+}
+// 373 seeded people, the first `nActive` of them with 4 stickers over 2 days.
+function seededUniverse(nSeeded = 373, nActive = 116) {
+  const inspectores = Array.from({ length: nSeeded }, (_, i) => depInspector(i + 1));
+  const stickers = [];
+  for (let i = 1; i <= nActive; i += 1) {
+    const ced = String(1000000 + i);
+    stickers.push(stickerFor(ced, `Profesional ${i}`, '2026-09-10T15:00:00+00:00'));
+    stickers.push(stickerFor(ced, `Profesional ${i}`, '2026-09-10T16:00:00+00:00'));
+    stickers.push(stickerFor(ced, `Profesional ${i}`, '2026-09-11T15:00:00+00:00'));
+    stickers.push(stickerFor(ced, `Profesional ${i}`, '2026-09-11T16:00:00+00:00'));
+  }
+  return { inspectores, stickers, depuracion: depuracionOf(inspectores) };
+}
+
+// ── 11.1 / 11.2 (seeding) ───────────────────────────────────────────────────
+
+named('test_rows_seeded_from_depuracion_inspectores', () => {
+  const dep = depuracionOf(
+    [depInspector(1), depInspector(2), depInspector(3)],
+    { alias_nombres: { 'profesional 2': '1000002' } },
+  );
+  const stickers = [
+    stickerFor('1000001', 'Profesional 1'),
+    stickerFor('1000001', 'Profesional 1', '2026-09-11T15:00:00+00:00'),
+  ];
+  const surveys = [{ nombre_evaluador: 'Profesional 2', fecha_inspeccion: '2026-09-12' }];
+  const { rows } = rowsFor({ stickers, surveys, depuracion: dep });
+  assert.equal(rows.length, 3, 'one row per depuracion.inspectores entry');
+  const byKey = new Map(rows.map((r) => [r.key, r]));
+  const zero = byKey.get('ced:1000003');
+  assert.ok(zero, 'the zero-activity person has a row');
+  assert.equal(zero.name, 'Profesional 3');
+  assert.equal(zero.cedula, '1000003');
+  assert.equal(zero.np, 'P2');
+  assert.equal(zero.estadoSugerido, 'revisar');
+  for (const field of ['stickersFase1', 'stickersFase2', 'stickersTotal', 'surveyTotal', 'total', 'activeDays', 'avgPerActiveDay']) {
+    assert.equal(zero[field], 0, `zero counter: ${field}`);
+  }
+  assert.equal(zero.firstDate, null);
+  assert.equal(zero.lastDate, null);
+  // Enrichment still lands on the seeded rows (sticker by cédula, survey by alias).
+  assert.equal(byKey.get('ced:1000001').stickersFase1, 2);
+  assert.equal(byKey.get('ced:1000002').surveyTotal, 1);
+  // Triangulation: a range that excludes every record still lists all 3.
+  const outOfRange = rowsFor({
+    stickers, surveys, depuracion: dep, from: '2026-01-01', to: '2026-01-31',
+  });
+  assert.equal(outOfRange.rows.length, 3);
+  assert.ok(outOfRange.rows.every((r) => r.total === 0));
+});
+
+named('test_seeding_empty_depuracion_inspectores_falls_back_to_records', () => {
+  const dep = depuracionOf([]);
+  const stickers = [stickerFor('7000001', 'Solo Sticker')];
+  const result = rowsFor({ stickers, depuracion: dep });
+  assert.equal(result.rows.length, 1, 'nothing seeded: the sticker still creates its row');
+  assert.equal(result.rows[0].stickersTotal, 1);
+  // Judgment-day C2 (deliberate change): the padrón is the number of SEEDED
+  // profiles, not the number of rows. Nothing was seeded, so it is 0 even
+  // though the orphan sticker still produced one (unseeded) row.
+  assert.equal(result.totals.padron, 0);
+  const none = rowsFor({ depuracion: dep });
+  assert.deepEqual(none.rows, []);
+  assert.equal(none.totals.professionals, 0);
+  assert.equal(none.totals.padron, 0);
+});
+
+named('test_seeding_tolerates_null_and_malformed_entries', () => {
+  const dep = depuracionOf([
+    null,
+    undefined,
+    {},
+    { identidad_key: null, identificacion: null, nombre_completo: 'Sin cedula' },
+    depInspector(1, { nombre_completo: null, np: null, estado_sugerido: null, codigo: undefined }),
+    depInspector(2),
+    depInspector(2, { nombre_completo: 'Duplicada' }),
+  ]);
+  const { rows } = rowsFor({ depuracion: dep });
+  assert.deepEqual(rows.map((r) => r.key).sort(), ['ced:1000001', 'ced:1000002']);
+  const nullish = rows.find((r) => r.key === 'ced:1000001');
+  assert.equal(nullish.name, '');
+  assert.equal(nullish.np, '');
+  assert.equal(nullish.estadoSugerido, '');
+  assert.equal(nullish.codigo, '');
+});
+
+named('test_seeding_cedula_forms_and_unificadas_route_every_sticker_to_one_row', () => {
+  const dep = depuracionOf([
+    depInspector(1, { identidad_key: '166000', identificacion: '166.000' }),
+    depInspector(2, { identidad_key: '1234567', identificacion: '1234567', cedulas_unificadas: ['1.234.567', '1234567.0', '0001234567', 'CC'] }),
+    depInspector(3, { identidad_key: '0012345', identificacion: '0012345' }),
+    // the same alias is claimed by TWO survivors: it must still resolve to ONE row
+    depInspector(4, { cedulas_unificadas: ['555'] }),
+    depInspector(5, { cedulas_unificadas: ['555'] }),
+  ]);
+  const stickers = [
+    stickerFor('166.000', 'Profesional 1'),
+    stickerFor('166000', 'Profesional 1'),
+    stickerFor('1234567.0', 'Profesional 2'),
+    stickerFor('1.234.567', 'Profesional 2'),
+    stickerFor('0001234567', 'Profesional 2'),
+    stickerFor('0012345', 'Profesional 3'),
+    stickerFor('12345', 'Otro Distinto'), // zero-preserving: NOT the padded cédula's row
+    stickerFor('555', 'Profesional 4'),
+  ];
+  const { rows, totals } = rowsFor({ stickers, depuracion: dep });
+  const byKey = new Map(rows.map((r) => [r.key, r]));
+  assert.equal(byKey.get('ced:166000').stickersTotal, 2);
+  assert.equal(byKey.get('ced:1234567').stickersTotal, 3);
+  assert.equal(byKey.get('ced:0012345').stickersTotal, 1);
+  assert.equal(byKey.get(`nom:${normalizeName('Otro Distinto')}`).stickersTotal, 1, 'unpadded cédula is NOT the padded one: its own row, never dropped');
+  const claimed = (byKey.get('ced:1000004').stickersTotal) + (byKey.get('ced:1000005').stickersTotal);
+  assert.equal(claimed, 1, 'a doubly-claimed alias resolves to exactly one row, no drop, no double count');
+  const perRow = rows.reduce((n, r) => n + r.stickersTotal, 0);
+  assert.equal(perRow, stickers.length, 'every sticker landed on a row');
+  assert.equal(totals.stickers, stickers.length);
+});
+
+named('test_seeding_unicode_and_huge_names_and_search', () => {
+  const huge = 'Ñ'.repeat(50000);
+  const dep = depuracionOf([
+    depInspector(1, { nombre_completo: 'José Ñandú 李雷' }),
+    depInspector(2, { nombre_completo: huge }),
+  ]);
+  const { rows } = rowsFor({ depuracion: dep });
+  assert.equal(rows.length, 2);
+  assert.equal(rows.find((r) => r.key === 'ced:1000001').name, 'José Ñandú 李雷');
+  assert.equal(visibleRowsFor(rows, { query: 'jose nandu' }).length, 1);
+  assert.equal(rows.find((r) => r.key === 'ced:1000002').name.length, 50000);
+});
+
+// ── 11.3 ────────────────────────────────────────────────────────────────────
+
+named('test_sticker_for_unseeded_cedula_still_creates_row', () => {
+  const dep = depuracionOf([depInspector(1), depInspector(2)]);
+  const stickers = [
+    stickerFor('9999999', 'Sin Sembrar', '2026-09-10T15:00:00+00:00'),
+    stickerFor('9999999', 'Sin Sembrar', '2026-09-11T15:00:00+00:00'),
+  ];
+  const surveys = [{ nombre_evaluador: 'Evaluador Suelto', fecha_inspeccion: '2026-09-12' }];
+  const { rows, totals, unassigned } = rowsFor({ stickers, surveys, depuracion: dep });
+  assert.equal(rows.length, 4, '2 seeded + the unseeded cédula + the name-only survey');
+  // The resolver only trusts an ELIGIBLE (seeded) cédula as a merge key, so an
+  // unseeded one falls back to its name key — but the row exists and keeps the cédula.
+  const extra = rows.find((r) => r.key === `nom:${normalizeName('Sin Sembrar')}`);
+  assert.ok(extra, 'the unseeded cédula has a row');
+  assert.equal(extra.stickersTotal, 2);
+  assert.equal(extra.name, 'Sin Sembrar', 'the row is identifiable, not blank');
+  assert.equal(extra.cedula, '9999999');
+  assert.ok(rows.some((r) => r.key === `nom:${normalizeName('Evaluador Suelto')}` && r.surveyTotal === 1));
+  assert.equal(totals.stickers, 2);
+  assert.deepEqual(unassigned, { stickers: 0, surveys: 0 });
+  // Judgment-day C2 (deliberate change, was `4`): this used to pin the WRONG
+  // semantics (padron = rows.length, i.e. 2 seeded + 2 orphan nom: rows). The
+  // padrón is the number of seeded profiles and never counts the orphan rows
+  // that records resolved to nobody create.
+  assert.equal(totals.padron, 2);
+  assert.equal(totals.professionals, 2, 'only the two rows WITH activity count as active');
+});
+
+// ── 11.4 (characterization) ─────────────────────────────────────────────────
+
+named('test_legacy_path_unchanged_when_depuracion_absent_or_inactive', () => {
+  const stickers = [
+    stickerFor('1000001', 'Profesional 1'),
+    stickerFor('1000001', 'Profesional 1', '2026-09-11T15:00:00+00:00'),
+    stickerFor('', 'Solo Nombre'),
+  ];
+  const surveys = [{ nombre_evaluador: 'Solo Nombre', fecha_inspeccion: '2026-09-12' }];
+  const baseline = buildProfessionalRows({
+    stickers, surveys, identity: buildIdentityIndex({ stickers, surveys }), today: P11_TODAY,
+  });
+  const seededButInactive = depuracionOf(
+    [depInspector(7), depInspector(8), depInspector(9)],
+    { activa: false, motivo: 'stickers_degradados' },
+  );
+  for (const depuracion of [null, undefined, seededButInactive, { activa: false, inspectores: [depInspector(7)] }]) {
+    const out = rowsFor({ stickers, surveys, depuracion });
+    assert.deepEqual(out.rows, baseline.rows, 'rows byte-identical to the no-depuracion call');
+    assert.deepEqual(out.totals, baseline.totals);
+    assert.deepEqual(Object.keys(out.totals), ['professionals', 'stickers', 'surveys', 'avgPerProfessional', 'unassigned', 'stickersWithoutDate'], 'no `padron` key on the legacy path');
+    assert.equal(out.rows.length, 2, 'rows only from stickers/surveys, the inactive inspectores are ignored');
+  }
+});
+
+// ── 11.5 / 11.6 / 11.7 (KPIs) ───────────────────────────────────────────────
+
+named('test_kpis_use_rows_with_activity_as_denominator', () => {
+  const { stickers, depuracion } = seededUniverse(373, 116);
+  const result = rowsFor({ stickers, depuracion });
+  assert.equal(result.rows.length, 373);
+  assert.equal(result.totals.padron, 373);
+  assert.equal(result.totals.professionals, 116);
+  assert.equal(result.totals.stickers, 464);
+  assert.equal(result.totals.avgPerProfessional, 4, '464 stickers / 116 active (NOT / 373 = 1.24)');
+  const t = kpiTotals(result, { stickersLoaded: true });
+  assert.equal(t.professionals, 116);
+  assert.equal(t.padron, 373, 'the seeded total is surfaced separately');
+  assert.equal(t.avgStickersPerDayPerProfessional, 2, 'each active professional: 4 stickers / 2 days');
+  const html = kpisHtml(result, true);
+  assert.match(html, /profesionales activos[\s\S]*?>116</);
+  assert.match(html, /padr.n[\s\S]*?>373</i, 'the padrón total has its own, distinctly labelled tile');
+  assert.equal((html.match(/kpi-tile/g) || []).length, 6);
+  // Triangulation: a different split.
+  const other = rowsFor({ ...seededUniverse(40, 3) });
+  assert.equal(kpiTotals(other).professionals, 3);
+  assert.equal(kpiTotals(other).padron, 40);
+});
+
+named('test_kpis_legacy_still_five_tiles_and_no_padron', () => {
+  const stickers = [stickerFor('1000001', 'Profesional 1')];
+  const result = rowsFor({ stickers });
+  const t = kpiTotals(result);
+  assert.equal(Object.prototype.hasOwnProperty.call(t, 'padron'), false);
+  assert.equal(t.professionals, 1);
+  assert.equal((kpisHtml(result, true).match(/kpi-tile/g) || []).length, 5);
+});
+
+named('test_kpis_empty_range_no_nan', () => {
+  const { inspectores, stickers } = seededUniverse(373, 116);
+  const dep = depuracionOf(inspectores);
+  const result = rowsFor({
+    stickers, depuracion: dep, from: '2027-01-01', to: '2027-01-31',
+  });
+  assert.equal(result.rows.length, 373, 'everybody still listed');
+  assert.equal(result.totals.professionals, 0);
+  assert.equal(result.totals.avgPerProfessional, 0);
+  const t = kpiTotals(result, { stickersLoaded: true });
+  assert.equal(t.professionals, 0);
+  assert.equal(t.padron, 373);
+  assert.equal(t.stickers, 0);
+  assert.equal(t.avgStickersPerDayPerProfessional, 0);
+  assert.equal(t.barriosActivos, 0);
+  const html = kpisHtml(result, true);
+  assert.ok(!/NaN|Infinity|undefined|null/.test(html), 'no NaN/Infinity/undefined reaches the DOM');
+  // Inverted range (to < from) and an entirely empty seeded set behave the same.
+  const inverted = rowsFor({
+    stickers, depuracion: dep, from: '2026-09-30', to: '2026-09-01',
+  });
+  assert.equal(kpiTotals(inverted).professionals, 0);
+  assert.ok(!/NaN|Infinity/.test(kpisHtml(inverted, true)));
+  const empty = rowsFor({ depuracion: depuracionOf([]) });
+  assert.ok(!/NaN|Infinity/.test(kpisHtml(empty, true)));
+  // A seeded padrón with stickers not loaded yet keeps masking behind DASH.
+  assert.equal(kpiTotals(result, { stickersLoaded: false }).padron, DASH);
+});
+
+named('test_kpis_barrios_ignore_zero_activity_rows', () => {
+  const result = {
+    rows: [
+      { stickersTotal: 1, total: 1, stickerActiveDays: 1, barriosActivos: ['San Antonio'] },
+      { stickersTotal: 0, total: 0, stickerActiveDays: 0, barriosActivos: ['Recent Barrio Outside Range'] },
+    ],
+    totals: { professionals: 1, padron: 2, stickers: 1, surveys: 0 },
+  };
+  const t = kpiTotals(result);
+  assert.equal(t.barriosActivos, 1, 'a zero-activity row (barrios are last-7-days, not range-bound) never feeds the KPI');
+  assert.equal(t.professionals, 1);
+});
+
+// ── 11.8 (characterization) ─────────────────────────────────────────────────
+
+named('test_timeline_and_charts_ignore_zero_activity_rows', () => {
+  const { stickers, inspectores } = seededUniverse(373, 5);
+  const seeded = buildIdentityIndex({ stickers, surveys: [], depuracion: depuracionOf(inspectores) });
+  const plain = buildIdentityIndex({ stickers, surveys: [] });
+  const withSeed = buildTimeline({ stickers, surveys: [], identity: seeded });
+  const without = buildTimeline({ stickers, surveys: [], identity: plain });
+  assert.deepEqual(withSeed, without, 'seeding never changes the timeline');
+  assert.deepEqual(withSeed.labels, ['2026-09-10', '2026-09-11']);
+  assert.deepEqual(withSeed.stickers, [10, 10]);
+  assert.equal(timelineChartConfig(withSeed).data.datasets.length, 4, 'no series per seeded row');
+  // Selecting a zero-activity professional yields an empty (not zero-height) timeline.
+  const zeroOnly = buildTimeline({
+    stickers, surveys: [], identity: seeded, professionalKey: 'ced:1000373',
+  });
+  assert.deepEqual(zeroOnly.labels, []);
+});
+
+// ── 11.9 / 11.10 / 11.11 (estado filter + column) ───────────────────────────
+
+named('test_estado_filter_narrows_table_and_composes_with_search', () => {
+  const dep = depuracionOf([
+    depInspector(1, { nombre_completo: 'Garcia Uno', estado_sugerido: 'activo' }),
+    depInspector(2, { nombre_completo: 'Garcia Dos', estado_sugerido: 'candidato_desactivacion' }),
+    depInspector(3, { nombre_completo: 'Garcia Tres', estado_sugerido: 'revisar' }),
+    depInspector(4, { nombre_completo: 'Perez Cuatro', estado_sugerido: 'activo' }),
+    depInspector(5, { nombre_completo: 'Lopez Cinco', estado_sugerido: 'no_persona' }),
+  ]);
+  const stickers = [stickerFor('1000001', 'Garcia Uno')];
+  const { rows } = rowsFor({ stickers, depuracion: dep });
+  assert.equal(visibleRowsFor(rows, { query: 'garcia' }).length, 3);
+  assert.deepEqual(
+    visibleRowsFor(rows, { query: 'garcia', estado: 'activo' }).map((r) => r.name),
+    ['Garcia Uno'],
+    'search matches 3, only 1 is activo',
+  );
+  assert.equal(visibleRowsFor(rows, { estado: 'activo' }).length, 2);
+  assert.equal(visibleRowsFor(rows, { estado: 'candidato_desactivacion' }).length, 1);
+  assert.equal(visibleRowsFor(rows, { estado: 'no_persona' }).length, 1);
+  assert.equal(visibleRowsFor(rows, { estado: 'all' }).length, 5);
+  assert.equal(visibleRowsFor(rows, {}).length, 5, 'default is "all"');
+  assert.equal(visibleRowsFor(rows, { estado: '' }).length, 5, 'an empty value means "all"');
+  // Composes with the professional select too (AND).
+  assert.equal(visibleRowsFor(rows, { estado: 'activo', professionalKey: 'ced:1000004' }).length, 1);
+  assert.equal(visibleRowsFor(rows, { estado: 'activo', professionalKey: 'ced:1000002' }).length, 0);
+  // The date range is upstream of the filter: it never changes with the estado.
+  const narrowed = rowsFor({
+    stickers, depuracion: dep, from: '2026-09-10', to: '2026-09-10',
+  });
+  assert.equal(narrowed.rows.length, 5);
+  assert.equal(visibleRowsFor(narrowed.rows, { estado: 'activo', query: 'garcia' }).length, 1);
+  assert.equal(hasActiveSegFilters({ estado: 'activo' }), true);
+  assert.equal(hasActiveSegFilters({ estado: 'all' }), false);
+  assert.equal(hasActiveSegFilters({}), false);
+});
+
+named('test_estado_column_only_with_depuracion_and_options_default_all', () => {
+  assert.deepEqual(columnsFor('totales'), COLUMNS_TOTALES, 'legacy columns untouched');
+  const withEstado = columnsFor('totales', { withEstado: true }).map((c) => c.key);
+  assert.equal(withEstado.length, COLUMNS_TOTALES.length + 1);
+  assert.ok(withEstado.includes('estadoSugerido'));
+  assert.equal(withEstado[withEstado.indexOf('np') + 1], 'estadoSugerido', 'right after "Clase (P)"');
+  assert.deepEqual(columnsFor('temporales', { withEstado: true }), COLUMNS_TEMPORALES, 'temporales sub-tab unchanged');
+  const values = SEG.ESTADO_FILTER_OPTIONS.map((o) => o.value);
+  assert.equal(values[0], 'all');
+  for (const v of ['activo', 'revisar', 'candidato_desactivacion', 'no_persona']) assert.ok(values.includes(v), v);
+  assert.equal(cellHtml({ estadoSugerido: 'candidato_desactivacion' }, 'estadoSugerido', true), 'candidato_desactivacion');
+  assert.equal(cellHtml({ estadoSugerido: '' }, 'estadoSugerido', true), 'Sin dato');
+  assert.equal(cellHtml({ estadoSugerido: 'activo' }, 'estadoSugerido', false), DASH);
+});
+
+named('test_estado_filter_unknown_value_visible_under_all', () => {
+  const dep = depuracionOf([
+    depInspector(1, { estado_sugerido: 'algo_inesperado' }),
+    depInspector(2, { estado_sugerido: '<b>x</b>' }),
+    depInspector(3, { estado_sugerido: 'activo' }),
+  ]);
+  const { rows } = rowsFor({ depuracion: dep });
+  assert.equal(visibleRowsFor(rows, { estado: 'all' }).length, 3, 'unknown strings stay visible under "all"');
+  assert.equal(visibleRowsFor(rows, {}).length, 3);
+  assert.equal(visibleRowsFor(rows, { estado: 'activo' }).length, 1, 'and are narrowed away by a concrete estado');
+  assert.equal(visibleRowsFor(rows, { estado: 'algo_inesperado' }).length, 1, 'an unexpected value can still be matched exactly');
+  assert.equal(cellHtml(rows.find((r) => r.name === 'Profesional 2'), 'estadoSugerido', true), '&lt;b&gt;x&lt;/b&gt;', 'the unknown estado is escaped in the cell');
+});
+
+named('test_sort_is_stable_with_seeded_zero_activity_rows', () => {
+  const { stickers, depuracion } = seededUniverse(60, 6);
+  const { rows } = rowsFor({ stickers, depuracion });
+  const a = sortRows(rows, 'stickersFase1', 'desc').map((r) => r.key);
+  const shuffled = [...rows].reverse();
+  const b = sortRows(shuffled, 'stickersFase1', 'desc').map((r) => r.key);
+  assert.deepEqual(a, b, 'input order never changes the result: ties break by key');
+  assert.equal(new Set(a).size, 60, 'sorting never loses or repeats a row');
+  assert.ok(a.slice(0, 6).every((k) => Number(k.slice(4)) <= 1000006), 'the 6 active rows first');
+  const asc = sortRows(rows, 'estadoSugerido', 'asc').map((r) => r.key);
+  assert.deepEqual(asc, [...asc].sort(), 'all-equal estado: pure key order');
+});
+
+// ── 11.12 / 11.13 / 11.14 (mass PDF export scope) ───────────────────────────
+
+named('test_mass_pdf_export_defaults_to_rows_with_activity', () => {
+  const { stickers, depuracion } = seededUniverse(373, 116);
+  const { rows } = rowsFor({ stickers, depuracion });
+  assert.equal(SEG.rowHasActivity(rows.find((r) => r.key === 'ced:1000001')), true);
+  assert.equal(SEG.rowHasActivity(rows.find((r) => r.key === 'ced:1000373')), false);
+  const scope = SEG.massExportScope(rows);
+  assert.equal(scope.status, 'ok');
+  assert.equal(scope.rows.length, 116, '116 reports, not 373');
+  assert.equal(scope.visible, 373);
+  assert.equal(scope.withActivity, 116);
+  assert.ok(scope.rows.every((r) => r.total > 0));
+  const text = SEG.massExportScopeText(scope);
+  assert.match(text, /116/);
+  assert.match(text, /373/);
+  assert.match(text, /con actividad/, 'the scope is stated in the UI before running');
+  // Filters narrow the base first: only the visible rows are considered.
+  const narrowed = visibleRowsFor(rows, { query: 'profesional 1' });
+  assert.ok(SEG.massExportScope(narrowed).rows.length <= narrowed.length);
+  // All visible rows active: the statement says so instead of "X de X".
+  const allActive = SEG.massExportScope(rows.filter((r) => r.total > 0));
+  assert.equal(allActive.rows.length, 116);
+  assert.doesNotMatch(SEG.massExportScopeText(allActive), /116 de 116/);
+});
+
+named('test_mass_pdf_export_over_cap_refuses_instead_of_truncating', () => {
+  const mk = (n) => Array.from({ length: n }, (_, i) => ({ key: `ced:${i}`, total: 1 }));
+  const at = SEG.massExportScope(mk(200));
+  assert.equal(at.status, 'ok', '200 is allowed');
+  assert.equal(at.rows.length, 200);
+  const over = SEG.massExportScope(mk(201));
+  assert.equal(over.status, 'refused', '201 is refused');
+  assert.deepEqual(over.rows, [], 'no partial batch');
+  assert.match(over.message, /200/, 'names the cap');
+  assert.match(over.message, /201/, 'names the count');
+  assert.equal(SEG.massExportScopeText(over), over.message);
+  assert.equal(SEG.MASS_EXPORT_CAP, 200);
+  // The cap applies to rows WITH activity: 500 visible / 150 active is fine.
+  const mixed = [...mk(150), ...Array.from({ length: 350 }, (_, i) => ({ key: `z:${i}`, total: 0 }))];
+  const scope = SEG.massExportScope(mixed);
+  assert.equal(scope.status, 'ok');
+  assert.equal(scope.rows.length, 150);
+  assert.equal(SEG.massExportScope(mk(5), { cap: 4 }).status, 'refused', 'a custom cap is honoured');
+});
+
+named('test_mass_pdf_export_scope_empty_and_malformed', () => {
+  for (const input of [[], null, undefined, 'x', [null, undefined]]) {
+    const scope = SEG.massExportScope(input);
+    assert.equal(scope.status, 'empty');
+    assert.deepEqual(scope.rows, []);
+    assert.equal(scope.visible, Array.isArray(input) ? input.length : 0);
+  }
+  const zeroOnly = SEG.massExportScope([{ key: 'a', total: 0 }, { key: 'b' }, { key: 'c', total: Number.NaN }]);
+  assert.equal(zeroOnly.status, 'empty', 'visible rows exist but none has activity');
+  assert.equal(zeroOnly.visible, 3);
+  assert.match(SEG.massExportScopeText(zeroOnly), /ning.n profesional/i);
+});
+
+// ── 11.15 / 11.15b / 11.16 (revisión manual) ────────────────────────────────
+
+const REV_IDENTITY = buildIdentityIndex({
+  depuracion: depuracionOf(
+    [
+      depInspector(1, { nombre_completo: 'Ana Uno' }),
+      depInspector(2, { nombre_completo: 'Beto Dos' }),
+      depInspector(3, { nombre_completo: 'Carla Tres' }),
+    ],
+    {
+      grupo_externos: {
+        n_colapsados: 1,
+        detalle: [{
+          nombre_completo: 'Extern Nueve', identificacion: '9999999', motivo: 'cedula_sospechosa', ultimo_sticker: null,
+        }],
+      },
+    },
+  ),
+});
+const REV_ITEMS = [
+  { motivo: 'codigo_remap_candidato', codigo: '041', nombre_vercel: 'ana uno', identidad_key_candidato: '1000001', score: 92.5 },
+  { motivo: 'remap_sin_duenio', codigo: '042', identidad_key: '1000002' },
+  { motivo: 'remap_conflicto', codigo: '043', identidad_key: '1000003' },
+  {
+    motivo: 'remap_owner_ambiguo', codigo: '044', cedula_key: '1000001', identidad_keys: ['1000001', '1000002'], identidad_keys_titulares: ['1000003'],
+  },
+  { motivo: 'remap_mismos_titulares', codigo: '045', identidad_key: '1000002', identidad_key_conservado: '1000001' },
+  { motivo: 'codigo_reemplazado', identidad_key: '1000003', codigo_anterior: '052', codigo_nuevo: '046' },
+  { motivo: 'codigo_duplicado_local', codigo: '047', identidad_keys: ['1000001', '1000003'] },
+  {
+    motivo: 'codigo_perdido_unificacion', codigo: '048', identidad_key: '1000001', identidad_key_absorbido: '2000002',
+  },
+  {
+    motivo: 'fase2_cedula_colision', cedula_key: '1000004', identidad_key: '1000002', identidad_key_existente: '1000001', nombre_completo: 'Beto Dos',
+  },
+  {
+    motivo: 'cedula_duplicada_main', cedula_key: '1000005', nombre_completo: 'Doble Cinco', nombre_completo_duplicado: 'Doble Cinco B', id: 'm1', id_duplicado: 'm2', mismo_nombre: false,
+  },
+  { motivo: 'main_sin_cedula', cedula_key: '', nombre_completo: 'Sin Cedula Seis', id: 'm6' },
+  { motivo: 'codigo_vercel_duplicado', codigo: '049', identidad_keys_titulares: ['1000001', '9999999'] },
+];
+const REV_EXPECTED = [
+  [/Ana Uno/, /1000001/, /92\.5/, /041/],
+  [/Beto Dos/, /1000002/, /042/],
+  [/Carla Tres/, /1000003/, /043/],
+  [/Ana Uno/, /Beto Dos/, /Carla Tres/, /044/, /1000001/],
+  [/Beto Dos/, /Ana Uno/, /1000002/, /1000001/, /045/, /conserva/i],
+  [/Carla Tres/, /1000003/, /052/, /046/, /→/],
+  [/Ana Uno/, /Carla Tres/, /047/],
+  [/Ana Uno/, /1000001/, /2000002/, /048/, /absorbid/i],
+  [/Beto Dos/, /Ana Uno/, /1000004/, /1000002/],
+  [/Doble Cinco B/, /1000005/, /Doble Cinco/],
+  [/Sin Cedula Seis/],
+  [/Ana Uno/, /Extern Nueve/, /9999999/, /049/],
+];
+
+named('test_revision_manual_renders_new_motivos_with_name_and_cedula', () => {
+  assert.equal(REV_ITEMS.length, REV_EXPECTED.length);
+  REV_ITEMS.forEach((item, i) => {
+    const html = revisionManualHtml([item], { identity: REV_IDENTITY, isAdmin: true });
+    assert.equal((html.match(/<li/g) || []).length, 1, item.motivo);
+    assert.ok(html.includes(item.motivo), `${item.motivo}: the raw motivo stays visible`);
+    for (const pattern of REV_EXPECTED[i]) assert.match(html, pattern, `${item.motivo}: ${pattern}`);
+  });
+  // One combined list renders every entry in order.
+  const all = revisionManualHtml(REV_ITEMS, { identity: REV_IDENTITY, isAdmin: true });
+  assert.equal((all.match(/<li/g) || []).length, REV_ITEMS.length);
+});
+
+named('test_revision_manual_unknown_motivo_shows_raw_string', () => {
+  const html = revisionManualHtml(
+    [{ motivo: 'motivo_del_futuro', codigo: '077', identidad_key: '1000001' }, { motivo: '' }, {}, null, 'basura'],
+    { identity: REV_IDENTITY, isAdmin: true },
+  );
+  assert.match(html, /motivo_del_futuro/, 'the raw string is shown, the entry is not dropped');
+  assert.match(html, /Ana Uno/, 'generic fields of an unknown motivo still resolve');
+  assert.match(html, /sin motivo/);
+  assert.equal((html.match(/<li/g) || []).length, 4, 'null entries are skipped, every real one is listed');
+});
+
+named('test_revision_manual_shows_ocurrencias_only_from_two', () => {
+  const base = { motivo: 'cedula_duplicada_main', cedula_key: '1000005', nombre_completo: 'Doble Cinco' };
+  const opts = { identity: REV_IDENTITY, isAdmin: true };
+  const plain = revisionManualHtml([base], opts);
+  assert.doesNotMatch(plain, /×/);
+  assert.match(revisionManualHtml([{ ...base, n_ocurrencias: 3 }], opts), /×3/);
+  assert.match(revisionManualHtml([{ ...base, n_ocurrencias: 2 }], opts), /×2/);
+  for (const n of [1, 0, -4, null, undefined, '3', Number.NaN, Infinity]) {
+    assert.equal(revisionManualHtml([{ ...base, n_ocurrencias: n }], opts), plain, `n_ocurrencias=${String(n)} renders exactly as before`);
+  }
+  assert.match(revisionManualHtml([{ ...base, n_ocurrencias: 3 }], { isAdmin: false }), /×3/, 'the counter is not PII');
+});
+
+named('test_revision_manual_without_options_keeps_the_previous_render', () => {
+  // characterization of the pre-Phase-11 contract (Task 4.6/4.7).
+  const html = revisionManualHtml([{ motivo: 'codigo_vercel_duplicado', codigo: '097' }]);
+  assert.equal(html, '<ul class="seg-revision-manual-list"><li>codigo_vercel_duplicado · código 097</li></ul>');
+});
+
+named('test_revision_manual_identity_detail_admin_only', () => {
+  const html = revisionManualHtml(REV_ITEMS, { identity: REV_IDENTITY, isAdmin: false });
+  assert.equal((html.match(/<li/g) || []).length, REV_ITEMS.length, 'the section is still rendered');
+  for (const item of REV_ITEMS) assert.ok(html.includes(item.motivo), item.motivo);
+  for (const codigo of ['041', '042', '043', '044', '045', '047', '048', '049']) assert.ok(html.includes(codigo), `código ${codigo} is not PII`);
+  for (const pii of [/Ana Uno/, /Beto Dos/, /Carla Tres/, /Extern Nueve/, /Doble Cinco/, /Sin Cedula Seis/, /100000\d/, /999999/, /2000002/]) {
+    assert.doesNotMatch(html, pii, `non-admin payload must not carry ${pii}`);
+  }
+  // Empty state is unchanged for a non-admin.
+  assert.match(revisionManualHtml([], { isAdmin: false }), /[Ss]in pendientes/);
+});
+
+named('test_revision_manual_escapes_every_new_render_path', () => {
+  const evil = '<img src=x onerror=alert(1)>';
+  const identity = buildIdentityIndex({
+    depuracion: depuracionOf(
+      [depInspector(1, { nombre_completo: evil, identificacion: evil })],
+      {
+        grupo_externos: {
+          n_colapsados: 1, detalle: [{ nombre_completo: '<svg onload=1>', identificacion: '9999999', motivo: 'x', ultimo_sticker: null }],
+        },
+      },
+    ),
+  });
+  const html = revisionManualHtml([
+    {
+      motivo: evil,
+      codigo: '"><script>alert(1)</script>',
+      identidad_key: '1000001',
+      identidad_keys: ['1000001', evil],
+      identidad_keys_titulares: ['9999999'],
+      identidad_key_conservado: `'${evil}`,
+      codigo_anterior: '<b>a</b>',
+      codigo_nuevo: '</li><li>injected',
+      cedula_key: '<u>1</u>',
+      nombre_completo: '<iframe src=javascript:1>',
+      nombre_completo_duplicado: '<a href="javascript:1">x</a>',
+      n_ocurrencias: 4,
+    },
+  ], { identity, isAdmin: true });
+  for (const raw of ['<img', '<script', '<svg', '<b>', '<u>', '<iframe', '<a href', '</li><li>injected']) {
+    assert.ok(!html.includes(raw), `raw ${raw} must not survive`);
+  }
+  assert.match(html, /&lt;img/);
+  assert.equal((html.match(/<li/g) || []).length, 1, 'the injected </li><li> did not add an entry');
+});
+
+named('test_revision_manual_huge_lists_and_names_stay_bounded', () => {
+  const keys = Array.from({ length: 5000 }, (_, i) => String(2000000 + i));
+  const started = performance.now();
+  const html = revisionManualHtml(
+    [{ motivo: 'codigo_duplicado_local', codigo: '1', identidad_keys: keys, nombre_completo: 'N'.repeat(200000) }],
+    { identity: REV_IDENTITY, isAdmin: true },
+  );
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed < 2000, `rendered in ${elapsed.toFixed(0)} ms`);
+  assert.match(html, /\+[\d.]+ m.s/, 'a huge key list is capped with a "+N más" tail');
+  assert.ok(!html.includes('2004999'), 'the tail of the list is not rendered');
+});
+
+named('test_revision_manual_unresolvable_keys_and_missing_identity', () => {
+  const item = { motivo: 'remap_conflicto', codigo: '043', identidad_key: '5550001' };
+  const withIdentity = revisionManualHtml([item], { identity: REV_IDENTITY, isAdmin: true });
+  assert.match(withIdentity, /5550001/, 'a key with no profile still shows its cédula, never a blank');
+  for (const identity of [null, undefined, {}, { profiles: null }, { profiles: new Map(), grupoExternos: { detalle: null } }]) {
+    const html = revisionManualHtml([item], { identity, isAdmin: true });
+    assert.match(html, /5550001/);
+  }
+});
+
+// ── 11.17 (banner) ──────────────────────────────────────────────────────────
+
+named('test_degraded_banner_shown_with_motivo', () => {
+  for (const motivo of ['stickers_degradados', 'sin_blob', 'calculo_fallido', 'referencia_timeout', 'motivo_raro']) {
+    const identity = buildIdentityIndex({ depuracion: { activa: false, motivo, inspectores: [depInspector(1)] } });
+    const text = depuracionBadgeHtml(identity, { loaded: true });
+    assert.ok(text && text.includes(motivo), `banner names ${motivo}`);
+    assert.doesNotMatch(text, /referencia generada/);
+  }
+  // A block with activa:false and NO motivo is still a server-sent degradation.
+  for (const block of [{ activa: false }, { activa: false, motivo: '' }, { activa: false, motivo: null }]) {
+    const noMotivo = buildIdentityIndex({ depuracion: block });
+    assert.equal(noMotivo.depuracionAusente, false, 'a block was sent');
+    assert.match(depuracionBadgeHtml(noMotivo, { loaded: true }), /sin_motivo/);
+    assert.equal(SEG.depuracionBadgeIsDegraded(noMotivo), true);
+  }
+  // ...but never while the sticker fetch is still in flight or has failed.
+  const degraded = buildIdentityIndex({ depuracion: { activa: false, motivo: 'sin_blob' } });
+  assert.equal(depuracionBadgeHtml(degraded, { loaded: false }), null);
+});
+
+// Task 1 correction (PR 10, part 2): an ABSENT block is the NORMAL state
+// (backend flag off, request did not opt in, viewer, old backend) and the
+// frontend cannot tell those apart -- so it is SILENT: legacy render, no banner.
+named('test_absent_depuracion_block_is_silent_no_banner', () => {
+  for (const payload of [
+    {}, { depuracion: null }, { depuracion: undefined }, { stickers: [], surveys: [] },
+    { depuracion: 'x' }, { depuracion: 7 }, { depuracion: [] }, { depuracion: true },
+  ]) {
+    const identity = buildIdentityIndex(payload);
+    assert.equal(identity.depuracionAusente, true, `absent: ${JSON.stringify(payload)}`);
+    assert.equal(identity.depuracionActiva, false);
+    for (const loaded of [true, false]) {
+      assert.equal(depuracionBadgeHtml(identity, { loaded }), null, `no badge text (loaded=${loaded}) for ${JSON.stringify(payload)}`);
+    }
+    assert.equal(SEG.depuracionBadgeIsDegraded(identity), false, 'an absent block is not "degraded"');
+  }
+  // The absent path must not even mention the synthetic motivo the part-1 code invented.
+  assert.doesNotMatch(readFileSync(new URL('./seguimiento.js', import.meta.url), 'utf8'), /sin_depuracion/);
+});
+
+named('test_active_shows_referencia_generada_en_no_banner', () => {
+  const identity = buildIdentityIndex({ depuracion: depuracionOf([depInspector(1)], { referencia_generada_en: '2026-09-19' }) });
+  assert.equal(identity.depuracionAusente, false);
+  const text = depuracionBadgeHtml(identity, { loaded: true });
+  assert.match(text, /2026-09-19/);
+  assert.doesNotMatch(text, /sin depurar|no disponible|sin_depuracion/i);
+  assert.equal(SEG.depuracionBadgeIsDegraded(identity), false);
+  assert.equal(SEG.depuracionBadgeIsDegraded(buildIdentityIndex({ depuracion: null })), false, 'an absent block is silent, not degraded');
+  assert.equal(SEG.depuracionBadgeIsDegraded(buildIdentityIndex({ depuracion: { activa: false, motivo: 'sin_blob' } })), true);
+  // Active but without a date: still no banner, the date is reported unknown.
+  const noDate = buildIdentityIndex({ depuracion: depuracionOf([], { referencia_generada_en: '' }) });
+  assert.match(depuracionBadgeHtml(noDate, { loaded: true }), /fecha desconocida/);
+});
+
+// ── table rendering (tableBodyHtml) and the mobile hooks ────────────────────
+
+named('test_table_body_escapes_seeded_rows_and_keeps_mobile_hooks', () => {
+  const evil = '<img src=x onerror=alert(1)>';
+  const dep = depuracionOf([
+    depInspector(1, {
+      nombre_completo: evil, identificacion: `"><script>1</script>`, np: '<b>P9</b>', estado_sugerido: '<i>x</i>', tarjeta_profesional: '<u>tp</u>',
+    }),
+    depInspector(2),
+  ]);
+  const { rows } = rowsFor({ depuracion: dep });
+  const columns = columnsFor('totales', { withEstado: true });
+  const html = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columns, false);
+  for (const raw of ['<img', '<script', '<b>P9', '<i>x', '<u>tp']) assert.ok(!html.includes(raw), `raw ${raw} must not survive in the table`);
+  assert.equal((html.match(/<tr>/g) || []).length, 2);
+  assert.equal((html.match(/seg-report-btn/g) || []).length, 2, 'the per-row report button hook is intact');
+  assert.match(html, /data-seg-report="ced:1000002"/);
+  assert.match(SEG.tableBodyHtml([], true, false, columns, false), new RegExp(`colspan="${columns.length + 1}"[^>]*eval-empty`));
+  // Source-level guards for the branch-05 mobile-overflow work.
+  const js = readFileSync(new URL('./seguimiento.js', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+  assert.match(js, /<div class="table-scroll">\s*<table class="tipologia-table" id="seg-table">/, 'the table stays inside .table-scroll');
+  assert.match(css, /#view-seguimiento\s*\{[^}]*width:\s*100%[^}]*min-width:\s*0[^}]*\}/, '#view-seguimiento keeps its definite width');
+  assert.match(css, /\.seg-sort-btn\s*\{[^}]*white-space:\s*nowrap/);
+  assert.match(css, /\.seg-grupo-externos-row td\s*\{/);
+  // The new controls live in the shared, wrapping toolbar and reuse its field class.
+  assert.match(js, /card-toolbar asignacion-filters">[\s\S]*?id="seg-estado"/);
+  assert.match(js, /<label class="sticker-field asignacion-inline-field"[^>]*>\s*<span>Estado sugerido<\/span>/);
+});
+
+// ══ Judgment-day fixes (fresh adversarial review of PR 10 parts 1+2) ═════════
+
+// C2: the padrón tile is the DEPURADO total ("independent of the range").
+named('test_padron_is_the_seeded_profile_count_in_every_range', () => {
+  const dep = depuracionOf([depInspector(1), depInspector(2)]);
+  const stickers = [
+    stickerFor('1000001', 'Profesional 1', '2026-09-10T15:00:00+00:00'),
+    stickerFor('', 'Ghost A', '2026-09-10T15:00:00+00:00'), // blank cédula, nobody seeded: orphan nom: row
+    stickerFor('', 'Ghost B', '2026-09-15T15:00:00+00:00'),
+  ];
+  const ranges = [
+    [{}, 3], // full range: Profesional 1 + both orphans are active
+    [{ to: '2026-09-12' }, 2], // Ghost B drops out
+    [{ from: '2026-09-14' }, 1], // only Ghost B
+    [{ from: '2027-01-01', to: '2027-01-31' }, 0], // nobody active
+    [{ from: '2026-09-30', to: '2026-09-01' }, 0], // inverted range
+  ];
+  for (const [range, activos] of ranges) {
+    const result = rowsFor({ stickers, depuracion: dep, ...range });
+    assert.equal(result.totals.padron, 2, `padron is 2 for ${JSON.stringify(range)}`);
+    assert.equal(result.totals.professionals, activos, `activos varies with the range ${JSON.stringify(range)}`);
+    assert.equal(kpiTotals(result, { stickersLoaded: true }).padron, 2);
+  }
+  const html = kpisHtml(rowsFor({ stickers, depuracion: dep }), true);
+  assert.match(html, /padr.n[\s\S]*?>2</i, 'the tile shows 2, not 4');
+  assert.doesNotMatch(html, /padr.n[\s\S]*?>4</i);
+  // A duplicated / cédula-less inspector entry never inflates it.
+  const dup = depuracionOf([depInspector(1), depInspector(1, { nombre_completo: 'Duplicada' }), { nombre_completo: 'Sin cedula' }, null]);
+  assert.equal(rowsFor({ stickers, depuracion: dup }).totals.padron, 1);
+  // Nothing seeded (active block, empty list) -> 0, never the row count.
+  assert.equal(rowsFor({ stickers, depuracion: depuracionOf([]) }).totals.padron, 0);
+});
+
+// W1: the XLSX "Filtros:" summary must mention the estado filter.
+named('test_xlsx_filters_summary_mentions_the_estado_filter', () => {
+  assert.equal(
+    xlsxFiltersSummary({ estado: 'candidato_desactivacion' }),
+    'Estado sugerido: Candidato a desactivación',
+  );
+  assert.equal(xlsxFiltersSummary({ estado: 'all' }), 'ninguno', '"all" is the no-op default');
+  assert.equal(xlsxFiltersSummary({ estado: '' }), 'ninguno');
+  assert.equal(xlsxFiltersSummary({ estado: null }), 'ninguno');
+  assert.equal(xlsxFiltersSummary({ estado: 'estado_raro' }), 'Estado sugerido: estado_raro', 'an unknown estado prints raw, never dropped');
+  assert.equal(
+    xlsxFiltersSummary({
+      search: 'ana', from: '2026-01-01', to: '2026-01-31', professionalName: 'Gil Soto', estado: 'revisar',
+    }),
+    'Búsqueda: "ana"; Desde: 2026-01-01; Hasta: 2026-01-31; Profesional: Gil Soto; Estado sugerido: Revisar',
+    'stable order: the existing parts first, estado last',
+  );
+  // It agrees with hasActiveSegFilters: whenever a filter is active, the summary is not "ninguno".
+  for (const estado of ['activo', 'revisar', 'candidato_desactivacion', 'no_persona', 'x']) {
+    assert.equal(SEG.hasActiveSegFilters({ estado }), true);
+    assert.notEqual(xlsxFiltersSummary({ estado }), 'ninguno');
+  }
+  // The download handler passes the live estado value.
+  const js = readFileSync(new URL('./seguimiento.js', import.meta.url), 'utf8');
+  assert.match(js, /xlsxFiltersSummary\(\{[^}]*estado: estadoEl\.value/, 'the handler forwards estadoEl.value');
+});
+
+// W3: with an active depuracion the name index is fed by the seeded profiles too.
+named('test_seeded_names_unify_blank_and_unlisted_cedula_records_to_the_padron_cedula', () => {
+  const dep = depuracionOf([
+    depInspector(1, { identidad_key: '1001', identificacion: '1001', nombre_completo: 'Juan Pérez', estado_sugerido: 'activo' }),
+    depInspector(2, { identidad_key: '1002', identificacion: '1002', nombre_completo: 'María Ñandú' }),
+  ]);
+  const stickers = [
+    stickerFor('', 'juan perez'), // blank cédula, accents/case differ
+    stickerFor('9999', 'JUAN PÉREZ'), // cédula not in the padrón
+    stickerFor('   ', '  Maria   Ñandu  '), // whitespace cédula, spacing differs
+  ];
+  const surveys = [{ nombre_evaluador: 'Juan Perez', fecha_inspeccion: '2026-09-12' }];
+  const { rows, totals } = rowsFor({ stickers, surveys, depuracion: dep });
+  assert.deepEqual(rows.map((r) => r.key).sort(), ['ced:1001', 'ced:1002'], 'one human, one row: no nom: duplicates');
+  const juan = rows.find((r) => r.key === 'ced:1001');
+  assert.equal(juan.stickersTotal, 2);
+  assert.equal(juan.surveyTotal, 1);
+  assert.equal(juan.total, 3);
+  assert.equal(juan.estadoSugerido, 'activo', 'the row with activity carries the estado, so the estado filter keeps it');
+  assert.equal(rows.find((r) => r.key === 'ced:1002').stickersTotal, 1);
+  assert.equal(totals.padron, 2);
+  assert.equal(visibleRowsFor(rows, { estado: 'activo' }).filter((r) => r.total > 0).length, 1, 'the activity row is visible under its estado');
+});
+
+named('test_seeded_ambiguous_or_aliased_names_are_never_unified', () => {
+  // Two seeded people share a normalized name: an unresolvable record stays separate.
+  const dep = depuracionOf([
+    depInspector(1, { identidad_key: '2001', identificacion: '2001', nombre_completo: 'Ana Gómez' }),
+    depInspector(2, { identidad_key: '2002', identificacion: '2002', nombre_completo: 'ANA GOMEZ' }),
+    depInspector(3, { identidad_key: '2003', identificacion: '2003', nombre_completo: 'Solo Uno' }),
+  ]);
+  const idx = buildIdentityIndex({ depuracion: dep });
+  assert.equal(idx.nameToCedula.has(normalizeName('Ana Gómez')), false, 'ambiguous seeded name is not indexed');
+  assert.equal(idx.nameToCedula.get(normalizeName('Solo Uno')), '2003');
+  const { rows } = rowsFor({ stickers: [stickerFor('', 'ana gomez'), stickerFor('', 'Solo Uno')], depuracion: dep });
+  const byKey = new Map(rows.map((r) => [r.key, r]));
+  assert.equal(byKey.get('ced:2001').total, 0);
+  assert.equal(byKey.get('ced:2002').total, 0);
+  assert.equal(byKey.get(`nom:${normalizeName('ana gomez')}`).stickersTotal, 1, 'the homonym record keeps its own bucket');
+  assert.equal(byKey.get('ced:2003').stickersTotal, 1);
+  // The backend's alias_nombres stays authoritative over the seeded-name index.
+  const aliased = depuracionOf([
+    depInspector(1, { identidad_key: '1001', identificacion: '1001', nombre_completo: 'Juan Pérez' }),
+    depInspector(2, { identidad_key: '1002', identificacion: '1002', nombre_completo: 'Otro' }),
+  ], { alias_nombres: { [normalizeName('Juan Pérez')]: '1002' } });
+  assert.equal(buildIdentityIndex({ depuracion: aliased }).nameToCedula.get(normalizeName('Juan Pérez')), '1002');
+  // Two seeded entries for the SAME cédula and name are one person, not ambiguity.
+  const same = depuracionOf([
+    depInspector(1, { identidad_key: '3001', identificacion: '3001', nombre_completo: 'Luis Mora' }),
+    depInspector(1, { identidad_key: '3001', identificacion: '3001', nombre_completo: 'luis mora' }),
+  ]);
+  assert.equal(buildIdentityIndex({ depuracion: same }).nameToCedula.get(normalizeName('Luis Mora')), '3001');
+});
+
+named('test_seeded_empty_or_missing_names_are_not_indexed_and_never_crash', () => {
+  const dep = depuracionOf([
+    depInspector(1, { nombre_completo: '' }),
+    depInspector(2, { nombre_completo: null }),
+    depInspector(3, { nombre_completo: '   ' }),
+    depInspector(4, { nombre_completo: undefined }),
+  ]);
+  const idx = buildIdentityIndex({ depuracion: dep });
+  assert.equal(idx.nameToCedula.size, 0, 'no empty-string key ever unifies blank-named records');
+  const { rows, unassigned } = rowsFor({ stickers: [stickerFor('', ''), stickerFor('', '   ')], surveys: [{ nombre_evaluador: '' }], depuracion: dep });
+  assert.equal(rows.length, 4, 'only the four seeded rows');
+  assert.deepEqual(unassigned, { stickers: 2, surveys: 1 }, 'nameless records stay unassigned');
+});
+
+named('test_legacy_name_index_is_untouched_by_the_seeded_name_feed', () => {
+  const stickers = [stickerFor('1001', 'Juan Pérez'), stickerFor('', 'juan perez')];
+  const surveys = [{ nombre_evaluador: 'Juan Perez', fecha_inspeccion: '2026-09-12' }];
+  const plain = buildIdentityIndex({ stickers, surveys });
+  for (const depuracion of [null, { activa: false, inspectores: [depInspector(7, { nombre_completo: 'Otro Nombre' })] }]) {
+    const other = buildIdentityIndex({ stickers, surveys, depuracion });
+    assert.deepEqual([...other.nameToCedula], [...plain.nameToCedula], 'legacy nameToCedula is byte-identical');
+    assert.deepEqual(other.nameToCedula.has(normalizeName('Otro Nombre')), false, 'an inactive block never feeds the name index');
+  }
+});
+
+// S1: an object without a boolean `activa` is not a degradation announcement.
+named('test_depuracion_block_without_boolean_activa_is_treated_as_absent', () => {
+  for (const block of [{}, { motivo: 'sin_blob' }, { inspectores: [depInspector(1)] }, { activa: 'yes' }, { activa: 1 }, { activa: null }, { activa: undefined }]) {
+    const identity = buildIdentityIndex({ depuracion: block });
+    assert.equal(identity.depuracionAusente, true, `absent: ${JSON.stringify(block)}`);
+    assert.equal(identity.depuracionActiva, false, `never active: ${JSON.stringify(block)}`);
+    assert.equal(depuracionBadgeHtml(identity, { loaded: true }), null, `silent: ${JSON.stringify(block)}`);
+    assert.equal(SEG.depuracionBadgeIsDegraded(identity), false);
+  }
+  // A real degraded/active block is still announced.
+  assert.equal(buildIdentityIndex({ depuracion: { activa: false } }).depuracionAusente, false);
+  assert.equal(SEG.depuracionBadgeIsDegraded(buildIdentityIndex({ depuracion: { activa: false } })), true);
+  assert.equal(buildIdentityIndex({ depuracion: depuracionOf([depInspector(1)]) }).depuracionActiva, true);
+});
+
+// S4: a scalar where the backend should send a list must not silently drop the people.
+named('test_revision_manual_scalar_identity_keys_render_an_escaped_fallback', () => {
+  const identity = buildIdentityIndex({ depuracion: depuracionOf([depInspector(1)]) });
+  const html = revisionManualHtml([{ motivo: 'x', identidad_keys: '1000001' }], { identity, isAdmin: true });
+  assert.match(html, /Profesional 1 \(cédula 1000001\)/, 'a scalar key still resolves to the person');
+  const numeric = revisionManualHtml([{ motivo: 'x', identidad_keys: 1000001 }], { identity, isAdmin: true });
+  assert.match(numeric, /Profesional 1/);
+  const evil = revisionManualHtml([{ motivo: 'x', identidad_keys: '<img src=x onerror=1>', identidad_keys_titulares: '"><script>1</script>' }], { identity, isAdmin: true });
+  assert.match(evil, /&lt;img/, 'the raw fallback is shown escaped, not dropped');
+  assert.doesNotMatch(evil, /<img|<script/);
+  for (const empty of ['', null, undefined, [], {}, false]) {
+    assert.doesNotMatch(revisionManualHtml([{ motivo: 'x', identidad_keys: empty }], { identity, isAdmin: true }), /personas/, `no "personas" for ${JSON.stringify(empty)}`);
+  }
+  assert.doesNotMatch(revisionManualHtml([{ motivo: 'x', identidad_keys: '1000001' }], { identity, isAdmin: false }), /1000001|Profesional/, 'a non-admin still sees no PII');
+  // The list form is unchanged.
+  assert.match(revisionManualHtml([{ motivo: 'x', identidad_keys: ['1000001'] }], { identity, isAdmin: true }), /personas: Profesional 1/);
+});
+
+// S5: XLSX formula injection. Verified against SheetJS 0.20.3 (the build
+// loadXlsx() loads): aoa_to_sheet/sheet_add_json give every JS string a typed
+// text cell (`t:"s"`, no `f`), and the writer emits `<c t="str"><v>=1+1</v></c>`
+// with no `<f>` element, so a value starting with = + - @ is stored and
+// displayed as TEXT, never evaluated. Nothing to neutralize; this guard fails
+// if the export ever starts building formula cells.
+named('test_xlsx_export_writes_plain_text_cells_never_formulas', () => {
+  const js = readFileSync(new URL('./seguimiento.js', import.meta.url), 'utf8');
+  const start = js.indexOf("downloadBtn.addEventListener('click'");
+  const handler = js.slice(start, js.indexOf('// Survey renders immediately', start));
+  assert.ok(handler.length > 200, 'located the export handler');
+  assert.match(handler, /XLSX\.utils\.aoa_to_sheet/);
+  assert.match(handler, /XLSX\.utils\.sheet_add_json/);
+  assert.doesNotMatch(handler, /\bcellFormula\b|\bf:\s|\.f\s*=|t:\s*'f'|\bset_cell_formula|\bcell_set_formula/, 'no formula cell is ever built');
+});
+
+if (phase11Failures.length) {
+  throw new Error(`Phase 11 named tests failed (${phase11Failures.length}): ${phase11Failures.join(', ')}`);
+}
 
 console.log('seguimiento.test.mjs: all assertions passed');
