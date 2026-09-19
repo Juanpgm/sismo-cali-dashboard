@@ -2204,6 +2204,9 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="sti
   display: inline-block; max-width: 24ch; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; vertical-align: bottom; text-align: left;
 }
+/* The td holding it: .tipologia-table td right-aligns numeric columns, which pushed "Sin dato" and short values
+   to the right edge while only the long (capped) ones sat at the left. */
+.tipologia-table td.seg-td-text { text-align: left; }
 /* GRUPO-EXTERNOS row (Task 4.4/4.5): its <td> otherwise inherits
    .tipologia-table td's right-align/nowrap (meant for numeric columns),
    which right-aligns the toggle label and disconnects each detail <li>'s

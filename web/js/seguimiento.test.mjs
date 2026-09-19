@@ -4832,6 +4832,28 @@ named('test_enfasis_cell_long_text_is_confined_by_a_truncating_class', () => {
   assert.match(rule[1], /white-space\s*:\s*nowrap/);
 });
 
+named('test_enfasis_cell_is_left_aligned_including_the_plain_sin_dato_cells', () => {
+  // .tipologia-table td right-aligns numeric columns. The Énfasis cell is text: a blank one is the plain
+  // string "Sin dato" (no span), so the alignment has to hang off the <td> itself, not off the capped span.
+  const dep = depuracionOf([
+    depInspector(1, { enfasis: ENFASIS_TEXTO }),
+    depInspector(2, { enfasis: '' }),
+  ]);
+  const { rows } = rowsFor({ depuracion: dep });
+  const columns = columnsFor('totales', { withEstado: true, withEnfasis: true });
+  const html = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columns, false);
+  const cells = [...html.matchAll(/<td class="seg-td-text">([^<]*(?:<span[^>]*>[^<]*<\/span>)?)<\/td>/g)];
+  assert.equal(cells.length, 2, 'exactly the Énfasis cells (one per row) carry the text-alignment class');
+  assert.ok(cells.some((m) => m[1] === 'Sin dato'), 'the blank cell is covered too');
+  // Legacy table (no depurado base): no Énfasis column, so no td carries the class and the markup is unchanged.
+  const legacy = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columnsFor('totales'), false);
+  assert.equal(legacy.includes('seg-td-text'), false);
+  const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+  const rule = /\.tipologia-table\s+td\.seg-td-text\s*\{([^}]*)\}/.exec(css);
+  assert.ok(rule, 'styles.css aligns the Énfasis cell');
+  assert.match(rule[1], /text-align\s*:\s*left/);
+});
+
 named('test_enfasis_xlsx_column_only_when_requested_legacy_sheet_untouched', () => {
   const row = { ...enfasisReportRow({ enfasis: ENFASIS_TEXTO }), key: 'ced:1', estadoSugerido: 'activo' };
   const legacyKeys = Object.keys(xlsxRowsFor([row], { subTab: 'totales' })[0]);

@@ -3183,7 +3183,9 @@ function rowHtml(r, stickersLoaded, isDegraded, columns, busy) {
   const reportTitle = isDegraded ? DEGRADED_TITLE
     : !stickersLoaded ? 'Esperando a que carguen los stickers…'
       : busy ? 'Generando exportación masiva…' : 'Descargar informe PDF de este profesional';
-  const cells = columns.map((c, i) => `<td>${cellHtml(r, c.key, stickersLoaded)}${i === 0 ? caveat : ''}</td>`).join('');
+  // The Énfasis column is free text: its <td> carries a class so it is left-aligned (the table right-aligns numeric
+  // columns), including the plain "Sin dato" cells that have no span. Other columns keep their bare <td>.
+  const cells = columns.map((c, i) => `<td${c.key === 'enfasis' ? ' class="seg-td-text"' : ''}>${cellHtml(r, c.key, stickersLoaded)}${i === 0 ? caveat : ''}</td>`).join('');
   return `<tr>${cells}<td><button type="button" class="sticker-action seg-report-btn" data-seg-report="${escapeHtml(r.key)}"${reportBlocked ? ' disabled' : ''} title="${escapeHtml(reportTitle)}">📄 Reporte</button></td></tr>`;
 }
 
