@@ -791,7 +791,17 @@ export function buildProfessionalRows({
   // The padrón is the depurado total: the number of SEEDED profiles, never
   // `rows.length` (which also counts the orphan `nom:`/`ced:` rows that records
   // resolving to nobody create, and so drifts with the date range).
-  if (seeded) totals.padron = idx.profiles.size;
+  if (seeded) {
+    totals.padron = idx.profiles.size;
+    // The depuración's own ACTIVE classification, over the whole padrón: like
+    // `padron` it ignores the date range, the search box and the estado filter.
+    // Exact match only — a missing/unexpected estado is never counted.
+    let inspectoresActivos = 0;
+    for (const profile of idx.profiles.values()) {
+      if (profile.estadoSugerido === 'activo') inspectoresActivos += 1;
+    }
+    totals.inspectoresActivos = inspectoresActivos;
+  }
 
   return {
     rows,
@@ -2329,7 +2339,14 @@ export function kpiTotals(rowsResult, { stickersLoaded = true } = {}) {
   };
   // The seeded total ("padrón") is its own figure, never conflated with
   // "profesionales activos"; absent (no key at all) on the legacy path.
-  if (seeded) result.padron = stickersLoaded ? totals.padron : DASH;
+  if (seeded) {
+    result.padron = stickersLoaded ? totals.padron : DASH;
+    // Only with a non-empty padrón (nothing to classify otherwise) and a real
+    // figure (older/hand-built results may not carry it); masked like padrón.
+    if (totals.padron > 0 && Number.isFinite(totals.inspectoresActivos)) {
+      result.inspectoresActivos = stickersLoaded ? totals.inspectoresActivos : DASH;
+    }
+  }
   return result;
 }
 
@@ -2956,8 +2973,20 @@ export function kpisHtml(rowsResult, stickersLoaded) {
       <span class="kpi-label kpi-label-lower">${escapeHtml(label)}</span>
       <span class="kpi-value">${fmt(value)}</span>
     </div>`;
+  const seeded = t.padron !== undefined;
   return [
-    tile('profesionales activos', t.professionals),
+    // The depuración's own ACTIVE count leads the row: it is the figure the owner
+    // asked to see, and it does not depend on the date range.
+    ...(t.inspectoresActivos === undefined ? [] : [tile(
+      'inspectores activos',
+      t.inspectoresActivos,
+      `Inspectores que la depuración clasifica como activos (con código vigente o sticker válido), sobre el total del padrón (${fmt(t.inspectoresActivos)} de ${fmt(t.padron)}). No depende del rango de fechas.`,
+    )]),
+    // Seeded: "activos" alone would be ambiguous next to "inspectores activos"
+    // (the depuración's classification), so this one says what it measures.
+    seeded
+      ? tile('profesionales con actividad', t.professionals, 'Profesionales con actividad en el rango de fechas seleccionado.')
+      : tile('profesionales activos', t.professionals),
     tile('stickers (F1+F2)', t.stickers),
     tile('evaluaciones survey', t.surveys),
     // M6: renamed from "promedio diario por profesional" — the OLD label

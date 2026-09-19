@@ -3615,9 +3615,9 @@ named('test_kpis_use_rows_with_activity_as_denominator', () => {
   assert.equal(t.padron, 373, 'the seeded total is surfaced separately');
   assert.equal(t.avgStickersPerDayPerProfessional, 2, 'each active professional: 4 stickers / 2 days');
   const html = kpisHtml(result, true);
-  assert.match(html, /profesionales activos[\s\S]*?>116</);
+  assert.match(html, /profesionales con actividad[\s\S]*?>116</);
   assert.match(html, /padr.n[\s\S]*?>373</i, 'the padrón total has its own, distinctly labelled tile');
-  assert.equal((html.match(/kpi-tile/g) || []).length, 6);
+  assert.equal((html.match(/kpi-tile/g) || []).length, 7, 'inspectores activos joins the padrón tile in the seeded row');
   // Triangulation: a different split.
   const other = rowsFor({ ...seededUniverse(40, 3) });
   assert.equal(kpiTotals(other).professionals, 3);
@@ -4118,6 +4118,202 @@ named('test_padron_is_the_seeded_profile_count_in_every_range', () => {
   assert.equal(rowsFor({ stickers, depuracion: dup }).totals.padron, 1);
   // Nothing seeded (active block, empty list) -> 0, never the row count.
   assert.equal(rowsFor({ stickers, depuracion: depuracionOf([]) }).totals.padron, 0);
+});
+
+// ── KPI "inspectores activos" (owner request 2026-09-19) ────────────────────
+// The depuración's own ACTIVE classification (estado_sugerido === 'activo') is a
+// padrón-level figure: range-, search- and estado-filter-independent, present
+// only when the table is seeded; the legacy 5-tile row stays byte-identical.
+
+const LEGACY_KPI_HTML = '\n    <div class="kpi-tile is-neutral">\n      <span class="kpi-label kpi-label-lower">profesionales activos</span>\n      <span class="kpi-value">1</span>\n    </div>\n    <div class="kpi-tile is-neutral">\n      <span class="kpi-label kpi-label-lower">stickers (F1+F2)</span>\n      <span class="kpi-value">1</span>\n    </div>\n    <div class="kpi-tile is-neutral">\n      <span class="kpi-label kpi-label-lower">evaluaciones survey</span>\n      <span class="kpi-value">0</span>\n    </div>\n    <div class="kpi-tile is-neutral" title="Stickers por día con actividad de stickers, promedio entre profesionales (excluye a quien no tiene ningún día con stickers).">\n      <span class="kpi-label kpi-label-lower">stickers/día por profesional</span>\n      <span class="kpi-value">1</span>\n    </div>\n    <div class="kpi-tile is-neutral">\n      <span class="kpi-label kpi-label-lower">barrios activos (7 d)</span>\n      <span class="kpi-value">0</span>\n    </div>';
+
+// Value text of the tile whose label is exactly `label`, or null when absent.
+function kpiTileValue(html, label) {
+  const m = html.match(new RegExp(`<span class="kpi-label kpi-label-lower">${label}</span>\\s*<span class="kpi-value">([^<]*)</span>`));
+  return m ? m[1] : null;
+}
+// Title attribute of the tile whose label is exactly `label`, or null.
+function kpiTileTitle(html, label) {
+  const m = html.match(new RegExp(`<div class="kpi-tile is-neutral"(?: title="([^"]*)")?>\\s*<span class="kpi-label kpi-label-lower">${label}</span>`));
+  return m ? (m[1] ?? '') : null;
+}
+// inspectors with the given estado counts, in order; `activity` = cédulas with a sticker.
+function estadoInspectors(counts) {
+  const out = [];
+  let i = 0;
+  for (const [estado, n] of Object.entries(counts)) {
+    for (let k = 0; k < n; k += 1) { i += 1; out.push(depInspector(i, { estado_sugerido: estado })); }
+  }
+  return out;
+}
+
+named('test_kpi_inspectores_activos_counts_only_estado_activo', () => {
+  const inspectores = estadoInspectors({
+    activo: 3, candidato_desactivacion: 2, no_persona: 1, revisar: 1,
+  }); // cédulas 1000001-3 activo, 4-5 candidato, 6 no_persona, 7 revisar
+  const dep = depuracionOf(inspectores);
+  // Activity on ONE activo (1000001) and ONE revisar (1000007): 2 rows with activity, != 3.
+  const stickers = [
+    stickerFor('1000001', 'Profesional 1', '2026-09-10T15:00:00+00:00'),
+    stickerFor('1000007', 'Profesional 7', '2026-09-10T15:00:00+00:00'),
+  ];
+  const result = rowsFor({ stickers, depuracion: dep });
+  assert.equal(result.totals.inspectoresActivos, 3);
+  assert.equal(result.totals.padron, 7);
+  const t = kpiTotals(result, { stickersLoaded: true });
+  assert.equal(t.inspectoresActivos, 3);
+  const html = kpisHtml(result, true);
+  assert.equal(kpiTileValue(html, 'inspectores activos'), '3');
+  assert.equal(kpiTileValue(html, 'profesionales con actividad'), '2', 'activity tile still counts only rows with activity');
+  assert.equal((html.match(/kpi-tile/g) || []).length, 7);
+  // Prominent: first depuración tile, i.e. right after the five legacy ones... and before padrón.
+  assert.ok(html.indexOf('inspectores activos') < html.indexOf('profesionales en padrón'));
+  // Range-independent: same value for a different (and an empty / inverted) range.
+  for (const range of [{ from: '2026-09-11' }, { from: '2027-01-01', to: '2027-01-31' }, { from: '2026-09-30', to: '2026-09-01' }]) {
+    const r = rowsFor({ stickers, depuracion: dep, ...range });
+    assert.equal(r.totals.inspectoresActivos, 3, `range ${JSON.stringify(range)}`);
+    assert.equal(kpiTileValue(kpisHtml(r, true), 'inspectores activos'), '3');
+  }
+  // Search / estado filter never touch it: the UI hands kpisHtml the full totals, and even
+  // a narrowed row list cannot move a padrón-level figure.
+  const narrowed = visibleRowsFor(result.rows, { query: 'Profesional 5', estado: 'candidato_desactivacion' });
+  assert.equal(narrowed.length, 1);
+  assert.equal(kpiTileValue(kpisHtml({ rows: narrowed, totals: result.totals }, true), 'inspectores activos'), '3');
+  // Triangulation: a different split.
+  const other = rowsFor({ depuracion: depuracionOf(estadoInspectors({ activo: 1, revisar: 4 })) });
+  assert.equal(other.totals.inspectoresActivos, 1);
+});
+
+named('test_kpi_inspectores_activos_ignores_unknown_and_missing_estado', () => {
+  const dep = depuracionOf([
+    depInspector(1, { estado_sugerido: 'activo' }),
+    depInspector(2, { estado_sugerido: 'algo_inesperado' }),
+    depInspector(3, { estado_sugerido: undefined }),
+    depInspector(4, { estado_sugerido: null }),
+    depInspector(5, { estado_sugerido: 'Activo' }),
+    depInspector(6, { estado_sugerido: 'activo ' }),
+    depInspector(7, { estado_sugerido: 'inactivo' }),
+    depInspector(8, { estado_sugerido: '' }),
+  ]);
+  const result = rowsFor({ depuracion: dep });
+  assert.equal(result.totals.padron, 8);
+  assert.equal(result.totals.inspectoresActivos, 1, 'only the exact string "activo" counts');
+  // All-inactive padrón: a real 0, never NaN / dash / blank.
+  const none = rowsFor({ depuracion: depuracionOf(estadoInspectors({ candidato_desactivacion: 3, no_persona: 1 })) });
+  assert.equal(none.totals.inspectoresActivos, 0);
+  const html = kpisHtml(none, true);
+  assert.equal(kpiTileValue(html, 'inspectores activos'), '0');
+  assert.ok(!/NaN|Infinity|undefined|null/.test(html));
+  // Every profile is activo: equals the padrón.
+  const all = rowsFor({ depuracion: depuracionOf(estadoInspectors({ activo: 4 })) });
+  assert.equal(all.totals.inspectoresActivos, 4);
+  assert.equal(all.totals.padron, 4);
+});
+
+named('test_kpi_inspectores_activos_absent_for_empty_seeded_padron', () => {
+  const empty = rowsFor({
+    stickers: [stickerFor('1000001', 'Profesional 1')],
+    depuracion: depuracionOf([]),
+  });
+  assert.equal(empty.totals.padron, 0);
+  let html;
+  assert.doesNotThrow(() => { html = kpisHtml(empty, true); });
+  assert.equal(kpiTileValue(html, 'inspectores activos'), null, 'nothing to classify: no tile');
+  assert.ok(!/NaN|Infinity|undefined|null/.test(html));
+  assert.equal(Object.prototype.hasOwnProperty.call(kpiTotals(empty), 'inspectoresActivos'), false);
+  // A hand-built seeded result without the figure (older shape) renders without it, no crash.
+  const handBuilt = { rows: [], totals: { professionals: 0, padron: 2, stickers: 0, surveys: 0 } };
+  assert.doesNotThrow(() => kpisHtml(handBuilt, true));
+  assert.equal(kpiTileValue(kpisHtml(handBuilt, true), 'inspectores activos'), null);
+});
+
+named('test_kpi_legacy_html_is_byte_identical_without_active_depuracion', () => {
+  const stickers = [stickerFor('1000001', 'Profesional 1')];
+  const degraded = depuracionOf([depInspector(1, { estado_sugerido: 'activo' })], { activa: false, motivo: 'stickers_degradados' });
+  const inactiveWithList = { activa: false, inspectores: [depInspector(1, { estado_sugerido: 'activo' })] };
+  for (const depuracion of [null, undefined, degraded, inactiveWithList]) {
+    const result = rowsFor({ stickers, depuracion });
+    assert.equal(Object.prototype.hasOwnProperty.call(result.totals, 'inspectoresActivos'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(kpiTotals(result), 'inspectoresActivos'), false);
+    const html = kpisHtml(result, true);
+    assert.equal(html, LEGACY_KPI_HTML, 'full HTML equality against the pre-change render');
+    assert.ok(html.includes('profesionales activos'), 'legacy label unchanged');
+  }
+});
+
+named('test_kpi_activity_label_renamed_only_when_seeded', () => {
+  const seeded = kpisHtml(rowsFor({ depuracion: depuracionOf(estadoInspectors({ activo: 2 })) }), true);
+  assert.equal(kpiTileValue(seeded, 'profesionales activos'), null, 'ambiguous label gone when seeded');
+  assert.equal(kpiTileValue(seeded, 'profesionales con actividad'), '0');
+  assert.equal(
+    kpiTileTitle(seeded, 'profesionales con actividad'),
+    'Profesionales con actividad en el rango de fechas seleccionado.',
+  );
+  assert.match(kpiTileTitle(seeded, 'inspectores activos'), /^Inspectores que la depuración clasifica como activos \(con código vigente o sticker válido\), sobre el total del padrón \(2 de 2\)\. No depende del rango de fechas\.$/);
+  // Other tiles unchanged when seeded.
+  for (const label of ['stickers \\(F1\\+F2\\)', 'evaluaciones survey', 'stickers/día por profesional', 'barrios activos \\(7 d\\)', 'profesionales en padrón']) {
+    assert.notEqual(kpiTileValue(seeded, label), null, `${label} still rendered`);
+  }
+  // Legacy keeps the original label.
+  const legacy = kpisHtml(rowsFor({ stickers: [stickerFor('1000001', 'Profesional 1')] }), true);
+  assert.notEqual(kpiTileValue(legacy, 'profesionales activos'), null);
+  assert.equal(kpiTileValue(legacy, 'profesionales con actividad'), null);
+});
+
+named('test_kpi_inspectores_activos_masks_while_stickers_load_and_escapes_markup', () => {
+  const dep = depuracionOf([
+    depInspector(1, { nombre_completo: '<script>alert(1)</script>', estado_sugerido: 'activo' }),
+    depInspector(2, { estado_sugerido: '"><img src=x onerror=1>' }),
+  ]);
+  const result = rowsFor({ depuracion: dep });
+  const masked = kpisHtml(result, false);
+  assert.equal(kpiTileValue(masked, 'inspectores activos'), DASH, 'masked like padrón while stickers are unresolved');
+  const html = kpisHtml(result, true);
+  assert.equal(kpiTileValue(html, 'inspectores activos'), '1');
+  assert.ok(!/<script|<img|onerror/.test(html), 'no record text ever reaches the KPI markup');
+  // Every title attribute stays a well-formed, quote-free string.
+  for (const m of html.matchAll(/title="([^"]*)"/g)) assert.ok(!/[<>]/.test(m[1]));
+  assert.equal((html.match(/title="/g) || []).length, (html.match(/title=/g) || []).length);
+});
+
+named('test_kpi_inspectores_activos_uses_es_co_number_format', () => {
+  const dep = depuracionOf(estadoInspectors({ activo: 1234, revisar: 266 }));
+  const result = rowsFor({ depuracion: dep });
+  assert.equal(result.totals.inspectoresActivos, 1234);
+  const html = kpisHtml(result, true);
+  assert.equal(kpiTileValue(html, 'inspectores activos'), (1234).toLocaleString('es-CO'));
+  assert.equal(kpiTileValue(html, 'inspectores activos'), '1.234');
+  assert.match(kpiTileTitle(html, 'inspectores activos'), /\(1\.234 de 1\.500\)/);
+});
+
+named('test_kpi_inspectores_activos_is_the_first_tile_of_the_row', () => {
+  // The owner asked to SEE the active inspectors: on a phone (two tiles per row) a sixth
+  // position would bury it on the third row, so it must lead the row when seeded.
+  const dep = depuracionOf(estadoInspectors({ activo: 2, no_persona: 1 }));
+  const stickers = [stickerFor('1000001', 'Profesional 1', '2026-09-10T15:00:00+00:00')];
+  const labelsOf = (html) => [...html.matchAll(/kpi-label[^>]*>([^<]*)</g)].map((m) => m[1]);
+  const seeded = labelsOf(kpisHtml(rowsFor({ stickers, depuracion: dep }), true));
+  assert.equal(seeded[0], 'inspectores activos');
+  assert.equal(seeded[1], 'profesionales con actividad');
+  assert.equal(seeded.length, 7);
+  // Legacy row (no depuración): unchanged, "profesionales activos" still leads it.
+  const legacy = labelsOf(kpisHtml(rowsFor({ stickers }), true));
+  assert.equal(legacy[0], 'profesionales activos');
+  assert.equal(legacy.length, 5);
+  assert.ok(!legacy.includes('inspectores activos'));
+});
+
+named('test_kpi_inspectores_activos_373_row_fixture_is_fast', () => {
+  const inspectores = Array.from({ length: 373 }, (_, i) => depInspector(i + 1, { estado_sugerido: i % 3 === 0 ? 'activo' : 'revisar' }));
+  const stickers = [];
+  for (let i = 1; i <= 116; i += 1) stickers.push(stickerFor(String(1000000 + i), `Profesional ${i}`));
+  const result = rowsFor({ stickers, depuracion: depuracionOf(inspectores) });
+  const started = performance.now();
+  let html;
+  for (let n = 0; n < 50; n += 1) html = kpisHtml(result, true);
+  const perCall = (performance.now() - started) / 50;
+  assert.equal(kpiTileValue(html, 'inspectores activos'), '125');
+  assert.ok(perCall < 20, `kpisHtml over 373 rows took ${perCall}ms per call`);
 });
 
 // W1: the XLSX "Filtros:" summary must mention the estado filter.
