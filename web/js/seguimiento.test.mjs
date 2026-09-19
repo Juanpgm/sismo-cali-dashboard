@@ -387,6 +387,56 @@ console.log('buildIdentityIndex: depuracion grouping uses the resolved cédula, 
 }
 console.log('buildIdentityIndex: a merged-away cédula (cedulas_unificadas) groups into the survivor row, not an orphan OK');
 
+{
+  // seguimiento-inspectores-depurado, slice 08 (D29): the backend now emits
+  // `depuracion.inspectores` in canonical (identidad_key) order instead of
+  // roster-then-main order. The identity index must NOT depend on that order:
+  // every permutation of the rows yields the same eligible cédulas, the same
+  // merged-away -> survivor routing (incl. the pre-Fase-2-fix cédula and its
+  // zero-padded form the backend exports in `cedulas_unificadas`) and the same
+  // profiles.
+  const fila = (key, nombre, unificadas = []) => ({
+    identidad_key: key, identificacion: key, nombre_completo: nombre, cedulas_unificadas: unificadas,
+    codigo: '', entidad: '', np: 'P2', np_fuente: 'fase2', fase: 'Fase I', fase_np_faltante: false,
+    estado_sugerido: 'activo', fuente_dato: 'main+fase2', tarjeta_profesional: '', num_telefono: '',
+    correo_contacto: '', no_persona: false,
+  });
+  const filas = [
+    fila('1053812345', 'Ana Gomez', ['999', '0999']),   // Fase 2 cédula fix: old key exported
+    fila('1111111', 'Beto Dos', ['2222222']),           // unified loser
+    fila('3333333', 'Carla Tres'),
+  ];
+  const stickers = ['999', '0999', '1053812345', '2222222', '1111111', '3333333'].map((ced) => ({
+    inspector: { identificacion: ced, nombre_completo: 'x' },
+  }));
+  const instantanea = (orden) => {
+    const depuracion = {
+      activa: true, motivo: '', referencia_generada_en: '2026-09-12', inspectores: orden,
+      grupo_externos: null, alias_nombres: {}, revision_manual: [],
+    };
+    const identity = buildIdentityIndex({ stickers, surveys: [], depuracion });
+    return JSON.stringify({
+      eligible: [...identity.eligibleCedulas].sort(),
+      fusionadas: [...identity.cedulaFusionadaACedulaSurvivor.entries()].sort(),
+      profiles: [...identity.profiles.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1)),
+      rutas: stickers.map((st) => professionalKeyOf(st, identity)),
+    });
+  };
+  const esperado = instantanea(filas);
+  assert.deepEqual(
+    JSON.parse(esperado).rutas,
+    ['ced:1053812345', 'ced:1053812345', 'ced:1053812345', 'ced:1111111', 'ced:1111111', 'ced:3333333'],
+    'every cédula form a sticker can carry must route to its row',
+  );
+  const permutaciones = (lista) => (lista.length <= 1 ? [lista] : lista.flatMap((item, i) => (
+    permutaciones([...lista.slice(0, i), ...lista.slice(i + 1)]).map((resto) => [item, ...resto])
+  )));
+  const todas = permutaciones(filas);
+  assert.equal(todas.length, 6);
+  for (const orden of todas) assert.equal(instantanea(orden), esperado, 'row order must not change the identity index');
+}
+console.log('buildIdentityIndex: the depuracion row order (canonical since slice 08) does not change the identity index OK');
+
 // Task 4.3: `depuracion` absent, or `activa:false`, must be BYTE-IDENTICAL
 // to the pre-existing "primer no vacío gana" code path (cold start / feature
 // flag off / reference Blob down) -- same profile.np result as calling

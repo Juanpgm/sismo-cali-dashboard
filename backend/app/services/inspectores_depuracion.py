@@ -61,26 +61,49 @@ distinct cédula, Firestore first. `vercel`/`fase2` stay overlays.
 ## Pipeline (design.md "Pipeline Order")
 
 1. `fusionar_identidad` = universe (roster, then `main`) + overlays + sticker
-   attribution through the cédula alias index. Returns `(perfiles, revision)`.
-2. `remapear_codigos`, 3. `unificar_duplicados` (D-P2, AFTER the overlays and
+   attribution through the cédula alias index + the Fase 2 cédula fix (D18,
+   `corregir_cedula_fase2`). Returns `(perfiles, revision)`.
+2. `remapear_codigos` (clears the código from every holder that is a DIFFERENT person than
+   the Vercel owner, D13 / D-MISMAPERSONA),
+   3. `unificar_duplicados` (D-P2, AFTER the overlays and
    the sticker attribution so the survivor score sees populated flags, D10),
 4. `entidad` / `np` / `fase` / `estado_sugerido` / `fuente_dato`,
 5. `colapsar_externos`, 6. `alias_nombres` (redacted logging).
 
+## Review-item invariants (judgment-day round 3; property-tested)
+
+INV-1 a código held by 2+ final rows is always named by a review item (`codigo_duplicado_local`
+is the catch-all); clearing needs Vercel evidence (D13). INV-2 every profile key an item
+names is a final row key or a `grupo_externos.detalle` member (`_resolver_claves_revision`).
+INV-5 a keeper is never emptied by the pass that cleared the other holders; a código the
+unification cannot keep is reported (`codigo_perdido_unificacion`).
+
 `hoy: date` — Bogotá "today" (design D6: cache-key input, not computed here).
+
+## Purity and determinism (design D29)
+
+`depurar()` mutates none of its inputs, returns nothing aliased to them, reads no
+clock/environment/module state, and its result does not depend on the ORDER of the
+roster or of the stickers (every first-wins choice iterates in `identidad_key`
+order; the survivor tie-break ends in the key; every emitted list is canonical).
+The `referencia` row order IS part of the input (D19: the first duplicate `main`
+row wins). Every `Perfil` field is immutable, which is why a shallow `copy.copy`
+is a real copy.
 """
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import math
 import re
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Iterable
 
-from rapidfuzz import fuzz
+from rapidfuzz import fuzz, process
 
 from app.services import cedula_utils
 from app.services.inspectores_referencia import EntradaReferencia, ReferenciaBundle
@@ -212,6 +235,12 @@ def _sticker_es_valido(sticker: dict) -> bool:
     return fecha >= CORTE_20AGO
 
 
+def _revision(motivo: str, **detalle: object) -> dict:
+    """The ONE constructor of a `revision_manual` item (a plain, fresh dict the
+    caller may mutate freely): `motivo` first, then the detail fields."""
+    return {"motivo": motivo, **detalle}
+
+
 # ── Perfil — the per-identity accumulator ───────────────────────────────────
 
 
@@ -240,6 +269,12 @@ class Perfil:
     en_fase2: bool = False
     np_vercel: str = ""
     np_fase2: str = ""
+    # `_cedula_key` of the Fase 2 row this profile matched (by cédula OR by name), kept
+    # even when the D18 fix is blocked: the remap resolves a Vercel owner through it (W3).
+    cedula_fase2: str = ""
+    # Its `main` cédula key BEFORE the D18 fix rewrote `identificacion` ("" when never
+    # rewritten): the notebook's `titular.cedula` in the same-person check (C1).
+    cedula_original: str = ""
     rango_main: str = ""
     no_persona_ref: bool = False
     ultimo_sticker: date | None = None
@@ -294,14 +329,16 @@ def _elegir_survivor(candidatos: list[Perfil]) -> Perfil:
     """Highest score wins. Ties break on the oldest `creado_en` (a blank or
     unparseable one never beats a real date), then on Firestore-backed before
     main-only (D10: kept LAST so it never displaces the notebook's
-    parity-bearing rules), then first-seen (insertion order) so the outcome is
-    deterministic."""
+    parity-bearing rules), then the ascending `identidad_key` as the TERMINAL total
+    order (D29 / D-TIEBREAK: a full tie is decided by the key, never by iteration
+    order, so the survivor is the same for any roster ordering)."""
     puntajes = [_survivor_score(c) for c in candidatos]
     max_score = max(puntajes)
 
     def desempate(indice: int) -> tuple:
         fecha = _parse_fecha(candidatos[indice].creado_en)
-        return (fecha is None, fecha or _SIN_FECHA, not candidatos[indice].firestore_backed, indice)
+        candidato = candidatos[indice]
+        return (fecha is None, fecha or _SIN_FECHA, not candidato.firestore_backed, candidato.identidad_key)
 
     mejor = min((i for i, score in enumerate(puntajes) if score == max_score), key=desempate)
     return candidatos[mejor]
@@ -327,8 +364,10 @@ def _recalcular_no_persona(perfil: Perfil) -> None:
 
 
 def _fusionar_en_survivor(survivor: Perfil, perdedor: Perfil) -> None:
-    """Backfill = "first non-empty wins" for every text field (losers are
-    visited in roster order), NOT a sum. The sticker aggregates ARE absorbed
+    """Backfill = "first non-empty wins" for every text field (losers are visited
+    in ascending `identidad_key` order — `_unificar_por_nombre` builds each group
+    from the sorted profiles — so the donor never depends on the roster order,
+    D-TIEBREAK), NOT a sum. The sticker aggregates ARE absorbed
     (count summed, `ultimo_sticker` the later one, `tiene_sticker_valido`
     OR-ed), and every key the loser answered to — its own cédula and any it had
     already absorbed — is registered in `cedulas_unificadas` so later lookups
@@ -388,7 +427,7 @@ def _unificar_por_nombre(perfiles: dict[str, Perfil]) -> tuple[dict[str, Perfil]
     An empty `nombre_norm` never groups (two nameless profiles are two
     people)."""
     grupos: dict[str, list[str]] = {}
-    for key, perfil in perfiles.items():
+    for key, perfil in sorted(perfiles.items()):  # canonical order: groups, losers, backfill (D29)
         if not perfil.nombre_norm:
             continue
         grupos.setdefault(perfil.nombre_norm, []).append(key)
@@ -400,17 +439,21 @@ def _unificar_por_nombre(perfiles: dict[str, Perfil]) -> tuple[dict[str, Perfil]
             continue
         candidatos = [perfiles[k] for k in keys]
         survivor_original = _elegir_survivor(candidatos)
-        survivor = copy.deepcopy(survivor_original)
+        survivor = copy.copy(survivor_original)  # every Perfil field is immutable
         for candidato in candidatos:
             if candidato is survivor_original:
                 continue
             _fusionar_en_survivor(survivor, candidato)
             del resultado[candidato.identidad_key]
-            fusiones.append({
+            fusion = {
                 "survivor": survivor.identidad_key,
                 "perdedor": candidato.identidad_key,
                 "nombre_norm": nombre_norm,
-            })
+            }
+            if candidato.codigo and survivor.codigo != candidato.codigo:
+                # the backfill only fills an EMPTY código: a loser's different one is lost
+                fusion["codigo_perdido"] = candidato.codigo
+            fusiones.append(fusion)
         resultado[survivor.identidad_key] = survivor
     return resultado, tuple(fusiones)
 
@@ -526,18 +569,23 @@ def construir_universo(
     por_cedula: dict[str, Perfil] = {}
     revision: list[dict] = []
 
-    for roster_entry in (roster_by_cedula or {}).values():
+    filas: list[tuple[str, str, str, dict]] = []
+    for clave_roster, roster_entry in (roster_by_cedula or {}).items():
         if not isinstance(roster_entry, dict):
             continue
         identificacion = _txt(roster_entry.get("identificacion"))
         if not identificacion:
             continue  # no identity anchor at all -> cannot be represented
+        filas.append((_cedula_key(identificacion) or identificacion, identificacion, str(clave_roster), roster_entry))
+    # Canonical order (D29): the roster dict's own key breaks the last tie, so which of
+    # two entries sharing a cédula is "first" never depends on the dict's order.
+    filas.sort(key=lambda fila: fila[:3])
+    for clave, identificacion, _clave_roster, roster_entry in filas:
         # Keyed by the normalized cédula exactly like `_perfil_desde_main` (C3): the
         # join key never depends on how the roster spelled it ("1.234.567",
         # "1234567.0"). The RAW roster text is exported in `cedulas_unificadas`
         # (once, never the row's own key) so any form the API/frontend carries maps
         # to the row.
-        clave = _cedula_key(identificacion) or identificacion
         existente = por_cedula.get(clave)
         if existente is not None:
             # Two roster entries collapse to the SAME cédula -> one person; keep
@@ -569,25 +617,25 @@ def construir_universo(
     for entrada in referencia.main:
         clave = _cedula_key(entrada.cedula_key)
         if not clave:
-            revision.append({
-                "motivo": "main_sin_cedula",
-                "cedula_key": _txt(entrada.cedula_key),
-                "nombre_completo": _nombre_de_entrada(entrada),
-                "id": _txt(entrada.id),
-            })
+            revision.append(_revision(
+                "main_sin_cedula",
+                cedula_key=_txt(entrada.cedula_key),
+                nombre_completo=_nombre_de_entrada(entrada),
+                id=_txt(entrada.id),
+            ))
             continue
         primera = vistos_main.get(clave)
         if primera is not None:
             nombre_a, nombre_b = _nombre_de_entrada(primera), _nombre_de_entrada(entrada)
-            revision.append({
-                "motivo": "cedula_duplicada_main",
-                "cedula_key": clave,
-                "nombre_completo": nombre_a,
-                "nombre_completo_duplicado": nombre_b,
-                "id": _txt(primera.id),
-                "id_duplicado": _txt(entrada.id),
-                "mismo_nombre": bool(nombre_a) and normalizar_nombre(nombre_a) == normalizar_nombre(nombre_b),
-            })
+            revision.append(_revision(
+                "cedula_duplicada_main",
+                cedula_key=clave,
+                nombre_completo=nombre_a,
+                nombre_completo_duplicado=nombre_b,
+                id=_txt(primera.id),
+                id_duplicado=_txt(entrada.id),
+                mismo_nombre=bool(nombre_a) and normalizar_nombre(nombre_a) == normalizar_nombre(nombre_b),
+            ))
             continue
         vistos_main[clave] = entrada
         perfil = por_cedula.get(clave)
@@ -599,6 +647,21 @@ def construir_universo(
             _rellenar_desde_main(perfil, entrada)
 
     return perfiles, tuple(revision)
+
+
+def _aplicar_vercel(perfil: Perfil, entrada: EntradaReferencia, por_cedula: bool) -> None:
+    """The ONE Vercel overlay of a profile (shared by `superponer_referencia` and the
+    post-fix re-overlay). `en_vercel` is only ever set to True, never back to False.
+    `np_vercel` and `entidad_vercel` are BOTH first-non-empty-wins: a later call fills
+    them only while they are empty, so a re-overlay can never wipe (or replace) a
+    non-empty `np_vercel` with an empty (or different) one (D-FIXOVERLAY, notebook 8.1
+    re-resolves only `entidad`; the caller clears `entidad_vercel` first to re-resolve
+    it). `entidad_vercel` is additionally taken ONLY from a match BY CÉDULA (D12)."""
+    perfil.en_vercel = True
+    if not perfil.np_vercel:
+        perfil.np_vercel = _txt(entrada.np)
+    if por_cedula and not perfil.entidad_vercel:
+        perfil.entidad_vercel = _txt(entrada.entidad)
 
 
 def superponer_referencia(perfiles: dict[str, Perfil], referencia: ReferenciaBundle) -> None:
@@ -614,15 +677,13 @@ def superponer_referencia(perfiles: dict[str, Perfil], referencia: ReferenciaBun
 
         entrada, por_cedula = vercel.buscar(cedula_k, perfil.nombre_norm)
         if entrada is not None:
-            perfil.en_vercel = True
-            perfil.np_vercel = _txt(entrada.np)
-            if por_cedula and not perfil.entidad_vercel:
-                perfil.entidad_vercel = _txt(entrada.entidad)
+            _aplicar_vercel(perfil, entrada, por_cedula)
 
         entrada, _ = fase2.buscar(cedula_k, perfil.nombre_norm)
         if entrada is not None:
             perfil.en_fase2 = True
             perfil.np_fase2 = _txt(entrada.np)
+            perfil.cedula_fase2 = _cedula_key(entrada.cedula_key)
 
         entrada, _ = main.buscar(cedula_k, perfil.nombre_norm)
         if entrada is not None:
@@ -653,11 +714,12 @@ class _IndiceAlias:
 
     def __init__(self, perfiles: dict[str, Perfil]) -> None:
         self.exacto: dict[str, Perfil] = {}
-        for perfil in perfiles.values():
+        ordenados = sorted(perfiles.values(), key=lambda p: p.identidad_key)
+        for perfil in ordenados:
             clave = _cedula_key(perfil.identificacion)
             if clave:
                 self.exacto.setdefault(clave, perfil)
-        for perfil in perfiles.values():
+        for perfil in ordenados:
             for alias in perfil.cedulas_unificadas:
                 clave = _cedula_key(alias)
                 if clave:
@@ -703,6 +765,10 @@ def atribuir_stickers(perfiles: dict[str, Perfil], stickers: list[dict]) -> None
     unresolvable/blank cédula or a malformed sticker is skipped, never raised.
     Mutates the profiles in place."""
     indice = _IndiceAlias(perfiles)
+    # The index stays static while the stickers are read (registering a form the
+    # stripped fallback already resolves changes no later lookup), so the outcome
+    # cannot depend on the sticker order; the forms are exported afterwards, sorted.
+    nuevos: dict[str, tuple[Perfil, set[str]]] = {}
     for sticker in (stickers or []):
         if not isinstance(sticker, dict):
             continue
@@ -713,7 +779,7 @@ def atribuir_stickers(perfiles: dict[str, Perfil], stickers: list[dict]) -> None
         if perfil is None:
             continue  # unattributable sticker -> skipped, never raised
         if clave not in indice.exacto:
-            indice.registrar(perfil, clave)
+            nuevos.setdefault(perfil.identidad_key, (perfil, set()))[1].add(clave)
         perfil.n_stickers += 1
         fecha = _parse_fecha(sticker.get("fecha_creacion"))
         if fecha is not None:
@@ -722,6 +788,99 @@ def atribuir_stickers(perfiles: dict[str, Perfil], stickers: list[dict]) -> None
                 perfil.ultimo_sticker = fecha_solo
         if _sticker_es_valido(sticker):
             perfil.tiene_sticker_valido = True
+    for identidad_key in sorted(nuevos):
+        perfil, claves = nuevos[identidad_key]
+        for clave in sorted(claves):
+            indice.registrar(perfil, clave)
+
+
+def corregir_cedula_fase2(
+    perfiles: dict[str, Perfil], referencia: ReferenciaBundle
+) -> tuple[dict[str, Perfil], tuple[dict, ...]]:
+    """D18, the notebook's "Fase 2 cédula overwrites main's": a profile that matched
+    Fase 2 by exact `nombre_norm` ONLY (its cédula did not match) adopts the Fase 2
+    cédula as its `identidad_key`/`identificacion`. Everything else follows from
+    keeping the join contract intact:
+
+    - `cedula_sospechosa` is NOT recomputed: it stays as computed from the ORIGINAL
+      cédula, in both directions (recomputing would clear the flag on exactly the
+      rows that most need review, and move collapse membership off parity).
+    - The OLD key is exported once in `cedulas_unificadas` (never the row's own key)
+      so a raw sticker still carrying it — or its zero-padded forms already
+      registered by the attribution — keeps resolving to the row on the frontend.
+    - A match BY cédula, a Fase 2 row without a usable cédula, or a cédula that is
+      already the profile's own key change nothing.
+    - No silent capture: when the Fase 2 cédula is already answered to (own key or
+      alias) by ANOTHER profile, or two profiles want the same one, nobody moves and
+      each such profile is reported (`fase2_cedula_colision`). Decisions read the
+      keys as they were BEFORE the pass, so the outcome is independent of order.
+
+    - A profile whose key WAS rewritten re-runs the Vercel overlay by its NEW cédula
+      (exact key only, never by name; `_aplicar_vercel`): `entidad_vercel` is re-resolved
+      from the corrected cédula (notebook 8.1 resolves `entidad` on the corrected
+      `identificacion`), while `en_vercel`/`np_vercel` are first-non-empty-wins: a
+      non-empty pre-fix `np_vercel` is never wiped or replaced, only filled when empty
+      (W-1). No Vercel row for the new cédula
+      leaves the profile exactly as the pre-fix overlay left it; a blocked fix
+      re-overlays nothing. `cedula_original` records the replaced key for the remap's
+      same-person check.
+
+    Runs AFTER the sticker attribution (aggregates were counted under the old key;
+    they stay on the profile object) and BEFORE the remap and the D-P2 unification
+    (the remap then finds the owner by the corrected cédula)."""
+    fase2 = _IndiceReferencia(referencia.fase2)
+    ordenados = sorted(perfiles.values(), key=lambda p: p.identidad_key)
+
+    reclamos: dict[str, set[str]] = {}
+    for perfil in ordenados:
+        for clave in (_cedula_key(perfil.identificacion), *map(_cedula_key, perfil.cedulas_unificadas)):
+            if clave:
+                reclamos.setdefault(clave, set()).add(perfil.identidad_key)
+
+    objetivos: dict[str, str] = {}
+    for perfil in ordenados:
+        propia = _cedula_key(perfil.identificacion)
+        entrada, por_cedula = fase2.buscar(propia, perfil.nombre_norm)
+        if entrada is None or por_cedula:
+            continue
+        nueva = _cedula_key(entrada.cedula_key)
+        if nueva and nueva != propia:
+            objetivos[perfil.identidad_key] = nueva
+    pretendientes = Counter(objetivos.values())
+
+    revision: list[dict] = []
+    nuevas_claves: dict[str, str] = {}
+    vercel: _IndiceReferencia | None = None  # built lazily: most bundles rewrite nothing
+    for perfil in ordenados:
+        nueva = objetivos.get(perfil.identidad_key)
+        if nueva is None:
+            continue
+        duenios = sorted(reclamos.get(nueva, set()) - {perfil.identidad_key})
+        if duenios or pretendientes[nueva] > 1:
+            revision.append(_revision(
+                "fase2_cedula_colision",
+                cedula_key=nueva,
+                identidad_key=perfil.identidad_key,
+                identidad_key_existente=duenios[0] if duenios else "",
+                nombre_completo=perfil.nombre_completo,
+            ))
+            continue
+        vieja = perfil.identidad_key
+        vieja_normalizada = _cedula_key(vieja) or vieja
+        alias = [a for a in perfil.cedulas_unificadas if _cedula_key(a) != nueva]
+        if vieja_normalizada not in {_cedula_key(a) or a for a in alias}:
+            alias.append(vieja)
+        perfil.identidad_key = perfil.identificacion = nueva
+        perfil.cedulas_unificadas = tuple(alias)
+        perfil.cedula_original = vieja_normalizada
+        nuevas_claves[vieja] = nueva
+        if vercel is None:
+            vercel = _IndiceReferencia(referencia.vercel)
+        entrada_vercel = vercel.por_cedula.get(nueva)
+        if entrada_vercel is not None:
+            perfil.entidad_vercel = ""  # the corrected cédula is authoritative (D12, notebook 8.1)
+            _aplicar_vercel(perfil, entrada_vercel, True)
+    return {nuevas_claves.get(clave, clave): perfil for clave, perfil in perfiles.items()}, tuple(revision)
 
 
 def fusionar_identidad(
@@ -730,70 +889,251 @@ def fusionar_identidad(
     referencia: ReferenciaBundle,
 ) -> tuple[dict[str, Perfil], tuple[dict, ...]]:
     """Stage 1: universe (Firestore roster ∪ `referencia.main`, D9) + Vercel /
-    Fase 2 / `main` overlays + priority heuristics + sticker attribution
-    (D11). Returns `(perfiles, revision_manual)`. It does NOT unify name
-    duplicates: D-P2 runs later (`unificar_duplicados`, D10) so its survivor
-    score is evaluated on populated flags."""
+    Fase 2 / `main` overlays + priority heuristics + sticker attribution (D11) +
+    the Fase 2 cédula fix (D18). Returns `(perfiles, revision_manual)`. It does NOT
+    unify name duplicates: D-P2 runs later (`unificar_duplicados`, D10) so its
+    survivor score is evaluated on populated flags."""
     perfiles, revision = construir_universo(roster_by_cedula, referencia)
     superponer_referencia(perfiles, referencia)
     atribuir_stickers(perfiles, stickers)
-    return perfiles, revision
+    perfiles, revision_fix = corregir_cedula_fase2(perfiles, referencia)
+    return perfiles, (*revision, *revision_fix)
 
 
 # ── Stage 2: remapear_codigos ────────────────────────────────────────────────
 
 
+def _misma_persona(perfil: Perfil, clave_vercel: str, nombre_vercel: str) -> bool:
+    """D-MISMAPERSONA — the notebook's 4.d `misma_persona`, verbatim: the current
+    holder IS the person the Vercel entry names when the Vercel cédula key equals its
+    own cédula key (or the one it had before the D18 fix), or its matched Fase 2
+    cédula, or `token_sort_ratio(nombre_norm, nombre_vercel) >= 90` (inclusive, the
+    same scorer/cutoff as the fuzzy scan). An empty cédula or an empty name never
+    matches anything: rapidfuzz scores two empty strings as 100."""
+    if clave_vercel and clave_vercel in (
+        _cedula_key(perfil.identificacion), perfil.cedula_original, perfil.cedula_fase2,
+    ):
+        return True
+    if perfil.nombre_norm and nombre_vercel:
+        return fuzz.token_sort_ratio(perfil.nombre_norm, nombre_vercel) >= FUZZY_REMAP_THRESHOLD
+    return False
+
+
+def _rango_conservado(
+    perfil: Perfil, clave_vercel: str, nombre_vercel: str, titular: Perfil | None
+) -> tuple:
+    """D-MISMOSTITULARES: which of 2+ same-person holders keeps the código (`min` wins).
+    (1) the cédula owner by its OWN key or its pre-fix key, (2) the profile the owner
+    lookup resolved (`titular`, which includes a unique Fase 2 owner), (3) the highest
+    `token_sort_ratio` against the Vercel name (0 when either name is empty), (4) the
+    lowest `identidad_key` as the TERMINAL total order (D29)."""
+    directa = bool(clave_vercel) and clave_vercel in (_cedula_key(perfil.identificacion), perfil.cedula_original)
+    es_titular = titular is not None and perfil.identidad_key == titular.identidad_key
+    puntaje = (
+        fuzz.token_sort_ratio(perfil.nombre_norm, nombre_vercel) if perfil.nombre_norm and nombre_vercel else 0.0
+    )
+    return (not directa, not es_titular, -puntaje, perfil.identidad_key)
+
+
 def remapear_codigos(
     perfiles: dict[str, Perfil], referencia: ReferenciaBundle
 ) -> tuple[dict[str, Perfil], tuple[dict, ...]]:
-    """Cédula match auto-remaps (D1: attribute to the CURRENT titular).
-    Fuzzy `token_sort_ratio >= 90` only SURFACES a candidate for manual
-    review — NEVER auto-assigns (spec: "Fuzzy match never merges
-    automatically"). D-P1: a `codigo` shared by 2+ Vercel entries (or
-    already listed in `referencia.codigos_duplicados`) is excluded from
-    remap entirely and listed for manual review."""
+    """Cédula match auto-remaps (D1: attribute to the CURRENT titular) and, since
+    D13, CLEARS the código from every current holder that is a DIFFERENT person than
+    the Vercel owner, so a código is single-valued by construction. A holder who IS
+    that person (`_misma_persona`, D-MISMAPERSONA, notebook parity) is never a wrong
+    holder: it keeps the código and, as in the notebook, the pair is left alone (no
+    assignment to another profile, no `remap_sin_duenio`, no candidate). Fuzzy
+    `token_sort_ratio >= 90` only SURFACES a candidate for manual review — NEVER
+    auto-assigns (spec: "Fuzzy match never merges automatically"). D-P1: a `codigo`
+    shared by 2+ Vercel entries (or already listed in `referencia.codigos_duplicados`)
+    is excluded from remap entirely (nothing assigned, nobody cleared) and listed for
+    manual review.
+
+    The owner is the profile whose own cédula key is the Vercel cédula, else the one
+    whose matched Fase 2 cédula is (W3, notebook `cedula_idx`); a Fase 2 cédula shared
+    by 2+ profiles is ambiguous: nothing is assigned or cleared and
+    `remap_owner_ambiguo` lists the profiles. When 2+ current holders are the same
+    person (D-MISMOSTITULARES) exactly ONE keeps the código (`_rango_conservado`) and
+    each other one is cleared and reported as `remap_mismos_titulares`, but ONLY when the
+    keeper surely ends up holding it (round 3, INV-5): a keeper emptied by its own
+    `remap_conflicto`, or given another código by a claim, leaves the others in place
+    (nothing is cleared or reported for them; the conflict item names the código). Review motivos:
+    `remap_sin_duenio` (one
+    per cleared holder: the Vercel owner has no profile), `codigo_reemplazado` (D-REMAP:
+    the owner held a DIFFERENT código before the pass and Vercel's, which NOBODY held,
+    replaces it; the behavior is kept, the divergence from the notebook is surfaced), `remap_conflicto` (one per
+    código: ONE profile is claimed by two DIFFERENT Vercel códigos, it is left empty;
+    a same-código pair is D-P1) and `remap_owner_ambiguo`. Every decision is taken
+    over the holdings as they were BEFORE the pass, so a swap or a rotation (A holds
+    B's code, B holds A's) resolves to the Vercel owners instead of wiping both.
+    Profiles are visited in `identidad_key` order (D29): the outcome never depends on
+    the roster order. Codes are compared as exact trimmed text — "021" and "21" are
+    different códigos; a whitespace-only Vercel código is no código (D-CODIGOTRIM).
+
+    `codigo_vercel_duplicado` (D-P1) is emitted for every excluded código that Vercel repeats
+    or that 2+ profiles hold (a pre-listed one too, W-4); with 2+ holders it lists them in
+    `identidad_keys_titulares`, as does `remap_owner_ambiguo` (its holders keep the código:
+    no evidence to clear them). The items name the keys AS OF THIS STAGE; `depurar` rewrites
+    them to the keys that survive the unification (`_resolver_claves_revision`)."""
     revision_manual: list[dict] = []
-    excluidos = set(referencia.codigos_duplicados)
+    excluidos = {codigo for codigo in map(_txt, referencia.codigos_duplicados) if codigo}
 
-    por_codigo: dict[str, list[EntradaReferencia]] = {}
+    vercel: list[tuple[str, EntradaReferencia]] = []
+    por_codigo: dict[str, int] = {}
     for entrada in referencia.vercel:
-        if entrada.codigo:
-            por_codigo.setdefault(entrada.codigo, []).append(entrada)
-    for codigo, entradas in por_codigo.items():
-        if len(entradas) >= 2 and codigo not in excluidos:
-            excluidos.add(codigo)
-            revision_manual.append({"motivo": "codigo_vercel_duplicado", "codigo": codigo})
+        codigo = _txt(entrada.codigo)  # D-CODIGOTRIM: a whitespace-only código is no código
+        if codigo:
+            vercel.append((codigo, entrada))
+            por_codigo[codigo] = por_codigo.get(codigo, 0) + 1
+    repetidos = {codigo for codigo, cantidad in por_codigo.items() if cantidad >= 2}
+    excluidos |= repetidos
 
-    perfiles_por_cedula = {
-        clave: p for p in perfiles.values() if (clave := _cedula_key(p.identificacion))
-    }
+    ordenados = sorted(perfiles.values(), key=lambda p: p.identidad_key)
+    propios: dict[str, Perfil] = {}
+    por_fase2: dict[str, list[Perfil]] = {}
+    for perfil in ordenados:
+        clave = _cedula_key(perfil.identificacion)
+        if clave:
+            propios.setdefault(clave, perfil)
+        if perfil.cedula_fase2 and perfil.cedula_fase2 != clave:
+            por_fase2.setdefault(perfil.cedula_fase2, []).append(perfil)
+    titulares_previos: dict[str, list[Perfil]] = {}
+    for perfil in ordenados:
+        if perfil.codigo:
+            titulares_previos.setdefault(perfil.codigo, []).append(perfil)
+    # D-P1 / W-4: an excluded código is reported when Vercel repeats it OR when it matters
+    # (2+ profiles hold it, whether the bundle pre-listed it or not); the holders ride along
+    # only when there are 2+, so the plain "Vercel repeats a código nobody holds" item keeps
+    # its exact shape.
+    for codigo in sorted(excluidos):
+        titulares = titulares_previos.get(codigo, ())
+        if codigo not in repetidos and len(titulares) < 2:
+            continue
+        holders = {"identidad_keys_titulares": [h.identidad_key for h in titulares]} if len(titulares) >= 2 else {}
+        revision_manual.append(_revision("codigo_vercel_duplicado", codigo=codigo, **holders))
 
-    for entrada in referencia.vercel:
-        if not entrada.codigo or entrada.codigo in excluidos:
+    def duenio_de(clave: str) -> tuple[Perfil | None, tuple[str, ...]]:
+        """`(owner, ambiguous keys)`: an own cédula beats another profile's Fase 2 claim."""
+        if not clave:
+            return None, ()
+        propio = propios.get(clave)
+        if propio is not None:
+            return propio, ()
+        candidatos = por_fase2.get(clave, ())
+        if len(candidatos) == 1:
+            return candidatos[0], ()
+        return None, tuple(p.identidad_key for p in candidatos)  # already in key order
+
+    a_limpiar: dict[str, Perfil] = {}
+    reclamos: dict[str, tuple[Perfil, set[str]]] = {}
+    # (código, keeper, the other same-person holders): decided AFTER every claim is known,
+    # because the keeper may still lose the código to its own conflict / another claim.
+    pendientes_mismos: list[tuple[str, Perfil, list[Perfil]]] = []
+    sin_titular: list[tuple[str, EntradaReferencia]] = []
+    for codigo, entrada in vercel:
+        if codigo in excluidos:
             continue
         clave_vercel = _cedula_key(entrada.cedula_key)
-        titular = perfiles_por_cedula.get(clave_vercel) if clave_vercel else None
-        if titular is not None:
-            titular.codigo = entrada.codigo
+        nombre_vercel = _nombre_norm_de_entrada(entrada)
+        titular, ambiguos = duenio_de(clave_vercel)
+        titulares = titulares_previos.get(codigo, ())
+        mismos = {h.identidad_key for h in titulares if _misma_persona(h, clave_vercel, nombre_vercel)}
+        equivocados = [h for h in titulares if h.identidad_key not in mismos]
+        if mismos:
+            for perfil in equivocados:
+                a_limpiar[perfil.identidad_key] = perfil
+            mismos_perfiles = [h for h in titulares if h.identidad_key in mismos]
+            conservado = min(mismos_perfiles, key=lambda h: _rango_conservado(h, clave_vercel, nombre_vercel, titular))
+            otros = [perfil for perfil in mismos_perfiles if perfil is not conservado]
+            if otros:  # the same person twice: a código is single-valued (decided below)
+                pendientes_mismos.append((codigo, conservado, otros))
+            if titular is not None and titular.identidad_key == conservado.identidad_key:
+                # already the owner's: keep the claim so a person registered twice in
+                # Vercel is still a conflict
+                reclamos.setdefault(titular.identidad_key, (titular, set()))[1].add(codigo)
             continue
-        # No cédula match -> fuzzy fallback, SURFACE only (D3).
-        mejor_perfil: Perfil | None = None
-        mejor_score = 0.0
-        for perfil in perfiles.values():
-            if not entrada.nombre_norm or not perfil.nombre_norm:
-                continue
-            score = fuzz.token_sort_ratio(entrada.nombre_norm, perfil.nombre_norm)
-            if score > mejor_score:
-                mejor_score = score
-                mejor_perfil = perfil
-        if mejor_perfil is not None and mejor_score >= FUZZY_REMAP_THRESHOLD:
-            revision_manual.append({
-                "motivo": "codigo_remap_candidato",
-                "codigo": entrada.codigo,
-                "nombre_vercel": entrada.nombre_norm,
-                "identidad_key_candidato": mejor_perfil.identidad_key,
-                "score": round(mejor_score, 1),
-            })
+        if ambiguos:
+            revision_manual.append(_revision(
+                "remap_owner_ambiguo", codigo=codigo, cedula_key=clave_vercel,
+                identidad_keys=list(ambiguos),
+                # nobody is cleared (no evidence which candidate is the owner): the holders
+                # keep the código, so they are listed (INV-1: no silent multi-holder)
+                identidad_keys_titulares=[h.identidad_key for h in titulares],
+            ))
+            continue
+        for perfil in equivocados:
+            a_limpiar[perfil.identidad_key] = perfil
+        if titular is not None:
+            reclamos.setdefault(titular.identidad_key, (titular, set()))[1].add(codigo)
+            continue
+        for perfil in equivocados:
+            revision_manual.append(_revision("remap_sin_duenio", codigo=codigo, identidad_key=perfil.identidad_key))
+        sin_titular.append((codigo, entrada))
+
+    # What each claimed profile will hold: its one código, or "" when two DIFFERENT Vercel
+    # códigos claim it (remap_conflicto). Computed before any mutation.
+    nuevos_codigos = {
+        titular.identidad_key: next(iter(codigos)) if len(codigos) == 1 else ""
+        for titular, codigos in reclamos.values()
+    }
+    for codigo, conservado, otros in pendientes_mismos:
+        # INV-5: the other same-person holders lose the código ONLY when the keeper surely ends
+        # up holding it. A keeper emptied by its own conflict (or re-assigned another código)
+        # would leave the código with nobody; then they keep it and the conflict item reports it.
+        if nuevos_codigos.get(conservado.identidad_key, codigo) != codigo:
+            continue
+        for perfil in otros:
+            a_limpiar[perfil.identidad_key] = perfil
+            revision_manual.append(_revision(
+                "remap_mismos_titulares", codigo=codigo, identidad_key=perfil.identidad_key,
+                identidad_key_conservado=conservado.identidad_key,
+            ))
+
+    anteriores = {p.identidad_key: _txt(p.codigo) for p in ordenados}  # BEFORE any clearing
+    for perfil in a_limpiar.values():
+        perfil.codigo = ""
+    for titular, codigos in reclamos.values():
+        nuevo = nuevos_codigos[titular.identidad_key]
+        if nuevo:
+            anterior = anteriores[titular.identidad_key]
+            if anterior and anterior != nuevo and nuevo not in titulares_previos:
+                # D-REMAP: nobody held the código, so the notebook's remap table (holders
+                # only) has no row for it; the engine assigns it and strips the owner's
+                # different one. Vercel still wins, but the loss is surfaced. A código that
+                # DID have a holder (swap, rotation) is a notebook remap: nothing to report.
+                revision_manual.append(_revision(
+                    "codigo_reemplazado", identidad_key=titular.identidad_key,
+                    codigo_anterior=anterior, codigo_nuevo=nuevo,
+                ))
+            titular.codigo = nuevo
+            continue
+        titular.codigo = ""
+        for codigo in sorted(codigos):
+            revision_manual.append(_revision("remap_conflicto", codigo=codigo, identidad_key=titular.identidad_key))
+
+    # No cédula match -> fuzzy fallback, SURFACE only (D3). `extractOne` returns the
+    # FIRST best candidate, and the list is in `identidad_key` order, so a tie is
+    # resolved by the lowest key whatever the roster order was.
+    candidatos = [p for p in ordenados if p.nombre_norm]
+    nombres = [p.nombre_norm for p in candidatos]
+    for codigo, entrada in sin_titular:
+        nombre = _nombre_norm_de_entrada(entrada)
+        if not nombre or not nombres:
+            continue
+        mejor = process.extractOne(
+            nombre, nombres, scorer=fuzz.token_sort_ratio, processor=None,
+            score_cutoff=FUZZY_REMAP_THRESHOLD,
+        )
+        if mejor is not None:
+            _, score, indice = mejor
+            revision_manual.append(_revision(
+                "codigo_remap_candidato",
+                codigo=codigo,
+                nombre_vercel=nombre,
+                identidad_key_candidato=candidatos[indice].identidad_key,
+                score=round(score, 1),
+            ))
 
     return perfiles, tuple(revision_manual)
 
@@ -826,8 +1166,8 @@ def colapsar_externos(
     surviving Perfil, informational regardless of collapse outcome."""
     restantes: dict[str, Perfil] = {}
     detalle: list[dict] = []
-    for key, perfil_original in perfiles.items():
-        perfil = copy.deepcopy(perfil_original)
+    for key, perfil_original in sorted(perfiles.items()):
+        perfil = copy.copy(perfil_original)  # every Perfil field is immutable
         dias_inactivo = None
         if perfil.ultimo_sticker is not None:
             dias_inactivo = (hoy - perfil.ultimo_sticker).days
@@ -847,6 +1187,7 @@ def colapsar_externos(
             })
         else:
             restantes[key] = perfil
+    detalle.sort(key=lambda d: (d["identificacion"], d["nombre_completo"]))
     return restantes, tuple(detalle)
 
 
@@ -932,7 +1273,8 @@ def alias_nombres(perfiles: dict[str, Perfil], nombres_survey: Iterable[str]) ->
     """Maps a `survey_cali` normalized name to the real person's
     `identidad_key` it corresponds to — spec: "a survey name that maps to a
     real person's key never lands in GRUPO-EXTERNOS". Deterministic
-    first-wins on a name collision (two different perfiles sharing the
+    first-wins on a name collision — the LOWEST `identidad_key` wins, whatever the
+    dict order (D29) — (two different perfiles sharing the
     exact same `nombre_norm`). A collision is reported as a COUNT only: an
     `identidad_key` is now a cédula and `nombre_norm` a person's name, so
     neither may reach a log line at any level (spec: "Contact Fields Are
@@ -941,7 +1283,7 @@ def alias_nombres(perfiles: dict[str, Perfil], nombres_survey: Iterable[str]) ->
     survey_norm.discard("")
     alias: dict[str, str] = {}
     colisiones = 0
-    for key, perfil in perfiles.items():
+    for key, perfil in sorted(perfiles.items()):
         if not perfil.nombre_norm or perfil.nombre_norm not in survey_norm:
             continue
         if perfil.nombre_norm in alias:
@@ -953,7 +1295,7 @@ def alias_nombres(perfiles: dict[str, Perfil], nombres_survey: Iterable[str]) ->
             "inspectores_depuracion.alias_nombres: %d colision(es) de nombre resueltas "
             "first-wins (detalle omitido: PII)", colisiones,
         )
-    return alias
+    return dict(sorted(alias.items()))
 
 
 # ── Response assembly ────────────────────────────────────────────────────────
@@ -995,10 +1337,124 @@ def _build_grupo_externos(detalle: tuple[dict, ...]) -> dict:
     return {
         "identidad_key": "GRUPO-EXTERNOS",
         "n_colapsados": len(detalle),
+        # Notebook parity shape (spec: "Aggregate row carries the parity shape").
+        "np_fuente": "ninguno",
+        "fase": "Fase I",
+        "fase_np_faltante": True,
+        "activo": False,
         "estado_sugerido": "grupo_externos_agrupado",
         "fuente_dato": f"grupo_agregado (main, {len(detalle)} registros colapsados)",
         "detalle": detalle,
     }
+
+
+# Review motivos that name a código held by 2+ rows (INV-1).
+_MOTIVOS_CODIGO_REPORTADO = frozenset({
+    "codigo_vercel_duplicado", "remap_owner_ambiguo", "remap_conflicto",
+    "remap_mismos_titulares", "codigo_duplicado_local",
+})
+# Item fields that name a profile key (a scalar or a list of them). `identidad_key_absorbido`
+# is deliberately absent: it names a key that no longer has a row, resolved by the survivor's
+# `cedulas_unificadas`.
+_CAMPOS_CLAVE = ("identidad_key", "identidad_key_conservado", "identidad_key_candidato", "identidad_key_existente")
+_CAMPOS_CLAVES = ("identidad_keys", "identidad_keys_titulares")
+
+
+def _mapa_claves_finales(perfiles_previos: dict[str, Perfil], fusiones: Iterable[dict]) -> dict[str, str]:
+    """Pipeline-time key -> the key that survives to the output: a key the D18 fix
+    rewrote (`cedula_original` -> `identidad_key`) and a key the D-P2 unification absorbed
+    (`perdedor` -> `survivor`), composed in pipeline order. A key that is already final is
+    absent (it maps to itself)."""
+    absorbidos = {f["perdedor"]: f["survivor"] for f in fusiones}
+    mapa = {
+        p.cedula_original: absorbidos.get(p.identidad_key, p.identidad_key)
+        for p in perfiles_previos.values() if p.cedula_original
+    }
+    for perdedor, survivor in absorbidos.items():
+        mapa.setdefault(perdedor, survivor)
+    return mapa
+
+
+def _resolver_clave_final(clave: str, mapa: dict[str, str]) -> str:
+    return mapa.get(clave, clave)
+
+
+def _resolver_claves_revision(items: Iterable[dict], mapa: dict[str, str]) -> list[dict]:
+    """INV-2 in ONE place: every profile key a review item names is rewritten to the key
+    that survives to the output (`_resolver_clave_final`), so a consumer never looks up a key
+    the D-P2 unification or the D18 fix already retired. Lists stay sorted and duplicate-free.
+    The items are copied, never mutated."""
+    if not mapa:
+        return [dict(item) for item in items]
+    resueltos = []
+    for item in items:
+        nuevo = dict(item)
+        for campo in _CAMPOS_CLAVE:
+            if isinstance(nuevo.get(campo), str):
+                nuevo[campo] = _resolver_clave_final(nuevo[campo], mapa)
+        for campo in _CAMPOS_CLAVES:
+            if isinstance(nuevo.get(campo), list):
+                nuevo[campo] = sorted({_resolver_clave_final(c, mapa) for c in nuevo[campo]})
+        resueltos.append(nuevo)
+    return resueltos
+
+
+def _codigos_perdidos_unificacion(fusiones: Iterable[dict]) -> list[dict]:
+    """A código the D-P2 backfill could not keep (the survivor already held a different
+    one) is reported, never lost silently."""
+    return [
+        _revision(
+            "codigo_perdido_unificacion", codigo=f["codigo_perdido"],
+            identidad_key=f["survivor"], identidad_key_absorbido=f["perdedor"],
+        )
+        for f in fusiones if f.get("codigo_perdido")
+    ]
+
+
+def _codigos_duplicados_locales(perfiles: dict[str, Perfil], items: Iterable[dict]) -> list[dict]:
+    """D-DUPLOCAL (INV-1): a código held by 2+ FINAL rows that no other item names (Vercel
+    never mentioned it, so D13 has no evidence to clear it) is reported with its holders,
+    never cleared."""
+    cubiertos = {_txt(i.get("codigo")) for i in items if i["motivo"] in _MOTIVOS_CODIGO_REPORTADO}
+    titulares: dict[str, list[str]] = {}
+    for key, perfil in sorted(perfiles.items()):
+        if perfil.codigo:
+            titulares.setdefault(perfil.codigo, []).append(key)
+    return [
+        _revision("codigo_duplicado_local", codigo=codigo, identidad_keys=claves)
+        for codigo, claves in sorted(titulares.items())
+        if len(claves) >= 2 and codigo not in cubiertos
+    ]
+
+
+def _canonizar_revision(items: Iterable[dict]) -> tuple[dict, ...]:
+    """D29 canonical `revision_manual`: sorted by `(motivo, codigo, identidad_key)`
+    with the item's own canonical JSON as the last tie-break (a total order).
+    Indistinguishable items are NEVER silently dropped (three identical duplicate
+    `main` rows are three facts): they collapse into ONE item carrying
+    `n_ocurrencias` (>= 2 only when it repeats; a singleton keeps its exact shape).
+    Counting is idempotent and composable: an item that already carries the counter
+    adds it instead of counting once. The input items are never mutated."""
+    def serializado(item: dict) -> str:
+        return json.dumps(item, sort_keys=True, ensure_ascii=False, default=str)
+
+    def repeticiones(item: dict) -> int:
+        n = item.get("n_ocurrencias")
+        return n if isinstance(n, int) and not isinstance(n, bool) and n >= 1 else 1
+
+    grupos: dict[str, tuple[dict, int]] = {}
+    for item in items:
+        base = {k: v for k, v in item.items() if k != "n_ocurrencias"}
+        clave = serializado(base)
+        previo = grupos.get(clave)
+        grupos[clave] = (base, (previo[1] if previo else 0) + repeticiones(item))
+
+    canonicos: list[tuple[tuple, dict]] = []
+    for clave, (base, cuenta) in grupos.items():
+        item = {**base, "n_ocurrencias": cuenta} if cuenta >= 2 else base
+        canonicos.append(((base["motivo"], _txt(base.get("codigo")), _txt(base.get("identidad_key")), clave), item))
+    canonicos.sort(key=lambda par: par[0])
+    return tuple(item for _, item in canonicos)
 
 
 def depurar(
@@ -1011,10 +1467,20 @@ def depurar(
 ) -> Depuracion:
     """The one public entry point (design's Interfaces/Contracts). Advisory
     only: returns a value, takes no mutable Firestore handle, calls no write
-    API (spec: "Classification never writes to the inspector record")."""
+    API (spec: "Classification never writes to the inspector record").
+
+    Pure and deterministic (D29): no input is mutated, nothing returned aliases an
+    input (every dict/list is built here), no clock/environment/module state is read
+    (`hoy` is the only date source), and the result does not depend on the roster
+    or sticker ORDER. `referencia` row order IS input (D19 first-wins). Every
+    emitted list is canonical: `inspectores` by `identidad_key`, `revision_manual`
+    by `(motivo, codigo, identidad_key)` (identical items collapse into one carrying
+    `n_ocurrencias`), `grupo_externos.detalle` by `identificacion`, `alias_nombres`
+    by name."""
     perfiles, revision_universo = fusionar_identidad(stickers, roster_by_cedula, referencia)
+    perfiles_previos = perfiles  # keys as the D18 fix left them: what the remap items name
     perfiles, revision_remap = remapear_codigos(perfiles, referencia)
-    perfiles, _fusiones = unificar_duplicados(perfiles)
+    perfiles, fusiones = unificar_duplicados(perfiles)
     alias = alias_nombres(perfiles, nombres_survey)
     perfiles, detalle_externos = colapsar_externos(perfiles, hoy, exentos=frozenset(alias.values()))
 
@@ -1025,8 +1491,16 @@ def depurar(
         perfil.fuente_dato = fuente_dato(perfil)
         perfil.estado_sugerido = estado_sugerido(perfil)
 
-    inspectores = tuple(_perfil_a_dict(p) for p in perfiles.values())
+    inspectores = tuple(_perfil_a_dict(p) for _, p in sorted(perfiles.items()))
     grupo_externos = _build_grupo_externos(detalle_externos) if detalle_externos else None
+
+    # Review items: resolved to the keys that survive (INV-2), then the two items only the
+    # END of the pipeline can know (a código lost in the unification, D-DUPLOCAL: INV-1).
+    revision = _resolver_claves_revision(
+        (*revision_universo, *revision_remap), _mapa_claves_finales(perfiles_previos, fusiones)
+    )
+    revision += _codigos_perdidos_unificacion(fusiones)
+    revision += _codigos_duplicados_locales(perfiles, revision)
 
     return Depuracion(
         activa=referencia.activa,
@@ -1035,5 +1509,5 @@ def depurar(
         inspectores=inspectores,
         grupo_externos=grupo_externos,
         alias_nombres=alias,
-        revision_manual=(*revision_universo, *revision_remap),
+        revision_manual=_canonizar_revision(revision),
     )

@@ -291,11 +291,49 @@ The system MUST remap `codigo` against the Vercel roster by cédula match, falli
 | D3: Fuzzy name match 85-99% | Never auto-merge; always route to manual review |
 | D5: Fase 2 row without NP | `np=""`, `np_fuente="ninguno"`; MUST NOT invent `pasos` |
 
-When Vercel assigns a `codigo` to cédula A and a DIFFERENT profile currently holds that `codigo`,
-the system MUST clear the `codigo` from the wrong holder before assigning it. If cédula A has no
-profile in the universe, the código MUST be cleared from the wrong holder anyway and reported as
-`motivo="remap_sin_duenio"`; if two Vercel-registered owners contend for one código on the same
-profile, the system MUST leave the `codigo` empty and report `motivo="remap_conflicto"`.
+When Vercel assigns a `codigo` to cédula A and a DIFFERENT PERSON currently holds that `codigo`,
+the system MUST clear the `codigo` from that wrong holder before assigning it. A holder is the SAME
+person as the Vercel owner (and is therefore never a wrong holder) when the Vercel cédula key equals
+its own cédula key, the cédula key it had before the Fase 2 cédula fix, or its matched Fase 2
+cédula, or when `token_sort_ratio` of the normalized names is `>= 90` (inclusive); an empty
+cédula or an empty name never matches. A same-person holder keeps its `codigo` and nothing is
+assigned, cleared for it, or reported for that pair. If cédula A has no profile in the universe,
+the código MUST be cleared from every wrong holder anyway and reported, one item per cleared holder,
+as `motivo="remap_sin_duenio"` (with the holder's `identidad_key`). If ONE profile is claimed by two
+DIFFERENT Vercel códigos (a person registered twice in Vercel), the system MUST leave its `codigo`
+empty and report each código as `motivo="remap_conflicto"`; two Vercel entries sharing the SAME código
+are a D-P1 duplicate (`codigo_vercel_duplicado`), never a conflict. The owner of a Vercel cédula is
+resolved through the profile's own cédula, else its matched Fase 2 cédula; a Fase 2 cédula shared by
+2+ profiles is ambiguous: nothing is assigned or cleared and `motivo="remap_owner_ambiguo"` lists the
+`identidad_keys` and, in `identidad_keys_titulares`, the current holders of the código (who keep it:
+there is no evidence to clear them). When 2+ current holders of a código are ALL the same person as the Vercel owner,
+exactly ONE MUST keep it (the cédula owner by own or pre-fix cédula, else the resolved owner, else
+the highest `token_sort_ratio`, else the lowest `identidad_key`) and each other one MUST be cleared and
+reported as `motivo="remap_mismos_titulares"` with `codigo`, `identidad_key` (the cleared holder) and
+`identidad_key_conservado` (the keeper), BUT only when the keeper surely ends up holding the código:
+a keeper that its own `remap_conflicto` empties (or that another claim re-assigns) MUST NOT cause the
+other same-person holders to be cleared; they keep the código and the conflict item names it. When the
+owner of a Vercel cédula held a DIFFERENT código and
+NOBODY held Vercel's, the código is still assigned (Vercel is the golden rule) and the replacement
+MUST be reported as `motivo="codigo_reemplazado"` with `identidad_key`, `codigo_anterior` and
+`codigo_nuevo`; a código that had a holder (a swap or a rotation) reports nothing.
+
+Review-item invariants (judgment-day round 3, property-tested): (INV-1) after `depurar`, every
+non-empty `codigo` held by 2+ output rows MUST be named by a `revision_manual` item whose `codigo`
+equals it (`codigo_vercel_duplicado`, `remap_owner_ambiguo`, `remap_conflicto`,
+`remap_mismos_titulares` or `codigo_duplicado_local`); clearing a código needs Vercel evidence (D13),
+so a código Vercel never mentions is kept and reported as
+`{"motivo":"codigo_duplicado_local","codigo":...,"identidad_keys":[...]}`. A código pre-listed in
+`referencia.codigos_duplicados` is excluded from the remap but MUST be reported as
+`codigo_vercel_duplicado` (with `identidad_keys_titulares`) whenever 2+ profiles hold it. (INV-2)
+every profile key a review item names MUST be a final `inspectores` key or a `grupo_externos.detalle`
+member: a key the D-P2 unification absorbed is reported as its survivor. When the survivor already
+holds a DIFFERENT código, the absorbed profile's código cannot be backfilled and MUST be reported as
+`{"motivo":"codigo_perdido_unificacion","codigo":...,"identidad_key":<survivor>,"identidad_key_absorbido":<key>}`.
+(INV-5) a keeper is never left empty by the pass that cleared the other holders. (INV-3/INV-4) the output
+does not depend on the roster/sticker/survey order and is idempotent. (INV-6) `activo` requires a
+non-empty `codigo`. A Vercel `codigo` is `_txt`-trimmed and a whitespace-only one is no código
+(D-CODIGOTRIM).
 
 D-P2 unification MUST run AFTER the Vercel/Fase 2 overlays, the Fase 2 cédula fix, sticker
 attribution and the remap, so the survivor score
@@ -305,7 +343,8 @@ before main-only. The survivor MUST absorb the losers' sticker aggregates and MU
 empty field with the first non-empty loser value. Every unified-away `cedula_key` MUST be registered
 so later lookups resolve to the survivor.
 (Previously: unification ran before overlays and stickers, so the survivor score was degenerate; the
-remap never cleared the código from a wrong holder and had no `remap_sin_duenio`/`remap_conflicto`.)
+remap never cleared the código from a wrong holder and had no `remap_sin_duenio`/`remap_conflicto`;
+a holder who was the same person as the Vercel owner was also cleared.)
 
 #### Scenario: Duplicated Vercel code is excluded, not guessed
 - GIVEN two Vercel roster entries share the same `codigo`
@@ -333,11 +372,71 @@ remap never cleared the código from a wrong holder and had no `remap_sin_duenio
 - THEN profile B's `codigo` becomes `""`
 - AND `revision_manual` contains `{"codigo":"041","motivo":"remap_sin_duenio"}`
 
-#### Scenario: Contending owners leave the código empty
-- GIVEN two Vercel-registered cédulas both resolve to the same profile for `codigo="041"`
+#### Scenario: One profile claimed by two different Vercel códigos is left empty
+- GIVEN two Vercel entries whose cédulas resolve to the same profile, with `codigo="041"` and `codigo="052"`
 - WHEN remap runs
 - THEN that profile's `codigo` is `""`
-- AND `revision_manual` contains `{"codigo":"041","motivo":"remap_conflicto"}`
+- AND `revision_manual` contains `{"codigo":"041","motivo":"remap_conflicto","identidad_key":<profile>}` and the same for `"052"`
+
+#### Scenario: Two Vercel entries with the same código are a duplicate, not a conflict
+- GIVEN two Vercel entries share `codigo="041"` and their cédulas resolve to the same profile
+- WHEN remap runs
+- THEN `revision_manual` contains `{"codigo":"041","motivo":"codigo_vercel_duplicado"}` and no `remap_conflicto`
+
+#### Scenario: A holder who is the same person is never a wrong holder
+- GIVEN Vercel assigns `codigo="041"` to cédula `1099999999` named "Juan Perez Gomez" and the roster profile with cédula `1234567` and the same name holds `"041"`
+- WHEN remap runs
+- THEN that profile keeps `codigo="041"` and `estado_sugerido="activo"`
+- AND `revision_manual` is empty
+
+#### Scenario: Same-person matching is inclusive at 90 and never matches empty names
+- GIVEN a holder whose name scores exactly 90.0 (resp. 88.9) against the Vercel name
+- WHEN remap runs
+- THEN the holder keeps the código at 90.0 and is cleared at 88.9
+- AND an empty holder name or an empty Vercel name never counts as a match
+
+#### Scenario: Two holders that are the same person keep exactly one código
+- GIVEN Vercel assigns `codigo="041"` to a third cédula named "Ana Maria Gomez", and two roster profiles named "Ana Maria Gomez" (cédula A) and "Ana Maria Gomes" (cédula B, `token_sort_ratio` 93.3) both hold `"041"`
+- WHEN remap runs
+- THEN exactly one of them keeps `"041"` (the cédula owner if one of them is, else the highest score, else the lowest `identidad_key`) and the other's `codigo` becomes `""`
+- AND `revision_manual` contains `{"motivo":"remap_mismos_titulares","codigo":"041","identidad_key":<cleared>,"identidad_key_conservado":<keeper>}` once per cleared holder
+- AND the result is identical for any roster order; a lone same-person holder reports nothing; "021" and "21" are different códigos
+
+#### Scenario: A keeper emptied by its own conflict does not get its twins cleared
+- GIVEN cédula A (roster, "Maria Fernanda Lopez", `codigo="021"`) and a `main`-only profile B with the same name and `codigo="021"`, and Vercel registers A twice (`021` and `052`)
+- WHEN remap runs
+- THEN A's `codigo` is `""` (`remap_conflicto` for 021 and 052) and B keeps `"021"`; no `remap_mismos_titulares` item is emitted
+- AND after the unification the single row holds `"021"`
+
+#### Scenario: A código lost in the unification is reported
+- GIVEN the same-person keeper of `"099"` (cédula 999) is unified into a profile that already holds `"052"`
+- WHEN `depurar` runs
+- THEN `revision_manual` contains `codigo_perdido_unificacion` with `codigo="099"`, `identidad_key=<survivor>` and `identidad_key_absorbido="999"`, and the `remap_mismos_titulares` item names the survivor as `identidad_key_conservado`
+- AND a survivor with no código inherits the absorbed one and reports nothing
+
+#### Scenario: A código held twice that Vercel never mentions is reported, not cleared
+- GIVEN two different people hold `codigo="041"` and Vercel has no entry for it
+- WHEN `depurar` runs
+- THEN both keep `"041"` and `revision_manual` contains `{"motivo":"codigo_duplicado_local","codigo":"041","identidad_keys":[<both>]}`
+- AND "021" vs "21", blank/whitespace códigos and a single holder report nothing
+
+#### Scenario: A pre-listed duplicate código held by two profiles is reported
+- GIVEN `codigos_duplicados` lists `"041"` and two profiles hold it
+- WHEN `depurar` runs
+- THEN nobody is cleared and `revision_manual` contains `codigo_vercel_duplicado` for `"041"` with `identidad_keys_titulares` listing both; held by one profile it reports nothing
+
+#### Scenario: A Vercel código nobody held replaces the owner's different código and is reported
+- GIVEN the owner of cédula A holds `codigo="052"` and Vercel assigns `codigo="041"` to A, and nobody holds `"041"`
+- WHEN remap runs
+- THEN A's `codigo` is `"041"`
+- AND `revision_manual` contains `{"motivo":"codigo_reemplazado","identidad_key":<A>,"codigo_anterior":"052","codigo_nuevo":"041"}`
+- AND a swap or rotation of códigos between profiles that all hold one reports no `codigo_reemplazado`
+
+#### Scenario: A Fase 2 cédula shared by two profiles is an ambiguous owner
+- GIVEN two profiles matched the same Fase 2 cédula (their fix was blocked), the Vercel owner cédula is that one, and a third profile holds the código
+- WHEN remap runs
+- THEN the código is not reassigned and the holder is not cleared
+- AND `revision_manual` contains a `remap_owner_ambiguo` item listing both `identidad_keys`
 
 #### Scenario: D-P2 pair carrying different cédulas across sources is unified after overlays
 - GIVEN one profile keyed by the Firestore cédula and another keyed by the `main` cédula share an
@@ -361,7 +460,9 @@ outside the dedicated `"no_persona"` branch.
 When Fase 2 supplies a corrected cédula for a profile matched by exact `nombre_norm` only (no cédula
 match), the system MUST adopt the Fase 2 cédula as the profile's `cedula_key` but MUST keep
 `cedula_sospechosa` as computed from the ORIGINAL `main` cédula, and MUST keep the original key
-resolvable so previously attributed stickers are not lost.
+resolvable so previously attributed stickers are not lost. After the rewrite the system MUST resolve
+`entidad`, `en_vercel`, `fuente_dato` and the Vercel `np` for that profile by its CORRECTED cédula
+(exact key match only, never by name); when the fix is blocked by a collision, nothing is re-resolved.
 (Previously: the heuristics requirement said nothing about the Fase 2 cédula fix, and recomputing
 `cedula_sospechosa` after the fix silently cleared the flag.)
 
@@ -376,6 +477,16 @@ resolvable so previously attributed stickers are not lost.
 - WHEN the cédula fix runs
 - THEN `cedula_key="1053812345"`, `identificacion="1053812345"`, and `cedula_sospechosa` is still
   `true`
+
+#### Scenario: The corrected cédula finds its Vercel row
+- GIVEN the profile above and a Vercel row with cédula `"1053812345"`, `codigo="041"`, `entidad="DAGRD"`
+- WHEN the pipeline runs
+- THEN the row `"1053812345"` has `entidad="DAGRD"`, `fuente_dato` containing `vercel` and `codigo="041"`
+
+#### Scenario: The corrected cédula's Vercel row never wipes a pre-fix Vercel np
+- GIVEN the profile above matched a Vercel row by NAME before the fix (`np="P7"`) and the Vercel row for the corrected cédula has an empty (or a different) `np` and `entidad="DAGRD"`
+- WHEN the pipeline runs
+- THEN `np="P7"` from `vercel` is kept (the `np_vercel` is only filled when empty) and `entidad="DAGRD"` is resolved from the corrected cédula
 
 #### Scenario: Stickers attributed before the fix survive it
 - GIVEN the same profile had stickers attributed under `"999"`
