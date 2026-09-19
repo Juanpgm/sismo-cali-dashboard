@@ -170,7 +170,7 @@ The system MUST remap `codigo` against the Vercel roster by cédula match, falli
 
 | Case | Rule |
 |---|---|
-| D-P1: Vercel roster has 2+ entries sharing a code | Exclude that code from remap; list for manual review |
+| D-P1: Vercel roster has 2+ entries sharing a code, OR a person duplicated by `nombre_norm` in the Vercel roster (every one of their codes; the publisher lists them in `codigos_duplicados`) | Exclude that code from remap; list for manual review |
 | D-P2: Same person, multiple cédulas | Unify only on exact name match; report discrepancies |
 | D1: Sticker code changes owner | Attribute to the CURRENT titular; no ownership history kept |
 | D2: Merge outcome for a duplicate | Exclude/mark the duplicate in the computed view; NEVER hard-delete |
@@ -284,7 +284,7 @@ The system MUST remap `codigo` against the Vercel roster by cédula match, falli
 
 | Case | Rule |
 |---|---|
-| D-P1: Vercel roster has 2+ entries sharing a code | Exclude that code from remap; list for manual review |
+| D-P1: Vercel roster has 2+ entries sharing a code, OR a person duplicated by `nombre_norm` in the Vercel roster (every one of their codes; the publisher lists them in `codigos_duplicados`) | Exclude that code from remap; list for manual review |
 | D-P2: Same person, multiple cédulas | Unify only on exact `nombre_norm` match; report discrepancies |
 | D1: Sticker code changes owner | Attribute to the CURRENT titular; no ownership history kept |
 | D2: Merge outcome for a duplicate | Exclude/mark the duplicate in the computed view; NEVER hard-delete |
@@ -341,7 +341,11 @@ attribution and the remap, so the survivor score
 evaluated on populated flags. Ties MUST break on the oldest `creado_en`, then on Firestore-backed
 before main-only. The survivor MUST absorb the losers' sticker aggregates and MUST backfill each
 empty field with the first non-empty loser value. Every unified-away `cedula_key` MUST be registered
-so later lookups resolve to the survivor.
+so later lookups resolve to the survivor. The unification MUST NOT change the survivor's own flags
+(`es_cuenta_no_persona`, `cedula_sospechosa`; D-SURVFLAGS, notebook parity): they stay what the survivor's
+own cédula / correo / nombre / bundle flag gave BEFORE the merge, so a real person merged with a non-person
+duplicate stays a person (and keeps its `estado_sugerido`), a non-person survivor is not cured by a real
+duplicate, and a correo backfilled from a loser never flips the flag (INV-7).
 (Previously: unification ran before overlays and stickers, so the survivor score was degenerate; the
 remap never cleared the código from a wrong holder and had no `remap_sin_duenio`/`remap_conflicto`;
 a holder who was the same person as the Vercel owner was also cleared.)

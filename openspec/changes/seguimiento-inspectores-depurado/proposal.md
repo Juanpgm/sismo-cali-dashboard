@@ -185,5 +185,5 @@ before slice 11 confirms parity.
 - [ ] `estado_sugerido` ≥ 99% excluding the enumerated D7 / D-REMAP divergences.
 - [ ] `tarjeta_profesional`, `num_telefono`, `correo_contacto` ≥ 99% where the source is non-empty.
 - [ ] `nombre_completo` compared through `normalizar_nombre`.
-- [ ] Row count 373 ± the enumerated Firestore-only extras (13 today).
+- [ ] Row accounting `[MODIFIED 2026-09-19]`: `backend = matched + firestore-only + D-EXENTOS survivors + unexplained`; every backend-only row is a Firestore-only extra, a D-EXENTOS survivor or listed as unexplained (the stale "373 ± 13" count is gone).
 - [ ] `n_colapsados` = 252, with the same 3 código-holding exclusions.
