@@ -564,6 +564,9 @@ function accumulateRowActivity({
   let unassignedStickers = 0;
   let unassignedSurveys = 0;
   let stickersWithoutDate = 0;
+  // Earliest Bogotá date among the COUNTED stickers (attributed or not): the
+  // anchor of the "stickers/día por inspector activo" range when no `from` is set.
+  let earliestStickerDate = null;
 
   function ensureRow(key) {
     let row = rowsByKey.get(key);
@@ -612,6 +615,7 @@ function accumulateRowActivity({
     const key = professionalKeyOf(s, idx);
     const dateVal = dateOnly(s.fecha);
     if (dateVal === null) stickersWithoutDate += 1;
+    else if (earliestStickerDate === null || dateVal < earliestStickerDate) earliestStickerDate = dateVal;
     if (!key) { unassignedStickers += 1; continue; }
     const row = ensureRow(key);
     adoptFallbackIdentity(row, s.inspector && s.inspector.nombre_completo, s.inspector && s.inspector.identificacion);
@@ -642,7 +646,7 @@ function accumulateRowActivity({
   }
 
   return {
-    rowsByKey, unassignedStickers, unassignedSurveys, stickersWithoutDate, seeded,
+    rowsByKey, unassignedStickers, unassignedSurveys, stickersWithoutDate, seeded, earliestStickerDate,
   };
 }
 
@@ -675,7 +679,7 @@ export function buildProfessionalRows({
   const todayStr = today || bogotaToday();
 
   const {
-    rowsByKey, unassignedStickers, unassignedSurveys, stickersWithoutDate, seeded,
+    rowsByKey, unassignedStickers, unassignedSurveys, stickersWithoutDate, seeded, earliestStickerDate,
   } = accumulateRowActivity({
     stickerList, surveyList, idx, from, to,
   });
@@ -693,9 +697,21 @@ export function buildProfessionalRows({
     stickers: stickerList, surveys: surveyList, identity: idx, today: todayStr, from, to,
   });
 
+  // "stickers/día por inspector activo": END of the range is `to`, else TODAY
+  // (Bogotá) — never the latest sticker, so a stray future-dated one cannot
+  // stretch the range. Stickers dated after END are outside it.
+  const rangeEnd = to || todayStr;
+  let stickersInspectoresActivos = 0;
+
   const rows = [...rowsByKey.values()].map((row) => {
     const profile = idx.profiles.get(row.key)
       || (seeded ? { name: row.fallbackName, cedula: row.fallbackCedula } : {});
+    // Numerator: F1+F2 stickers of the seeded profiles whose estado is exactly
+    // 'activo' (orphan rows carry no estado), dated inside the range. Undated
+    // stickers cannot be placed in it, so they never count.
+    if (seeded && profile.estadoSugerido === 'activo') {
+      for (const d of row.stickerDates) if (d <= rangeEnd) stickersInspectoresActivos += 1;
+    }
     const sortedDates = [...row.dates].sort();
     const activeDays = new Set(sortedDates).size;
     const datedRecords = sortedDates.length;
@@ -801,6 +817,13 @@ export function buildProfessionalRows({
       if (profile.estadoSugerido === 'activo') inspectoresActivos += 1;
     }
     totals.inspectoresActivos = inspectoresActivos;
+    totals.stickersInspectoresActivos = stickersInspectoresActivos;
+    // Inclusive days of the range START..END; START = `from`, else the earliest
+    // sticker date of the data. null (never 0/negative) when there is no START
+    // (no `from` and no dated sticker) or when the range is inverted/malformed.
+    const rangeStart = from || earliestStickerDate;
+    const span = rangeStart ? daysBetween(rangeStart, rangeEnd) : null;
+    totals.rangoDias = span !== null && span >= 0 ? span + 1 : null;
   }
 
   return {
@@ -2345,6 +2368,19 @@ export function kpiTotals(rowsResult, { stickersLoaded = true } = {}) {
     // figure (older/hand-built results may not carry it); masked like padrón.
     if (totals.padron > 0 && Number.isFinite(totals.inspectoresActivos)) {
       result.inspectoresActivos = stickersLoaded ? totals.inspectoresActivos : DASH;
+      // Daily pace of the ACTIVE padrón: stickers of the active inspectors in
+      // the range / days of the range / number of active inspectors. DASH for
+      // anything that is not a real ratio (no active inspector, no valid range,
+      // stickers still loading) — never NaN/Infinity/negative.
+      const days = totals.rangoDias;
+      const stickersActivos = totals.stickersInspectoresActivos;
+      result.rangoDias = Number.isFinite(days) && days >= 1 ? days : DASH;
+      result.stickersPorInspectorActivo = stickersLoaded
+        && totals.inspectoresActivos > 0
+        && Number.isFinite(days) && days >= 1
+        && Number.isFinite(stickersActivos) && stickersActivos >= 0
+        ? Math.round((stickersActivos / days / totals.inspectoresActivos) * 100) / 100
+        : DASH;
     }
   }
   return result;
@@ -2810,13 +2846,19 @@ export function massExportScope(visibleRows, { cap = MASS_EXPORT_CAP } = {}) {
  *  visible rows, or the refusal message. Plain text (`.textContent`). */
 export function massExportScopeText(scope) {
   if (!scope) return '';
-  if (scope.status === 'refused') return scope.message;
+  // The persistent notice under the buttons is calm guidance; the explicit
+  // "No se puede exportar: ..." wording (scope.message) is reserved for the
+  // moment the user actually clicks the mass export over the cap.
+  const count = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0).toLocaleString('es-CO');
+  if (scope.status === 'refused') {
+    return `Exportación masiva: hay ${count(scope.withActivity)} profesionales con actividad y el máximo por exportación es ${count(scope.cap)}. Para exportar, acotá los filtros (búsqueda, estado, rango o profesional).`;
+  }
   if (scope.status === 'empty') return 'Exportación masiva: ningún profesional visible con actividad en el rango.';
-  const n = scope.withActivity.toLocaleString('es-CO');
+  const n = count(scope.withActivity);
   if (scope.withActivity === scope.visible) {
     return `Exportación masiva: ${n} profesionales visibles, todos con actividad en el rango.`;
   }
-  return `Exportación masiva: ${n} de ${scope.visible.toLocaleString('es-CO')} profesionales visibles (solo los profesionales con actividad en el rango).`;
+  return `Exportación masiva: ${n} de ${count(scope.visible)} profesionales visibles (solo los profesionales con actividad en el rango).`;
 }
 
 /** L8: whether a NEW mass export may start — shared, module-level state
@@ -2981,6 +3023,13 @@ export function kpisHtml(rowsResult, stickersLoaded) {
       'inspectores activos',
       t.inspectoresActivos,
       `Inspectores que la depuración clasifica como activos (con código vigente o sticker válido), sobre el total del padrón (${fmt(t.inspectoresActivos)} de ${fmt(t.padron)}). No depende del rango de fechas.`,
+    )]),
+    // Second tile: the daily sticker pace of that same active padrón (owner
+    // definition 2026-09-19). Follows the range but not the search/estado filters.
+    ...(t.stickersPorInspectorActivo === undefined ? [] : [tile(
+      'stickers/día por inspector activo',
+      t.stickersPorInspectorActivo,
+      `Stickers de los inspectores activos en el rango ÷ días del rango (${fmt(t.rangoDias)}) ÷ inspectores activos (${fmt(t.inspectoresActivos)}). Es el rendimiento del padrón activo completo; no depende del buscador ni del filtro de estado.`,
     )]),
     // Seeded: "activos" alone would be ambiguous next to "inspectores activos"
     // (the depuración's classification), so this one says what it measures.

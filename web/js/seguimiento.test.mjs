@@ -3617,7 +3617,7 @@ named('test_kpis_use_rows_with_activity_as_denominator', () => {
   const html = kpisHtml(result, true);
   assert.match(html, /profesionales con actividad[\s\S]*?>116</);
   assert.match(html, /padr.n[\s\S]*?>373</i, 'the padrón total has its own, distinctly labelled tile');
-  assert.equal((html.match(/kpi-tile/g) || []).length, 7, 'inspectores activos joins the padrón tile in the seeded row');
+  assert.equal((html.match(/kpi-tile/g) || []).length, 8, 'inspectores activos and stickers/día por inspector activo join the padrón tile in the seeded row');
   // Triangulation: a different split.
   const other = rowsFor({ ...seededUniverse(40, 3) });
   assert.equal(kpiTotals(other).professionals, 3);
@@ -3810,7 +3810,9 @@ named('test_mass_pdf_export_over_cap_refuses_instead_of_truncating', () => {
   assert.deepEqual(over.rows, [], 'no partial batch');
   assert.match(over.message, /200/, 'names the cap');
   assert.match(over.message, /201/, 'names the count');
-  assert.equal(SEG.massExportScopeText(over), over.message);
+  // The persistent notice is now a calm hint (see test_mass_export_persistent_notice_*); only the
+  // click-time refusal keeps `message`.
+  assert.match(SEG.massExportScopeText(over), /^Exportación masiva: hay 201 profesionales con actividad y el máximo por exportación es 200\./);
   assert.equal(SEG.MASS_EXPORT_CAP, 200);
   // The cap applies to rows WITH activity: 500 visible / 150 active is fine.
   const mixed = [...mk(150), ...Array.from({ length: 350 }, (_, i) => ({ key: `z:${i}`, total: 0 }))];
@@ -4190,7 +4192,7 @@ named('test_kpi_inspectores_activos_counts_only_estado_activo', () => {
   const html = kpisHtml(result, true);
   assert.equal(kpiTileValue(html, 'inspectores activos'), '3');
   assert.equal(kpiTileValue(html, 'profesionales con actividad'), '2', 'activity tile still counts only rows with activity');
-  assert.equal((html.match(/kpi-tile/g) || []).length, 7);
+  assert.equal((html.match(/kpi-tile/g) || []).length, 8);
   // Prominent: first depuración tile, i.e. right after the five legacy ones... and before padrón.
   assert.ok(html.indexOf('inspectores activos') < html.indexOf('profesionales en padrón'));
   // Range-independent: same value for a different (and an empty / inverted) range.
@@ -4319,8 +4321,9 @@ named('test_kpi_inspectores_activos_is_the_first_tile_of_the_row', () => {
   const labelsOf = (html) => [...html.matchAll(/kpi-label[^>]*>([^<]*)</g)].map((m) => m[1]);
   const seeded = labelsOf(kpisHtml(rowsFor({ stickers, depuracion: dep }), true));
   assert.equal(seeded[0], 'inspectores activos');
-  assert.equal(seeded[1], 'profesionales con actividad');
-  assert.equal(seeded.length, 7);
+  assert.equal(seeded[1], 'stickers/día por inspector activo', 'the per-active-inspector pace is the second tile');
+  assert.equal(seeded[2], 'profesionales con actividad');
+  assert.equal(seeded.length, 8);
   // Legacy row (no depuración): unchanged, "profesionales activos" still leads it.
   const legacy = labelsOf(kpisHtml(rowsFor({ stickers }), true));
   assert.equal(legacy[0], 'profesionales activos');
@@ -4339,6 +4342,250 @@ named('test_kpi_inspectores_activos_373_row_fixture_is_fast', () => {
   const perCall = (performance.now() - started) / 50;
   assert.equal(kpiTileValue(html, 'inspectores activos'), '125');
   assert.ok(perCall < 20, `kpisHtml over 373 rows took ${perCall}ms per call`);
+});
+
+// ── KPI "stickers/día por inspector activo" (owner definition 2026-09-19) ───
+// Daily sticker performance of the ACTIVE padrón: stickers placed by profiles whose
+// estado is exactly `activo`, inside the selected range, ÷ days of the range ÷ number
+// of active inspectors. START = `from` else the earliest sticker date in the data;
+// END = `to` else today (Bogotá) — a stray future sticker never stretches the range.
+
+const SPI_LABEL = 'stickers/día por inspector activo';
+const P11_DAY = 86400000;
+function isoDayPlus(ymd, n) {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d) + n * P11_DAY).toISOString().slice(0, 10);
+}
+// `n` stickers of one cédula on one Bogotá day (12:00 UTC = 07:00 Bogotá).
+function stickersOn(cedula, day, n, fase = 1) {
+  return Array.from({ length: n }, () => stickerFor(cedula, `Profesional ${Number(cedula) - 1000000}`, `${day}T12:00:00+00:00`, { fase }));
+}
+// 3 activos (1-3), 1 revisar (4), today = 2026-09-19.
+//  activo 1: 2 F1 (09-10) + 1 F2 (09-12) + 1 F1 (09-13) = 4, plus 1 stray FUTURE sticker on 09-25
+//  activo 2: 5 on 09-15                                  activo 3: nothing
+//  revisar 4: 1 on 09-08 (earliest sticker of the data, NOT an active one) + 5 on 09-11
+//  unattributed (no cédula, no name): 1 on 09-14
+function spiFixture() {
+  const dep = depuracionOf([
+    depInspector(1, { estado_sugerido: 'activo' }),
+    depInspector(2, { estado_sugerido: 'activo' }),
+    depInspector(3, { estado_sugerido: 'activo' }),
+    depInspector(4, { estado_sugerido: 'revisar' }),
+  ]);
+  const stickers = [
+    ...stickersOn('1000001', '2026-09-10', 2, 1),
+    ...stickersOn('1000001', '2026-09-12', 1, 2),
+    ...stickersOn('1000001', '2026-09-13', 1, 1),
+    ...stickersOn('1000001', '2026-09-25', 1, 1),
+    ...stickersOn('1000002', '2026-09-15', 5, 2),
+    ...stickersOn('1000004', '2026-09-08', 1, 1),
+    ...stickersOn('1000004', '2026-09-11', 5, 1),
+    stickerFor('', '', '2026-09-14T12:00:00+00:00'),
+  ];
+  return { dep, stickers };
+}
+const spiValue = (range) => {
+  const { dep, stickers } = spiFixture();
+  return kpiTileValue(kpisHtml(rowsFor({ stickers, depuracion: dep, ...range }), true), SPI_LABEL);
+};
+
+named('test_kpi_stickers_per_day_per_active_inspector_exact_arithmetic', () => {
+  const { dep, stickers } = spiFixture();
+  const result = rowsFor({ stickers, depuracion: dep });
+  // No range: START = earliest sticker of the data (09-08, a NON-active one) .. END = today (09-19)
+  // = 12 days; only the 9 counted stickers of activos 1 and 2 (the future one is out) / 12 / 3.
+  assert.equal(result.totals.stickersInspectoresActivos, 9);
+  assert.equal(result.totals.rangoDias, 12);
+  assert.equal(result.totals.inspectoresActivos, 3);
+  assert.equal(kpiTotals(result, { stickersLoaded: true }).stickersPorInspectorActivo, 0.25);
+  assert.equal(kpiTileValue(kpisHtml(result, true), SPI_LABEL), '0,25');
+  assert.equal(spiValue({ from: '2026-09-10', to: '2026-09-15' }), '0,5', '9 / 6 days / 3');
+  assert.equal(spiValue({ to: '2026-09-12' }), '0,2', 'START = earliest sticker: 09-08..09-12 = 5 days, 3 counted stickers');
+  assert.equal(spiValue({ from: '2026-09-10' }), '0,3', 'END = today, not the future sticker: 9 / 10 days / 3');
+  // The revisar profile's stickers and the unattributed one never reach the numerator.
+  assert.equal(spiValue({ from: '2026-09-11', to: '2026-09-11' }), '0', '1-day range holding only a non-active profile: real zero');
+});
+
+named('test_kpi_stickers_per_day_range_edges_show_dash_never_nan', () => {
+  assert.equal(spiValue({ from: '2026-09-15', to: '2026-09-10' }), DASH, 'inverted range');
+  assert.equal(spiValue({ from: '2026-09-25' }), DASH, 'from after today, no `to`');
+  assert.equal(spiValue({ from: '2026-09-19' }), '0', 'one-day range (today) with nothing in it');
+  assert.equal(spiValue({ from: '2026-09-19', to: '2026-09-19' }), '0');
+  // An explicit `to` in the future is the user own choice: 09-10..09-30 = 21 days, 10 stickers / 21 / 3.
+  assert.equal(spiValue({ from: '2026-09-10', to: '2026-09-30' }), '0,16');
+  // No sticker at all and no `from`: nothing to anchor START on.
+  const dep = depuracionOf(estadoInspectors({ activo: 3 }));
+  const none = rowsFor({ depuracion: dep });
+  assert.equal(none.totals.rangoDias, null);
+  assert.equal(kpiTileValue(kpisHtml(none, true), SPI_LABEL), DASH);
+  // ...but with a `from` the range is well defined and the value is a real 0.
+  assert.equal(kpiTileValue(kpisHtml(rowsFor({ depuracion: dep, from: '2026-09-10' }), true), SPI_LABEL), '0');
+  // Only undated stickers: they cannot be placed inside any range.
+  const undated = rowsFor({ depuracion: dep, stickers: [stickerFor('1000001', 'Profesional 1', null)] });
+  assert.equal(undated.totals.stickersInspectoresActivos, 0);
+  assert.equal(kpiTileValue(kpisHtml(undated, true), SPI_LABEL), DASH);
+  for (const range of [{ from: '2026-09-15', to: '2026-09-10' }, { from: '2026-09-25' }, {}, { from: '2027-01-01', to: '2027-01-31' }]) {
+    assert.ok(!/NaN|Infinity|undefined|-\d/.test(spiValue(range) || ''), JSON.stringify(range));
+  }
+});
+
+named('test_kpi_stickers_per_day_dash_without_active_inspectors_and_while_loading', () => {
+  const { stickers } = spiFixture();
+  const noActive = depuracionOf(estadoInspectors({ revisar: 3, candidato_desactivacion: 1 }));
+  const zero = rowsFor({ stickers, depuracion: noActive });
+  assert.equal(zero.totals.inspectoresActivos, 0);
+  assert.equal(kpiTileValue(kpisHtml(zero, true), SPI_LABEL), DASH, 'no active inspector: never a division by zero');
+  const { dep } = spiFixture();
+  const result = rowsFor({ stickers, depuracion: dep });
+  assert.equal(kpiTileValue(kpisHtml(result, false), SPI_LABEL), DASH, 'masked while stickers load');
+  assert.equal(kpiTotals(result, { stickersLoaded: false }).stickersPorInspectorActivo, DASH);
+  // Hand-built / older result shapes: no crash, DASH instead of NaN.
+  const handBuilt = { rows: [], totals: { professionals: 0, padron: 3, inspectoresActivos: 3, stickers: 0, surveys: 0 } };
+  let html;
+  assert.doesNotThrow(() => { html = kpisHtml(handBuilt, true); });
+  assert.equal(kpiTileValue(html, SPI_LABEL), DASH);
+  assert.ok(!/NaN|Infinity/.test(html));
+});
+
+named('test_kpi_stickers_per_day_ignores_search_estado_and_non_active_activity', () => {
+  const { dep, stickers } = spiFixture();
+  const result = rowsFor({ stickers, depuracion: dep });
+  const narrowed = visibleRowsFor(result.rows, { query: 'Profesional 4', estado: 'revisar' });
+  assert.equal(narrowed.length, 1);
+  assert.equal(kpiTileValue(kpisHtml({ rows: narrowed, totals: result.totals }, true), SPI_LABEL), '0,25', 'search/estado never move it');
+  // More stickers from NON-active profiles change the rows with activity but not the tile.
+  const noisy = rowsFor({ stickers: [...stickers, ...stickersOn('1000004', '2026-09-16', 40)], depuracion: dep });
+  assert.equal(kpiTileValue(kpisHtml(noisy, true), SPI_LABEL), '0,25');
+  // Orphan (unseeded) profiles are not active inspectors either.
+  const orphan = rowsFor({ stickers: [...stickers, ...stickersOn('9999999', '2026-09-16', 40)], depuracion: dep });
+  assert.equal(kpiTileValue(kpisHtml(orphan, true), SPI_LABEL), '0,25');
+});
+
+named('test_kpi_stickers_per_day_scaled_fixture_reproduces_the_live_shape', () => {
+  // 146 active inspectors, 30 days (2026-08-21 .. 2026-09-19), 2,859 stickers of active
+  // profiles, 706 of them in the last 7 days (09-13 .. 09-19): 0,65 overall and 0,69 for the week.
+  const inspectores = [
+    ...Array.from({ length: 146 }, (_, i) => depInspector(i + 1, { estado_sugerido: 'activo' })),
+    ...Array.from({ length: 227 }, (_, i) => depInspector(147 + i, { estado_sugerido: 'revisar' })),
+  ];
+  const perDay = [];
+  for (let d = 0; d < 23; d += 1) perDay.push(d < 14 ? 94 : 93); // 08-21 .. 09-12 = 2,153
+  perDay.push(100, 100, 100, 100, 100, 100, 106); // 09-13 .. 09-19 = 706
+  assert.equal(perDay.reduce((a, b) => a + b, 0), 2859);
+  const stickers = [];
+  let k = 0;
+  perDay.forEach((n, d) => {
+    const day = isoDayPlus('2026-08-21', d);
+    for (let i = 0; i < n; i += 1) { k += 1; stickers.push(...stickersOn(String(1000001 + (k % 146)), day, 1)); }
+  });
+  stickers.push(...stickersOn('1000200', '2026-09-01', 300)); // non-active noise
+  const dep = depuracionOf(inspectores);
+  const all = rowsFor({ stickers, depuracion: dep });
+  assert.equal(all.totals.inspectoresActivos, 146);
+  assert.equal(all.totals.rangoDias, 30);
+  assert.equal(all.totals.stickersInspectoresActivos, 2859);
+  assert.equal(kpiTileValue(kpisHtml(all, true), SPI_LABEL), '0,65');
+  const week = rowsFor({ stickers, depuracion: dep, from: '2026-09-13' });
+  assert.equal(week.totals.rangoDias, 7);
+  assert.equal(week.totals.stickersInspectoresActivos, 706);
+  assert.equal(kpiTileValue(kpisHtml(week, true), SPI_LABEL), '0,69');
+});
+
+named('test_kpi_stickers_per_day_tile_position_title_and_legacy_row', () => {
+  const { dep, stickers } = spiFixture();
+  const html = kpisHtml(rowsFor({ stickers, depuracion: dep }), true);
+  const labels = [...html.matchAll(/kpi-label[^>]*>([^<]*)</g)].map((m) => m[1]);
+  assert.deepEqual(labels.slice(0, 3), ['inspectores activos', SPI_LABEL, 'profesionales con actividad']);
+  assert.equal(labels.length, 8);
+  assert.equal(
+    kpiTileTitle(html, SPI_LABEL),
+    'Stickers de los inspectores activos en el rango ÷ días del rango (12) ÷ inspectores activos (3). Es el rendimiento del padrón activo completo; no depende del buscador ni del filtro de estado.',
+  );
+  // Real numbers in the title use es-CO grouping too.
+  const big = kpisHtml({ rows: [], totals: { professionals: 0, padron: 2000, inspectoresActivos: 1500, stickersInspectoresActivos: 9, rangoDias: 1200, stickers: 0, surveys: 0 } }, true);
+  assert.match(kpiTileTitle(big, SPI_LABEL), /días del rango \(1\.200\) ÷ inspectores activos \(1\.500\)\./);
+  // Legacy (no active depuración): byte-identical row, no new key anywhere.
+  const legacyResult = rowsFor({ stickers: [stickerFor('1000001', 'Profesional 1')] });
+  assert.equal(kpisHtml(legacyResult, true), LEGACY_KPI_HTML);
+  assert.equal(Object.prototype.hasOwnProperty.call(legacyResult.totals, 'stickersInspectoresActivos'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(legacyResult.totals, 'rangoDias'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(kpiTotals(legacyResult), 'stickersPorInspectorActivo'), false);
+  // Empty seeded padrón: nothing to classify, no tile (same condition as "inspectores activos").
+  const empty = rowsFor({ stickers, depuracion: depuracionOf([]) });
+  assert.equal(kpiTileValue(kpisHtml(empty, true), SPI_LABEL), null);
+});
+
+// ── Mass export notice: calm hint under the buttons, explicit refusal on click ──
+
+named('test_mass_export_persistent_notice_is_a_calm_hint_over_the_cap', () => {
+  const mk = (n) => Array.from({ length: n }, (_, i) => ({ key: `ced:${i}`, total: 1 }));
+  const over = SEG.massExportScope(mk(407));
+  assert.equal(
+    SEG.massExportScopeText(over),
+    'Exportación masiva: hay 407 profesionales con actividad y el máximo por exportación es 200. Para exportar, acotá los filtros (búsqueda, estado, rango o profesional).',
+  );
+  assert.doesNotMatch(SEG.massExportScopeText(over), /No se puede exportar|superan/i, 'reads as guidance, not as an error');
+  assert.match(SEG.massExportScopeText(SEG.massExportScope(mk(1234))), /hay 1\.234 profesionales con actividad/, 'es-CO grouping');
+  // Boundary: 200 is within the cap (informational sentence), 201 is over it (the hint).
+  const at = SEG.massExportScope(mk(200));
+  assert.equal(at.status, 'ok');
+  assert.equal(SEG.massExportScopeText(at), 'Exportación masiva: 200 profesionales visibles, todos con actividad en el rango.');
+  const justOver = SEG.massExportScope(mk(201));
+  assert.equal(justOver.status, 'refused');
+  assert.match(SEG.massExportScopeText(justOver), /^Exportación masiva: hay 201 profesionales con actividad y el máximo por exportación es 200\./);
+  // A custom cap is reflected, never a hard-coded 200.
+  assert.match(SEG.massExportScopeText(SEG.massExportScope(mk(5), { cap: 4 })), /hay 5 profesionales .* es 4\./);
+  // Within the cap the pre-existing sentences are unchanged.
+  const mixed = SEG.massExportScope([...mk(3), { key: 'z', total: 0 }]);
+  assert.equal(SEG.massExportScopeText(mixed), 'Exportación masiva: 3 de 4 profesionales visibles (solo los profesionales con actividad en el rango).');
+  assert.equal(SEG.massExportScopeText(SEG.massExportScope([])), 'Exportación masiva: ningún profesional visible con actividad en el rango.');
+  assert.equal(SEG.massExportScopeText(null), '');
+});
+
+named('test_mass_export_click_refusal_keeps_the_explicit_wording_and_never_truncates', () => {
+  const mk = (n) => Array.from({ length: n }, (_, i) => ({ key: `ced:${i}`, total: 1 }));
+  const over = SEG.massExportScope(mk(407));
+  assert.equal(
+    over.message,
+    'No se puede exportar: 407 profesionales con actividad superan el máximo de 200 por exportación. Acotá los filtros (búsqueda/estado/rango/profesional) antes de exportar.',
+  );
+  assert.equal(over.status, 'refused');
+  assert.deepEqual(over.rows, [], 'no partial batch');
+  assert.notEqual(SEG.massExportScopeText(over), over.message, 'the persistent notice is no longer the refusal text');
+  const js = readFileSync(new URL('./seguimiento.js', import.meta.url), 'utf8');
+  const handler = js.slice(js.indexOf('async function generarReportesMasivos'));
+  assert.match(handler, /scope\.status === 'refused'\) \{ showToast\(scope\.message, 'error'\); return; \}/, 'the click still toasts the strong refusal');
+});
+
+named('test_mass_export_notice_has_no_error_style_and_hostile_values_stay_plain_text', () => {
+  const js = readFileSync(new URL('./seguimiento.js', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+  const tag = js.match(/<p class="([^"]*)" id="seg-report-scope"[^>]*><\/p>/);
+  assert.ok(tag, 'the notice element keeps its position and id');
+  assert.equal(tag[1], 'sticker-note', 'only the muted hint class');
+  assert.doesNotMatch(tag[1], /error|warn|danger|alert/i);
+  assert.match(css, /\.sticker-note\s*\{[^}]*color:\s*var\(--text-muted\)/, 'that class is the muted one');
+  assert.doesNotMatch(js, /reportScopeEl\.classList/, 'no state class is ever toggled on it (no error/warning colors)');
+  assert.match(js, /reportScopeEl\.textContent = text/);
+  assert.doesNotMatch(js, /reportScopeEl\.innerHTML/);
+  // XSS-looking numbers/text: values are coerced to numbers, markup never survives.
+  const hostile = SEG.massExportScopeText({
+    status: 'refused', withActivity: '<img src=x onerror=alert(1)>', cap: '<script>alert(1)</script>', visible: 1,
+  });
+  assert.doesNotMatch(hostile, /[<>]/);
+  assert.doesNotMatch(hostile, /NaN|Infinity|undefined/);
+  const weird = SEG.massExportScopeText({
+    status: 'refused', withActivity: Number.POSITIVE_INFINITY, cap: undefined, visible: 0,
+  });
+  assert.doesNotMatch(weird, /NaN|Infinity|undefined/);
+  const visibleHostile = SEG.massExportScopeText({ status: 'ok', withActivity: 2, visible: '<b>9</b>' });
+  assert.doesNotMatch(visibleHostile, /[<>]/);
+});
+
+named('test_mass_export_notice_legacy_path_is_unchanged', () => {
+  const js = readFileSync(new URL('./seguimiento.js', import.meta.url), 'utf8');
+  // Still only rendered for a seeded table with stickers loaded; nothing shown otherwise.
+  assert.match(js, /currentIdentity\.depuracionActiva && stickersLoaded\s*\? massExportScopeText\(massExportScope\(visibleRows\)\)\s*: ''/);
 });
 
 // W1: the XLSX "Filtros:" summary must mention the estado filter.
