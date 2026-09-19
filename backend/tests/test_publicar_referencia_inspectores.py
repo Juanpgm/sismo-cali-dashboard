@@ -10,9 +10,12 @@ network call anywhere in this file.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
@@ -414,3 +417,251 @@ def test_construir_bundle_duplicate_cedulas_stay_exact_and_are_kept_per_row():
     assert [f["codigo"] for f in bundle["vercel"]] == ["021", "021"]
     # same identity twice -> NOT a shared-by-two-identities duplicate
     assert bundle["codigos_duplicados"] == []
+
+
+# --- Extension 2026-09-19 (PR 06): main rows emit the optional fields -------
+#
+# Real `main` export column names (header-only check, 2026-09-18): id, cedula,
+# nombre, telefono, correo, codigoInspector, creadoEn, addlInfo.rango,
+# addlInfo.matriculaProfesional, addlInfo.matricula.
+
+_COLUMNAS_MAIN = [
+    "id", "cedula", "nombre", "telefono", "correo", "codigoInspector", "creadoEn",
+    "addlInfo.rango", "addlInfo.matriculaProfesional", "addlInfo.matricula",
+]
+
+
+def _bundle_desde_main_archivo(ruta):
+    return cli.construir_bundle(
+        vercel_records=[], fase2_records=[], main_records=cli._leer_tabla(ruta),
+        generado_en="2026-09-16", origen={},
+    )
+
+
+@pytest.mark.parametrize("sufijo", [".csv", ".xlsx"])
+def test_cli_emits_optional_fields(tmp_path, sufijo):
+    ruta = tmp_path / f"main{sufijo}"
+    _escribir_tabla(
+        ruta,
+        [["uuid-1", "1234567890", "Juan Perez", "30012345678", "juan@example.com", "021",
+          "2026-01-05T10:00:00.000Z", "P2", "TP-99", ""]],
+        _COLUMNAS_MAIN,
+    )
+
+    bundle = _bundle_desde_main_archivo(ruta)
+
+    fila = bundle["main"][0]
+    assert fila["nombre"] == "Juan Perez"
+    assert fila["telefono"] == "30012345678"
+    assert fila["codigo"] == "021"
+    assert fila["creado_en"] == "2026-01-05T10:00:00.000Z"
+    assert fila["id"] == "uuid-1"
+    assert fila["correo"] == "juan@example.com"
+    assert fila["tarjeta_profesional"] == "TP-99"
+    assert fila["rango"] == "P2"
+    # the emitted bundle round-trips through the tolerant parser
+    entrada = ir.parse_bundle(bundle).main[0]
+    assert (entrada.telefono, entrada.codigo, entrada.id) == ("30012345678", "021", "uuid-1")
+    assert bundle["schema"] == 1
+
+
+def test_cli_matricula_fallback_when_matricula_profesional_blank(tmp_path):
+    ruta = tmp_path / "main.csv"
+    _escribir_tabla(ruta, [["u", "111", "A", "", "", "", "", "", None, "MAT-7"]], _COLUMNAS_MAIN)
+
+    assert _bundle_desde_main_archivo(ruta)["main"][0]["tarjeta_profesional"] == "MAT-7"
+
+
+@pytest.mark.parametrize("sufijo", [".csv", ".xlsx"])
+def test_cli_preserves_leading_zeros_and_long_numerics(tmp_path, sufijo):
+    ruta = tmp_path / f"main{sufijo}"
+    _escribir_tabla(
+        ruta,
+        [["u1", "1012345678", "Ana", "30012345678", "a@x.co", "041", "", "", "", ""],
+         ["u2", "0012345", "Beto", "03001234567", "b@x.co", "007", "", "", "", ""]],
+        _COLUMNAS_MAIN,
+    )
+
+    filas = _bundle_desde_main_archivo(ruta)["main"]
+
+    assert [f["cedula_key"] for f in filas] == ["1012345678", "0012345"]
+    assert [f["codigo"] for f in filas] == ["041", "007"]
+    assert [f["telefono"] for f in filas] == ["30012345678", "03001234567"]
+
+
+def test_cli_missing_optional_columns_yield_empty_not_nan(tmp_path):
+    ruta = tmp_path / "main.csv"
+    ruta.write_text("cedula,nombre\n1234567,Juan Perez\n", encoding="utf-8")
+
+    fila = _bundle_desde_main_archivo(ruta)["main"][0]
+
+    for campo in ("telefono", "codigo", "creado_en", "id", "correo", "tarjeta_profesional"):
+        assert fila[campo] == ""
+    assert fila["nombre"] == "Juan Perez"
+    assert "NaN" not in json.dumps(fila) and "nan" not in fila.values()
+    assert "None" not in json.dumps(fila)
+
+
+def test_cli_blank_cells_yield_empty_strings_not_nan(tmp_path):
+    ruta = tmp_path / "main.csv"
+    _escribir_tabla(ruta, [["", "1234567", "Juan", None, None, None, None, None, None, None]], _COLUMNAS_MAIN)
+
+    fila = _bundle_desde_main_archivo(ruta)["main"][0]
+
+    for campo in ("telefono", "codigo", "creado_en", "id", "correo", "tarjeta_profesional", "rango"):
+        assert fila[campo] == ""
+
+
+def test_cli_duplicate_main_cedula_rows_both_kept_with_their_own_fields(tmp_path):
+    ruta = tmp_path / "main.csv"
+    _escribir_tabla(
+        ruta,
+        [["u1", "1234567", "Juan A", "300", "a@x.co", "021", "2026-01-01", "", "", ""],
+         ["u2", "1234567", "Juan B", "301", "b@x.co", "022", "2026-02-01", "", "", ""]],
+        _COLUMNAS_MAIN,
+    )
+
+    filas = _bundle_desde_main_archivo(ruta)["main"]
+
+    assert [f["id"] for f in filas] == ["u1", "u2"]
+    assert [f["codigo"] for f in filas] == ["021", "022"]
+    assert [f["telefono"] for f in filas] == ["300", "301"]
+
+
+def test_cli_main_row_without_cedula_is_still_dropped(tmp_path):
+    ruta = tmp_path / "main.csv"
+    _escribir_tabla(
+        ruta,
+        [["u1", "", "Sin Cedula", "300", "a@x.co", "021", "", "", "", ""],
+         ["u2", "abc", "Junk", "301", "b@x.co", "022", "", "", "", ""],
+         ["u3", "555", "Con Cedula", "", "", "", "", "", "", ""]],
+        _COLUMNAS_MAIN,
+    )
+
+    assert [f["id"] for f in _bundle_desde_main_archivo(ruta)["main"]] == ["u3"]
+
+
+def test_cli_main_records_with_wrong_typed_cells_never_raise():
+    bundle = cli.construir_bundle(
+        vercel_records=[], fase2_records=[],
+        main_records=[{"cedula": 1234567, "telefono": 3001234567.0, "codigoInspector": 21,
+                       "creadoEn": float("nan"), "id": None, "correo": "  A@X.co "}],
+        generado_en="2026-09-16", origen={},
+    )
+    fila = bundle["main"][0]
+    assert fila["telefono"] == "3001234567"
+    assert fila["codigo"] == "21"
+    assert fila["creado_en"] == ""
+    assert fila["id"] == ""
+    assert fila["correo"] == "A@X.co"
+
+
+def test_cli_existing_main_fields_unchanged_regression():
+    bundle = cli.construir_bundle(
+        vercel_records=[], fase2_records=[],
+        main_records=[{"cedula": "1234567", "nombre": "Juan Perez", "addlInfo.rango": "P2",
+                       "addlInfo.matriculaProfesional": "TP-1", "correo": "juan@example.com"}],
+        generado_en="2026-09-16", origen={},
+    )
+    fila = bundle["main"][0]
+    assert fila["cedula_key"] == "1234567"
+    assert fila["nombre_norm"] == "juan perez"
+    assert fila["rango"] == "P2"
+    assert fila["tarjeta_profesional"] == "TP-1"
+    assert fila["correo"] == "juan@example.com"
+    assert fila["no_persona"] is False
+
+
+# --- review W2: publisher and parser share ONE identifier coercion ---------
+
+
+@pytest.mark.parametrize(
+    "crudo",
+    ["21.0", "21.00", " 21.0 ", "021", "021.0", "0.0", "3.0e9", "3.5", "1.234.567", ".0",
+     "21.0a", "", "   ", 21.0, 21, 3001234567.0, float("nan"), None],
+)
+def test_campo_id_and_texto_opcional_agree(crudo):
+    assert cli._campo_id({"c": crudo}, "c") == ir._texto_opcional(crudo)
+
+
+# --- review: _limpiar treats every pandas missing marker as blank ----------
+
+
+@pytest.mark.parametrize("faltante", [None, float("nan"), pd.NA, pd.NaT, np.nan, np.float64("nan")])
+def test_limpiar_every_missing_marker_becomes_empty(faltante):
+    assert cli._limpiar(faltante) == ""
+
+
+@pytest.mark.parametrize(
+    "crudo, esperado",
+    [
+        ("  Ana  ", "Ana"),
+        (0, "0"),
+        (False, "False"),
+        ([1, 2], "[1, 2]"),
+        (np.array([1, 2]), "[1 2]"),
+        ((), "()"),
+    ],
+)
+def test_limpiar_non_scalar_or_falsy_values_never_raise(crudo, esperado):
+    assert cli._limpiar(crudo) == esperado
+
+
+# --- review W3: main rows carry `entidad` from addlInfo.entidad ------------
+
+
+def _main_records(**extra):
+    return cli.construir_bundle(
+        vercel_records=[], fase2_records=[],
+        main_records=[{"cedula": "1234567", "nombre": "Juan Perez", **extra}],
+        generado_en="2026-09-16", origen={},
+    )
+
+
+def test_main_row_emits_entidad_from_addl_info_entidad_and_roundtrips():
+    bundle = _main_records(**{"addlInfo.entidad": "  DAGRD  "})
+
+    assert bundle["main"][0]["entidad"] == "DAGRD"
+    assert ir.parse_bundle(bundle).main[0].entidad == "DAGRD"
+
+
+@pytest.mark.parametrize("crudo", [None, float("nan"), pd.NA, "", "   "])
+def test_main_row_blank_entidad_is_empty_string(crudo):
+    assert _main_records(**{"addlInfo.entidad": crudo})["main"][0]["entidad"] == ""
+
+
+def test_main_row_entidad_column_missing_entirely_is_empty_string():
+    fila = _main_records()["main"][0]
+
+    assert fila["entidad"] == ""
+    assert ir.parse_bundle(_main_records()).main[0].entidad == ""
+
+
+def test_main_row_entidad_from_csv_file_with_nan_and_whitespace(tmp_path):
+    ruta = tmp_path / "main.csv"
+    ruta.write_text(
+        "cedula,nombre,addlInfo.entidad\n111,A,DAGRD\n222,B,\n333,C,   \n",
+        encoding="utf-8",
+    )
+
+    filas = _bundle_desde_main_archivo(ruta)["main"]
+
+    assert [f["entidad"] for f in filas] == ["DAGRD", "", ""]
+
+
+# --- review: a main codigo colliding with a vercel codigo is NOT a duplicate
+
+
+def test_main_codigo_colliding_with_vercel_codigo_not_in_codigos_duplicados():
+    bundle = cli.construir_bundle(
+        vercel_records=[{"identificacion": "111", "nombre_completo": "A", "codigo": "097"}],
+        fase2_records=[],
+        main_records=[
+            {"cedula": "222", "nombre": "B", "codigoInspector": "097"},
+            {"cedula": "333", "nombre": "C", "codigoInspector": "097"},
+        ],
+        generado_en="2026-09-16", origen={},
+    )
+
+    assert bundle["codigos_duplicados"] == []
+    assert [f["codigo"] for f in bundle["main"]] == ["097", "097"]

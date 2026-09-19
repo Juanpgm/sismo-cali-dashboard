@@ -25,14 +25,14 @@ Column mapping (verified against the real source files, 2026-09-16):
   vercel: identificacion|cedula, nombre_completo|nombre, NP, entidad, codigo
   fase2:  identificacion|cedula, nombre_completo, NP
   main:   cedula, nombre, addlInfo.rango, addlInfo.matriculaProfesional|
-          addlInfo.matricula, correo
+          addlInfo.matricula, addlInfo.entidad, correo, telefono, codigoInspector, creadoEn, id
 
-`pasos` (design's bundle JSON example, under `fase2`) is intentionally
-omitted here: `app.services.inspectores_depuracion`'s six seams never read
-`EntradaReferencia.pasos` today (confirmed — grep finds no `.pasos` use
-outside `_parse_entrada`), and the real "Fase 2 verified listing" source
-file (`Listado verificado Fase 2.xlsx`) carries no comparable column of its
-own; `parse_bundle` already defaults an absent `pasos` to `()`.
+`pasos` (design's bundle JSON example, under `fase2`) is intentionally still
+NOT emitted in this slice: `app.services.inspectores_depuracion`'s six seams
+never read `EntradaReferencia.pasos` today (grep finds no `.pasos` use outside
+`_parse_entrada`). The real "Fase 2 verified listing" source has no comparable
+column, and the real main CSV does have a `pasos` column but nothing consumes
+it yet; `parse_bundle` already defaults an absent `pasos` to `()`.
 """
 from __future__ import annotations
 
@@ -70,11 +70,14 @@ def _limpiar(value: object) -> str:
     produce the literal text "nan"."""
     if value is None:
         return ""
-    try:
-        if isinstance(value, float) and pd.isna(value):
-            return ""
-    except TypeError:
-        pass
+    if not isinstance(value, str):
+        # Scalars only: `pd.isna` on an array-like returns an array (ambiguous
+        # truth value). Covers float NaN, pd.NA and pd.NaT.
+        try:
+            if pd.api.types.is_scalar(value) and pd.isna(value):
+                return ""
+        except (TypeError, ValueError):
+            pass
     return str(value).strip()
 
 
@@ -89,6 +92,13 @@ def _sin_sufijo_decimal(texto: str) -> str:
     untouched. Leading zeros are never added or removed here."""
     coincidencia = _SUFIJO_DECIMAL_CERO.match(texto)
     return coincidencia.group(1) if coincidencia else texto
+
+
+def _campo_id(row: dict, columna: str) -> str:
+    """One coercion for identifier-like optional fields (`telefono`, `codigo`,
+    `id`, ...): blank/NaN/None -> "", whitespace stripped, a pure ".0" float
+    tail dropped, leading zeros and every other character kept as-is."""
+    return _sin_sufijo_decimal(_limpiar(row.get(columna)))
 
 
 def _solo_digitos(value: object) -> str:
@@ -112,7 +122,7 @@ def _fila_vercel(row: dict) -> dict[str, Any] | None:
         "nombre_norm": normalizar_nombre(row.get("nombre_completo") or row.get("nombre")),
         "np": _limpiar(row.get("NP")),
         "entidad": _limpiar(row.get("entidad")),
-        "codigo": _sin_sufijo_decimal(_limpiar(row.get("codigo"))),
+        "codigo": _campo_id(row, "codigo"),
     }
 
 
@@ -138,8 +148,19 @@ def _fila_main(row: dict) -> dict[str, Any] | None:
         "cedula_key": cedula_key,
         "nombre_norm": normalizar_nombre(nombre),
         "rango": _limpiar(row.get("addlInfo.rango")),
+        # design D12: `entidad` = Vercel-by-cedula > Firestore > main; this is
+        # the source for main (real CSV column `addlInfo.entidad`).
+        "entidad": _limpiar(row.get("addlInfo.entidad")),
         "tarjeta_profesional": tarjeta,
         "correo": correo,
+        # Optional identity/contact fields (schema stays 1, additive). Sources
+        # are read as strings, so codigo "021" keeps its leading zero; `id` and
+        # `creado_en` are the raw export values (`id`, `creadoEn`).
+        "nombre": nombre,
+        "telefono": _campo_id(row, "telefono"),
+        "codigo": _campo_id(row, "codigoInspector"),
+        "creado_en": _limpiar(row.get("creadoEn")),
+        "id": _campo_id(row, "id"),
         # Precomputed at publish time (design's bundle JSON note): the
         # depuración pipeline never needs the raw correo for classification,
         # only this boolean.

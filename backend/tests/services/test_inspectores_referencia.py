@@ -419,3 +419,296 @@ def test_default_reader_malformed_token_degrades_gracefully_no_leak(monkeypatch,
     assert bundle.activa is False
     assert bundle.motivo == "sin_blob"
     assert "SUPERSECRETVALUE" not in caplog.text
+
+
+# --- Extension 2026-09-19 (PR 06): optional identity/contact fields at schema 1
+# (spec datos-referencia-blob "Bundle Entries Carry Optional Identity And
+# Contact Fields At Schema 1"; design D15) -----------------------------------
+
+_CAMPOS_OPCIONALES = ("nombre", "telefono", "codigo", "creado_en", "id", "correo", "tarjeta_profesional")
+
+_MAIN_COMPLETA = {
+    "cedula_key": "1234567",
+    "nombre_norm": "juan perez",
+    "rango": "P2",
+    "nombre": "Juan Perez",
+    "telefono": "3001234567",
+    "codigo": "021",
+    "creado_en": "2026-01-05T10:00:00Z",
+    "id": "3f2b8c1e-0000-4000-8000-000000000001",
+    "correo": "juan@example.com",
+    "tarjeta_profesional": "TP-1",
+    "no_persona": False,
+}
+
+
+def _bundle_con(main=None, vercel=None, fase2=None):
+    raw = {
+        "schema": 1,
+        "generado_en": "2026-09-12",
+        "vercel": vercel if vercel is not None else [],
+        "fase2": fase2 if fase2 is not None else [],
+        "main": main if main is not None else [],
+    }
+    return ir.parse_bundle(raw)
+
+
+def test_parse_entrada_new_optional_fields():
+    entrada = ir._parse_entrada(_MAIN_COMPLETA)
+
+    assert entrada is not None
+    assert entrada.nombre == "Juan Perez"
+    assert entrada.telefono == "3001234567"
+    assert entrada.codigo == "021"
+    assert entrada.creado_en == "2026-01-05T10:00:00Z"
+    assert entrada.id == "3f2b8c1e-0000-4000-8000-000000000001"
+    assert entrada.correo == "juan@example.com"
+    assert entrada.tarjeta_profesional == "TP-1"
+    # existing fields untouched
+    assert entrada.cedula_key == "1234567"
+    assert entrada.np == "P2"
+
+
+def test_parse_bundle_new_bundle_exposes_contact_fields_and_stays_active():
+    bundle = _bundle_con(main=[_MAIN_COMPLETA])
+
+    assert bundle is not None and bundle.activa is True
+    assert bundle.main[0].telefono == "3001234567"
+    assert bundle.main[0].correo == "juan@example.com"
+
+
+def test_entrada_referencia_new_fields_default_empty_when_built_directly():
+    entrada = ir.EntradaReferencia(
+        cedula_key="1", nombre_norm="x", np="", entidad="", codigo="", pasos=(), no_persona=False,
+    )
+    for campo in ("nombre", "telefono", "creado_en", "id", "correo", "tarjeta_profesional"):
+        assert getattr(entrada, campo) == ""
+
+
+def test_parse_bundle_old_bundle_yields_empty_contact_fields():
+    bundle = ir.parse_bundle(VALID_RAW)  # published shape: none of the new keys
+
+    assert bundle is not None
+    assert bundle.activa is True
+    assert bundle.generado_en == "2026-09-12"
+    for entrada in (*bundle.vercel, *bundle.fase2):
+        for campo in ("nombre", "telefono", "creado_en", "id", "correo", "tarjeta_profesional"):
+            assert getattr(entrada, campo) == ""
+    # `main` in the published shape already carries correo/tarjeta_profesional
+    # (the publisher always emitted them) — they are now exposed, the rest empty.
+    principal = bundle.main[0]
+    assert principal.correo == "juan@example.com"
+    assert principal.tarjeta_profesional == "TP-1"
+    for campo in ("nombre", "telefono", "codigo", "creado_en", "id"):
+        assert getattr(principal, campo) == ""
+
+
+def test_parse_bundle_regression_published_bundle_existing_fields_unchanged():
+    bundle = ir.parse_bundle(VALID_RAW)
+
+    assert bundle.vercel[0].codigo == "041"
+    assert bundle.vercel[0].entidad == "DAGRD"
+    assert bundle.fase2[0].pasos == (1, 2)
+    assert bundle.main[0].np == "P2"
+    assert bundle.codigos_duplicados == ("097", "127")
+
+
+def test_parse_bundle_unknown_extra_keys_are_ignored():
+    fila = {**_MAIN_COMPLETA, "campo_futuro": "x", "otro": {"a": 1}}
+    bundle = _bundle_con(main=[fila])
+
+    assert bundle is not None
+    assert bundle.main[0].correo == "juan@example.com"
+
+
+def test_parse_bundle_wrong_typed_optional_fields():
+    fila = {
+        **_MAIN_COMPLETA,
+        "telefono": 3001234567,
+        "creado_en": None,
+        "correo": ["a@b.co", "c@d.co"],
+    }
+    bundle = _bundle_con(main=[fila])
+
+    assert bundle is not None
+    entrada = bundle.main[0]
+    assert entrada.telefono == "3001234567"
+    assert entrada.creado_en == ""
+    assert entrada.correo == ""
+    # untouched siblings and identity
+    assert entrada.cedula_key == "1234567"
+    assert entrada.nombre_norm == "juan perez"
+    assert entrada.np == "P2"
+    assert entrada.tarjeta_profesional == "TP-1"
+
+
+@pytest.mark.parametrize(
+    "crudo, esperado",
+    [
+        (None, ""),
+        ("", ""),
+        ("   ", ""),
+        ("  3001234567  ", "3001234567"),
+        (3001234567, "3001234567"),
+        (3001234567.0, "3001234567"),
+        (float("nan"), ""),
+        (float("inf"), ""),
+        (True, ""),
+        (False, ""),
+        ([], ""),
+        (["a"], ""),
+        ({}, ""),
+        ({"k": "v"}, ""),
+        (("a",), ""),
+        pytest.param("x" * 100_000, "x" * 100_000, id="very-long-string"),
+    ],
+    ids=lambda v: None if isinstance(v, str) and len(v) > 50 else repr(v)[:20],
+)
+def test_parse_entrada_optional_field_coercion_never_raises_or_alters_siblings(crudo, esperado):
+    for campo in _CAMPOS_OPCIONALES:
+        fila = {**_MAIN_COMPLETA, campo: crudo}
+        entrada = ir._parse_entrada(fila)
+
+        assert entrada is not None
+        assert getattr(entrada, campo) == esperado
+        # every OTHER field keeps its parsed value
+        for otro in _CAMPOS_OPCIONALES:
+            if otro != campo:
+                assert getattr(entrada, otro) == ir._parse_entrada(_MAIN_COMPLETA).__getattribute__(otro)
+        assert entrada.cedula_key == "1234567"
+        assert entrada.nombre_norm == "juan perez"
+        assert entrada.no_persona is False
+
+
+def test_parse_bundle_schema_2_still_none():
+    assert ir.parse_bundle({**VALID_RAW, "schema": 2, "main": [_MAIN_COMPLETA]}) is None
+    assert ir._SCHEMA_VERSION == 1
+
+
+def test_parse_bundle_vercel_fase2_sections_accept_new_fields_too():
+    fila = {"cedula_key": "9", "nombre_norm": "ana", "np": "P3", "telefono": "3111111111",
+            "correo": "ana@example.com", "creado_en": "2026-02-02", "id": "abc"}
+    bundle = _bundle_con(main=[_MAIN_COMPLETA], vercel=[fila], fase2=[fila])
+
+    assert bundle.vercel[0].telefono == "3111111111"
+    assert bundle.fase2[0].correo == "ana@example.com"
+    assert bundle.fase2[0].id == "abc"
+    # absent on a section -> ignored (empty), not an error
+    sin_nuevos = _bundle_con(vercel=[{"cedula_key": "9", "nombre_norm": "ana"}])
+    assert sin_nuevos.vercel[0].telefono == ""
+
+
+def test_cargar_referencia_malformed_bundle_never_logs_or_exposes_pii(monkeypatch, caplog):
+    monkeypatch.setenv("BLOB_READ_WRITE_TOKEN", "fake-token")
+    pii = "pii-secreto-3001234567@example.com"
+    entradas_malas = [
+        {"cedula_key": pii, "correo": pii, "telefono": {"x": pii}},
+        {"cedula_key": "", "correo": pii, "nombre": pii},
+        "no es un dict " + pii,
+        {"cedula_key": "1", "correo": [pii], "pasos": [pii]},
+    ]
+    payloads = [
+        {"schema": 1, "vercel": entradas_malas, "fase2": pii, "main": entradas_malas,
+         "codigos_duplicados": [pii, {"x": pii}]},
+        {"schema": pii, "main": entradas_malas},
+        {"schema": 99, "main": entradas_malas},
+        [pii],
+        pii,
+    ]
+    with caplog.at_level(logging.DEBUG):
+        for payload in payloads:
+            bundle = ir.cargar_referencia(load_json=_fake_load_json(payload))
+            assert pii not in bundle.motivo
+            assert pii not in bundle.generado_en
+            assert "3001234567" not in bundle.motivo
+
+    assert pii not in caplog.text
+    assert "3001234567" not in caplog.text
+
+
+# --- W1: PII never leaks through the auto-generated repr --------------------
+
+_PII_FALSOS = {
+    "nombre": "Nombre-Falso-Zzyx",
+    "telefono": "3009998877",
+    "correo": "falso.zzyx@example.com",
+    "tarjeta_profesional": "TP-FALSA-77123",
+}
+
+
+def test_entrada_repr_and_bundle_repr_hide_pii_fields():
+    fila = {**_MAIN_COMPLETA, **_PII_FALSOS}
+    bundle = _bundle_con(main=[fila], vercel=[fila], fase2=[fila])
+
+    assert bundle.main[0].nombre == _PII_FALSOS["nombre"]  # still readable
+    for texto in (repr(bundle.main[0]), repr(bundle)):
+        for valor in _PII_FALSOS.values():
+            assert valor not in texto
+    # non-PII identifiers stay visible for debugging
+    assert "1234567" in repr(bundle.main[0])
+
+
+# --- W2: one coercion for optional fields AND codigos_duplicados ------------
+
+
+@pytest.mark.parametrize(
+    "crudo, esperado",
+    [
+        ("21.0", "21"),
+        ("21.00", "21"),
+        (" 21.0 ", "21"),
+        ("0.0", "0"),
+        ("021", "021"),
+        ("021.0", "021"),
+        ("3.0e9", "3.0e9"),
+        ("3.5", "3.5"),
+        ("1.234.567", "1.234.567"),
+        (".0", ".0"),
+        ("21.0a", "21.0a"),
+        (21.0, "21"),
+        (21, "21"),
+    ],
+)
+def test_texto_opcional_drops_pure_decimal_zero_tail_from_strings(crudo, esperado):
+    assert ir._texto_opcional(crudo) == esperado
+
+
+def test_parse_bundle_codigos_duplicados_use_the_same_coercion():
+    bundle = ir.parse_bundle({
+        "schema": 1,
+        "codigos_duplicados": [21.0, "021", 22, "22.0", " 23.0 ", None, "", True, float("nan"), ["x"], {"k": 1}],
+    })
+
+    assert bundle is not None
+    assert bundle.codigos_duplicados == ("21", "021", "22", "22", "23")
+
+
+def test_remapear_codigos_honors_numeric_codigos_duplicados_from_bundle():
+    from app.services import inspectores_depuracion as dep
+
+    def _v(cedula, nombre, codigo):
+        return {"cedula_key": cedula, "nombre_norm": nombre, "codigo": codigo}
+
+    bundle = ir.parse_bundle({
+        "schema": 1,
+        "codigos_duplicados": [21.0, "021", 22],
+        "vercel": [
+            _v("1111111", "ana uno", "21"),
+            _v("2222222", "beto dos", "021"),
+            _v("3333333", "carla tres", "22"),
+            _v("4444444", "dario cuatro", "23"),
+        ],
+    })
+    roster = {
+        c: {"identificacion": c, "nombre_completo": n}
+        for c, n in (("1111111", "Ana Uno"), ("2222222", "Beto Dos"),
+                     ("3333333", "Carla Tres"), ("4444444", "Dario Cuatro"))
+    }
+    perfiles = dep.fusionar_identidad([], roster, bundle)
+    perfiles, revision = dep.remapear_codigos(perfiles, bundle)
+
+    assert perfiles["1111111"].codigo == ""   # 21.0 (float) excludes "21"
+    assert perfiles["2222222"].codigo == ""   # "021" keeps its zero and excludes "021"
+    assert perfiles["3333333"].codigo == ""   # 22 (int) excludes "22"
+    assert perfiles["4444444"].codigo == "23"  # not listed -> remapped normally
+    assert revision == ()

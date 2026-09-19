@@ -220,17 +220,17 @@ If a child PR's diff shows a previous slice's changes, its base is wrong: retarg
 
 Slice forecast: ~200 lines · risk Low · base `…-05-mobile-overflow`.
 
-- [ ] 7.1 RED: `backend/tests/services/test_inspectores_referencia.py::test_parse_entrada_new_optional_fields` — a `main` row with `nombre`/`telefono`/`codigo`/`creado_en`/`id`/`correo`/`tarjeta_profesional` exposes all seven.
-- [ ] 7.2 GREEN: add the seven optional fields with empty defaults to `EntradaReferencia` and `_parse_entrada` in `backend/app/services/inspectores_referencia.py`.
-- [ ] 7.3 RED+GREEN edge: `test_parse_bundle_old_bundle_yields_empty_contact_fields` — a `schema:1` bundle without the new keys parses to entries with all seven empty, `activa=true`.
-- [ ] 7.4 RED+GREEN edge: `test_parse_bundle_wrong_typed_optional_fields` — numeric `telefono`, `null` `creado_en`, list-valued `correo` → coerced to string / empty, never raises.
-- [ ] 7.5 RED+GREEN edge: `test_parse_bundle_schema_2_still_none` — regression guard that `schema` stays `1` and an unknown value still returns `None` (D15).
-- [ ] 7.6 RED+GREEN edge: `test_parse_bundle_vercel_fase2_sections_accept_new_fields_too` — the optional fields are accepted (and ignored when absent) on all three sections, not only `main`.
-- [ ] 7.7 RED: `backend/tests/test_publicar_referencia_inspectores.py::test_cli_emits_optional_fields` — the produced JSON carries the seven fields for a fixture source row.
-- [ ] 7.8 GREEN: emit the seven fields from `scripts/publicar_referencia_inspectores.py`.
-- [ ] 7.9 RED+GREEN edge: `test_cli_preserves_leading_zeros_and_long_numerics` — `codigoInspector="041"`, 10-digit cédula, 11-digit `telefono` survive as exact strings (guards the `ccbc71e` string-dtype fix).
-- [ ] 7.10 RED+GREEN edge: `test_cli_missing_optional_columns_yield_empty_not_nan` — a source file lacking `correo`/`matricula` produces `""`, never `"nan"`/`"None"`.
-- [ ] 7.11 REFACTOR: extract the per-field coercion into one helper; assert no behavior change by re-running `python -m pytest backend/tests/services/test_inspectores_referencia.py backend/tests/test_publicar_referencia_inspectores.py -q`.
+- [x] 7.1 RED: `backend/tests/services/test_inspectores_referencia.py::test_parse_entrada_new_optional_fields` — a `main` row with `nombre`/`telefono`/`codigo`/`creado_en`/`id`/`correo`/`tarjeta_profesional` exposes all seven.
+- [x] 7.2 GREEN: add the seven optional fields with empty defaults to `EntradaReferencia` and `_parse_entrada` in `backend/app/services/inspectores_referencia.py`.
+- [x] 7.3 RED+GREEN edge: `test_parse_bundle_old_bundle_yields_empty_contact_fields` — a `schema:1` bundle without the new keys parses to entries with all seven empty, `activa=true`.
+- [x] 7.4 RED+GREEN edge: `test_parse_bundle_wrong_typed_optional_fields` — numeric `telefono`, `null` `creado_en`, list-valued `correo` → coerced to string / empty, never raises.
+- [x] 7.5 RED+GREEN edge: `test_parse_bundle_schema_2_still_none` — regression guard that `schema` stays `1` and an unknown value still returns `None` (D15).
+- [x] 7.6 RED+GREEN edge: `test_parse_bundle_vercel_fase2_sections_accept_new_fields_too` — the optional fields are accepted (and ignored when absent) on all three sections, not only `main`.
+- [x] 7.7 RED: `backend/tests/test_publicar_referencia_inspectores.py::test_cli_emits_optional_fields` — the produced JSON carries the seven fields for a fixture source row.
+- [x] 7.8 GREEN: emit the seven fields from `scripts/publicar_referencia_inspectores.py`.
+- [x] 7.9 RED+GREEN edge: `test_cli_preserves_leading_zeros_and_long_numerics` — `codigoInspector="041"`, 10-digit cédula, 11-digit `telefono` survive as exact strings (guards the `ccbc71e` string-dtype fix).
+- [x] 7.10 RED+GREEN edge: `test_cli_missing_optional_columns_yield_empty_not_nan` — a source file lacking `correo`/`matricula` produces `""`, never `"nan"`/`"None"`.
+- [x] 7.11 REFACTOR: extract the per-field coercion into one helper; assert no behavior change by re-running `python -m pytest backend/tests/services/test_inspectores_referencia.py backend/tests/test_publicar_referencia_inspectores.py -q`.
 - [ ] 7.12 Gate: `python -m pytest backend/tests/ -q` green; open PR 06 against `…-05-mobile-overflow`.
 
 ## Phase 8: Engine — Full Universe (PR 07)

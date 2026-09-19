@@ -17,7 +17,9 @@ Two functions, two purities:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import math
+import re
+from dataclasses import dataclass, field
 
 from app.services import blob_lkg
 
@@ -38,6 +40,17 @@ class EntradaReferencia:
     codigo: str
     pasos: tuple[int, ...]
     no_persona: bool
+    # Optional identity/contact fields (extension 2026-09-19, `schema` stays 1):
+    # an old bundle simply omits them and they default to empty. PII — private
+    # Blob only, admin-only in responses.
+    # `repr=False` on the PII fields keeps them out of the auto `__repr__` (and
+    # so out of any log line / traceback that prints an entry or a bundle).
+    nombre: str = field(default="", repr=False)
+    telefono: str = field(default="", repr=False)
+    creado_en: str = ""
+    id: str = ""
+    correo: str = field(default="", repr=False)
+    tarjeta_profesional: str = field(default="", repr=False)
 
 
 @dataclass(frozen=True)
@@ -71,6 +84,31 @@ def _norm_str(value: object) -> str:
     return str(value).strip()
 
 
+_SUFIJO_DECIMAL_CERO = re.compile(r"^(\d+)\.0+$")
+
+
+def _texto_opcional(value: object) -> str:
+    """Tolerant coercion for the optional bundle fields: strings are stripped
+    (and a PURE decimal-zero tail such as "21.0" is dropped, exactly like the
+    publisher's `_campo_id`; "021" and "3.0e9" are untouched), ints/finite
+    floats become their digits (an integral float drops the ".0"), and
+    everything else (None, bool, NaN/inf, list, dict...) is "" — never raises
+    and never `str()`s a container that could smuggle PII into a value."""
+    if isinstance(value, str):
+        texto = value.strip()
+        coincidencia = _SUFIJO_DECIMAL_CERO.match(texto)
+        return coincidencia.group(1) if coincidencia else texto
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return ""
+        return str(int(value)) if value == int(value) else str(value)
+    return ""
+
+
 def _parse_entrada(raw: object) -> EntradaReferencia | None:
     """A single reference row. Missing/blank `cedula_key` -> `None` (skipped
     by the caller), never raised — spec: malformed rows are excluded, not
@@ -94,9 +132,15 @@ def _parse_entrada(raw: object) -> EntradaReferencia | None:
         nombre_norm=_norm_str(raw.get("nombre_norm")),
         np=_norm_str(np_valor),
         entidad=_norm_str(raw.get("entidad")),
-        codigo=_norm_str(raw.get("codigo")),
+        codigo=_texto_opcional(raw.get("codigo")),
         pasos=pasos,
         no_persona=bool(raw.get("no_persona", False)),
+        nombre=_texto_opcional(raw.get("nombre")),
+        telefono=_texto_opcional(raw.get("telefono")),
+        creado_en=_texto_opcional(raw.get("creado_en")),
+        id=_texto_opcional(raw.get("id")),
+        correo=_texto_opcional(raw.get("correo")),
+        tarjeta_profesional=_texto_opcional(raw.get("tarjeta_profesional")),
     )
 
 
@@ -126,7 +170,7 @@ def parse_bundle(raw: dict) -> ReferenciaBundle | None:
     if not isinstance(codigos_raw, list):
         codigos_raw = []
     codigos_duplicados = tuple(
-        _norm_str(codigo) for codigo in codigos_raw if _norm_str(codigo)
+        codigo for codigo in (_texto_opcional(c) for c in codigos_raw) if codigo
     )
     return ReferenciaBundle(
         vercel=_parse_seccion(raw.get("vercel")),
