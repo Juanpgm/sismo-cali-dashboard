@@ -647,7 +647,8 @@ def test_get_evaluaciones_firestore_exception_becomes_502_not_a_bare_crash(monke
     resp = client.get("/evaluaciones")
 
     assert resp.status_code == 502
-    assert "Quota exceeded" in resp.json()["detail"]
+    assert resp.json()["detail"] == stickers.DETALLE_FALLO_EVALUACIONES
+    assert "Quota exceeded" not in resp.text  # the exception text is never echoed (viewers can read this route)
 
 
 def test_evaluaciones_cache_serves_stale_payload_when_a_later_fetch_fails(monkeypatch):

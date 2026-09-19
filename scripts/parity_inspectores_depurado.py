@@ -1220,7 +1220,8 @@ def assemble_inputs(db: Any, *, fetch_rows: Callable[[], list], cargar_referenci
 
 # O1 (design "Open Questions"): the acceptance criterion is per OPEN HOUR, not per day: flag ON must not cost more than
 # the flag-OFF baseline of about 20,000 Firestore reads per open hour (production today, ~12 refreshes/hour of
-# I + E + U documents). RECOMMENDED DEFAULT, PENDING OWNER CONFIRMATION; `--budget-per-hour` overrides it.
+# I + E + U documents). RATIFIED by the owner on 2026-09-19 (the 10,000/day placeholder is retired); `--budget-per-hour`
+# overrides it.
 DEFAULT_BUDGET_PER_HOUR = 20_000
 DEFAULT_OPEN_HOURS_PER_DAY = 8  # modeled workload: one admin tab open during a working day
 # per continuously-open hour, static inputs (design "Efficiency Acceptance Budgets"); the scan limits count component
@@ -1478,7 +1479,7 @@ def format_projection(projection: dict) -> str:
         f"  static inputs over {hours} open h (probe-gated survey and evaluaciones, forced reconcile every"
         f" {sim['ttls']['survey_reconcile'] / 3600:g} h): {projection['arithmetic_per_day']} per day"
         f" = {_fmt(projection['reads_per_hour'])} per open hour",
-        f"  budget per open hour: {projection['budget_per_hour']:,} (recommended default, pending owner confirmation: the"
+        f"  budget per open hour: {projection['budget_per_hour']:,} (ratified by the owner 2026-09-19: the"
         f" flag-OFF baseline) -> {projection['verdict']} (worst case {projection['worst_case_reads_per_hour']:,})",
         f"  daily projection, information only: {projection['reads_per_day']:,} reads over {hours} open h with static inputs;"
         f" worst case {projection['worst_case_reads_per_day']:,}",
@@ -1596,8 +1597,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timing-runs", type=int, default=TIMING_MIN_RUNS)
     parser.add_argument("--timing-ceiling", type=float, default=TIMING_CEILING_S, help="seconds")
     parser.add_argument("--budget-per-hour", type=int, default=DEFAULT_BUDGET_PER_HOUR,
-                        help="Firestore reads per open hour (design O1; recommended default 20,000 = the flag-OFF "
-                             "baseline, pending owner confirmation)")
+                        help="Firestore reads per open hour (design O1; 20,000 = the flag-OFF baseline, "
+                             "ratified by the owner 2026-09-19)")
     parser.add_argument("--budget-per-day", type=int, default=None,
                         help="optional: also print a verdict against a daily budget (information only)")
     parser.add_argument("--open-hours-per-day", type=float, default=DEFAULT_OPEN_HOURS_PER_DAY,

@@ -319,7 +319,7 @@ no real time); rows marked "ledger" are measured on live data by the parity harn
 | Firestore scans per continuously-open hour, static inputs (derived from the TTLs) | roster ≤ 2, survey ≤ 1, evaluaciones ≤ 4 | test (fake clock) |
 | Firestore reads per open hour, WORST CASE (derived: every refresh finds a change) | 2·I + S + 4·(E + U) + the probes — with the D33 roster lookup U ≈ 0 — ≈ 262 + 1,924 + 5,880 = 8,066 of scans, plus the probe every probe-gated refresh pays BEFORE its scan (S3: 1 survey + 4 evaluaciones probes × 3 reads = 15) = **8,081** at the live sizes (8,462 + 15 before D33) | ledger (reported), the O1 gate |
 | Firestore reads per open hour, STATIC inputs (D34) | roster 2·I; survey and evaluaciones one probe (≈ 3 reads) per refresh and a full scan only at cold start and at the forced 6 h reconcile: **≈ 1,125 per open hour / 9,004 per 8-hour day** at the live sizes (harness `simulate_static_day`, U = 0) | ledger (reported), information |
-| Firestore reads for this path | **≤ 20,000 per open hour** (the flag-OFF baseline, recommended default, pending owner confirmation) — see **O1**. The original ≤ 10,000/day placeholder is no longer the criterion; the daily figure is printed for information | ledger, gates the flag flip |
+| Firestore reads for this path | **≤ 20,000 per open hour** (the flag-OFF baseline, RATIFIED by the owner 2026-09-19) — see **O1**. The original ≤ 10,000/day placeholder is no longer the criterion; the daily figure is printed for information | ledger, gates the flag flip |
 | Probe cost (D34) | survey / evaluaciones on a TTL expiry with unchanged content: 1 `count()` + 1 newest query ≈ 3 reads, 0 scans; changed count or newest timestamp: exactly 1 scan; forced reconcile every 6 h; 20 concurrent requests at expiry: 1 probe, ≤ 1 scan | test (`test_stickers_probed_components.py`, `test_probed_scan.py`) |
 | Evaluación NP join (D33) | 0 `inspectores/{uid}` reads for uids the roster holds; ≤ 1 batched `get_all` for the rest | test (`test_evaluaciones_np_from_roster.py`) |
 | Atención Sismo API | ≤ 1 walk per 5-min TTL; 0 with no viewers | test |
@@ -410,12 +410,12 @@ Mirrors the amended Rollout Order; the numbers are the steps of that list. Every
      the static-inputs figure per open hour and per modeled day through the real component caches (probe-gated survey and
      evaluaciones, forced reconcile) on a fake clock, with the arithmetic and the design formula printed beside it. The
      `np lookups` of the ledger are now only the uids the roster could not resolve (D33): the projection's `U`.
-6. **Confirm O1** from the projection. The measure-first step is done (see "Open Questions (Efficiency Extension)", O1,
-   DECISION 2026-09-19): the criterion is per OPEN HOUR (default `--budget-per-hour 20000`, the flag-OFF baseline, a
-   recommended default pending owner confirmation), the daily projection is printed for information (`--budget-per-day`
-   adds an optional extra verdict). The run can still model other TTLs and reconcile intervals
-   (`--ttl-evaluaciones 3600`, `--ttl-survey_reconcile 7200`, …). Record the confirmed budget and any changed TTLs in the
-   report; the flag stays `0` until the owner confirms it.
+6. **Read O1 from the projection.** The budget is RATIFIED (see "Open Questions (Efficiency Extension)", O1, ratified by
+   the owner on 2026-09-19): the criterion is per OPEN HOUR (default `--budget-per-hour 20000`, the flag-OFF baseline), the
+   daily projection is printed for information (`--budget-per-day` adds an optional extra verdict). The run can still model
+   other TTLs and reconcile intervals (`--ttl-evaluaciones 3600`, `--ttl-survey_reconcile 7200`, …). Record any changed
+   TTLs in the report; the flag stays `0` until the remaining flip gates of 12b.4 hold (merged chain, green suites, the
+   live parity PASS, the post-deploy check).
 7. **Flip** `SEGUIMIENTO_DEPURACION=1` only when every gate of step 5 of the Rollout Order holds, then **merge the
    tracker** into `main`; afterwards run the one-hour observation window (12b.7).
 
@@ -450,11 +450,69 @@ changes of this slice are visible to every viewer, flag or no flag, and are inte
   is `None`), and a cold start also means an empty component, so within one process lifetime (a)/(b) require a
   state no request sequence produces; the change is pinned by
   `test_degraded_guard_only_bites_a_cold_evaluaciones_component` (state forced by hand) rather than observed.
+- **Contact fields are admin-only in every payload (D-VIEWER-PII, 2026-09-19).** A viewer's
+  `evaluaciones[].inspector.{tarjeta_profesional, num_telefono, correo_contacto}` were served with the roster
+  person's values on `main` (flag off included); they now arrive as `""` (keys kept). Visible to every viewer, flag or
+  no flag, and intended: see "D-VIEWER-PII" below.
 - **Cédula join.** `cedula_key` now goes through the shared `cedula_utils.solo_digitos` rule (task 10.12), so a
   float-artifact cédula (`"1234567.0"` in the roster or in the matched evaluación) joins with `"1234567"`.
   Sticker rows whose `inspector.*` fields (`nombre_completo`, `entidad`, `np`, `uid`...) were previously blank
   because that join missed are now populated, for viewers too. A previously missed match is now found (a
   genuinely different cédula still does not match, asserted by a test).
+
+### D-VIEWER-PII (2026-09-19): contact fields are admin-only in every payload
+
+**Finding (a reviewer, against `origin/main`, independent of the flag).** `GET /stickers-atencionsismo` is
+`require_role("admin", "viewer")`, and `role_from_claims` resolves ANY authenticated `@cali.gov.co` account to `viewer`.
+`normalize_sticker` fills `inspector.tarjeta_profesional`, `num_telefono` and `correo_contacto` from the roster on every
+branch that names a person (Rule A cédula match, the `rango` roster branch, the brigade-code roster branch; Rule B step 1
+leaves them blank) and the route serialized them for every caller. The Blob last-known-good already redacted them
+(`redact_for_blob`); the live response did not. Only `web/js/seguimiento.js` (the admin-only tab) reads the three fields.
+
+**Decision.** For a caller whose role is not exactly `admin`, every contact field that is PRESENT in a row's `inspector`
+block is served as `""`. Admins receive exactly what they received before (byte-identical, golden test).
+
+- **Empty string, keys kept (not omitted).** The `redact_for_blob` convention: the response SHAPE stays stable for existing
+  clients and tests, and the frontend never has to guard `undefined` before a `.trim()`/render. A key that is ABSENT from a
+  row is not added (nothing to leak; the pre-change fixtures stay byte-identical). Omitting the keys was rejected: it would
+  change the shape for no extra protection.
+- **Where.** `redact_contact_fields` / `evaluaciones_for_role` (`backend/app/routers/stickers_atencionsismo.py`) are called
+  inside `build_body`, the role-specific builder of the `(role, opt_in)` variant of `EncodedBodyCache` (D26). The viewer
+  variant is therefore BUILT redacted, once per key, and gzip/ETag/304 are derived from those bytes; nothing is redacted
+  after a shared cache lookup and the admin bytes are not reachable from a viewer (role is part of the cache key AND of the
+  ETag). `evaluaciones_for_role` fails closed: only an exact `"admin"` is served the shared list itself, everything else
+  gets the redacted copy. The shared `payload` (also what the Blob copy and `depurar()` read) is never mutated; only the
+  row and its `inspector` dict are copied, and only when a contact key is present. Cost: O(rows) on a bytes-cache miss of
+  the viewer variant (20,000 rows < 1.5 s in the test; in production once per snapshot change), 0 on a hit or a 304.
+- **Producer audit.** The only producer of `inspector` blocks that carries the three fields is `normalize_sticker`
+  (called only by `build_evaluaciones`, whose only production caller is this route's `build_payload`), and this route is
+  the only reader of `stickers_atencionsismo_cache`. Covered by the same redaction: Rule A, the `rango` branch, the
+  brigade-code branch, Rule B (blank by construction), opt-in `?depuracion=1`, flag on and off, identity and gzip, 200 and
+  304, and the degraded path (a Blob-restored copy is blanked even if an older build stored values in it). NOT affected
+  (characterization tests): `GET /evaluaciones` and `POST /stickers {action:"evaluaciones"}` (`list_evaluaciones` projects
+  `uid/codigo/nombre_completo/identificacion/entidad/np` explicitly, so contact fields in a Firestore doc cannot leak;
+  the POST is admin-only anyway). The legacy `api/stickers.js` `listEvaluaciones` (Vercel, admin-only) builds the same
+  five-field-plus-uid block and never carried them. `scripts/parity_inspectores_depurado.py` calls `build_evaluaciones`
+  offline.
+- **Facts for the follow-up decision on the rest of `evaluaciones[].inspector` (NOT changed here).** A viewer still
+  receives `uid`, `codigo`, `nombre_completo`, `identificacion` (national ID), `entidad`, `np` and `inspector_fuente`, plus
+  `descripcion.nombre` (the AFFECTED person's name, `personaAfectada`), address, coordinates, comments and photos. The
+  viewer-facing frontend (Stickers tab) reads: `nombre_completo` (list "quién", search, detail modal, XLSX export, PDF
+  report), `codigo` (same places), `identificacion` (detail modal "Identificación", XLSX column
+  `inspector_identificacion`, PDF report), `entidad` (detail modal, XLSX, PDF), `np` (the Fase fallback `faseKeyDe` when the
+  API's `fase` is null, so it drives the Fase filter/KPIs, plus detail/XLSX/PDF). `uid` is read by no viewer-facing code.
+  `identificacion` is NOT searchable and drives no logic in the viewer tab: blanking it for viewers would only turn the
+  detail row, the XLSX column and the PDF row into "Sin dato" (the server-side identity matching and the admin-only
+  Seguimiento identity keys read the unredacted list, so they would not change). `np` and `nombre_completo`/`codigo` cannot be
+  blanked without breaking Fase classification and the tab's search/labels. Open for the owner.
+  Also still viewer-visible, by design of this slice: `comentarios` (free text written by the inspector), `descripcion.nombre`,
+  `direccion` and `coords`. `comentarios` is the one UNSTRUCTURED channel that could carry the very same contact values (a phone
+  or a correo typed into the comment) and it cannot be redacted mechanically without destroying legitimate content: whether to
+  blank it, mask contact-shaped substrings or accept the residual risk is a product decision for the owner.
+- **Tests.** `backend/tests/routers/test_stickers_atencionsismo_viewer_pii.py` (route + unit, incl. the golden bytes of both
+  variants, ETag/304, role changes on one token, degraded restore, logs, size) and
+  `web/js/viewer-pii-contract.test.mjs` (viewer-facing modules never read the three fields; Seguimiento and the Stickers
+  helpers tolerate them empty, absent or null). Mutation-checked with 11 backend and 4 frontend scratch mutants.
 
 ## Contradiction Register (efficiency extension)
 
@@ -471,7 +529,18 @@ changes of this slice are visible to every viewer, flag or no flag, and are inte
 
 ## Open Questions (Efficiency Extension)
 
-- [x] **O1 — DECIDED 2026-09-19 as a recommended default, PENDING OWNER CONFIRMATION (blocks the flag flip until confirmed).**
+- [x] **O1 — DECIDED 2026-09-19 and RATIFIED by the owner the same day (no longer blocks the flag flip).**
+  **Ratified by the owner on 2026-09-19: the acceptance criterion for enabling the flag is that flag ON must not cost more per
+  continuously-open admin hour than today's flag-OFF baseline (~20,000 Firestore reads per open hour: 12 refreshes x (I+E+U));
+  measured live: worst case ≈8.1k/hour (model figure 8,081/hour), static 1,125.5/hour; the placeholder 10,000/day is retired;
+  watermark/delta reads stay deferred as a later improvement.**
+  `[CORRECTED 2026-09-19 (judgment-day W2)]` The ratification text first quoted "8,142/hour" and "~1,130/hour". The harness model
+  (`project_reads` of `scripts/parity_inspectores_depurado.py`, E 1,470, I 131, S 1,924, U 0, 8 open hours) gives **8,081** worst
+  case per open hour (8,066 of scans + 5 probes × 3 reads) and **9,004 / 8 = 1,125.5** static per open hour. The live run printed
+  a slightly higher figure because it measured 15 fallback np lookups instead of the roster-served 0 (U = 15 gives 8,141 worst case
+  and 9,034 / 8 ≈ 1,129 static with the same harness; the printed 8,142 is one read above that and could not be reproduced exactly,
+  so the live figure is quoted as ≈8.1k). The decision (20,000 reads per open hour, checked against the worst case) is unchanged:
+  every variant is far below the criterion.
   **Measure-first result** (live, read-only, 2026-09-19; one process, one continuously-open admin tab; E 1,470 evaluaciones
   documents, I 131 inspectores, S 1,924 survey_cali, U 99 distinct uids the evaluaciones scan looked up): the 10,000/day
   placeholder is **not achievable by any TTL** (one full refresh of survey_cali + evaluaciones alone costs ~3.5k reads, and
@@ -500,5 +569,6 @@ changes of this slice are visible to every viewer, flag or no flag, and are inte
   cursor) that would make reads proportional to the changed documents (D31).
   **What this does NOT guarantee:** the per-open-hour criterion keeps flag ON at or below the flag-OFF baseline, but the
   worst case of an 8-hour day (64,648) exceeds the Spark 50,000/day cap on its own; only the static-inputs day (9,004) fits
-  under it. Whether that risk is acceptable, or the project runs on a plan without that cap, is the owner's call; until the
-  owner confirms the per-open-hour criterion (or replaces it), 12b.4 stays blocked.
+  under it. Whether that risk is acceptable, or the project runs on a plan without that cap, was the owner's call, and the
+  owner ratified the per-open-hour criterion on 2026-09-19. The budget therefore no longer blocks 12b.4; the remaining flip
+  gates are the merged chain, green suites, the live parity PASS and the post-deploy check.

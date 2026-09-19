@@ -1039,7 +1039,8 @@ def test_ledger_projection_uses_ttls_and_reports_per_hour_and_per_day(monkeypatc
     assert ("2 x 130 (I) + 1 x 1900 (S) + 4 x (1470 + 0) (E + U) + 1 survey probes x 3 + 4 evaluaciones probes x 3"
             " = 8,055") in text
     assert "design formula 2*I + S + 4*E = 8,040" in text
-    assert "8,940" in text and "20,000" in text and "recommended default, pending owner confirmation" in text
+    assert "8,940" in text and "20,000" in text and "ratified by the owner 2026-09-19" in text
+    assert "pending owner confirmation" not in text and "recommended default" not in text  # O1 is ratified
     assert parity.probe_reads(1924) == 3 and parity.probe_reads(1000) == 2 and parity.probe_reads(1001) == 3
     assert parity.probe_reads(1) == 2 and parity.probe_reads(0) == 1
 
@@ -1326,7 +1327,8 @@ def test_cli_default_budget_is_20000_per_open_hour_and_passes_at_the_live_sizes(
     code = parity.main(["--snapshot", str(snapshot), "--xlsx", str(xlsx)])
     out = capsys.readouterr().out
     assert code == parity.EXIT_OK, out
-    assert "budget per open hour: 20,000" in out and "recommended default, pending owner confirmation" in out
+    assert "budget per open hour: 20,000" in out and "ratified by the owner 2026-09-19" in out
+    assert "pending owner confirmation" not in out and "recommended default" not in out
     assert "daily projection, information only" in out and "9,004" in out
 
 

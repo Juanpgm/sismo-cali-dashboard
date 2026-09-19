@@ -69,6 +69,14 @@ EVALUACIONES_FS_CACHE_TTL_SECONDS = 15 * 60
 # omits `depuracion` entirely, byte-identical to the pre-Phase-3 payload.
 SEGUIMIENTO_DEPURACION_ENV = "SEGUIMIENTO_DEPURACION"
 
+# Error bodies of GET /stickers-atencionsismo. `require_role("admin", "viewer")`
+# lets any institutional account read this route, and an upstream/Firestore
+# exception message can echo a cedula, a name or a correo, so the response
+# carries a fixed message per status class and NEVER the exception text (the
+# log keeps type + location only, see `_resumen_seguro`).
+DETALLE_SERVICIO_NO_DISPONIBLE = "El servicio de stickers no está disponible en este momento. Intente de nuevo más tarde."
+DETALLE_FALLO_STICKERS = "No se pudo obtener la información de stickers en este momento."
+
 # Dedicated executor for the two Firestore reads in `build_payload`'s
 # concurrent gather (fail-fast fix, adversarial review 2026-09-10) — this
 # must NOT be `asyncio.to_thread`'s default (loop) executor. `build_payload`
@@ -149,6 +157,42 @@ def redact_for_blob(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "fotos": [],
         })
     return out
+
+
+# D-VIEWER-PII: contact data of a roster person, admin-only in EVERY payload
+# (the `depuracion` block is already admin-only). Only the admin-only
+# Seguimiento tab reads these three fields; the viewer-facing Stickers tab
+# never does.
+CONTACT_FIELDS = ("tarjeta_profesional", "num_telefono", "correo_contacto")
+
+
+def redact_contact_fields(payload: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Viewer projection of the served `evaluaciones`: every contact field that
+    is PRESENT in a row's `inspector` block is set to `""` (whatever it held:
+    text, `None`, a number). The KEYS stay - the `redact_for_blob` convention -
+    so the response shape does not move for existing clients; a key that is
+    absent is not added (nothing to leak, and rows stay byte-identical). Rows
+    without a usable `inspector` block pass through as the same object.
+
+    Pure and never mutating: `payload` is the shared list the sticker cache
+    holds (and persisted, redacted, to the public Blob), and the admin variant
+    is served from it. Only the row and its `inspector` dict are copied, and
+    only when there is something to blank."""
+    out: list[dict[str, Any]] = []
+    for row in payload:
+        insp = row.get("inspector") if isinstance(row, dict) else None
+        present = [k for k in CONTACT_FIELDS if k in insp] if isinstance(insp, dict) else []
+        if present:
+            row = {**row, "inspector": {**insp, **dict.fromkeys(present, "")}}
+        out.append(row)
+    return out
+
+
+def evaluaciones_for_role(payload: list[dict[str, Any]], role: Any) -> list[dict[str, Any]]:
+    """The list a caller of `role` is served: the shared `payload` itself for an
+    exact `"admin"`, the redacted copy for EVERYTHING else (fail closed - a role
+    added later, or an unexpected value, can never inherit the admin bytes)."""
+    return payload if role == "admin" else redact_contact_fields(payload)
 
 
 # ── Depuración wiring (design.md D1-D8, tasks.md Phase 3) ──────────────────
@@ -963,12 +1007,12 @@ def get_stickers_atencionsismo(
         # every other upstream-unavailable case — this is the "nothing
         # trustworthy to serve" branch, not an unclassified bug, so it does
         # not deserve the generic 502 below.
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=DETALLE_SERVICIO_NO_DISPONIBLE) from exc
     except Exception as exc:  # pragma: no cover - same CORS-preserving catch-all as GET /evaluaciones
         # Type and location only, never `logging.exception`: its traceback text
         # carries the message, which can echo a cedula or a name.
         logging.error("stickers-atencionsismo: fallo no clasificado (%s)", _resumen_seguro(exc))
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=DETALLE_FALLO_STICKERS) from exc
 
     # The response body — never `payload` itself — is where `depuracion` gets
     # added (`build_body` below, D3, PII isolation): `payload` is the exact list
@@ -1050,8 +1094,14 @@ def get_stickers_atencionsismo(
             )
 
     def build_body() -> dict[str, Any]:
+        # D-VIEWER-PII: the redaction sits HERE, in the role-specific builder the
+        # `(role, opt_in)` bytes-cache variant is built from: the viewer variant
+        # is constructed redacted (never redacted after a shared lookup), the
+        # admin variant serves `payload` itself (`evaluaciones_for_role` fails
+        # closed: anything that is not an admin gets the redacted copy).
+        evaluaciones = evaluaciones_for_role(payload, role)
         body: dict[str, Any] = {
-            "ok": True, "fuente": "atencionsismo", "evaluaciones": payload, "degraded": snapshot.degraded,
+            "ok": True, "fuente": "atencionsismo", "evaluaciones": evaluaciones, "degraded": snapshot.degraded,
         }
         if resultado is not None:
             body["depuracion"] = _depuracion_a_dict(resultado)

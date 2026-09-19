@@ -620,6 +620,13 @@ be added to the response only when the authenticated role is admin, and MUST NOT
 Blob-persisted copy of the payload. Any INFO-level log of `alias_nombres` or of identity keys MUST be
 redacted or downgraded to DEBUG, because `identidad_key` is now a cédula.
 
+`[MODIFIED 2026-09-19, D-VIEWER-PII]` The contact fields are admin-only in EVERY payload, not only in the
+`depuracion` block: `evaluaciones[].inspector.tarjeta_profesional`, `num_telefono` and `correo_contacto` of
+`GET /stickers-atencionsismo` MUST reach a caller whose role is not exactly `admin` as `""` (the keys stay, the
+values are blank), on every producer path (cédula match, `rango` roster branch, brigade-code roster branch,
+evaluación match, degraded/Blob-restored snapshot), with or without `?depuracion=1`, flag on or off, identity or gzip
+encoding, and on a 200 as well as through the ETag/304 flow. The admin response is unchanged.
+
 #### Scenario: Viewer role gets no depuración block
 - GIVEN an authenticated non-admin (viewer) request
 - WHEN the response is assembled
@@ -630,6 +637,24 @@ redacted or downgraded to DEBUG, because `identidad_key` is now a cédula.
 - WHEN the response is assembled
 - THEN `depuracion.inspectores` entries carry `num_telefono`, `correo_contacto` and
   `tarjeta_profesional` where the source is non-empty
+
+#### Scenario: A viewer receives blank contact fields in evaluaciones
+- GIVEN an authenticated viewer request and roster people carrying `tarjeta_profesional`, `num_telefono` and
+  `correo_contacto`
+- WHEN `evaluaciones` is served (any producer branch, any encoding, with or without `?depuracion=1`)
+- THEN every `inspector` block carries the three keys with the value `""` and none of the values appears anywhere
+  in the body
+
+#### Scenario: The admin still receives the contact fields in evaluaciones
+- GIVEN the same data and an authenticated admin request
+- WHEN `evaluaciones` is served
+- THEN the body is byte-identical to the pre-change serialization and carries the roster values
+
+#### Scenario: A role change never serves cached admin bytes
+- GIVEN an admin received the full body and the same session is then downgraded to viewer, or a viewer sends the
+  admin's ETag or `If-None-Match: *`
+- WHEN the viewer requests the list
+- THEN the response is 200 with the redacted body and a different ETag, and back to admin the full body is served again
 
 #### Scenario: alias_nombres is not logged in clear at INFO
 - GIVEN the engine builds `alias_nombres`

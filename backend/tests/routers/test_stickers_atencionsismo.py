@@ -272,7 +272,9 @@ def test_missing_password_is_503(client, monkeypatch):
 
     monkeypatch.setattr(atencionsismo, "credentials_from_env", no_creds)
     resp = client.get("/stickers-atencionsismo")
-    assert resp.status_code == 503 and "VISITADOS_API_PASS" in resp.json()["detail"]
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == router_mod.DETALLE_SERVICIO_NO_DISPONIBLE
+    assert "VISITADOS_API_PASS" not in resp.text  # the exception text is never echoed
 
 
 def test_redaction_blanks_persona_and_np():

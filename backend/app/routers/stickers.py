@@ -67,6 +67,9 @@ _CEDULA_RE = re.compile(r"^\d{5,12}$")
 _CODIGO_RE = re.compile(r"^\d{3}$")
 
 EVALUACIONES_CACHE_TTL_SECONDS = 5 * 60
+# Error body of GET /evaluaciones (viewers can read it): a fixed message, never
+# the exception text, which can echo a cedula or a name.
+DETALLE_FALLO_EVALUACIONES = "No se pudo obtener la lista de evaluaciones en este momento."
 # Longest a FAILING probe may hide a change of the evaluaciones collection (D34, C1): the
 # 15-minute evaluaciones component TTL (`stickers_atencionsismo.EVALUACIONES_FS_CACHE_TTL_SECONDS`,
 # asserted equal in the tests; it cannot be imported from here without a cycle).
@@ -932,5 +935,5 @@ def get_evaluaciones(
         # headers attached, which the browser then reports as a misleading
         # "blocked by CORS policy" / "Failed to fetch" instead of the real
         # cause. A normal HTTPException always carries CORS headers.
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=DETALLE_FALLO_EVALUACIONES) from exc
     return JSONResponse({"ok": True, "evaluaciones": evaluaciones, "degraded": cache.degraded})
