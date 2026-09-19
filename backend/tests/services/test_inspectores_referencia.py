@@ -802,3 +802,67 @@ def test_huella_from_cargar_referencia_matches_parse_bundle(monkeypatch):
 def test_huella_never_leaks_pii_in_the_bundle_repr():
     with_phone = {**VALID_RAW, "vercel": [{**VALID_RAW["vercel"][0], "telefono": "3000000009"}]}
     assert "3000000009" not in repr(ir.parse_bundle(with_phone))
+
+
+# --- D-ENFASIS: optional free-text `enfasis` at schema 1 ---------------------
+
+
+def test_entrada_referencia_enfasis_defaults_to_empty_when_built_directly():
+    entrada = ir.EntradaReferencia(
+        cedula_key="1", nombre_norm="x", np="", entidad="", codigo="", pasos=(), no_persona=False,
+    )
+    assert entrada.enfasis == ""
+
+
+def test_parse_entrada_reads_enfasis_verbatim_trimmed():
+    entrada = ir._parse_entrada({**_MAIN_COMPLETA, "enfasis": "  Especialización en Estructuras "})
+    assert entrada is not None
+    assert entrada.enfasis == "Especialización en Estructuras"  # accents and case untouched
+    assert entrada.tarjeta_profesional == "TP-1"  # neighbours untouched
+
+
+def test_parse_bundle_old_bundle_without_the_key_parses_with_blank_enfasis():
+    bundle = ir.parse_bundle(VALID_RAW)  # published before the field existed
+
+    assert bundle is not None and bundle.activa is True
+    for entrada in (*bundle.vercel, *bundle.fase2, *bundle.main):
+        assert entrada.enfasis == ""
+
+
+@pytest.mark.parametrize(
+    "crudo, esperado",
+    [
+        ("Geotecnia", "Geotecnia"),
+        ("  Geotecnia  ", "Geotecnia"),
+        ("ESTRUCTURAS", "ESTRUCTURAS"),
+        ("Construcción y sismo", "Construcción y sismo"),
+        ("<script>alert('x')</script> \"a\" & <b>", "<script>alert('x')</script> \"a\" & <b>"),
+        ("Nivel 2.0 estructuras", "Nivel 2.0 estructuras"),
+        ("Estructuras " * 200, ("Estructuras " * 200).strip()),  # 2,000+ chars are kept whole
+        (None, ""),
+        ("", ""),
+        ("   ", ""),
+        (float("nan"), ""),
+        (float("inf"), ""),
+        (5, "5"),  # coerced like every optional field
+        (5.0, "5"),
+        (True, ""),
+        (["Geotecnia"], ""),  # a container is never str()'d
+        ({"a": "b"}, ""),
+    ],
+    ids=lambda v: repr(v)[:24],
+)
+def test_parse_entrada_enfasis_tolerant_coercion(crudo, esperado):
+    entrada = ir._parse_entrada({**_MAIN_COMPLETA, "enfasis": crudo})
+    assert entrada is not None
+    assert entrada.enfasis == esperado
+
+
+def test_parse_bundle_enfasis_round_trips_and_wrong_typed_one_never_drops_the_row():
+    bundle = _bundle_con(main=[
+        {**_MAIN_COMPLETA, "enfasis": "Geotecnia"},
+        {**_MAIN_COMPLETA, "cedula_key": "7654321", "enfasis": ["x"]},
+    ])
+    assert bundle is not None
+    assert [e.enfasis for e in bundle.main] == ["Geotecnia", ""]
+    assert [e.cedula_key for e in bundle.main] == ["1234567", "7654321"]

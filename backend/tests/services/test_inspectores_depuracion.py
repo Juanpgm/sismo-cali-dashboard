@@ -4648,3 +4648,115 @@ def test_r3_no_pii_reaches_the_logs_for_the_new_items(caplog):
     texto = caplog.text.lower()
     assert "zoraida" not in texto and "ximena" not in texto and "juan perez" not in texto
     assert "1111111111" not in texto and "0012345" not in texto
+
+
+# ── D-ENFASIS: free-text `enfasis` from the registry (`main`) ───────────────
+
+
+def test_enfasis_main_only_profile_takes_the_main_entry_text():
+    main = [_entrada(cedula_key="12345678", nombre_norm="ana gomez", enfasis="Especialización en Estructuras")]
+    perfiles, _ = dep.fusionar_identidad([], {}, _bundle(main=main))
+    assert perfiles["12345678"].enfasis == "Especialización en Estructuras"
+
+
+def test_enfasis_defaults_to_blank_for_a_main_entry_without_it():
+    perfiles, _ = dep.fusionar_identidad([], {}, _bundle(main=[_entrada(cedula_key="12345678", nombre_norm="ana")]))
+    assert perfiles["12345678"].enfasis == ""
+
+
+def test_enfasis_roster_and_main_intersection_backfills_when_roster_has_none():
+    roster = {"12345678": _roster_entry("12345678", "Juan Perez")}
+    main = [_entrada(cedula_key="12345678", nombre_norm="juan perez", enfasis="Geotecnia")]
+    perfiles, _ = dep.fusionar_identidad([], roster, _bundle(main=main))
+    assert len(perfiles) == 1
+    assert perfiles["12345678"].enfasis == "Geotecnia"
+    assert perfiles["12345678"].firestore_backed is True
+
+
+def test_enfasis_roster_and_main_intersection_a_blank_main_value_backfills_nothing():
+    roster = {"12345678": _roster_entry("12345678", "Juan Perez")}
+    main = [_entrada(cedula_key="12345678", nombre_norm="juan perez", enfasis="")]
+    perfiles, _ = dep.fusionar_identidad([], roster, _bundle(main=main))
+    assert perfiles["12345678"].enfasis == ""
+
+
+def test_enfasis_duplicate_main_cedula_first_row_wins():
+    main = [
+        _entrada(cedula_key="12345678", nombre_norm="ana gomez", enfasis="Estructuras"),
+        _entrada(cedula_key="12345678", nombre_norm="ana gomez b", enfasis="Geotecnia"),
+    ]
+    perfiles, revision = dep.fusionar_identidad([], {}, _bundle(main=main))
+    assert perfiles["12345678"].enfasis == "Estructuras"
+    assert [r["motivo"] for r in revision] == ["cedula_duplicada_main"]
+
+
+def test_enfasis_unificar_survivor_without_it_takes_the_first_non_empty_loser_text():
+    survivor = _perfil("S", "juan perez", ultimo_sticker=date(2026, 8, 1))
+    l1 = _perfil("L1", "juan perez", enfasis="")
+    l2 = _perfil("L2", "juan perez", enfasis="Geotecnia")
+    l3 = _perfil("L3", "juan perez", enfasis="Estructuras")
+    resultado, _ = dep.unificar_duplicados({"L3": l3, "S": survivor, "L2": l2, "L1": l1})
+    assert resultado["S"].enfasis == "Geotecnia"  # ascending identidad_key: L2 before L3
+
+
+def test_enfasis_unificar_survivor_own_text_is_never_overwritten():
+    survivor = _perfil("S", "juan perez", ultimo_sticker=date(2026, 8, 1), enfasis="Estructuras")
+    loser = _perfil("L1", "juan perez", enfasis="Geotecnia")
+    resultado, _ = dep.unificar_duplicados({"S": survivor, "L1": loser})
+    assert resultado["S"].enfasis == "Estructuras"
+
+
+def test_enfasis_unificar_is_deterministic_under_every_permutation():
+    import itertools
+
+    def perfiles():
+        return [
+            _perfil("S", "juan perez", ultimo_sticker=date(2026, 8, 1)),
+            _perfil("L1", "juan perez", enfasis=""),
+            _perfil("L2", "juan perez", enfasis="Geotecnia"),
+            _perfil("L3", "juan perez", enfasis="Estructuras"),
+        ]
+
+    resultados = set()
+    for orden in itertools.permutations(range(4)):
+        base = perfiles()
+        resultado, _ = dep.unificar_duplicados({base[i].identidad_key: base[i] for i in orden})
+        resultados.add(resultado["S"].enfasis)
+    assert resultados == {"Geotecnia"}
+
+
+def test_enfasis_is_emitted_in_the_depuracion_row_and_blank_by_default():
+    main = [
+        _entrada(cedula_key="1111111", nombre_norm="ana gomez", enfasis="Especialización en estructuras"),
+        _entrada(cedula_key="2222222", nombre_norm="beto ruiz"),
+    ]
+    filas = _by_key(_depurar(main=main))
+    assert filas["1111111"]["enfasis"] == "Especialización en estructuras"
+    assert filas["2222222"]["enfasis"] == ""
+
+
+def test_enfasis_survives_the_whole_pipeline_for_a_roster_person_and_a_unified_duplicate():
+    roster = {"1111111": _roster_entry("1111111", "Ana Gomez")}
+    main = [
+        _entrada(cedula_key="1111111", nombre_norm="ana gomez", enfasis="Geotecnia"),
+        _entrada(cedula_key="3333333", nombre_norm="carlos ruiz", enfasis=""),
+        _entrada(cedula_key="4444444", nombre_norm="carlos ruiz", enfasis="Construccion"),
+    ]
+    filas = _by_key(_depurar(roster=roster, main=main))
+    assert filas["1111111"]["enfasis"] == "Geotecnia"
+    survivor = next(f for k, f in filas.items() if k in ("3333333", "4444444"))
+    assert survivor["enfasis"] == "Construccion"  # the empty survivor took the loser's text
+
+
+@pytest.mark.parametrize(
+    "valor", ["<script>alert(1)</script>", "\"quoted\" & <b>", "Estructuras " * 200], ids=["script", "quoted", "long"],
+)
+def test_enfasis_hostile_and_very_long_text_pass_through_the_engine_verbatim(valor):
+    main = [_entrada(cedula_key="1111111", nombre_norm="ana gomez", enfasis=valor)]
+    assert _by_key(_depurar(main=main))["1111111"]["enfasis"] == valor.strip()
+
+
+@pytest.mark.parametrize("valor", [None, float("nan"), float("inf"), "", "   "])
+def test_enfasis_blank_entry_values_never_leak_nan_or_none_text(valor):
+    main = [_entrada(cedula_key="1111111", nombre_norm="ana gomez", enfasis=valor)]
+    assert _by_key(_depurar(main=main))["1111111"]["enfasis"] == ""

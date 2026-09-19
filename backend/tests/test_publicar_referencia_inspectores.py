@@ -973,3 +973,103 @@ def test_d_p1_end_to_end_a_prelisted_code_held_by_two_profiles_emits_codigo_verc
     items = [i for i in depurado.revision_manual if i["motivo"] == "codigo_vercel_duplicado"]
     assert [(i["codigo"], i["identidad_keys_titulares"]) for i in items] == [("148", ["1000000660", "1000000661"])]
     assert _codigos_por_clave(depurado)["1000000660"] == "148" and _codigos_por_clave(depurado)["1000000661"] == "148"
+
+
+# --- D-ENFASIS: `addlInfo.enfasis` (free text) rides the main rows ----------
+
+_COLUMNAS_MAIN_ENFASIS = [*_COLUMNAS_MAIN, "addlInfo.enfasis"]
+_ENFASIS_LARGO = "Estructuras " * 200  # 2,400 chars once trimmed
+_ENFASIS_HOSTIL = "<script>alert('x')</script> \"Geotecnia\" & <b>Suelos</b>"
+
+
+@pytest.mark.parametrize(
+    "crudo, esperado",
+    [
+        ("Especialización en estructuras", "Especialización en estructuras"),  # accents kept
+        ("ESTRUCTURAS", "ESTRUCTURAS"),  # case kept
+        ("  Geotecnia  ", "Geotecnia"),  # only trimmed
+        ("Construccion\ny sismo", "Construccion\ny sismo"),  # inner whitespace verbatim
+        (_ENFASIS_HOSTIL, _ENFASIS_HOSTIL),  # never sanitized at publish time
+        (None, ""),
+        (float("nan"), ""),
+        (pd.NA, ""),
+        ("", ""),
+        ("   ", ""),
+        ("\t\n", ""),
+        (5.0, "5"),  # a float-typed cell: no ".0" artifact
+        (7, "7"),
+        ("Nivel 2.0 estructuras", "Nivel 2.0 estructuras"),  # only a LONE float tail is an artifact
+    ],
+)
+def test_fila_main_enfasis_is_the_trimmed_text_verbatim(crudo, esperado):
+    fila = cli._fila_main({"cedula": "1234567", "nombre": "Ana", "addlInfo.enfasis": crudo})
+    assert fila["enfasis"] == esperado
+    assert fila["enfasis"] not in ("nan", "None", "<NA>")
+
+
+def test_fila_main_enfasis_very_long_text_is_kept_whole():
+    fila = cli._fila_main({"cedula": "1234567", "addlInfo.enfasis": _ENFASIS_LARGO})
+    assert fila["enfasis"] == _ENFASIS_LARGO.strip()
+    assert len(fila["enfasis"]) > 2000
+
+
+def test_fila_main_without_the_enfasis_column_emits_blank():
+    fila = cli._fila_main({"cedula": "1234567", "nombre": "Ana"})
+    assert fila["enfasis"] == ""
+
+
+def test_fila_main_enfasis_does_not_disturb_the_neighbouring_fields():
+    fila = cli._fila_main({"cedula": "1234567", "nombre": "Ana", "addlInfo.matriculaProfesional": "TP-1",
+                           "addlInfo.rango": "P2", "addlInfo.enfasis": "Geotecnia"})
+    assert (fila["tarjeta_profesional"], fila["rango"], fila["enfasis"]) == ("TP-1", "P2", "Geotecnia")
+
+
+@pytest.mark.parametrize(
+    "crudo", ["Estructuras", " Estructuras ", "5.0", "5", "", "   ", 5.0, 5, float("nan"), None, "3.5", "2.0 niveles"],
+)
+def test_enfasis_publisher_and_parser_agree(crudo):
+    assert cli._campo_id({"c": crudo}, "c") == ir._texto_opcional(crudo)
+
+
+@pytest.mark.parametrize("sufijo", [".csv", ".xlsx"])
+def test_cli_reads_the_enfasis_column_from_csv_and_xlsx(tmp_path, sufijo):
+    ruta = tmp_path / f"main{sufijo}"
+    _escribir_tabla(
+        ruta,
+        [["u1", "1234567", "Ana", "", "", "", "", "P2", "TP-1", "", "Especialización en estructuras"],
+         ["u2", "7654321", "Beto", "", "", "", "", "P3", "", "", None],
+         ["u3", "1111111", "Cata", "", "", "", "", "P3", "", "", "   "]],
+        _COLUMNAS_MAIN_ENFASIS,
+    )
+
+    bundle = _bundle_desde_main_archivo(ruta)
+
+    assert [f["enfasis"] for f in bundle["main"]] == ["Especialización en estructuras", "", ""]
+    assert "NaN" not in json.dumps(bundle["main"]) and '"nan"' not in json.dumps(bundle["main"])
+    assert ir.parse_bundle(bundle).main[0].enfasis == "Especialización en estructuras"
+
+
+def test_cli_csv_without_enfasis_column_still_publishes_blank(tmp_path):
+    ruta = tmp_path / "main.csv"
+    ruta.write_text("cedula,nombre\n1234567,Juan Perez\n", encoding="utf-8")
+
+    assert _bundle_desde_main_archivo(ruta)["main"][0]["enfasis"] == ""
+
+
+def test_publisher_output_round_trips_to_the_depuracion_row():
+    """publisher -> JSON -> `parse_bundle` -> `depurar` -> `_perfil_a_dict`."""
+    bundle = cli.construir_bundle(
+        vercel_records=[], fase2_records=[],
+        main_records=[
+            {"cedula": "1000000660", "nombre": "Ana Uno", "addlInfo.enfasis": "  Especialización en Estructuras "},
+            {"cedula": "1000000661", "nombre": "Beto Dos", "addlInfo.enfasis": float("nan")},
+            {"cedula": "1000000662", "nombre": "Cata Tres"},
+        ],
+        generado_en="2026-09-19", origen={},
+    )
+    referencia = ir.parse_bundle(json.loads(json.dumps(bundle)))
+    filas = {f["identificacion"]: f for f in _e2e_depurar(referencia).inspectores}
+
+    assert filas["1000000660"]["enfasis"] == "Especialización en Estructuras"
+    assert filas["1000000661"]["enfasis"] == ""
+    assert filas["1000000662"]["enfasis"] == ""

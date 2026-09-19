@@ -4743,6 +4743,169 @@ named('test_xlsx_export_writes_plain_text_cells_never_formulas', () => {
   assert.doesNotMatch(handler, /\bcellFormula\b|\bf:\s|\.f\s*=|t:\s*'f'|\bset_cell_formula|\bcell_set_formula/, 'no formula cell is ever built');
 });
 
+// ── D-ENFASIS: the registry's free-text "énfasis" (depuracion.inspectores[].enfasis) ─────────
+
+const ENFASIS_TEXTO = 'Especialización en estructuras';
+const ENFASIS_HOSTIL = `<script>alert('x')</script> "q" & <img src=x onerror=1>`;
+const ENFASIS_LARGO = 'Estructuras '.repeat(200).trim(); // 2,399 chars
+
+function enfasisRowFor(extra) {
+  const dep = depuracionOf([depInspector(1, extra)]);
+  return rowsFor({ depuracion: dep }).rows[0];
+}
+function enfasisReportRow(extra = {}) {
+  return {
+    name: 'Gil Soto', cedula: '1', codigo: '', entidad: '', np: '', barriosActivos: [],
+    tarjetaProfesional: 'TP-1', stickersFase1: 0, stickersFase2: 0, surveyTotal: 0, total: 0,
+    firstDate: null, lastDate: null, activeDays: 0, avgPerActiveDay: 0,
+    avgStickersPerDay: null, rosterSourced: 0, ...extra,
+  };
+}
+const ENFASIS_POINTS = { stickerPoints: [], surveyPoints: [] };
+const ENFASIS_CTX = { from: null, to: null, generatedAt: '2026-09-19', today: '2026-09-19', objetivoDiario: null, degraded: false };
+
+named('test_enfasis_is_read_into_the_depurado_profile_and_the_row', () => {
+  const dep = depuracionOf([depInspector(1, { enfasis: ENFASIS_TEXTO })]);
+  const identity = buildIdentityIndex({ stickers: [], surveys: [], depuracion: dep });
+  assert.equal(identity.profiles.get('ced:1000001').enfasis, ENFASIS_TEXTO);
+  const row = rowsFor({ depuracion: dep }).rows[0];
+  assert.equal(row.enfasis, ENFASIS_TEXTO, 'the row carries the profile text untouched (accents and case kept)');
+});
+
+named('test_enfasis_missing_or_blank_in_the_depuracion_reads_as_an_empty_string', () => {
+  for (const extra of [{}, { enfasis: '' }, { enfasis: null }, { enfasis: undefined }]) {
+    const row = enfasisRowFor(extra);
+    assert.equal(row.enfasis, '', `depuracion without a usable enfasis (${JSON.stringify(extra)}) -> ''`);
+  }
+});
+
+named('test_enfasis_never_leaks_into_the_legacy_rows', () => {
+  const stickers = [stickerFor('1000001', 'Profesional 1')];
+  const legacy = rowsFor({ stickers }).rows[0];
+  assert.equal('enfasis' in legacy, false, 'a legacy (unseeded) row has no enfasis key at all');
+  const inactive = rowsFor({ stickers, depuracion: { ...depuracionOf([depInspector(1)]), activa: false } }).rows[0];
+  assert.equal('enfasis' in inactive, false, 'an inactive depuracion is the legacy path');
+});
+
+named('test_enfasis_column_only_when_seeded_and_right_after_tarjeta_profesional', () => {
+  assert.deepEqual(columnsFor('totales'), COLUMNS_TOTALES, 'legacy columns untouched');
+  assert.deepEqual(columnsFor('totales', { withEstado: true }).map((c) => c.key),
+    columnsFor('totales', { withEstado: true, withEnfasis: false }).map((c) => c.key), 'the flag defaults to off');
+  const withEnfasis = columnsFor('totales', { withEnfasis: true });
+  const keys = withEnfasis.map((c) => c.key);
+  assert.equal(keys.length, COLUMNS_TOTALES.length + 1);
+  assert.equal(keys[keys.indexOf('tarjetaProfesional') + 1], 'enfasis', 'right after "Tarjeta profesional"');
+  assert.equal(withEnfasis.find((c) => c.key === 'enfasis').label, 'Énfasis');
+  const both = columnsFor('totales', { withEstado: true, withEnfasis: true }).map((c) => c.key);
+  assert.deepEqual(both.slice(1, 6), ['cedula', 'tarjetaProfesional', 'enfasis', 'np', 'estadoSugerido']);
+  assert.equal(both[both.indexOf('tarjetaProfesional') + 1], 'enfasis');
+  assert.equal(both[both.indexOf('np') + 1], 'estadoSugerido', 'the estado column keeps its own place');
+  assert.equal(both.length, COLUMNS_TOTALES.length + 2);
+  assert.deepEqual(columnsFor('temporales', { withEnfasis: true }), COLUMNS_TEMPORALES, 'temporales sub-tab unchanged');
+  assert.ok(!COLUMNS_TOTALES.some((c) => c.key === 'enfasis'), 'the exported legacy array is never mutated');
+});
+
+named('test_enfasis_cell_escapes_and_follows_the_sin_dato_convention', () => {
+  const texto = cellHtml({ enfasis: ENFASIS_TEXTO }, 'enfasis', true);
+  assert.ok(texto.includes(ENFASIS_TEXTO), 'the real text is shown as is');
+  assert.equal(cellHtml({ enfasis: '' }, 'enfasis', true), 'Sin dato');
+  assert.equal(cellHtml({}, 'enfasis', true), 'Sin dato');
+  assert.equal(cellHtml({ enfasis: ENFASIS_TEXTO }, 'enfasis', false), DASH, 'masked while stickers load, like the other identity cells');
+  const hostil = cellHtml({ enfasis: ENFASIS_HOSTIL }, 'enfasis', true);
+  assert.doesNotMatch(hostil, /<script|<img|onerror=1>/, 'no raw tag survives');
+  assert.ok(hostil.includes('&lt;script&gt;') && hostil.includes('&quot;q&quot;') && hostil.includes('&amp;'), 'text escaped');
+  // the tooltip attribute cannot be broken out of either
+  const title = /title="([^"]*)"/.exec(hostil);
+  assert.ok(title && !/[<>]/.test(title[1]) && !title[1].includes("'"), 'the title attribute is fully escaped');
+});
+
+named('test_enfasis_cell_long_text_is_confined_by_a_truncating_class', () => {
+  const largo = cellHtml({ enfasis: ENFASIS_LARGO }, 'enfasis', true);
+  assert.ok(largo.includes(ENFASIS_LARGO), 'the whole text stays reachable (tooltip / copy), never sliced in JS');
+  assert.match(largo, /class="seg-enfasis"/);
+  const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+  const rule = /\.seg-enfasis\s*\{([^}]*)\}/.exec(css);
+  assert.ok(rule, 'styles.css defines .seg-enfasis');
+  assert.match(rule[1], /max-width\s*:/);
+  assert.match(rule[1], /overflow\s*:\s*hidden/);
+  assert.match(rule[1], /text-overflow\s*:\s*ellipsis/);
+  assert.match(rule[1], /white-space\s*:\s*nowrap/);
+});
+
+named('test_enfasis_xlsx_column_only_when_requested_legacy_sheet_untouched', () => {
+  const row = { ...enfasisReportRow({ enfasis: ENFASIS_TEXTO }), key: 'ced:1', estadoSugerido: 'activo' };
+  const legacyKeys = Object.keys(xlsxRowsFor([row], { subTab: 'totales' })[0]);
+  assert.equal(legacyKeys.includes('enfasis'), false, 'the legacy sheet carries no enfasis column');
+  assert.deepEqual(xlsxRowsFor([row]), xlsxRowsFor([row], { withEnfasis: false }), 'off by default');
+  const [seeded] = xlsxRowsFor([row], { subTab: 'totales', withEnfasis: true });
+  const keys = Object.keys(seeded);
+  assert.equal(seeded.enfasis, ENFASIS_TEXTO);
+  assert.equal(keys[keys.indexOf('tarjeta_profesional') + 1], 'enfasis', 'right after tarjeta_profesional');
+  assert.deepEqual(keys.filter((k) => k !== 'enfasis'), legacyKeys, 'every other column is exactly the legacy set, in order');
+  const [blank] = xlsxRowsFor([{ ...row, enfasis: undefined }], { withEnfasis: true });
+  assert.equal(blank.enfasis, '', 'a missing value is an empty cell, never "undefined"');
+  assert.deepEqual(xlsxRowsFor([row], { subTab: 'temporales', withEnfasis: true }), xlsxRowsFor([row], { subTab: 'temporales' }),
+    'the temporales sheet never carries it');
+  const [hostil] = xlsxRowsFor([{ ...row, enfasis: ENFASIS_HOSTIL }], { withEnfasis: true });
+  assert.equal(hostil.enfasis, ENFASIS_HOSTIL, 'a spreadsheet cell keeps the raw text (typed text cell, never HTML)');
+});
+
+named('test_enfasis_pdf_row_sits_next_to_the_tarjeta_profesional', () => {
+  const doc = buildProfessionalReportDocDefinition(enfasisReportRow({ enfasis: ENFASIS_TEXTO }), ENFASIS_POINTS, ENFASIS_CTX);
+  const text = JSON.stringify(doc.content);
+  assert.ok(text.includes('Énfasis') && text.includes(ENFASIS_TEXTO));
+  assert.ok(text.indexOf('Tarjeta profesional') < text.indexOf('Énfasis'), 'after the tarjeta row');
+  assert.ok(text.indexOf('Énfasis') < text.indexOf('Clase (P) / Código vigente'), 'before the next row');
+  const vacio = JSON.stringify(buildProfessionalReportDocDefinition(enfasisReportRow({ enfasis: '' }), ENFASIS_POINTS, ENFASIS_CTX).content);
+  assert.ok(vacio.includes('Énfasis'), 'a seeded row without énfasis still shows the row');
+  assert.match(vacio, /"Énfasis"[^\]]*"—"/, '... with the forced dash');
+  const hostil = JSON.stringify(buildProfessionalReportDocDefinition(enfasisReportRow({ enfasis: ENFASIS_HOSTIL }), ENFASIS_POINTS, ENFASIS_CTX).content);
+  assert.ok(hostil.includes('onerror=1'), 'pdfmake prints text, it never parses it: the value is kept verbatim');
+});
+
+named('test_enfasis_pdf_legacy_report_is_byte_identical', () => {
+  const sin = enfasisReportRow();
+  assert.equal('enfasis' in sin, false);
+  const text = JSON.stringify(buildProfessionalReportDocDefinition(sin, ENFASIS_POINTS, ENFASIS_CTX).content);
+  assert.ok(!text.includes('Énfasis'), 'a legacy row (no enfasis key) gets no Énfasis row');
+});
+
+named('test_enfasis_search_matches_the_text_like_the_other_name_fields', () => {
+  const row = { name: 'Xyz', cedula: '', tarjetaProfesional: '', np: 'P1', enfasis: ENFASIS_TEXTO };
+  assert.equal(matchesSearch(row, 'estructuras'), true);
+  assert.equal(matchesSearch(row, 'ESTRUCTURAS'), true, 'case-insensitive');
+  assert.equal(matchesSearch(row, 'especializacion'), true, 'accent-insensitive: the query lost its accent');
+  assert.equal(matchesSearch(row, 'especialización'), true, 'and the accented query matches too');
+  assert.equal(matchesSearch(row, '  Estructuras  '), true, 'trimmed query');
+  assert.equal(matchesSearch(row, 'geotecnia'), false, 'a different text never matches');
+  assert.equal(matchesSearch({ ...row, enfasis: '' }, 'estructuras'), false, 'blank énfasis matches nothing');
+  const legacy = { name: 'Xyz', cedula: '', tarjetaProfesional: '', np: 'P1' };
+  assert.equal(matchesSearch(legacy, 'estructuras'), false, 'a legacy row (no key) never throws and never matches');
+  assert.equal(matchesSearch({ ...row, enfasis: null }, 'estructuras'), false);
+  assert.equal(matchesSearch({ ...row, enfasis: ENFASIS_LARGO }, 'estructuras'), true, 'a 2,000-char text is searchable');
+  assert.equal(matchesSearch(row, '2026'), false, 'a >=3-digit query stays on the cédula/TP path (digits never search the text)');
+  const e = { name: 'A', cedula: '', enfasis: 'Nivel 2026 estructuras' };
+  assert.equal(matchesSearch(e, '2026'), false, 'consistent with np/name: digit runs are cédula/TP fragments');
+});
+
+named('test_enfasis_search_composes_with_visibleRowsFor_and_sorts_like_any_text_column', () => {
+  const dep = depuracionOf([
+    depInspector(1, { enfasis: 'Geotecnia' }), depInspector(2, { enfasis: 'Estructuras' }), depInspector(3),
+  ]);
+  const { rows } = rowsFor({ depuracion: dep });
+  assert.equal(visibleRowsFor(rows, { query: 'geotec' }).length, 1);
+  assert.equal(visibleRowsFor(rows, { query: 'geotec', estado: 'revisar' }).length, 1);
+  assert.deepEqual(sortRows(rows, 'enfasis', 'asc').map((r) => r.enfasis), ['', 'Estructuras', 'Geotecnia']);
+});
+
+named('test_enfasis_dom_wiring_passes_the_seeded_flag_to_the_table_and_the_export', () => {
+  const js = readFileSync(new URL('./seguimiento.js', import.meta.url), 'utf8');
+  const calls = js.match(/columnsFor\(subTab, \{[^}]*\}\)/g) || [];
+  assert.ok(calls.length >= 2 && calls.every((c) => /withEnfasis:\s*currentIdentity\.depuracionActiva/.test(c)),
+    'both columnsFor call sites (render + stillSortable) gate the column on the depurado base');
+  assert.match(js, /xlsxRowsFor\(sorted, \{ subTab: sheetSubTab, withEnfasis: currentIdentity\.depuracionActiva \}\)/);
+});
+
 if (phase11Failures.length) {
   throw new Error(`Phase 11 named tests failed (${phase11Failures.length}): ${phase11Failures.join(', ')}`);
 }

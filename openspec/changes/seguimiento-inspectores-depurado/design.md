@@ -514,6 +514,55 @@ block is served as `""`. Admins receive exactly what they received before (byte-
   `web/js/viewer-pii-contract.test.mjs` (viewer-facing modules never read the three fields; Seguimiento and the Stickers
   helpers tolerate them empty, absent or null). Mutation-checked with 11 backend and 4 frontend scratch mutants.
 
+### D-ENFASIS (2026-09-19): the registry's free-text "énfasis" is shown in Seguimiento (admin-only)
+
+**Request.** The owner asked to show "el énfasis, la variable de la API que indica el posgrado" in Seguimiento.
+
+**Findings (live data, 2026-09-19).**
+
+- The Atención Sismo STICKERS endpoint does NOT carry it: its `profesional` block has only `cedula`, `nombre`, `rango` and
+  `tarjetaProfesional` (3,035 live stickers, no enfasis-like key anywhere). Reading it from the stickers was therefore ruled out.
+- It exists in the technicians registry (the "tecnicos atencion sismo" export the publisher already reads for the `tarjeta_profesional`)
+  as the column `addlInfo.enfasis`, and in the visitados endpoint (`tecnicoVerificacion.enfasis`, NOT used here).
+- Coverage in the registry: 263 of 743 rows non-empty (35%); 79 of the 153 rows that have a `codigoInspector` (52%).
+- It is FREE TEXT with 189 distinct values ("Especialización en estructuras", "Estructuras", "Construccion", "Geotecnia", ...), NOT a
+  yes/no "posgrado" flag. The text is shown as is (trimmed); no boolean is derived from it, no KPI, no filter.
+
+**Decision.** Source = the REGISTRY, through the reference bundle, mirroring exactly how `tarjeta_profesional` flows through every layer:
+
+1. Publisher (`_fila_main`): `enfasis` = `_campo_id(row, "addlInfo.enfasis")` (the same helper as `telefono`/`codigo`: NaN/None/blank -> `""`, trimmed,
+   a lone float-artifact `.0` tail dropped, accents and case verbatim). Optional bundle field, `schema` stays 1.
+2. Parser: `EntradaReferencia.enfasis: str = ""` read with `_texto_opcional` (the publisher/parser agreement test now also covers it);
+   an already-published bundle without the key parses with `""`.
+3. Engine: `Perfil.enfasis` (main-only profile: the entry's text; roster and main: first-non-empty backfill in `_rellenar_desde_main`;
+   unification: added to `_CAMPOS_TEXTO_BACKFILL`, so a survivor without énfasis takes the first non-empty loser's in ascending `identidad_key` order and a
+   survivor with one keeps it). Emitted by `_perfil_a_dict` as `depuracion.inspectores[].enfasis`. The Firestore roster carries no énfasis and is not read for it.
+   New property `test_enfasis_output_only_ever_carries_a_text_of_a_main_entry` (INV-ENFASIS: moved, never invented) rides the existing corpus, and INV-1..INV-7 plus
+   order independence stay green (the generator derives the énfasis from the entry `id`, so no seed changes its universe).
+4. Frontend (`seguimiento.js`): `insp.enfasis` -> identity profile -> row (`enfasis` key present ONLY on rows seeded from the depurado base, so legacy rows,
+   the legacy PDF and the legacy XLSX are byte-identical). Column "Énfasis" (`enfasis`) right after "Tarjeta profesional" in Totales, gated exactly like "Estado sugerido"
+   (`columnsFor(..., { withEnfasis })`, fed with `currentIdentity.depuracionActiva`); cell = escaped text in a `.seg-enfasis` span (one ellipsis-truncated
+   line, `max-width: 24ch`, the whole escaped text in the tooltip; the table keeps scrolling inside `.table-scroll`, the toolbar is untouched) or "Sin dato";
+   searchable (name path of `matchesSearch`, accent- and case-insensitive; a >=3-digit query stays on the cédula/TP path); XLSX totales sheet gets `enfasis`
+   right after `tarjeta_profesional` (`xlsxRowsFor(..., { withEnfasis })`); the individual PDF gets an "Énfasis" row right after "Tarjeta profesional" (only for a
+   row that has the key; `—` when blank). Everything escaped; no KPI, no filter.
+
+**Viewers never receive it.** The `depuracion` block is admin-only (D-VIEWER-PII and the opt-in), and `enfasis` is NOT part of the sticker `inspector` block (the
+sticker payload is built without it). `test_viewer_response_never_contains_enfasis_anywhere` asserts that, for every `depuracion` query variant and both encodings, the raw
+viewer body contains neither the key `enfasis` nor the secret text; the admin control shows it only inside `depuracion.inspectores[]`, never in `evaluaciones[].inspector`.
+
+**Alternatives.** (a) The stickers endpoint: rejected, it does not carry the field. (b) The visitados endpoint (`tecnicoVerificacion.enfasis`): a possible later source
+if the registry's 35% coverage is not enough; it is a different population (only professionals with a visit) and needs its own join, so it is out of this change.
+(c) Deriving a "tiene posgrado" boolean: rejected, the values are free text ("Construccion" is not a posgrado) and a wrong boolean is worse than the text.
+
+**Rollout.** The bundle must be REPUBLISHED (`scripts/publicar_referencia_inspectores.py`) after this is deployed for the field to appear in production: until then
+every entry parses with `""` and the column shows "Sin dato". No flag, no schema bump.
+
+**Tests.** `test_publicar_referencia_inspectores.py` (`test_fila_main_enfasis_*`, `test_cli_reads_the_enfasis_column_from_csv_and_xlsx`, the publisher -> `parse_bundle` -> `depurar`
+round trip), `test_inspectores_referencia.py` (`test_parse_entrada_enfasis_tolerant_coercion`, old bundle), `test_inspectores_depuracion.py` (`test_enfasis_*`: main-only,
+roster and main, duplicate main, unification backfill, permutations, hostile and 2,400-char text), the property file, `test_stickers_atencionsismo_viewer_pii.py`, and the
+`test_enfasis_*` named tests in `web/js/seguimiento.test.mjs`. Mutation-checked with 8 backend and 10 frontend scratch mutants (all killed).
+
 ## Contradiction Register (efficiency extension)
 
 | # | Finding | Resolution |

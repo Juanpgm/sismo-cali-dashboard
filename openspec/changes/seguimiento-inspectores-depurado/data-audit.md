@@ -55,3 +55,14 @@ Columnas donde el campo sí puede leerse hoy de una fuente identificable, pero c
 ## Veredicto
 
 De las 19 columnas auditadas, solo **3 (≈16%)** — `np_fuente`, `n_stickers` y `tiene_sticker_valido` — son 100% viables hoy leyendo únicamente Firestore/la API en vivo, sin subir ni mantener actualizados Vercel o Fase 2 (y aun así, `tiene_sticker_valido` arrastra un bug de implementación por corregir sobre el filtro de `origen`). Sumando las que ya leen un campo en vivo pero con un riesgo de tipo/nombre por resolver en código (`activo`, `num_telefono`) la cifra sube a **5/19 (≈26%)**; el **74% restante (14/19)** depende de subir y mantener sincronizados los archivos estáticos Vercel/Fase 2, del CSV congelado del 12-sep-2026, o de referencias manuales de la propia auditoría.
+
+
+## Nota 2026-09-19 — énfasis (D-ENFASIS)
+
+El dueño pidió mostrar "el énfasis, la variable de la API que indica el posgrado". Verificado con datos en vivo:
+
+- El endpoint de STICKERS de Atención Sismo **no** lo trae: su bloque `profesional` solo tiene `cedula`, `nombre`, `rango` y `tarjetaProfesional` (3.035 stickers, ninguna llave parecida a `enfasis`).
+- Sí existe en el registro de técnicos (export "tecnicos atencion sismo", columna `addlInfo.enfasis`, la misma fuente de `addlInfo.matriculaProfesional`) y en el endpoint de visitados (`tecnicoVerificacion.enfasis`, no usado aquí).
+- Cobertura en el registro: 263 de 743 filas con valor (35%); 79 de las 153 filas que tienen `codigoInspector` (52%).
+- Es **texto libre** con 189 valores distintos ("Especialización en estructuras", "Estructuras", "Construccion", "Geotecnia", ...), no un indicador sí/no de posgrado. Se muestra tal cual (recortado); nunca se deriva un booleano.
+- Es dato de la referencia (Blob), no del endpoint en vivo: hay que **republicar el bundle** para que aparezca en producción. Solo lo recibe el rol admin (bloque `depuracion`).

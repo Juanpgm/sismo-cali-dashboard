@@ -55,6 +55,7 @@ NPS = ["P1", "P3", "7", "", "P7", "P2"]
 CORREOS = ["a@x.com", "b@import.local", "", "c@sismo.cali.gov.co", "d@y.com"]
 FECHAS = ["2026-08-19T10:00:00Z", "2026-08-21T10:00:00Z", "2026-07-01T00:00:00Z", None, "junk"]
 CREADOS = ["", "2024-01-01", "2023-05-05", "junk", "2025-12-31"]
+ENFASIS = ["", "Estructuras", "Geotecnia", "", "Especialización en estructuras", " "]
 
 
 def _generar(rnd: random.Random) -> dict:
@@ -64,8 +65,10 @@ def _generar(rnd: random.Random) -> dict:
             cedula_key=rnd.choice(CEDULAS), nombre_norm=rnd.choice(NOMBRES), np=rnd.choice(NPS),
             entidad=rnd.choice(ENTIDADES), codigo=rnd.choice(CODIGOS), pasos=(),
             no_persona=rnd.random() < 0.1, nombre="", telefono=str(rnd.randrange(10**7)),
-            creado_en=rnd.choice(CREADOS), id=str(rnd.randrange(1000)), correo=rnd.choice(CORREOS),
+            creado_en=rnd.choice(CREADOS), id=(entrada_id := str(rnd.randrange(1000))), correo=rnd.choice(CORREOS),
             tarjeta_profesional=str(rnd.randrange(100)),
+            # derived from the id: it adds NO draw, so every existing seed keeps its universe
+            enfasis=ENFASIS[int(entrada_id) % len(ENFASIS)],
         )
 
     roster = {}
@@ -484,3 +487,25 @@ def test_a_large_universe_sharing_one_codigo_stays_fast_and_reports_it_once():
     assert time.perf_counter() - t0 < 5.0  # generous: a canary against quadratic blow-ups only
     locales = [i for i in resultado.revision_manual if i["motivo"] == "codigo_duplicado_local"]
     assert len(locales) == 1 and len(locales[0]["identidad_keys"]) == 1500
+
+
+# ── D-ENFASIS: the free-text field is carried, never invented ────────────────
+
+
+def test_enfasis_output_only_ever_carries_a_text_of_a_main_entry(corpus):
+    """Backfill and unification MOVE an `enfasis`; nothing may ever make one up. The corpus must also
+    really exercise the field (some row ends with one, some without)."""
+    con_texto = sin_texto = 0
+
+    def comprobar(caso):
+        nonlocal con_texto, sin_texto
+        posibles = {e.enfasis for e in caso.entrada["referencia"].main}
+        for fila in caso.resultado.inspectores:
+            if fila["enfasis"]:
+                con_texto += 1
+                if fila["enfasis"] not in posibles:
+                    yield f"INV-ENFASIS: {fila['identidad_key']} carries {fila['enfasis']!r}, not in main {posibles}"
+            else:
+                sin_texto += 1
+    _ok(_fallos(corpus, comprobar))
+    assert con_texto > 50 and sin_texto > 50

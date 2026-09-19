@@ -50,6 +50,9 @@ class EntradaReferencia:
     id: str = ""
     correo: str = field(default="", repr=False)
     tarjeta_profesional: str = field(default="", repr=False)
+    # D-ENFASIS (optional, `schema` stays 1): the registry's free-text "énfasis" (`addlInfo.enfasis`),
+    # only present on `main` rows. An older bundle omits it and it defaults to "".
+    enfasis: str = ""
 
 
 @dataclass(frozen=True)
@@ -143,6 +146,7 @@ def _parse_entrada(raw: object) -> EntradaReferencia | None:
         id=_texto_opcional(raw.get("id")),
         correo=_texto_opcional(raw.get("correo")),
         tarjeta_profesional=_texto_opcional(raw.get("tarjeta_profesional")),
+        enfasis=_texto_opcional(raw.get("enfasis")),
     )
 
 

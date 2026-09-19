@@ -2197,6 +2197,13 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="sti
 }
 .seg-sort-btn.is-active { color: var(--accent); }
 .seg-caveat { cursor: help; color: var(--accent); }
+/* "Énfasis" is free text of any length (the registry has 189 distinct values, some long): one truncated
+   line inside the cell, the full text in the tooltip. The table already scrolls inside .table-scroll, so
+   this only keeps a single value from stretching the whole table on a phone. */
+.seg-enfasis {
+  display: inline-block; max-width: 24ch; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; vertical-align: bottom; text-align: left;
+}
 /* GRUPO-EXTERNOS row (Task 4.4/4.5): its <td> otherwise inherits
    .tipologia-table td's right-align/nowrap (meant for numeric columns),
    which right-aligns the toggle label and disconnects each detail <li>'s

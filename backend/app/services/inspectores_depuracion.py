@@ -259,6 +259,8 @@ class Perfil:
     entidad_vercel: str = ""  # only ever set by a Vercel match BY CÉDULA (D12)
     entidad_main: str = ""
     tarjeta_profesional: str = ""
+    # D-ENFASIS: free text from the registry (`main`), never derived; "" when the registry has none.
+    enfasis: str = ""
     num_telefono: str = ""
     correo_contacto: str = ""
     creado_en: str = ""
@@ -348,7 +350,7 @@ def _elegir_survivor(candidatos: list[Perfil]) -> Perfil:
 # an output field, and the survivor keeps its own date (a loser's date must not
 # rewrite the survivor's history).
 _CAMPOS_TEXTO_BACKFILL = (
-    "correo", "codigo", "tarjeta_profesional", "num_telefono", "correo_contacto",
+    "correo", "codigo", "tarjeta_profesional", "enfasis", "num_telefono", "correo_contacto",
     "rango_main", "id", "entidad_firestore", "entidad_vercel", "entidad_main",
 )
 
@@ -516,6 +518,7 @@ def _perfil_desde_main(entrada: EntradaReferencia, cedula_id: str) -> Perfil:
         correo=correo,
         codigo=_txt(entrada.codigo),
         tarjeta_profesional=_txt(entrada.tarjeta_profesional),
+        enfasis=_txt(entrada.enfasis),
         num_telefono=re.sub(r"\D", "", _txt(entrada.telefono), flags=re.ASCII),
         correo_contacto=correo.lower(),
         creado_en=_txt(entrada.creado_en),
@@ -537,6 +540,7 @@ def _rellenar_desde_main(perfil: Perfil, entrada: EntradaReferencia) -> None:
         ("correo", correo),
         ("codigo", _txt(entrada.codigo)),
         ("tarjeta_profesional", _txt(entrada.tarjeta_profesional)),
+        ("enfasis", _txt(entrada.enfasis)),
         ("num_telefono", re.sub(r"\D", "", _txt(entrada.telefono), flags=re.ASCII)),
         ("correo_contacto", correo.lower()),
         ("creado_en", _txt(entrada.creado_en)),
@@ -1317,6 +1321,7 @@ def _perfil_a_dict(perfil: Perfil) -> dict:
         "estado_sugerido": perfil.estado_sugerido,
         "fuente_dato": perfil.fuente_dato,
         "tarjeta_profesional": perfil.tarjeta_profesional,
+        "enfasis": perfil.enfasis,
         "num_telefono": perfil.num_telefono,
         "correo_contacto": perfil.correo_contacto,
         "no_persona": perfil.es_cuenta_no_persona,

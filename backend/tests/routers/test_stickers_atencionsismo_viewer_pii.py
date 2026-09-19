@@ -26,6 +26,7 @@ from starlette.responses import JSONResponse
 from app.auth.deps import current_claims
 from app.routers import stickers
 from app.routers import stickers_atencionsismo as router_mod
+from app.services.inspectores_referencia import EntradaReferencia, ReferenciaBundle
 from tests.routers.test_stickers import FAKE_CLAIMS_ADMIN, FAKE_CLAIMS_INSTITUCIONAL, FAKE_CLAIMS_VIEWER
 from tests.routers.test_stickers_atencionsismo_components import OPT_IN, Rig
 from tests.routers.test_stickers_atencionsismo_optin import (
@@ -560,3 +561,41 @@ def test_a_healthy_degraded_response_is_still_a_200_and_the_error_mapping_is_unt
     _force_degraded(rig, monkeypatch)
     resp = _get(rig)
     assert resp.status_code == 200 and resp.json()["degraded"] is True
+
+
+# ── D-ENFASIS: the registry's free-text `enfasis` is admin-only (depuracion) ─
+
+ENFASIS_SECRETO = "Especializacion en estructuras SECRETA-ENF-77"
+
+
+def _rig_with_enfasis(monkeypatch, *, admin: bool) -> Rig:
+    rig = _paths_rig(monkeypatch, admin=admin)
+    rig.referencia = ReferenciaBundle(
+        vercel=(), fase2=(), generado_en="2026-09-12", activa=True, motivo="", codigos_duplicados=(),
+        main=(EntradaReferencia(cedula_key=CEDULA, nombre_norm="beto secreto", np="P2", entidad="DAGRD",
+                                codigo="", pasos=(), no_persona=False, nombre="Beto Secreto",
+                                enfasis=ENFASIS_SECRETO),),
+        huella="h-enfasis",
+    )
+    return rig
+
+
+def test_admin_receives_enfasis_only_inside_the_depuracion_block(monkeypatch):
+    rig = _rig_with_enfasis(monkeypatch, admin=True)
+    body = _get(rig, OPT_IN).json()
+    persona = next(i for i in body["depuracion"]["inspectores"] if i["identificacion"] == CEDULA)
+    assert persona["enfasis"] == ENFASIS_SECRETO
+    # never in the sticker rows' inspector block, for anyone
+    for row in body["evaluaciones"]:
+        assert "enfasis" not in row["inspector"]
+
+
+@pytest.mark.parametrize("params", [OPT_IN, None, {"depuracion": "0"}])
+@pytest.mark.parametrize("ae", ["identity", "gzip"])
+def test_viewer_response_never_contains_enfasis_anywhere(monkeypatch, params, ae):
+    rig = _rig_with_enfasis(monkeypatch, admin=False)
+    resp = _get(rig, params, ae=ae)
+    assert resp.status_code == 200
+    assert "enfasis" not in resp.text
+    assert ENFASIS_SECRETO not in resp.text
+    assert "depuracion" not in resp.json()
