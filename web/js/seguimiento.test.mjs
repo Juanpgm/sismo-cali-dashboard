@@ -4087,6 +4087,31 @@ named('test_table_body_escapes_seeded_rows_and_keeps_mobile_hooks', () => {
   assert.match(js, /<label class="sticker-field asignacion-inline-field"[^>]*>\s*<span>Estado sugerido<\/span>/);
 });
 
+// The filter toolbar must stay inside the viewport on a phone. The layout itself
+// is verified in Chromium (see the render measurements); these source-level pins
+// guard the CSS contract and the markup hooks that contract depends on.
+named('test_filter_toolbar_is_bounded_on_phones_and_keeps_its_hooks', () => {
+  const js = readFileSync(new URL('./seguimiento.js', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  // Markup hooks the CSS relies on: same toolbar/field classes and control ids.
+  assert.match(js, /<div class="card-toolbar asignacion-filters">/);
+  for (const id of ['seg-from', 'seg-to', 'seg-chart-professional', 'seg-estado', 'seg-download', 'seg-report-selected', 'seg-report-mass']) {
+    assert.ok(js.includes(`id="${id}"`), `${id} keeps its id`);
+  }
+  assert.equal((js.match(/<label class="sticker-field asignacion-inline-field"/g) || []).length, 4, 'the four filter fields share one class');
+  // Every viewport: a select never outgrows its field and truncates its closed label.
+  assert.match(css, /\.seg-section \.asignacion-inline-field select\s*\{[^}]*min-width:\s*0[^}]*max-width:\s*100%[^}]*text-overflow:\s*ellipsis/);
+  // Phones: the toolbar is a wrapping ROW (never the shared column that made it multi-line
+  // and as wide as the widest select), fields stack label-over-control, buttons wrap.
+  const phone = css.match(/@media \(max-width: 640px\) \{\n\s*\.seg-section \.asignacion-filters[\s\S]*?\n\}\n/);
+  assert.ok(phone, 'the seguimiento phone toolbar block exists');
+  assert.match(phone[0], /\.seg-section \.asignacion-filters\s*\{[^}]*flex-direction:\s*row/);
+  assert.match(phone[0], /\.seg-section \.asignacion-inline-field\s*\{[^}]*flex:\s*1 1 100%[^}]*flex-direction:\s*column !important/);
+  assert.match(phone[0], /input,\s*\.seg-section \.asignacion-inline-field select\s*\{[^}]*width:\s*100%[^}]*min-width:\s*0/);
+  assert.match(phone[0], /\.sticker-action\s*\{[^}]*flex:\s*1 1 auto/);
+  assert.doesNotMatch(phone[0], /flex-wrap:\s*nowrap/);
+});
+
 // ══ Judgment-day fixes (fresh adversarial review of PR 10 parts 1+2) ═════════
 
 // C2: the padrón tile is the DEPURADO total ("independent of the range").

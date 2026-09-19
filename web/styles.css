@@ -2108,6 +2108,32 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="sti
    header buttons and the roster caveat mark are genuinely new. */
 .seg-section .asignacion-search { flex: 1 1 220px; margin: 0; }
 .seg-section .asignacion-filters { align-items: flex-end; }
+/* Filter toolbar must never outgrow its card. A native <select> sizes itself
+   to its LONGEST <option>, and the professional select now lists the whole
+   depurado base (hundreds of long names), so it asks for ~500px+. Constrain
+   every control to its container and truncate the closed select instead. */
+.seg-section .asignacion-inline-field { min-width: 0; max-width: 100%; }
+.seg-section .asignacion-inline-field select {
+  min-width: 0; max-width: 100%; text-overflow: ellipsis;
+}
+/* Phone: the shared @media rule turns every .card-toolbar into a column, and
+   `.seg-section .asignacion-filters` adds align-items:flex-end. A wrapping
+   column container is multi-line, so its single line is as wide as the widest
+   item (the 500px+ select) and flex-end pushed every control to that line's
+   far edge, past the viewport (unreachable: html/body clip overflow-x). Back
+   to a wrapping row, each field stacked label-over-control and bounded by the
+   toolbar; Desde/Hasta share a row, the selects take a full row, and the
+   three action buttons wrap onto as many rows as they need. */
+@media (max-width: 640px) {
+  .seg-section .asignacion-filters { flex-direction: row; align-items: stretch; }
+  .seg-section .asignacion-inline-field {
+    flex: 1 1 100%; flex-direction: column !important; align-items: stretch; gap: 5px !important;
+  }
+  .seg-section .asignacion-inline-field:has(input[type="date"]) { flex: 1 1 calc(50% - 4px); }
+  .seg-section .asignacion-inline-field input,
+  .seg-section .asignacion-inline-field select { width: 100%; min-width: 0; box-sizing: border-box; }
+  .seg-section .asignacion-filters .sticker-action { flex: 1 1 auto; text-align: center; }
+}
 /* #view-seguimiento is a direct flex item of .main-column (flex-direction:
    column) that also carries `margin: 0 auto` to center itself under
    max-width on wide screens. A flex item with an auto margin on the cross
