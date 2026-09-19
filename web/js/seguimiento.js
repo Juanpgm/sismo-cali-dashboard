@@ -2081,21 +2081,26 @@ export const DASH = '—';
 // pre-W9 COLUMNS): it is a row action, never sortable/exportable data — the
 // DOM section appends its own "Acciones" header/cell after whichever of
 // these two columnsFor() returns.
+//
+// `align` ('left' | 'right') is the column TYPE's alignment, applied to BOTH the <th> and the
+// <td> (see alignClassOf): text and identifier columns are left, numeric/date/time columns right.
+// A column without `align` is treated as right, so a newly added numeric column can never be missed.
 export const COLUMNS_TOTALES = [
-  { key: 'name', label: 'Nombre' },
-  { key: 'cedula', label: 'Cédula' },
+  { key: 'name', label: 'Nombre', align: 'left' },
+  { key: 'cedula', label: 'Cédula', align: 'left' },
   // W-TP (user request, 2026-09-15): tarjeta profesional is now shown
   // inline in the Seguimiento tab itself, not just in the per-professional
   // PDF report — see xlsxRowsFor's totales mapping and cellHtml below.
-  { key: 'tarjetaProfesional', label: 'Tarjeta profesional' },
-  { key: 'np', label: 'Clase (P)' },
-  { key: 'codigo', label: 'Código vigente' },
-  { key: 'stickersFase1', label: 'Sticker F1' },
-  { key: 'stickersFase2', label: 'Sticker F2' },
-  { key: 'surveyTotal', label: 'Ev. Survey' },
-  { key: 'activeDays', label: 'Días activos' },
-  { key: 'avgStickersPerDay', label: 'Stickers prom. diario' },
-  { key: 'barriosActivos', label: 'Barrios activos (7 d)' },
+  { key: 'tarjetaProfesional', label: 'Tarjeta profesional', align: 'left' },
+  { key: 'np', label: 'Clase (P)', align: 'left' },
+  { key: 'codigo', label: 'Código vigente', align: 'left' },
+  { key: 'stickersFase1', label: 'Sticker F1', align: 'right' },
+  { key: 'stickersFase2', label: 'Sticker F2', align: 'right' },
+  { key: 'surveyTotal', label: 'Ev. Survey', align: 'right' },
+  { key: 'activeDays', label: 'Días activos', align: 'right' },
+  { key: 'avgStickersPerDay', label: 'Stickers prom. diario', align: 'right' },
+  // A comma-joined list of neighbourhood names: text, not a number.
+  { key: 'barriosActivos', label: 'Barrios activos (7 d)', align: 'left' },
 ];
 
 // L10: the four hour-of-day columns (and daysSinceFirst) below now respect
@@ -2105,19 +2110,26 @@ export const COLUMNS_TOTALES = [
 // visible on hover, not just in this source comment.
 const RANGE_AWARE_HOUR_TITLE = 'Calculado sobre el rango Desde–Hasta activo (si hay uno seleccionado).';
 export const COLUMNS_TEMPORALES = [
-  { key: 'name', label: 'Nombre' },
-  { key: 'cedula', label: 'Cédula' },
-  { key: 'np', label: 'Clase (P)' },
-  { key: 'codigo', label: 'Código' },
-  { key: 'firstDate', label: 'Fecha primer registro' },
-  { key: 'lastDate', label: 'Fecha último registro' },
-  { key: 'activeDays', label: 'Días activo' },
-  { key: 'daysSinceFirst', label: 'Días desde 1ª actividad' },
-  { key: 'prevDayFirstMinutes', label: 'Hora 1er registro (día ant.)', title: RANGE_AWARE_HOUR_TITLE },
-  { key: 'prevDayLastMinutes', label: 'Hora últ. registro (día ant.)', title: RANGE_AWARE_HOUR_TITLE },
-  { key: 'avgFirstMinutes', label: 'Hora prom. 1er registro', title: RANGE_AWARE_HOUR_TITLE },
-  { key: 'avgLastMinutes', label: 'Hora prom. últ. registro', title: RANGE_AWARE_HOUR_TITLE },
+  { key: 'name', label: 'Nombre', align: 'left' },
+  { key: 'cedula', label: 'Cédula', align: 'left' },
+  { key: 'np', label: 'Clase (P)', align: 'left' },
+  { key: 'codigo', label: 'Código', align: 'left' },
+  { key: 'firstDate', label: 'Fecha primer registro', align: 'right' },
+  { key: 'lastDate', label: 'Fecha último registro', align: 'right' },
+  { key: 'activeDays', label: 'Días activo', align: 'right' },
+  { key: 'daysSinceFirst', label: 'Días desde 1ª actividad', align: 'right' },
+  { key: 'prevDayFirstMinutes', label: 'Hora 1er registro (día ant.)', align: 'right', title: RANGE_AWARE_HOUR_TITLE },
+  { key: 'prevDayLastMinutes', label: 'Hora últ. registro (día ant.)', align: 'right', title: RANGE_AWARE_HOUR_TITLE },
+  { key: 'avgFirstMinutes', label: 'Hora prom. 1er registro', align: 'right', title: RANGE_AWARE_HOUR_TITLE },
+  { key: 'avgLastMinutes', label: 'Hora prom. últ. registro', align: 'right', title: RANGE_AWARE_HOUR_TITLE },
 ];
+
+/** The alignment class of a column's <th> AND <td>, driven by `column.align` (see COLUMNS_TOTALES).
+ *  Anything but the exact string 'left' (missing, unknown, hostile) is right, the numeric default; the
+ *  result is one of two constants, so no column data ever reaches a class attribute. */
+export function alignClassOf(column) {
+  return column && column.align === 'left' ? 'seg-align-left' : 'seg-align-right';
+}
 
 /** Which column set a sub-tab shows — an unrecognized/missing `subTab` falls
  *  back to 'totales' (never throws, never renders a headerless table). */
@@ -2145,9 +2157,9 @@ export function columnsFor(subTab, { withEstado = false, withEnfasis = false, wi
   }
   return columns;
 }
-const COLUMN_ESTADO = { key: 'estadoSugerido', label: 'Estado sugerido' };
-const COLUMN_ENFASIS = { key: 'enfasis', label: 'Énfasis' };
-const COLUMN_PROFESION = { key: 'profesion', label: 'Profesión' };
+const COLUMN_ESTADO = { key: 'estadoSugerido', label: 'Estado sugerido', align: 'left' };
+const COLUMN_ENFASIS = { key: 'enfasis', label: 'Énfasis', align: 'left' };
+const COLUMN_PROFESION = { key: 'profesion', label: 'Profesión', align: 'left' };
 
 /** The sort state a sub-tab opens with (D4: header-click sorting is
  *  preserved when the CURRENT sort column still exists in the new sub-tab's
@@ -3111,7 +3123,7 @@ export function headerRowHtml(sortState, columns) {
     const active = sortState.column === c.key;
     const arrow = active ? (sortState.dir === 'asc' ? ' ▲' : ' ▼') : '';
     const title = c.title ? ` title="${escapeHtml(c.title)}"` : '';
-    return `<th scope="col"><button type="button" class="seg-sort-btn${active ? ' is-active' : ''}" data-seg-sort="${c.key}"${title}>${escapeHtml(c.label)}${arrow}</button></th>`;
+    return `<th scope="col" class="${alignClassOf(c)}"><button type="button" class="seg-sort-btn${active ? ' is-active' : ''}" data-seg-sort="${c.key}"${title}>${escapeHtml(c.label)}${arrow}</button></th>`;
   }).join('');
   return `${sortable}<th scope="col">Acciones</th>`;
 }
@@ -3167,8 +3179,14 @@ export function cellHtml(r, key, stickersLoaded) {
     case 'activeDays': return stk(r.activeDays);
     case 'avgStickersPerDay':
       return stickersLoaded ? (Number.isFinite(r.avgStickersPerDay) ? r.avgStickersPerDay : DASH) : DASH;
-    case 'barriosActivos':
-      return stk(escapeHtml((r.barriosActivos && r.barriosActivos.length) ? r.barriosActivos.join(', ') : 'Sin dato'));
+    case 'barriosActivos': {
+      // A comma-joined list that can be long: like Profesión/Énfasis, one ellipsis-truncated line (`.seg-barrios`)
+      // with the whole escaped list in the tooltip; the text and the ', ' separator are exactly what they were.
+      if (!stickersLoaded) return DASH;
+      if (!(r.barriosActivos && r.barriosActivos.length)) return 'Sin dato';
+      const texto = escapeHtml(r.barriosActivos.join(', '));
+      return `<span class="seg-barrios" title="${texto}">${texto}</span>`;
+    }
     case 'firstDate': return stk(escapeHtml(formatDateCell(r.firstDate)));
     case 'lastDate': return stk(escapeHtml(formatDateCell(r.lastDate)));
     case 'daysSinceFirst':
@@ -3214,9 +3232,9 @@ function rowHtml(r, stickersLoaded, isDegraded, columns, busy) {
   const reportTitle = isDegraded ? DEGRADED_TITLE
     : !stickersLoaded ? 'Esperando a que carguen los stickers…'
       : busy ? 'Generando exportación masiva…' : 'Descargar informe PDF de este profesional';
-  // The Énfasis and Profesión columns are free text: their <td> carries a class so it is left-aligned (the table
-  // right-aligns numeric columns), including the plain "Sin dato" cells that have no span. Other columns keep their bare <td>.
-  const cells = columns.map((c, i) => `<td${c.key === 'enfasis' || c.key === 'profesion' ? ' class="seg-td-text"' : ''}>${cellHtml(r, c.key, stickersLoaded)}${i === 0 ? caveat : ''}</td>`).join('');
+  // Every data <td> carries its column's alignment class (the same one as its <th>), including the plain "Sin dato"
+  // and dash cells that have no span. The trailing "Acciones" cell keeps its bare <td>.
+  const cells = columns.map((c, i) => `<td class="${alignClassOf(c)}">${cellHtml(r, c.key, stickersLoaded)}${i === 0 ? caveat : ''}</td>`).join('');
   return `<tr>${cells}<td><button type="button" class="sticker-action seg-report-btn" data-seg-report="${escapeHtml(r.key)}"${reportBlocked ? ' disabled' : ''} title="${escapeHtml(reportTitle)}">📄 Reporte</button></td></tr>`;
 }
 

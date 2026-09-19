@@ -2200,15 +2200,33 @@ body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="sti
 /* "Énfasis" is free text of any length (the registry has 189 distinct values, some long): one truncated
    line inside the cell, the full text in the tooltip. The table already scrolls inside .table-scroll, so
    this only keeps a single value from stretching the whole table on a phone. "Profesión" (D-PROFESION, also
-   registry free text: 59 distinct values with case/gender variants) shares the rule, so both truncate alike. */
+   registry free text: 59 distinct values with case/gender variants) and "Barrios activos" (a comma-joined
+   list of neighbourhood names) share the rule, so all three truncate alike. */
+.seg-barrios,
 .seg-profesion,
 .seg-enfasis {
   display: inline-block; max-width: 24ch; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; vertical-align: bottom; text-align: left;
 }
-/* The td holding it: .tipologia-table td right-aligns numeric columns, which pushed "Sin dato" and short values
-   to the right edge while only the long (capped) ones sat at the left. */
-.tipologia-table td.seg-td-text { text-align: left; }
+/* Column-type alignment, driven by `column.align` in seguimiento.js (headerRowHtml/rowHtml put the SAME class on a
+   column's <th> and <td>). .tipologia-table right-aligns every cell by default (meant for numbers), which left
+   identifiers and text (Nombre, Cédula, Clase, Código, Profesión, Énfasis, Barrios...) right-aligned beside
+   left-aligned neighbours: text and identifier columns are left, numeric/date/time columns right. The
+   `thead th.seg-align-right` selector ties the specificity of `.tipologia-table thead th:first-child` above
+   (declared earlier), so a right-aligned first column would not lose to it. "Acciones" carries no class and
+   keeps the table default. */
+.tipologia-table th.seg-align-left,
+.tipologia-table td.seg-align-left { text-align: left; }
+.tipologia-table th.seg-align-right,
+.tipologia-table thead th.seg-align-right,
+.tipologia-table td.seg-align-right { text-align: right; }
+/* The sort button is a block-level flex box, so `text-align` on the <th> cannot move it (it sat at the left of
+   every header). Spanning the cell and justifying its content puts the label and the ▲/▼ arrow on the same
+   side as the column's cells. Scoped to <th>: the "Externos agrupados" toggle reuses .seg-sort-btn inside a <td>. */
+.tipologia-table th.seg-align-left .seg-sort-btn,
+.tipologia-table th.seg-align-right .seg-sort-btn { width: 100%; }
+.tipologia-table th.seg-align-left .seg-sort-btn { justify-content: flex-start; text-align: left; }
+.tipologia-table th.seg-align-right .seg-sort-btn { justify-content: flex-end; text-align: right; }
 /* GRUPO-EXTERNOS row (Task 4.4/4.5): its <td> otherwise inherits
    .tipologia-table td's right-align/nowrap (meant for numeric columns),
    which right-aligns the toggle label and disconnects each detail <li>'s

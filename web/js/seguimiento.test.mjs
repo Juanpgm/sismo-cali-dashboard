@@ -3105,7 +3105,9 @@ console.log('buildMassReportDocDefinition: 110-professional perf sanity (page br
   assert.equal(cellHtml(row, 'codigo', true), 'B1');
   assert.equal(cellHtml(row, 'cedula', true), '123');
   assert.equal(cellHtml(row, 'tarjetaProfesional', true), 'TP-9988');
-  assert.equal(cellHtml(row, 'barriosActivos', true), 'San Antonio');
+  // Confined like Profesión/Énfasis (a truncating span with the full list as tooltip); the visible text is unchanged.
+  assert.equal(cellHtml(row, 'barriosActivos', true), '<span class="seg-barrios" title="San Antonio">San Antonio</span>');
+  assert.equal(cellHtml(row, 'barriosActivos', true).replace(/<[^>]*>/g, ''), 'San Antonio');
   assert.equal(cellHtml(row, 'activeDays', true), 3);
   assert.equal(cellHtml(row, 'firstDate', true), '2026-01-01');
   assert.equal(cellHtml(row, 'lastDate', true), '2026-01-05');
@@ -4835,6 +4837,7 @@ named('test_enfasis_cell_long_text_is_confined_by_a_truncating_class', () => {
 named('test_enfasis_cell_is_left_aligned_including_the_plain_sin_dato_cells', () => {
   // .tipologia-table td right-aligns numeric columns. The Énfasis cell is text: a blank one is the plain
   // string "Sin dato" (no span), so the alignment has to hang off the <td> itself, not off the capped span.
+  // (Every text column now carries `seg-align-left`, so the Énfasis cell is located by its column index.)
   const dep = depuracionOf([
     depInspector(1, { enfasis: ENFASIS_TEXTO }),
     depInspector(2, { enfasis: '' }),
@@ -4842,16 +4845,19 @@ named('test_enfasis_cell_is_left_aligned_including_the_plain_sin_dato_cells', ()
   const { rows } = rowsFor({ depuracion: dep });
   const columns = columnsFor('totales', { withEstado: true, withEnfasis: true });
   const html = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columns, false);
-  const cells = [...html.matchAll(/<td class="seg-td-text">([^<]*(?:<span[^>]*>[^<]*<\/span>)?)<\/td>/g)];
-  assert.equal(cells.length, 2, 'exactly the Énfasis cells (one per row) carry the text-alignment class');
-  assert.ok(cells.some((m) => m[1] === 'Sin dato'), 'the blank cell is covered too');
-  // Legacy table (no depurado base): no Énfasis column, so no td carries the class and the markup is unchanged.
+  const enfasisAt = columns.findIndex((c) => c.key === 'enfasis');
+  const cells = alignRowCells(html).map((tds) => tds[enfasisAt]);
+  assert.equal(cells.length, 2, 'one Énfasis cell per row');
+  assert.ok(cells.every((c) => c.cls === 'seg-align-left'), 'every Énfasis cell carries the left-alignment class');
+  assert.ok(cells.some((c) => c.inner === 'Sin dato'), 'the blank cell is covered too');
+  // Legacy table (no depurado base): no Énfasis column; it is harmonized by column type like every other table.
   const legacy = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columnsFor('totales'), false);
   assert.equal(legacy.includes('seg-td-text'), false);
+  assert.equal(legacy.includes('enfasis'), false);
   const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
-  const rule = /\.tipologia-table\s+td\.seg-td-text\s*\{([^}]*)\}/.exec(css);
-  assert.ok(rule, 'styles.css aligns the Énfasis cell');
-  assert.match(rule[1], /text-align\s*:\s*left/);
+  const rule = cssRulesMatching(css, '.tipologia-table td.seg-align-left')[0];
+  assert.ok(rule, 'styles.css aligns the text cells');
+  assert.match(rule.body, /text-align\s*:\s*left/);
 });
 
 named('test_enfasis_xlsx_column_only_when_requested_legacy_sheet_untouched', () => {
@@ -5041,14 +5047,18 @@ named('test_profesion_cell_is_left_aligned_including_the_plain_sin_dato_cells', 
   const { rows } = rowsFor({ depuracion: dep });
   const columns = columnsFor('totales', { withEstado: true, withProfesion: true });
   const html = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columns, false);
-  const cells = [...html.matchAll(/<td class="seg-td-text">([^<]*(?:<span[^>]*>[^<]*<\/span>)?)<\/td>/g)];
-  assert.equal(cells.length, 2, 'exactly the Profesión cells (one per row) carry the text-alignment class');
-  assert.ok(cells.some((m) => m[1] === 'Sin dato'), 'the blank cell is covered too');
-  const ambas = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false,
-    columnsFor('totales', { withEstado: true, withEnfasis: true, withProfesion: true }), false);
-  assert.equal([...ambas.matchAll(/<td class="seg-td-text">/g)].length, 4, 'Profesión and Énfasis cells, two rows each');
+  const profesionAt = columns.findIndex((c) => c.key === 'profesion');
+  const cells = alignRowCells(html).map((tds) => tds[profesionAt]);
+  assert.equal(cells.length, 2, 'one Profesión cell per row');
+  assert.ok(cells.every((c) => c.cls === 'seg-align-left'), 'every Profesión cell carries the left-alignment class');
+  assert.ok(cells.some((c) => c.inner === 'Sin dato'), 'the blank cell is covered too');
+  const todas = columnsFor('totales', { withEstado: true, withEnfasis: true, withProfesion: true });
+  const ambas = alignRowCells(SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, todas, false));
+  for (const key of ['profesion', 'enfasis']) {
+    assert.ok(ambas.every((tds) => tds[todas.findIndex((c) => c.key === key)].cls === 'seg-align-left'), `${key} cells, two rows each`);
+  }
   const legacy = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columnsFor('totales'), false);
-  assert.equal(legacy.includes('seg-td-text'), false, 'the legacy table markup is unchanged');
+  assert.equal(legacy.includes('seg-td-text'), false, 'the old ad-hoc text class is gone from the legacy table too');
 });
 
 named('test_profesion_table_renders_both_columns_in_order_and_independently', () => {
@@ -5059,7 +5069,9 @@ named('test_profesion_table_renders_both_columns_in_order_and_independently', ()
   const { rows } = rowsFor({ depuracion: dep });
   const columns = columnsFor('totales', { withEnfasis: true, withProfesion: true });
   const html = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columns, false);
-  const cells = [...html.matchAll(/<td class="seg-td-text">(.*?)<\/td>/g)].map((m) => m[1]);
+  const registryAt = [columns.findIndex((c) => c.key === 'profesion'), columns.findIndex((c) => c.key === 'enfasis')];
+  assert.deepEqual(registryAt.map((i) => columns[i].key), ['profesion', 'enfasis'], 'Profesión then Énfasis, in column order');
+  const cells = alignRowCells(html).flatMap((tds) => registryAt.map((i) => tds[i].inner));
   assert.equal(cells.length, 4, 'two text cells per row, in column order: Profesión then Énfasis');
   assert.ok(cells[0].includes('Arquitecto') && cells[1] === 'Sin dato', 'row 1: profesión set, énfasis blank');
   assert.ok(cells[2] === 'Sin dato' && cells[3].includes('Geotecnia'), 'row 2: profesión blank, énfasis set');
@@ -5224,7 +5236,7 @@ function temporalesSeeded() {
 
 named('test_temporales_header_renders_the_new_columns_in_order_and_sortable', () => {
   const html = SEG.headerRowHtml({ column: 'firstDate', dir: 'desc' }, columnsFor('temporales', TEMP_ALL));
-  const labels = [...html.matchAll(/<th scope="col">(?:<button[^>]*>(.*?)<\/button>|(Acciones))<\/th>/g)]
+  const labels = [...html.matchAll(/<th scope="col"(?: class="[^"]*")?>(?:<button[^>]*>(.*?)<\/button>|(Acciones))<\/th>/g)]
     .map((m) => (m[1] ?? m[2]).replace(/ [▲▼]$/, ''));
   assert.deepEqual(labels, ['Nombre', 'Cédula', 'Profesión', 'Énfasis', 'Clase (P)', 'Estado sugerido', 'Código',
     'Fecha primer registro', 'Fecha último registro', 'Días activo', 'Días desde 1ª actividad',
@@ -5244,7 +5256,7 @@ named('test_temporales_body_shows_registry_text_for_seeded_zero_activity_people'
   const html = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columns, false);
   const trs = html.split('<tr>').slice(1);
   assert.equal(trs.length, 5, 'every seeded person is a row, active or not');
-  const cellsOf = (tr) => [...tr.matchAll(/<td(?: class="seg-td-text")?>(.*?)<\/td>/g)].map((m) => m[1]);
+  const cellsOf = (tr) => [...tr.matchAll(/<td(?: class="[^"]*")?>(.*?)<\/td>/g)].map((m) => m[1]);
   const p1 = cellsOf(trs[0]);
   assert.equal(p1[0], 'Profesional 1'); assert.equal(p1[1], '1000001');
   assert.ok(p1[2].includes('Arquitecto') && p1[3].includes('Estructuras'), 'active person: profesión + énfasis');
@@ -5261,14 +5273,18 @@ named('test_temporales_body_shows_registry_text_for_seeded_zero_activity_people'
 named('test_temporales_body_text_cells_are_left_aligned_escaped_and_truncated', () => {
   const rows = temporalesSeeded();
   const html = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columnsFor('temporales', TEMP_ALL), false);
-  assert.equal([...html.matchAll(/<td class="seg-td-text">/g)].length, 10, 'Profesión and Énfasis cells only, two per row, five rows');
-  assert.ok([...html.matchAll(/<td class="seg-td-text">Sin dato<\/td>/g)].length >= 2, 'the plain "Sin dato" cells carry the alignment class too');
+  const temporalCols = columnsFor('temporales', TEMP_ALL);
+  const registryAt = [temporalCols.findIndex((c) => c.key === 'profesion'), temporalCols.findIndex((c) => c.key === 'enfasis')];
+  const textCells = alignRowCells(html).flatMap((tds) => registryAt.map((i) => tds[i]));
+  assert.equal(textCells.length, 10, 'Profesión and Énfasis cells, two per row, five rows');
+  assert.ok(textCells.every((c) => c.cls === 'seg-align-left'), 'every one of them is left-aligned');
+  assert.ok(textCells.filter((c) => c.inner === 'Sin dato').length >= 2, 'the plain "Sin dato" cells carry the alignment class too');
   for (const raw of ['<script', '<img', 'onerror=1>']) assert.ok(!html.includes(raw), `raw ${raw} never survives`);
   assert.ok(html.includes('&lt;script&gt;') && html.includes('&quot;q&quot;'), 'hostile text is escaped');
   assert.ok(html.includes(PROFESION_LARGA) && html.includes(ENFASIS_LARGO), 'long text stays whole (tooltip/copy), never sliced');
   assert.match(html, /class="seg-profesion"/); assert.match(html, /class="seg-enfasis"/);
   const legacy = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, COLUMNS_TEMPORALES, false);
-  assert.equal(legacy.includes('seg-td-text'), false, 'the legacy temporales markup has no text class');
+  assert.equal(legacy.includes('seg-td-text'), false, 'the old ad-hoc text class is gone from the legacy temporales markup too');
   assert.equal(legacy, SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columnsFor('temporales'), false), 'legacy path is byte-identical');
 });
 
@@ -5352,6 +5368,213 @@ named('test_temporales_xlsx_handler_feeds_the_flags_to_both_sheets_and_filtros_i
   assert.ok(/subTab:\s*sheetSubTab/.test(loop[0]) && /withEnfasis:\s*currentIdentity\.depuracionActiva/.test(loop[0]) && /withProfesion:\s*currentIdentity\.depuracionActiva/.test(loop[0]),
     'the temporales sheet gets the same flags as the totales sheet');
   assert.equal(xlsxFiltersSummary({ search: '', from: null, to: null, professionalName: '', estado: 'all' }), xlsxFiltersSummary({}), 'Filtros summary knows nothing of columns');
+});
+
+// ── column-type alignment (owner request 2026-09-19: "que todo quede armonizado") ──────────────────────
+// One principle, applied per column TYPE through `column.align`: text/identifier columns are left-aligned, numeric,
+// date and time columns right-aligned; the header follows its cells. Only classes/CSS change: no cell content.
+const ALIGN_LEFT_KEYS = ['name', 'cedula', 'tarjetaProfesional', 'profesion', 'enfasis', 'np', 'estadoSugerido', 'codigo', 'barriosActivos'];
+const ALIGN_FLAG_COMBOS = [0, 1, 2, 3, 4, 5, 6, 7].map((n) => ({ withEstado: Boolean(n & 1), withEnfasis: Boolean(n & 2), withProfesion: Boolean(n & 4) }));
+const ALIGN_ROW = {
+  key: 'ced:1', name: 'Ana Ruiz', cedula: '123', tarjetaProfesional: 'TP-9', profesion: 'Arquitecto', enfasis: 'Geotecnia', np: 'P2',
+  estadoSugerido: 'activo', codigo: 'B1', stickersFase1: 4, stickersFase2: 2, surveyTotal: 7, stickersTotal: 6, total: 13, activeDays: 3,
+  avgStickersPerDay: 1.5, barriosActivos: ['San Antonio', 'El Ingenio'], firstDate: '2026-01-01', lastDate: '2026-01-05', daysSinceFirst: 9,
+  prevDayFirstMinutes: 495, prevDayLastMinutes: 1035, avgFirstMinutes: 500, avgLastMinutes: 1000, rosterSourced: 0,
+};
+function alignHeaderCells(html) {
+  return [...html.matchAll(/<th scope="col"(?: class="([^"]*)")?>(.*?)<\/th>/g)].map((m) => ({ cls: m[1] || '', inner: m[2] }));
+}
+function alignRowCells(html) {
+  return html.split('<tr>').slice(1).map((tr) => [...tr.matchAll(/<td(?: class="([^"]*)")?>(.*?)<\/td>/g)].map((m) => ({ cls: m[1] || '', inner: m[2] })));
+}
+function cssRulesMatching(css, fragment) {
+  return [...css.replace(/\r\n/g, '\n').replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^}]*)\}/g)].filter((m) => m[1].includes(fragment)).map((m) => ({ selector: m[1].trim(), body: m[2] }));
+}
+
+named('test_align_every_column_object_declares_left_or_right_by_type', () => {
+  const every = [...COLUMNS_TOTALES, ...COLUMNS_TEMPORALES];
+  for (const flags of ALIGN_FLAG_COMBOS) for (const sub of ['totales', 'temporales']) every.push(...columnsFor(sub, flags));
+  for (const column of every) {
+    assert.ok(column.align === 'left' || column.align === 'right', `${column.key} declares an explicit align`);
+    assert.equal(column.align, ALIGN_LEFT_KEYS.includes(column.key) ? 'left' : 'right', `${column.key} follows its column type`);
+  }
+  const aligns = (cols) => Object.fromEntries(cols.map((c) => [c.key, c.align]));
+  assert.deepEqual(aligns(COLUMNS_TOTALES), {
+    name: 'left', cedula: 'left', tarjetaProfesional: 'left', np: 'left', codigo: 'left', stickersFase1: 'right', stickersFase2: 'right',
+    surveyTotal: 'right', activeDays: 'right', avgStickersPerDay: 'right', barriosActivos: 'left',
+  });
+  assert.deepEqual(aligns(COLUMNS_TEMPORALES), {
+    name: 'left', cedula: 'left', np: 'left', codigo: 'left', firstDate: 'right', lastDate: 'right', activeDays: 'right', daysSinceFirst: 'right',
+    prevDayFirstMinutes: 'right', prevDayLastMinutes: 'right', avgFirstMinutes: 'right', avgLastMinutes: 'right',
+  });
+  const all = columnsFor('totales', { withEstado: true, withEnfasis: true, withProfesion: true });
+  assert.deepEqual(aligns(all.filter((c) => ['profesion', 'enfasis', 'estadoSugerido'].includes(c.key))), { profesion: 'left', enfasis: 'left', estadoSugerido: 'left' });
+});
+
+named('test_align_class_defaults_to_right_for_unknown_or_invalid_columns_and_never_injects_markup', () => {
+  assert.equal(SEG.alignClassOf({ key: 'x', label: 'x' }), 'seg-align-right', 'a column without align defaults to right');
+  assert.equal(SEG.alignClassOf({ key: 'x', align: 'left' }), 'seg-align-left');
+  assert.equal(SEG.alignClassOf({ key: 'x', align: 'right' }), 'seg-align-right');
+  for (const bad of ['center', 'LEFT', '', null, undefined, 0, 1, {}, ['left'], '"><script>alert(1)</script>', 'left seg-evil']) {
+    assert.equal(SEG.alignClassOf({ key: 'x', align: bad }), 'seg-align-right', `invalid align ${JSON.stringify(bad)} falls back to right`);
+  }
+  for (const missing of [undefined, null, {}, 'name']) assert.equal(SEG.alignClassOf(missing), 'seg-align-right', 'a missing column never throws');
+  // An unknown column reaches the real render path with the default class, escaped and intact.
+  const unknown = [{ key: 'mystery', label: '<b>x</b>' }];
+  assert.equal(SEG.headerRowHtml({ column: 'none', dir: 'asc' }, unknown), '<th scope="col" class="seg-align-right"><button type="button" class="seg-sort-btn" data-seg-sort="mystery">&lt;b&gt;x&lt;/b&gt;</button></th><th scope="col">Acciones</th>');
+  assert.equal(SEG.tableBodyHtml([ALIGN_ROW], true, false, unknown, false).includes('<td class="seg-align-right"></td>'), true, 'an unknown key renders an empty right-aligned cell');
+});
+
+named('test_align_header_and_cell_carry_the_same_class_for_every_column_in_both_sub_tabs_and_all_flags', () => {
+  for (const sub of ['totales', 'temporales']) {
+    for (const flags of ALIGN_FLAG_COMBOS) {
+      const columns = columnsFor(sub, flags);
+      const header = alignHeaderCells(SEG.headerRowHtml({ column: 'name', dir: 'asc' }, columns));
+      const [row] = alignRowCells(SEG.tableBodyHtml([ALIGN_ROW], true, false, columns, false));
+      const label = `${sub} ${JSON.stringify(flags)}`;
+      assert.equal(header.length, columns.length + 1, `${label}: one th per column plus Acciones`);
+      assert.equal(row.length, columns.length + 1, `${label}: one td per column plus Acciones`);
+      columns.forEach((c, i) => {
+        const expected = `seg-align-${ALIGN_LEFT_KEYS.includes(c.key) ? 'left' : 'right'}`;
+        assert.equal(header[i].cls, expected, `${label}: th ${c.key}`);
+        assert.equal(row[i].cls, expected, `${label}: td ${c.key}`);
+        assert.equal(header[i].cls, row[i].cls, `${label}: ${c.key} header follows its cell`);
+      });
+      // "Acciones" keeps its current markup on both sides.
+      assert.deepEqual(header[columns.length], { cls: '', inner: 'Acciones' });
+      assert.equal(row[columns.length].cls, '');
+      assert.ok(row[columns.length].inner.startsWith('<button type="button" class="sticker-action seg-report-btn"'));
+    }
+  }
+});
+
+named('test_align_legacy_tables_get_the_harmonization_too_and_the_old_text_class_is_gone', () => {
+  const ordered = (cols) => alignHeaderCells(SEG.headerRowHtml({ column: 'name', dir: 'asc' }, cols)).slice(0, -1)
+    .map((h, i) => `${cols[i].label}=${h.cls.replace('seg-align-', '')}`);
+  assert.deepEqual(ordered(COLUMNS_TOTALES), ['Nombre=left', 'Cédula=left', 'Tarjeta profesional=left', 'Clase (P)=left', 'Código vigente=left',
+    'Sticker F1=right', 'Sticker F2=right', 'Ev. Survey=right', 'Días activos=right', 'Stickers prom. diario=right', 'Barrios activos (7 d)=left']);
+  assert.deepEqual(ordered(COLUMNS_TEMPORALES), ['Nombre=left', 'Cédula=left', 'Clase (P)=left', 'Código=left', 'Fecha primer registro=right',
+    'Fecha último registro=right', 'Días activo=right', 'Días desde 1ª actividad=right', 'Hora 1er registro (día ant.)=right',
+    'Hora últ. registro (día ant.)=right', 'Hora prom. 1er registro=right', 'Hora prom. últ. registro=right']);
+  assert.equal(columnsFor('totales'), COLUMNS_TOTALES, 'the legacy path still returns the very same constant');
+  assert.equal(columnsFor('temporales'), COLUMNS_TEMPORALES);
+  const js = readFileSync(new URL('./seguimiento.js', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+  assert.equal(js.includes('seg-td-text') || css.includes('seg-td-text'), false, 'the ad-hoc seg-td-text class was replaced by the per-column align class');
+});
+
+named('test_align_header_markup_keeps_sort_button_arrow_and_title_and_acciones_is_untouched', () => {
+  const html = SEG.headerRowHtml({ column: 'stickersFase1', dir: 'desc' }, COLUMNS_TOTALES);
+  assert.ok(html.includes('<th scope="col" class="seg-align-right"><button type="button" class="seg-sort-btn is-active" data-seg-sort="stickersFase1">Sticker F1 ▼</button></th>'), 'active numeric header keeps the arrow inside the button');
+  assert.ok(html.includes('<th scope="col" class="seg-align-left"><button type="button" class="seg-sort-btn" data-seg-sort="name">Nombre</button></th>'));
+  assert.ok(html.endsWith('<th scope="col">Acciones</th>'), 'Acciones header markup is byte-identical');
+  const temporal = SEG.headerRowHtml({ column: 'avgLastMinutes', dir: 'asc' }, COLUMNS_TEMPORALES);
+  assert.ok(temporal.includes('<th scope="col" class="seg-align-right"><button type="button" class="seg-sort-btn is-active" data-seg-sort="avgLastMinutes" title="Calculado sobre el rango Desde–Hasta activo (si hay uno seleccionado).">Hora prom. últ. registro ▲</button></th>'), 'the range-aware tooltip survives');
+});
+
+named('test_align_cell_content_is_unchanged_only_classes_differ', () => {
+  const all = { withEstado: true, withEnfasis: true, withProfesion: true };
+  const golden = {
+    name: 'Ana Ruiz', cedula: '123', tarjetaProfesional: 'TP-9',
+    profesion: '<span class="seg-profesion" title="Arquitecto">Arquitecto</span>', enfasis: '<span class="seg-enfasis" title="Geotecnia">Geotecnia</span>',
+    np: 'P2', estadoSugerido: 'activo', codigo: 'B1', stickersFase1: 4, stickersFase2: 2, surveyTotal: 7, activeDays: 3, avgStickersPerDay: 1.5,
+    barriosActivos: '<span class="seg-barrios" title="San Antonio, El Ingenio">San Antonio, El Ingenio</span>',
+    firstDate: '2026-01-01', lastDate: '2026-01-05', daysSinceFirst: 9,
+    prevDayFirstMinutes: '08:15', prevDayLastMinutes: '17:15', avgFirstMinutes: '08:20', avgLastMinutes: '16:40',
+  };
+  const keys = new Set([...columnsFor('totales', all), ...columnsFor('temporales', all)].map((c) => c.key));
+  assert.deepEqual([...keys].sort(), Object.keys(golden).sort());
+  for (const key of keys) assert.equal(cellHtml(ALIGN_ROW, key, true), golden[key], `cell ${key}`);
+  // Masked while the stickers load: every sticker-derived cell is the dash, Survey stays real.
+  for (const key of keys) assert.equal(cellHtml(ALIGN_ROW, key, false), key === 'name' ? 'Ana Ruiz' : key === 'surveyTotal' ? 7 : DASH, `masked ${key}`);
+  // The rendered <td> holds exactly cellHtml (plus the roster caveat on the first column): the class is the only addition.
+  const caveat = { ...ALIGN_ROW, rosterSourced: 2 };
+  for (const sub of ['totales', 'temporales']) {
+    const columns = columnsFor(sub, all);
+    const [cells] = alignRowCells(SEG.tableBodyHtml([caveat], true, false, columns, false));
+    columns.forEach((c, i) => {
+      const expected = String(cellHtml(caveat, c.key, true)) + (i === 0 ? ' <span class="seg-caveat" title="Identidad por roster, aproximada — 2 sticker(s) sin verificar contra esta evaluación.">⚠</span>' : '');
+      assert.equal(cells[i].inner, expected, `${sub} td ${c.key}`);
+    });
+  }
+  // XLSX rows: byte-identical key order and values.
+  const xlsxRow = { ...ALIGN_ROW, celular: '300', correo: 'a@b.co', entidad: 'X' };
+  assert.equal(JSON.stringify(xlsxRowsFor([xlsxRow], { subTab: 'totales', ...all })),
+    '[{"profesional":"Ana Ruiz","cedula":"123","tarjeta_profesional":"TP-9","profesion":"Arquitecto","enfasis":"Geotecnia","clase_p":"P2","codigo_vigente":"B1","entidad":"X","stickers_fase1":4,"stickers_fase2":2,"stickers_total":6,"evaluaciones_survey":7,"total":13,"primer_registro":"2026-01-01","ultimo_registro":"2026-01-05","dias_activos":3,"promedio_por_dia":0,"stickers_promedio_diario":1.5,"barrios_activos_7d":"San Antonio, El Ingenio","stickers_por_roster":0,"fase":"","estado_sugerido":"activo","fuente_dato":""}]');
+  assert.equal(JSON.stringify(xlsxRowsFor([xlsxRow], { subTab: 'temporales', ...all })),
+    '[{"profesional":"Ana Ruiz","cedula":"123","profesion":"Arquitecto","enfasis":"Geotecnia","clase_p":"P2","codigo":"B1","fecha_primer_registro":"2026-01-01","fecha_ultimo_registro":"2026-01-05","dias_activo":3,"dias_desde_primera_actividad":9,"hora_1er_registro_dia_ant":"08:15","hora_ult_registro_dia_ant":"17:15","hora_prom_1er_registro":"08:20","hora_prom_ult_registro":"16:40"}]');
+  assert.equal(JSON.stringify(xlsxRowsFor([xlsxRow], { subTab: 'totales' })),
+    '[{"profesional":"Ana Ruiz","cedula":"123","tarjeta_profesional":"TP-9","clase_p":"P2","codigo_vigente":"B1","entidad":"X","stickers_fase1":4,"stickers_fase2":2,"stickers_total":6,"evaluaciones_survey":7,"total":13,"primer_registro":"2026-01-01","ultimo_registro":"2026-01-05","dias_activos":3,"promedio_por_dia":0,"stickers_promedio_diario":1.5,"barrios_activos_7d":"San Antonio, El Ingenio","stickers_por_roster":0,"fase":"","estado_sugerido":"activo","fuente_dato":""}]');
+});
+
+named('test_align_hostile_and_empty_values_stay_escaped_and_the_empty_state_row_is_untouched', () => {
+  const evil = { ...ALIGN_ROW, name: '<img src=x onerror=alert(1)>', profesion: PROFESION_HOSTIL, enfasis: ENFASIS_HOSTIL, barriosActivos: ['<script>1</script>', 'a"b'] };
+  const columns = columnsFor('totales', { withEstado: true, withEnfasis: true, withProfesion: true });
+  const html = SEG.tableBodyHtml([evil], true, false, columns, false);
+  for (const raw of ['<img', '<script', 'onerror=1>']) assert.ok(!html.includes(raw), `raw ${raw} never survives`);
+  assert.equal(alignRowCells(html)[0].length, columns.length + 1, 'hostile text never breaks the cell structure');
+  assert.equal(SEG.tableBodyHtml([], true, false, COLUMNS_TOTALES, false),
+    '<tr><td colspan="12" class="eval-empty">Ningún profesional coincide con los filtros aplicados.</td></tr>', 'the empty-state row has no alignment class');
+  assert.equal(SEG.headerRowHtml({ column: 'name', dir: 'asc' }, []), '<th scope="col">Acciones</th>', 'no columns: only Acciones');
+});
+
+named('test_align_group_row_keeps_its_own_layout', () => {
+  const html = grupoExternosRowHtml({ n_colapsados: 2, detalle: [] }, 12);
+  assert.equal(html, '<tr class="seg-grupo-externos-row"><td colspan="12"><button type="button" class="seg-sort-btn" id="seg-externos-toggle" data-seg-externos-toggle aria-expanded="false">▸ Externos agrupados (2)</button><ul class="seg-externos-detail" id="seg-externos-detail" hidden></ul></td></tr>');
+  assert.equal(html.includes('seg-align'), false);
+  const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+  assert.match(css.replace(/\r\n/g, '\n'), /\.seg-grupo-externos-row td\s*\{\s*text-align:\s*left;\s*white-space:\s*normal;\s*\}/, 'the group row override is untouched');
+  // The header-button rules must not leak onto the group row's toggle (it lives in a <td>, not a <th>).
+  for (const rule of cssRulesMatching(css, '.seg-sort-btn')) {
+    if (rule.selector.includes('seg-align')) assert.ok(rule.selector.split(',').every((s) => /\bth\b/.test(s)), `header-button rule stays th-scoped: ${rule.selector}`);
+  }
+});
+
+named('test_align_css_contract_rules_for_both_classes_and_the_header_button', () => {
+  const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+  const left = cssRulesMatching(css, '.tipologia-table td.seg-align-left');
+  const right = cssRulesMatching(css, '.tipologia-table td.seg-align-right');
+  assert.equal(left.length, 1, 'one rule aligns the left cells');
+  assert.equal(right.length, 1, 'one rule aligns the right cells');
+  assert.match(left[0].body, /text-align\s*:\s*left/); assert.match(right[0].body, /text-align\s*:\s*right/);
+  assert.ok(left[0].selector.includes('.tipologia-table th.seg-align-left'), 'left rule covers the header too');
+  assert.ok(right[0].selector.includes('.tipologia-table th.seg-align-right'), 'right rule covers the header too');
+  // `.tipologia-table thead th:first-child` (0,2,2) left-aligns the first header; the right rule must be at least as specific
+  // and come later, so a right-aligned first column could never lose to it.
+  assert.ok(right[0].selector.includes('.tipologia-table thead th.seg-align-right'), 'right header rule outranks thead th:first-child');
+  assert.ok(css.indexOf('.tipologia-table thead th.seg-align-right') > css.indexOf('.tipologia-table thead th:first-child'), 'and comes after it');
+  const btnLeft = cssRulesMatching(css, '.tipologia-table th.seg-align-left .seg-sort-btn');
+  const btnRight = cssRulesMatching(css, '.tipologia-table th.seg-align-right .seg-sort-btn');
+  assert.ok(btnLeft.length >= 1 && btnRight.length >= 1, 'the sort button follows the header alignment');
+  const bodyOf = (rules) => rules.map((r) => r.body).join(';');
+  assert.match(bodyOf(btnLeft), /justify-content\s*:\s*flex-start/);
+  assert.match(bodyOf(btnRight), /justify-content\s*:\s*flex-end/);
+  // The button is a block-level flex box: `text-align` on the th cannot move it, so it must span the cell.
+  const widthRule = cssRulesMatching(css, '.tipologia-table th').find((r) => /\.seg-sort-btn/.test(r.selector) && /width\s*:\s*100%/.test(r.body));
+  assert.ok(widthRule, 'the header button spans its th so justify-content can place label and arrow');
+  assert.match(css, /\.seg-sort-btn\s*\{[^}]*white-space:\s*nowrap/, 'the base button rule is intact');
+});
+
+named('test_barrios_cell_is_confined_like_the_other_free_text_columns_and_keeps_its_text_and_separator', () => {
+  const lista = ['San Antonio', 'El Ingenio'];
+  assert.equal(cellHtml({ barriosActivos: lista }, 'barriosActivos', true), '<span class="seg-barrios" title="San Antonio, El Ingenio">San Antonio, El Ingenio</span>');
+  assert.equal(cellHtml({ barriosActivos: ['Solo'] }, 'barriosActivos', true), '<span class="seg-barrios" title="Solo">Solo</span>');
+  assert.equal(cellHtml({ barriosActivos: [] }, 'barriosActivos', true), 'Sin dato');
+  assert.equal(cellHtml({}, 'barriosActivos', true), 'Sin dato');
+  assert.equal(cellHtml({ barriosActivos: null }, 'barriosActivos', true), 'Sin dato');
+  assert.equal(cellHtml({ barriosActivos: lista }, 'barriosActivos', false), DASH, 'masked while stickers load');
+  const muchos = Array.from({ length: 40 }, (_, i) => `Barrio número ${i}`);
+  const largo = cellHtml({ barriosActivos: muchos }, 'barriosActivos', true);
+  assert.ok(largo.includes(muchos.join(', ')), 'the whole list stays reachable (tooltip and copy), never sliced');
+  assert.equal(largo.replace(/<[^>]*>/g, ''), muchos.join(', '), 'visible text is exactly the old comma-joined list');
+  const hostil = cellHtml({ barriosActivos: ['<img src=x onerror=1>', 'a"b'] }, 'barriosActivos', true);
+  assert.ok(!hostil.includes('<img') && hostil.includes('&lt;img') && hostil.includes('a&quot;b'), 'escaped in the text and in the title');
+  const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+  const [rule] = cssRulesMatching(css, '.seg-barrios');
+  assert.ok(rule, 'styles.css defines .seg-barrios');
+  for (const cls of ['.seg-profesion', '.seg-enfasis']) assert.ok(rule.selector.includes(cls), `${cls} shares the truncation rule, so all three truncate alike`);
+  assert.match(rule.body, /max-width\s*:\s*24ch/); assert.match(rule.body, /overflow\s*:\s*hidden/);
+  assert.match(rule.body, /text-overflow\s*:\s*ellipsis/); assert.match(rule.body, /white-space\s*:\s*nowrap/);
 });
 
 if (phase11Failures.length) {

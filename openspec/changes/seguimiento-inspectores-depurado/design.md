@@ -591,7 +591,7 @@ roster and main, duplicate main, unification backfill, permutations, hostile and
    `slice(1, 6)` order) pin what `withEnfasis` adds, so folding two columns under it would have meant rewriting them; two flags also keep the columns independently
    switchable. The only existing test edited is the DOM-wiring regex of the XLSX call (it pinned the whole argument object on one line; it now checks `subTab` and `withEnfasis`
    inside the call, and the new test checks `withProfesion`). Cell = escaped text in a `.seg-profesion` span (same rule as `.seg-enfasis` through a shared selector list in
-   `styles.css`: one ellipsis-truncated line, `max-width: 24ch`, the whole escaped text in the tooltip) or "Sin dato"; its `<td>` carries `seg-td-text` (left-aligned, so the
+   `styles.css`: one ellipsis-truncated line, `max-width: 24ch`, the whole escaped text in the tooltip) or "Sin dato"; its `<td>` carries `seg-align-left` (D-ALIGN, 2026-09-19: every column has an `align` and the same class goes on its `<th>` and `<td>`; text and identifier columns are left-aligned, numeric, date and time columns right-aligned; it replaced the ad-hoc `seg-td-text`), so the
    blank cells align too); searchable (name path of `matchesSearch`, accent- and case-insensitive; a >=3-digit query stays on the cédula/TP path); XLSX totales sheet gets
    `profesion` right after `tarjeta_profesional` (before `enfasis`; `xlsxRowsFor(..., { withProfesion })`); the individual PDF gets a "Profesión" row right before "Énfasis"
    (only for a row that has the key; `—` when blank). Everything escaped; the legacy table, XLSX and PDF are byte-identical.
