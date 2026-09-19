@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.auth.deps import require_role
+from app.auth.roles import role_from_claims
 from app.credentials import clients as credentials
 from app.routers import stickers
 from app.services import atencionsismo, fechas_es_co
@@ -262,7 +263,25 @@ class DepuracionCache:
             or (now - self._referencia_at) > REFERENCIA_CACHE_TTL_SECONDS
         )
         if stale:
-            self._referencia = self._cargar_referencia()
+            nueva = self._cargar_referencia()
+            # WARNING fix (adversarial review): `cargar_referencia()` never
+            # raises — a transient failure (Blob network blip) degrades to
+            # `ReferenciaBundle.vacia()` (`activa=False`), which would
+            # otherwise unconditionally REPLACE a last-known-good bundle
+            # here. `get_or_compute` below keys its recompute decision off
+            # `referencia.activa`, so that replacement would immediately
+            # recompute `depurar()` against an EMPTY reference and DISCARD
+            # the previously-good `depuracion` result, exactly the
+            # regression spec's "Unavailable reference source degrades to
+            # last-good cache" scenario forbids. Keep serving the
+            # last-known-good bundle instead; only ever adopt a degraded one
+            # when there was no good bundle to fall back on. `_referencia_at`
+            # still advances either way, so this doesn't retry
+            # `cargar_referencia()` on every single request during an
+            # outage — it still respects the 30-min TTL cadence.
+            tenia_buena = self._referencia is not None and self._referencia.activa
+            if not (nueva.activa is False and tenia_buena):
+                self._referencia = nueva
             self._referencia_at = now
         assert self._referencia is not None
         return self._referencia
@@ -277,7 +296,16 @@ class DepuracionCache:
         """`compute(referencia)` builds a fresh `Depuracion` from the
         CURRENT reference bundle — invoked only when the sticker payload's
         identity, `hoy`, or `referencia.generado_en`/`activa` changed since
-        the last call."""
+        the last call.
+
+        WARNING fix (adversarial review): `compute(...)` runs a Firestore
+        roster/survey scan plus `depuracion_svc.depurar()`'s O(n×m) rapidfuzz
+        loop — potentially hundreds of ms. It now runs OUTSIDE `self._lock`
+        so a concurrent `/stickers-atencionsismo` request (including one
+        that would have hit the `unchanged` fast path) is never blocked
+        behind it; the lock only protects the referencia TTL check above and
+        the cached-result compare/write below, mirroring
+        `EvaluacionesCache`'s own concurrency story."""
         with self._lock:
             referencia = self._referencia_actual()
             unchanged = (
@@ -290,13 +318,30 @@ class DepuracionCache:
             if unchanged:
                 assert self._result is not None
                 return self._result
-            self._result = compute(referencia)
+
+        result = compute(referencia)
+
+        with self._lock:
+            self._result = result
             self._src = evaluaciones
             self._hoy = hoy
             return self._result
 
 
-def build_payload(db: Any, evaluaciones_cache: stickers.EvaluacionesCache) -> list[dict[str, Any]]:
+def build_payload(
+    db: Any,
+    evaluaciones_cache: stickers.EvaluacionesCache,
+    *,
+    roster_out: dict[str, dict[str, str]] | None = None,
+) -> list[dict[str, Any]]:
+    """`roster_out` (WARNING fix, adversarial review): when given, this
+    function fills it IN PLACE with the same `roster_by_cedula` map this
+    call's own `stickers.inspector_profiles(db)` scan already produced — a
+    caller that also needs the roster for `depuracion_svc.depurar()`
+    (`get_stickers_atencionsismo`'s `_compute`) can reuse it instead of
+    triggering a second, redundant `inspectores` collection scan. Optional
+    and additive: every existing caller that omits it keeps the exact same
+    `list[dict]` return value/type."""
     user, password = atencionsismo.credentials_from_env()
 
     async def _pull() -> list[dict]:
@@ -403,6 +448,10 @@ def build_payload(db: Any, evaluaciones_cache: stickers.EvaluacionesCache) -> li
     roster_map, roster_by_cedula = roster_result
     firestore_evals = firestore_result
 
+    if roster_out is not None:
+        roster_out.clear()
+        roster_out.update(roster_by_cedula)
+
     if evaluaciones_cache.degraded:
         # design D4: "si Firestore falla, el fetch falla completo" — a
         # Blob-restored evaluaciones payload has `inspector.np`,
@@ -428,8 +477,16 @@ def get_stickers_atencionsismo(
     cache: stickers.EvaluacionesCache = request.app.state.stickers_atencionsismo_cache
     evaluaciones_cache: stickers.EvaluacionesCache = request.app.state.stickers_evaluaciones_cache
     db = credentials.sismo().firestore
+    # WARNING fix (adversarial review, part a): filled in place by
+    # `build_payload` ONLY when it actually runs a fresh fetch (`cache.
+    # get_or_fetch` below calls it only while stale) — `_compute` reuses it
+    # instead of re-scanning `inspectores` via `stickers.inspector_profiles`
+    # a second time in the SAME request.
+    roster_by_cedula_holder: dict[str, dict[str, str]] = {}
     try:
-        payload = cache.get_or_fetch(lambda: build_payload(db, evaluaciones_cache))
+        payload = cache.get_or_fetch(
+            lambda: build_payload(db, evaluaciones_cache, roster_out=roster_by_cedula_holder)
+        )
     except HTTPException:
         raise
     except (atencionsismo.ApiUnavailableError, atencionsismo.ApiCredentialsError,
@@ -456,12 +513,32 @@ def get_stickers_atencionsismo(
         "ok": True, "fuente": "atencionsismo", "evaluaciones": payload, "degraded": cache.degraded,
     }
 
-    if _depuracion_habilitada():
+    # CRITICAL (adversarial review): `depuracion` carries full PII
+    # (cédula/tarjeta_profesional/num_telefono/correo_contacto/no_persona) —
+    # this route's own `require_role("admin", "viewer")` above lets ANY
+    # authenticated @cali.gov.co account through as "viewer"
+    # (`app.auth.roles.role_from_claims`), not a curated admin allowlist.
+    # The rest of the payload stays available to both roles (unchanged); only
+    # this block is gated to `admin` so a viewer's response is exactly the
+    # same shape as the flag-off case (key absent entirely).
+    if _depuracion_habilitada() and role_from_claims(claims) == "admin":
         depuracion_cache: DepuracionCache = request.app.state.depuracion_cache
         hoy = datetime.now(fechas_es_co.BOGOTA).date()
 
         def _compute(referencia: referencia_svc.ReferenciaBundle) -> depuracion_svc.Depuracion:
-            _, roster_by_cedula = stickers.inspector_profiles(db)
+            # WARNING fix (adversarial review, part a): reuse the roster
+            # `build_payload` already scanned THIS request instead of
+            # calling `stickers.inspector_profiles(db)` again — that helper
+            # scans the whole `inspectores` collection, and `build_payload`
+            # (via `cache.get_or_fetch`) already paid that cost moments ago
+            # whenever it actually ran. Falls back to a fresh scan only for
+            # the rarer case where `depuracion_cache` decides to recompute
+            # (e.g. the referencia TTL just expired) without a fresh sticker
+            # fetch happening in THIS same request, so `roster_by_cedula_
+            # holder` was never populated.
+            roster_by_cedula = roster_by_cedula_holder or None
+            if roster_by_cedula is None:
+                _, roster_by_cedula = stickers.inspector_profiles(db)
             return depuracion_svc.depurar(
                 stickers=_stickers_para_depuracion(payload),
                 roster_by_cedula=_roster_para_depuracion(roster_by_cedula),

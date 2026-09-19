@@ -624,6 +624,14 @@ def _perfil_a_dict(perfil: Perfil) -> dict:
         "identidad_key": perfil.identidad_key,
         "nombre_completo": perfil.nombre_completo,
         "identificacion": perfil.identificacion,
+        # CRITICAL (adversarial review): a name-duplicate merge
+        # (_unificar_por_nombre/_fusionar_en_survivor) keeps the LOSING
+        # identity's own cédula here, never on the dict before now — without
+        # it, a raw sticker still carrying the losing cédula in
+        # `inspector.identificacion` had no way to resolve to this survivor
+        # row on the frontend (see seguimiento.js's
+        # buildIdentityIndexFromDepuracion/professionalKeyOf).
+        "cedulas_unificadas": list(perfil.cedulas_unificadas),
         "codigo": perfil.codigo,
         "entidad": perfil.entidad,
         "np": perfil.np,

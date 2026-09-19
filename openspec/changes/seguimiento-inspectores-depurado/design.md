@@ -108,6 +108,8 @@ Response addition (auth-gated, never persisted to Blob):
 
 Pathname `referencia/inspectores/bundle.json`, uploaded with `access: 'private'` (single file — one atomic read, no partial-bundle state). No public URL is ever minted for it; `cargar_referencia()` reads it back via the Blob REST API with `BLOB_READ_WRITE_TOKEN` (the same credential the backend already holds for `blob_lkg`), exactly like fetching any other authenticated resource — there is no unguessable-prefix trick to maintain:
 
+**Update:** the private read/publish now uses `BLOB_PRIVATE_TOKEN` (fallback `BLOB_READ_WRITE_TOKEN`) against `https://<storeid>.private.blob.vercel-storage.com`, verified live 2026-09-19 (403 without token, 200 with Bearer).
+
 ```json
 {"schema": 1, "generado_en": "2026-09-12",
  "origen": {"vercel": "inspectores_vercel-app.csv", "fase2": "Listado verificado Fase 2.xlsx",

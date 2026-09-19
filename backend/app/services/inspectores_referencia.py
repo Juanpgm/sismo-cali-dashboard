@@ -17,10 +17,12 @@ Two functions, two purities:
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 
 from app.services import blob_lkg
+
+# `blob_lkg` puts deploy/ on sys.path; same module object it uses.
+import blob_sync  # noqa: E402
 
 BUNDLE_BLOB = "referencia/inspectores/bundle.json"
 
@@ -138,11 +140,20 @@ def parse_bundle(raw: dict) -> ReferenciaBundle | None:
 
 
 def _token_available() -> bool:
-    """Independent of `blob_lkg._token_available()` (which only logs and
-    returns a bool) because `cargar_referencia` needs to distinguish
-    `sin_token` from `sin_blob` in its `motivo` BEFORE calling `load_json` —
-    `blob_lkg.load_json` collapses every failure reason to a bare `None`."""
-    return bool(os.environ.get("BLOB_READ_WRITE_TOKEN", "").strip())
+    """Side-effect-free presence check (no logging, unlike
+    `blob_lkg._private_token_available()`) because `cargar_referencia` needs
+    to distinguish `sin_token` from `sin_blob` in its `motivo` BEFORE calling
+    `load_json` — `blob_lkg.load_json` collapses every failure reason to a
+    bare `None`.
+
+    The referencia bundle lives in a PRIVATE Blob store: `BLOB_PRIVATE_TOKEN`
+    first, `BLOB_READ_WRITE_TOKEN` when that is unset/blank. Delegates to
+    `blob_sync.private_token()` — the SAME resolver the actual read
+    (`blob_lkg.load_json_private` -> `blob_sync.download_authenticated`) and
+    the publish (`blob_sync.upload(access="private")`) use, so the
+    `sin_token` gate, the read and the write can never disagree. Returns only
+    a bool: the raw secret never leaves `blob_sync`."""
+    return bool(blob_sync.private_token())
 
 
 def cargar_referencia(*, load_json=blob_lkg.load_json_private, ahora=None) -> ReferenciaBundle:
@@ -157,7 +168,8 @@ def cargar_referencia(*, load_json=blob_lkg.load_json_private, ahora=None) -> Re
     Phase 1 test injects its own `load_json` fake, so this default-only
     change breaks nothing; production behavior changes from "always
     degrades to sin_blob against a private bundle" to "actually reads it".
-    - `sin_token`: `BLOB_READ_WRITE_TOKEN` unset, checked before calling
+    - `sin_token`: neither `BLOB_PRIVATE_TOKEN` nor `BLOB_READ_WRITE_TOKEN`
+      (fallback) is set, checked before calling
       `load_json` since `blob_lkg.load_json` itself doesn't distinguish WHY
       it returned `None`.
     - `sin_blob`: `load_json` returned `None` (missing blob, network,
