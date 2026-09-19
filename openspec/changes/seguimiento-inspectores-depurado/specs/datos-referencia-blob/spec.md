@@ -158,3 +158,102 @@ admin role. Log records naming a bundle entry MUST be redacted at INFO level.
 - GIVEN the CLI publishes the bundle
 - WHEN the upload completes
 - THEN it used `access: 'private'` and no public URL was minted or logged
+
+---
+
+# Efficiency Extension 2026-09-19 — Delta (incremental, quota-safe base)
+
+Source: `efficiency-extension.md`, `design.md` D22 and D24. No requirement above is modified or removed;
+the blocks below APPEND. The bundle `schema` stays `1` and the published file gains NO new key: the
+content hash is computed by the reader.
+
+## ADDED Requirements
+
+### Requirement: The Loaded Bundle Carries A Content Hash (`huella`)
+
+`ReferenciaBundle` MUST expose `huella`, a stable hash of the bundle's parsed content computed on read
+(the same stable-JSON hash `blob_lkg.payload_hash` uses, so object-key order does not matter but row
+order does). The consumers' cache keys MUST use `huella`, not the day-granular `generado_en`, so a
+republish on the same day is detected. A degraded or empty bundle MUST have an empty `huella`. The
+publisher MUST NOT be required to emit it, so a bundle published before this change keeps working.
+
+#### Scenario: Identical content has an identical huella
+- GIVEN two loads of the same bundle content, one with the JSON object keys in a different order
+- WHEN `huella` is compared
+- THEN the two values are equal
+
+#### Scenario: A same-day republish is detected
+- GIVEN a bundle republished on the same day (same `generado_en`) with one changed row
+- WHEN the next TTL refresh loads it
+- THEN `huella` differs and exactly one depuración recompute follows
+
+#### Scenario: An optional contact field alone changes the huella
+- GIVEN a republish that changes only one entry's `telefono`
+- WHEN the bundle is loaded
+- THEN `huella` differs (the hash covers the optional fields)
+
+#### Scenario: Degraded bundle has an empty huella
+- GIVEN the bundle is missing, corrupt or of an unknown schema
+- WHEN the degraded bundle is produced
+- THEN `huella` is `""` and never equals the `huella` of a real bundle
+
+#### Scenario: A bundle published before this change still loads
+- GIVEN a `schema: 1` bundle that has no `huella` anywhere in it
+- WHEN `parse_bundle` runs
+- THEN it returns a valid bundle whose `huella` is computed from its content
+
+### Requirement: Reference Downloads Are Rate-Limited And Failure Keeps The Last-Good Bundle
+
+With a 30-minute TTL the system MUST issue at most 2 reference GETs per hour and MUST NOT issue HEAD
+or list requests on this path. A failed or corrupt download MUST keep the last-good bundle, MUST NOT
+trigger a recompute, and MUST be retried at most once per TTL window — never once per request. A
+degraded bundle MUST be adopted only when no good bundle exists.
+
+#### Scenario: Fifty requests in an hour cost at most two GETs
+- GIVEN a fake clock and 50 requests spread over one simulated hour
+- WHEN they are served
+- THEN at most 2 reference GETs occurred and no HEAD or list call was made
+
+#### Scenario: A failed download keeps the last-good bundle
+- GIVEN a good bundle is cached and the next scheduled GET fails or returns a corrupt bundle
+- WHEN requests arrive
+- THEN the last-good bundle is still served, no recompute happens, and the retry occurs at most once
+  in that TTL window
+
+#### Scenario: Cold-start failure is retried once per TTL, not per request
+- GIVEN no bundle was ever loaded and the GET fails
+- WHEN 20 requests arrive within the TTL
+- THEN the degraded bundle is served, exactly one GET was attempted, and the next attempt waits for
+  the next TTL window
+
+#### Scenario: Recovery with identical content does not recompute
+- GIVEN the GET failed and a later GET succeeds with content identical to the last-good bundle
+- WHEN the bundle is adopted
+- THEN `huella` is unchanged and no recompute happens
+
+#### Scenario: Recovery with new content recomputes once
+- GIVEN a later GET succeeds with different content
+- WHEN the bundle is adopted
+- THEN `huella` changes and exactly one recompute follows
+
+### Requirement: Reference Loading Never Blocks Other Requests
+
+The reference download MUST run outside the cache lock, single-flight: at most one caller downloads
+while all other callers read the last-good bundle without waiting. A slow or failing loader MUST NOT
+leave the lock or the in-flight marker held.
+
+#### Scenario: A slow download does not block a fast-path request
+- GIVEN a reference download in progress that will take a long time
+- WHEN a concurrent request whose result is still fresh arrives
+- THEN it is served without waiting for the download
+
+#### Scenario: Concurrent stale callers download once
+- GIVEN the bundle's TTL has expired and 20 requests arrive together
+- WHEN they are served
+- THEN exactly one GET was issued and every request received a bundle (the last-good one until the new
+  one is adopted)
+
+#### Scenario: A loader exception releases everything
+- GIVEN the download raises
+- WHEN the next request arrives
+- THEN no lock or marker is left held, and the retry policy above applies

@@ -242,3 +242,145 @@ percentage alone does not satisfy the gate (D20).
 ## Open Questions
 
 None. The five decisions in `explore-extension.md` are final and are encoded as D9-D20 above.
+(Superseded for the efficiency extension only: see "Open Questions (Efficiency Extension)" at the end
+of this file — exactly one item, O1, is open and gates the flag flip.)
+
+---
+
+# Addendum — Efficiency extension 2026-09-19
+
+Source of truth: `efficiency-extension.md` (acceptance criterion for the flag flip, not a nice-to-have).
+Baseline: this branch (`…-08-engine-remap`), backend HEAD `ff474a1`. Append-only: nothing above is
+deleted; D21-D32 extend D1-D20 and, where marked `[MODIFIED]`, supersede parts of D4/D6 and of the
+Rollout Order. The engine stays a pure function (D29); every derived value is keyed by input
+fingerprints; every Firestore-derived input has its own TTL and a single-flight lock; no network I/O
+runs under a shared lock. Live sizes (parity run): ~1470 `evaluaciones` (E), 130 `inspectores` (I),
+~1900 `survey_cali` names (S), ~2990 API sticker rows. Engine CPU is ~0.26 s: the cost is I/O and
+quota, not CPU. One uvicorn worker (`backend/Dockerfile`); caches are per process.
+
+## Architecture Decisions D21-D32
+
+| # | Decision | Rejected alternative | Rationale |
+|---|---|---|---|
+| D21 `[ADDED]` | **Content-stable stickers snapshot.** After every atencionsismo fetch, hash the FULL in-memory served payload with `blob_lkg.payload_hash`; if equal to the previous content, keep the previous list object AND `snapshot_version`; otherwise bump it. `degraded` is part of the version. The hash is over the UNREDACTED payload (the redacted Blob copy blanks `inspector.np`, which feeds classification, so hashing it would hide a real change); it never leaves the process except folded into the ETag composite (D26). The existing hash of the REDACTED copy that gates the Blob PUT is unchanged and separate. No per-fetch volatile field may enter the hashed payload (asserted by a test). A change of row ORDER alone bumps the version — conservative and accepted (costs one recompute; the engine itself is order-independent, D29) | Object identity (`self._src is payload`, D4) as the recompute signal | `EvaluacionesCache` builds a NEW list on every 5-minute refetch even when the content is identical, so every refresh forced a full recompute including a full `survey_cali` scan (audit waste #1). Hashing ~3k rows costs milliseconds against 0.26 s of compute plus ~3.6k Firestore reads. The version is internal: it is NOT added to the body (that would break the flag-off 4-key byte-identity of D2/3.8/10.10); the wire identity is the ETag (D26) |
+| D22 `[ADDED]` | **Versioned component caches**, one per Firestore-derived input, following the `InspectoresCache` pattern (own lock, serve-stale on error, `invalidate()`): `roster` TTL 30 min (invalidated on admin create/setEnabled), `survey_names` TTL 60 min (`nombre_evaluador` only — Firestore bills per document, so a field projection saves nothing), `evaluaciones` Firestore side TTL 15 min, `referencia` TTL 30 min (keyed by content `huella`, D24). Each exposes a `version` = `payload_hash` of its content: a refetch with identical content keeps the version, so an expired TTL alone never forces a recompute. Failed refreshes reuse the existing `failure_backoff_s` convention of the atencionsismo `EvaluacionesCache` (serve last-good, no hot retry). One roster scan is shared by `_compute` and `build_payload` (audit waste #5). A small generic primitive (proposed `backend/app/services/versioned_cache.py`) is preferred over four copies. The roster picker's own 5-minute `InspectoresCache` behavior is NOT changed; the create/setEnabled hook invalidates both | One global TTL; recompute every input on every 5-minute stickers refresh; extending `InspectoresCache`'s TTL for everyone | Inputs change at very different rates (a survey name set drifts slowly, the roster changes only on admin writes, stickers move every few minutes). Independent TTLs + content versions are what make "0 recomputes/hour with static inputs" true. Admin writes still show immediately through `invalidate()` |
+| D23 `[ADDED]` `[MODIFIED: D4, D6]` | **`DepuracionCache` key = `(snapshot_version, roster_version, survey_version, referencia_huella, hoy)`** plus an in-flight marker: the first caller for a key computes OUTSIDE the lock, concurrent callers for the SAME key wait on the marker and receive the same result (exactly 1 `depurar` and 1 set of scans for N requests). The marker is always cleared in `finally`; if the leader raises, waiters serve the last-good result when one exists, otherwise observe the same outcome the leader's caller does, and the next request retries (no deadlock, no poisoned marker). Only the current key (plus last-good) is retained. No TTL of its own — freshness is bounded by the component TTLs (D22) | Keep the identity key (`is`, D4); a global lock held during compute; compute per request | Today `compute()` runs outside the lock with no in-flight marker, so N concurrent admin requests each recompute and each scan survey and roster (audit waste #3). `[MODIFIED]` D4: "key by object identity, inherits the 5-minute TTL" is replaced by the content key above. D6 is KEPT: `hoy` (Bogotá) stays in the key, so the midnight rollover costs exactly one recompute |
+| D24 `[ADDED]` | **`referencia` is loaded OUTSIDE the cache lock**, single-flight: the TTL check under the lock is O(1); at most one caller downloads, everyone else reads the last-good bundle. The loaded bundle carries `huella` = `payload_hash` of the parsed raw JSON (computed on read, NOT stored in the published file, so old bundles keep working and no republish is needed). The `huella` (not the day-granular `generado_en`) is what keys D23 — a same-day republish is detected on the next TTL refresh. A failed load keeps the last-good bundle, does not trigger a recompute, and is retried at most once per TTL (the existing "advance `_referencia_at` even on failure" behavior is retained and now covered by a test); a degraded bundle is adopted only when there was no good one. Budget: ≤ 2 GETs/hour, no HEAD/list in this path | Load under the lock (status quo: up to 30 s block); key by `generado_en` | Audit waste #4 and #7. Under the lock a slow Blob GET blocks even requests that would have hit the fast path; `generado_en` is date-granular, so a same-day republish would be ignored until restart |
+| D25 `[ADDED]` | **`depuracion` is opt-in per request: `GET /stickers-atencionsismo?depuracion=1`**, exact value `1` only (anything else, repeated or absent, means "not requested"). It composes with — never replaces — the existing gates: flag `SEGUIMIENTO_DEPURACION`, admin role, live (non-degraded) snapshot. A request that does not opt in performs 0 depuración work (no `depurar`, no survey scan, no referencia GET, no roster scan beyond what the existing sticker normalization already does) and its body is byte-identical to the flag-off shape. Viewers cost 0 even when they send the param | Always-on for admin (status quo); a second endpoint | The Stickers tab uses the same endpoint and today downloads and ignores the PII `depuracion` block (audit waste #6). D2 stands: it is still ONE snapshot and ONE cache — the parameter is only a projection switch, not a second cache |
+| D26 `[ADDED]` | **Encoded-bytes cache + ETag/304 + gzip.** Cache the fully encoded body per `(snapshot_version, depuracion_version, role, degraded)` and per encoding; gzip is precompressed once per key (never re-compressed per request). `ETag` = quoted, truncated sha256 of that key (+ an encoding suffix, because strong validators must differ per representation); `depuracion_version` is `"none"` for a non-opt-in request. `If-None-Match` handling accepts a list, weak `W/` prefixes and `*`; a match returns 304 with an empty body and the ETag; authentication and role resolution ALWAYS precede the 304 decision (an unauthenticated request never gets a 304, and one role's ETag never validates another role's body). Headers: `Cache-Control: no-store` (no browser-disk copy of PII — the client does an in-memory MANUAL conditional GET), `Vary: Authorization, Accept-Encoding`, `Content-Encoding: gzip` only when `Accept-Encoding` allows it (`q=0` and absent header mean identity). The serialized body of the flag-off / non-opt-in path stays byte-identical to the pre-extension `JSONResponse` output | `GZipMiddleware` alone (re-compresses per request, no 304); a time-bucket weak ETag; `max-age` browser caching | Audit waste #6: the whole body is re-serialized on every request. A 304 needs no body and no serialization; a cache hit is bytes. `no-store` is deliberate: the body carries names, cédulas, phones and emails |
+| D27 `[ADDED]` | **CORS**: `CORS_ALLOW_HEADERS` (`backend/app/config.py`) gains `If-None-Match`; the `CORSMiddleware` call in `backend/app/main.py` gains `expose_headers=["ETag"]`. Existing headers stay. Verified in a real browser (Chromium/Playwright, cross-origin Vercel→Railway shape), not only with `TestClient` | Assume same-origin; ship without a browser check | The frontend (Vercel) and backend (Railway) are cross-origin. Without `allow_headers` the preflight of a request carrying `If-None-Match` fails and the fetch is blocked; without `expose_headers` JS cannot read the ETag, so 304/skip-render silently never engages. The frontend MUST degrade to a plain full render when the ETag is unreadable |
+| D28 `[ADDED]` | **Frontend snapshot retention + skip-render.** `web/js/seguimiento.js` keeps the last `{snapshot_id, stickers, depuracion}` at module level, where `snapshot_id` is the opaque ETag string of D26. On tab open it renders from the retained value immediately, revalidates in the background with `If-None-Match`, and skips `render()` when the answer is a 304 or an equal ETag; a changed ETag re-renders once. Only `?depuracion=1` is sent, and only from Seguimiento; the Stickers tab neither requests nor receives `depuracion`. Retention is in memory only and is cleared on sign-out or role change (the retained value is admin PII). `fetchEvaluacionesOnce`/`tagFuente` (`web/js/stickers.js`) surface the ETag additively | `sessionStorage`/IndexedDB persistence; a `snapshot_id` key in the body | Audit waste #8: the tab rebuilds on every open and the Stickers tab's 5-minute poll keeps the cache hot. Persistent browser storage would put PII at rest; a body key would break the flag-off byte-identity (D21) |
+| D29 `[ADDED]` | **Engine determinism, purity and idempotency.** `depurar()` keeps the signature `(stickers, roster_by_cedula, nombres_survey, referencia, hoy)`; the router owns fingerprints, the engine stays pure. Contract: (a) the result is independent of the order of the roster and of the stickers — `referencia` row order is part of the INPUT (its `huella` is order-sensitive), which is what keeps D19's "first-wins" well-defined; (b) survivor tie-break chain, in order: D-P2 score → oldest parsed `creado_en` (blank never beats a real date, D-SURVFECHA) → Firestore-backed (D10) → ascending `identidad_key` as the TERMINAL total order (so a full tie with blank `creado_en` on both sides is decided by the key, never by iteration order); (c) every other first-wins choice that depends on iteration order (`alias_nombres` collisions, fuzzy-remap candidates) iterates in canonical (sorted) order; (d) every emitted list is canonical (`inspectores` by `identidad_key`, `revision_manual` by `(motivo, codigo, identidad_key)`, `grupo_externos.detalle` by `identificacion`); (e) no input mutation, no result aliasing of inputs, no clock/env/global reads (`hoy` is a parameter); (f) `depurar(x) == depurar(x)`. Registered divergence **D-TIEBREAK**: the notebook's tie resolution follows row order; the engine's is the total order above. It can only change a survivor in a FULL tie; the harness lists every such key (D20 style) | Rely on dict insertion order; Firestore-backed as the terminal tie-break | The D23 cache is only sound if equal fingerprints imply equal results, and the engine may run in any process on any roster ordering. Reconciles with D10: Firestore-backed stays ahead of `identidad_key`, so the earlier "Firestore-backed decides a FULL tie" text still holds whenever exactly one side is Firestore-backed |
+| D30 `[ADDED]` | **Per-inspector delta recompute is REJECTED.** Evidence: (1) unification, remap, collapse and the `alias_nombres` index are cross-profile — one changed sticker can move a profile into or out of `GRUPO-EXTERNOS`, flip a survivor, or change an alias winner, so a correct delta needs a dependency graph and a parallel code path that must be kept at parity with the full path; (2) the full compute is ~0.26 s CPU, so a delta saves at most a few hundred milliseconds once per real change; (3) the quota cost lives UPSTREAM of the engine (scans in D22), which a delta of the engine does not touch; (4) fingerprint gating (D21-D23) already yields 0 recomputes with static inputs and exactly 1 per real change | Incremental engine keyed per `identidad_key` | Smallest change that meets the requirement. Parity risk (D20) rises with every second code path |
+| D31 `[ADDED]` | **Deferred, not planned in this change:** the `evaluaciones` watermark + reconcile (read only changed documents — see O1, a PROMOTION CANDIDATE), the atencionsismo `desde_utc` API delta, stale-while-revalidate, cross-instance snapshot sharing (PII in shared storage, single instance today) | — | Each adds a second source of truth or storage of PII; none is needed for correctness |
+| D32 `[ADDED]` | **Multi-instance note.** All caches (D21-D24) are per process. If the web service ever runs N replicas the ledger is N× the single-process figures. The replica count is unverified today; this is documented, not solved. The parity harness measures ONE process | Sharing caches across replicas | Would require shared storage of PII or a coordination layer; out of scope (D31) |
+
+`[MODIFIED]` markers above supersede, for the depuración path only: D4 ("keyed by object identity … inherits
+the 5-minute TTL") by the content key of D23, and the Data Flow line `DepuracionCache (keyed by is + hoy +
+generado_en)` by `(snapshot_version, roster_version, survey_version, referencia_huella, hoy)`. D6 (`hoy` in
+the key) and D3 (PII outside the cached, Blob-persisted list) are unchanged.
+
+## Efficiency Data Flow (supersedes the Data Flow diagram for the depuración path)
+
+    atencionsismo API (5-min walk) ─→ snapshot: payload_hash ─→ snapshot_version   (D21)
+    roster (30 min) ─────────────────→ version                                       (D22)
+    survey names (60 min) ───────────→ version                                       (D22)
+    evaluaciones Firestore (15 min) ─→ version                                       (D22)
+    referencia Blob (30 min, OUTSIDE the lock) → huella                               (D24)
+                     │  only when ?depuracion=1 + flag + admin + live snapshot     (D25)
+                     ▼
+    DepuracionCache key (snapshot_version, roster, survey, huella, hoy) + in-flight marker   (D23)
+                     ▼
+    encoded-bytes cache per (snapshot_version, depuracion_version, role, degraded, encoding)
+                     ▼  ETag / 304 / gzip                                             (D26, D27)
+    seguimiento.js: retained {snapshot_id = ETag, stickers, depuracion}; skip-render  (D28)
+
+## Efficiency Acceptance Budgets
+
+Scope: one process, at least one admin tab continuously open. "Static inputs" = no upstream change.
+Every row marked "test" is enforced with fakes that count calls and an injectable clock (deterministic,
+no real time); rows marked "ledger" are measured on live data by the parity harness (slice 11).
+
+| Budget | Limit | Enforced by |
+|---|---|---|
+| Recomputes per hour, static inputs | 0 (exactly 1 per day at the Bogotá midnight `hoy` rollover) | test |
+| Recomputes per real change | exactly 1 per changed fingerprint (sticker, roster, survey, `huella`, `hoy`) | test |
+| N concurrent requests at expiry | 1 walk, 1 `depurar`, ≤ 1 survey scan, ≤ 1 roster scan | test |
+| 50 requests inside the TTLs | 1 walk, 1 evaluaciones scan, 1 roster scan, 1 survey scan, 1 `depurar`, 1 referencia GET, ≤ 2 Blob PUTs at cold start | test |
+| Firestore scans per continuously-open hour, static inputs (derived from the TTLs) | roster ≤ 2, survey ≤ 1, evaluaciones ≤ 4 | test (fake clock) |
+| Firestore reads per open hour (derived) | 2·I + S + 4·E ≈ 260 + 1,900 + 5,880 ≈ **8,040** at the live sizes | ledger (reported) |
+| Firestore reads for this path | ≤ 10,000/day (20% of the Spark 50k cap) — see **O1**: not attainable with a continuously open tab at these TTLs | ledger, gates the flag flip |
+| Atención Sismo API | ≤ 1 walk per 5-min TTL; 0 with no viewers | test |
+| Blob | 0 PUTs when content is unchanged; referencia GET ≤ 2/hour; no HEAD/list in this path | test |
+| Payload | `evaluaciones` ≤ 4 MB raw; `depuracion` ≤ 400 KB raw for 400 profiles; gzip target ≤ ~15% of raw (measured and recorded at parity) | test (raw ceilings) + ledger (ratio) |
+| Latency on a cache hit | p95 ≤ 50 ms for a 304; p95 ≤ 250 ms for a 200 served from precomputed bytes (in-process, over ≥ 50 samples) | test |
+| Engine | 373 profiles + 3,000 stickers < 0.5 s (best of N; baseline ≈ 0.26 s) | test (canary) + ledger (real snapshot) |
+| Viewer role or missing `?depuracion=1` | 0 depuración work | test |
+
+The doc's per-hour figure "≤ 1-2 evaluaciones scans" is corrected to ≤ 4: a 15-minute TTL cannot yield fewer
+than four scans in a continuously open hour (contradiction register below).
+
+## File Changes — Efficiency Slices
+
+| Slice | File | Action | Description |
+|---|---|---|---|
+| 08 | `backend/app/services/inspectores_depuracion.py` | Modify | Canonical ordering, terminal `identidad_key` tie-break, order-independent first-wins (D29) |
+| 08 | `backend/tests/services/test_inspectores_depuracion.py` | Modify | Shuffle, purity, idempotency and perf-canary units |
+| 09a | `backend/app/services/versioned_cache.py` | Create (proposed) | Generic TTL + content-version + single-flight primitive used by D22-D24 |
+| 09a | `backend/app/routers/stickers.py` | Modify | `snapshot_version` on `EvaluacionesCache` (content-stable, D21) |
+| 09a | `backend/app/routers/stickers_atencionsismo.py` | Modify | Component caches, `DepuracionCache` key + in-flight marker, referencia outside the lock, `?depuracion=1` (D22-D25) |
+| 09a | `backend/app/services/inspectores_referencia.py` | Modify | `huella` on `ReferenciaBundle` (D24) |
+| 09a | `backend/tests/routers/test_stickers_atencionsismo.py`, `backend/tests/services/test_inspectores_referencia.py`, shared counting-fake fixtures | Modify/Create | Unit-level tests per mechanism |
+| 09b | `backend/app/routers/stickers_atencionsismo.py` | Modify | Encoded-bytes cache, ETag/304, gzip, headers (D26) |
+| 09b | `backend/app/config.py`, `backend/app/main.py` | Modify | `If-None-Match` allowed, `ETag` exposed (D27) |
+| 09b | `backend/tests/routers/test_stickers_atencionsismo_budget.py` | Create | Budget tests 1-9 and 11 (ledger fakes + injectable clock) |
+| 10 | `web/js/seguimiento.js`, `web/js/stickers.js` | Modify | `?depuracion=1` from Seguimiento only; retention + skip-render; ETag surfaced (D28) |
+| 10 | `web/js/seguimiento.test.mjs`, `web/js/stickers.test.mjs` | Modify | The two Node tests plus edge cases |
+| 11 | `scripts/parity_inspectores_depurado.py` | Modify | Determinism + timing check on the real snapshot; E/I/S read-ledger |
+
+## Rollout Order (amended — supersedes the Rollout Order above where it differs)
+
+1. **Deploy** backend slices 06 → 08 → 09a → 09b with `SEGUIMIENTO_DEPURACION` unset/`0`. The response BODY stays
+   byte-identical; from 09b the response HEADERS gain `ETag`, `Cache-Control`, `Vary` and, when accepted,
+   `Content-Encoding: gzip` — verify the Stickers tab still loads (browsers decode gzip transparently).
+2. **Republish** the bundle once slice 06 is deployed (deploy-then-republish); record `generado_en`. No
+   `huella` is published — it is computed on read.
+3. **Merge slice 10** (frontend: opt-in param, retention, skip-render) into the tracker. Per 11.20 this happens
+   only after slice 11's tests are green. `[MODIFIED]` The earlier step "slice 10 merges into the tracker last,
+   after the flip" no longer holds: the frontend now precedes the flip because the opt-in parameter is what makes
+   the flip cheap.
+4. **Live parity + read ledger** — slice 11's harness against live output and the xlsx; it also records the
+   determinism check, the timing check and the E/I/S ledger.
+5. **Flip the flag** to `SEGUIMIENTO_DEPURACION=1` ONLY when ALL hold: slices 09a, 09b and 10 are merged; the
+   budget tests are green; step 4 passes every parity threshold; and the measured ledger is within the budget
+   ratified under O1.
+6. **Merge the tracker into `main`** (the only branch that merges to `main`).
+
+Rollback at any point = `SEGUIMIENTO_DEPURACION=0`; with the flag off (or no opt-in) the compute, the survey scan
+and the referencia GET all stop by construction.
+
+## Contradiction Register (efficiency extension)
+
+| # | Finding | Resolution |
+|---|---|---|
+| C-E1 | The doc budgets "Firestore ≤ 10k reads/day" with a continuously open admin tab, but its own TTLs give 8,040 reads per open hour (D22 arithmetic), i.e. ≈ 193k/day for 24 h and 10k only in ≈ 1.2 h. The "≤ 1-2 evaluaciones scans/hour" figure is also incompatible with a 15-minute TTL (4/hour) | Per-hour scan counts are corrected to what the TTLs imply (≤ 2 / ≤ 1 / ≤ 4) and enforced by tests; the daily ceiling is kept as a measured LEDGER gate on the flag flip, and the unresolved arithmetic is raised as O1 for the user rather than silently weakened or silently kept |
+| C-E2 | D4 says the derived cache has "no TTL of its own, inherits the 5-minute TTL" and the shipped `DepuracionCache` keys by identity | Superseded by D23 (`[MODIFIED]`); task 10.9 is kept and re-labelled, not deleted |
+| C-E3 | The efficiency doc says the frontend skips render when `snapshot_id` is unchanged, but adding a `snapshot_id` key to the body would break the flag-off 4-key byte-identity (3.8, 10.10) | No new body key. `snapshot_id` is the frontend's name for the opaque ETag (D26/D28), which is why `expose_headers=["ETag"]` is mandatory |
+| C-E4 | "Shuffled roster/sticker order yields an identical result" versus D19's "first-wins" on duplicate `main` cédulas and the "first-wins" `alias_nombres` collision (2.23) | `referencia` row order is part of the input (its `huella` is order-sensitive); the roster/sticker order is not. Iteration-order-dependent choices iterate in canonical order (D29) |
+| C-E5 | The efficiency doc asks for a stable tie-break by `identidad_key` "when `creado_en` is blank", D10/8.13 make Firestore-backed the last tie-break | Layered: score → `creado_en` → Firestore-backed → `identidad_key` terminal (D29). D-TIEBREAK is registered |
+| C-E6 | The old Rollout Order says slice 10 merges last (after the flip); the efficiency gate requires slice 10 merged before the flip | Rollout amended above; 11.20's "not into the tracker before Phase 12 passes" is compatible (slice 11's tests green → merge 10 and 11 → measure → flip) |
+| C-E7 | Old Rollout Order: "response stays byte-identical, invisible to users" | True for the body only; 09b adds headers (rollout step 1 states it) |
+| C-E8 | Budget tests 6-8 (single-flight, slow referencia, failure keeps last-good) exercise mechanisms built in 09a, but the efficiency doc assigns the budget tests to 09b | 09a keeps unit-level TDD tests for each mechanism (tasks 10.13-10.42); 09b hosts the route-level ledger versions 1-9 and 11 that reuse the 09a fixtures and assert counts only |
+
+## Open Questions (Efficiency Extension)
+
+- [ ] **O1 (blocks the flag flip, needs a user decision).** With E ≈ 1,470, I ≈ 130, S ≈ 1,900 and the delegated
+  TTLs (roster 30 min, evaluaciones 15 min, survey 60 min), one continuously open admin tab costs ≈ 8,040
+  Firestore reads per hour, so the ≤ 10,000/day default is met only for ≈ 1.2 open hours/day (the pre-change
+  figure is ≈ 43,000/hour, so the improvement is real, ≈ 5×, but it does not reach the stated number). Options:
+  (a) ratify a different budget (for example per open-hour, or a larger daily share of the 50k Spark cap);
+  (b) lengthen the `evaluaciones` TTL via configuration (60 min lowers the hour to ≈ 3,630 reads — still only
+  ≈ 2.75 open hours at 10k); (c) promote the deferred `evaluaciones` watermark + reconcile (D31) so reads become
+  proportional to changed documents — the only option that scales, at the cost of a second read path and its
+  parity risk. Recommendation: measure first (12.19), then choose between (a) and (c). Until ratified,
+  12b.4 stays blocked.

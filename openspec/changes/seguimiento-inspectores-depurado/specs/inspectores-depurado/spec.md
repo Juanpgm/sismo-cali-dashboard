@@ -520,3 +520,178 @@ redacted or downgraded to DEBUG, because `identidad_key` is now a cédula.
 - GIVEN the engine builds `alias_nombres`
 - WHEN it logs at INFO level
 - THEN neither a name nor a cédula appears in the record
+
+---
+
+# Efficiency Extension 2026-09-19 — Delta (incremental, quota-safe base)
+
+Source: `efficiency-extension.md`, `design.md` D21-D32. The engine stays a pure function of
+`(stickers, roster_by_cedula, nombres_survey, referencia, hoy)`; the router owns the input
+fingerprints. Blocks here APPEND (ADDED) or REPLACE (MODIFIED) the body above. `referencia` row order
+is part of the INPUT (its `huella` is order-sensitive); the roster order and the sticker order are not.
+
+## ADDED Requirements
+
+### Requirement: Engine Output Is Independent Of Roster And Sticker Order
+
+For the same set of inputs, `depurar()` MUST return a structurally identical result regardless of the
+iteration order of the roster and of the stickers. Where two candidates tie completely, the survivor
+tie-break chain MUST be: the survivor score, then the oldest parsed `creado_en` (a blank or
+unparseable date never beats a real one), then the Firestore-backed profile, then the ascending
+`identidad_key` as the terminal total order. Every choice that depends on iteration order (alias
+collisions, fuzzy-remap candidates, unification groups) MUST iterate in canonical sorted order, and
+every emitted list MUST be canonical: `inspectores` by `identidad_key`, `revision_manual` by
+`(motivo, codigo, identidad_key)`, `grupo_externos.detalle` by `identificacion`.
+
+#### Scenario: Shuffled roster and sticker order yields an identical result
+- GIVEN the full-universe fixture and at least 25 different permutations of the roster dict order and
+  of the sticker list order
+- WHEN `depurar()` runs on each permutation
+- THEN every result equals the first (inspectores, grupo_externos, alias_nombres, revision_manual,
+  cedulas_unificadas)
+
+#### Scenario: Terminal tie-break is the identidad_key when creado_en is blank
+- GIVEN two same-name profiles with an equal survivor score, a blank `creado_en` on both and both
+  Firestore-backed
+- WHEN they are unified, in either input order
+- THEN the profile with the lower `identidad_key` survives both times
+
+#### Scenario: Firestore-backed still outranks the identidad_key
+- GIVEN two same-name profiles with an equal score and equal or blank `creado_en`, exactly one of them
+  Firestore-backed and that one having the HIGHER `identidad_key`
+- WHEN they are unified
+- THEN the Firestore-backed profile survives (design D10 is unchanged; the key only breaks a full tie)
+
+#### Scenario: A blank creado_en never beats a real date
+- GIVEN two otherwise tied profiles where one has a real `creado_en` and the other a blank value
+- WHEN they are unified
+- THEN the one with the real date survives regardless of `identidad_key` or order
+
+#### Scenario: alias_nombres collisions resolve the same way in any order
+- GIVEN two different survey names that normalize to the same key
+- WHEN `alias_nombres` runs over any permutation of the inputs
+- THEN the same name wins every time and the conflict is recorded once
+
+#### Scenario: Empty inputs are deterministic
+- GIVEN an empty roster, no stickers, no survey names and an empty referencia
+- WHEN `depurar()` runs repeatedly
+- THEN every call returns the same empty result and none raises
+
+#### Scenario: Bundle order, unlike roster or sticker order, is part of the input
+- GIVEN two `main` rows share a `cedula_key` (design D19: first wins)
+- WHEN the bundle rows are swapped
+- THEN the other row may win — the winner is defined by bundle order — while permuting the roster or
+  the stickers never changes it
+
+### Requirement: Engine Is Pure
+
+`depurar()` MUST NOT mutate any of its inputs, MUST NOT return objects aliased to its inputs, and MUST
+NOT read the clock, the process environment or mutable module-level state; `hoy` is the only date
+source. Two interleaved calls with different inputs MUST NOT influence each other.
+
+#### Scenario: Inputs are not mutated
+- GIVEN deep copies of the stickers, the roster dicts and the survey names taken before the call
+- WHEN `depurar()` returns
+- THEN every input still equals its copy and the frozen `ReferenciaBundle` is untouched
+
+#### Scenario: Survey names may be a one-shot iterable
+- GIVEN `nombres_survey` supplied as a generator, and separately as a set
+- WHEN `depurar()` runs
+- THEN both produce the same result (the iterable is materialized once, never consumed twice)
+
+#### Scenario: The result does not alias the inputs
+- GIVEN a returned `Depuracion` whose lists and dicts are then mutated by the caller
+- WHEN `depurar()` runs again on the same inputs
+- THEN the second result equals the first pristine result and the inputs are unchanged
+
+#### Scenario: No clock, environment or global reads
+- GIVEN `date.today`, `datetime.now`, `time.time` and `os.environ` patched to raise
+- WHEN `depurar()` runs with an explicit `hoy`
+- THEN it completes, and two different `hoy` values change only the `dias_inactivo`-dependent fields
+  and the collapse membership
+
+#### Scenario: Interleaved calls do not leak state
+- GIVEN two calls with different inputs run alternately
+- WHEN each is compared with its own isolated run
+- THEN both equal their isolated result and no module-level state changed
+
+### Requirement: Engine Is Idempotent And Cheap Enough To Recompute Only On A Fingerprint Change
+
+`depurar()` MUST return equal results for equal inputs, and MUST compute the reference universe
+(373 profiles, 3,000 stickers) in under 0.5 seconds (best of at least 5 runs; the recorded baseline is
+about 0.26 s), so that recomputing exactly once per changed input fingerprint is affordable and a
+per-inspector delta recompute is unnecessary (design D30).
+
+#### Scenario: Same inputs twice give equal results
+- GIVEN identical inputs
+- WHEN `depurar()` runs twice
+- THEN the two results are equal
+
+#### Scenario: Performance canary at the reference size
+- GIVEN 373 profiles and 3,000 stickers
+- WHEN `depurar()` runs (best of at least 5 runs)
+- THEN it completes in under 0.5 s and a failure message prints the measured time
+
+#### Scenario: Worst case with unattributable stickers stays within the same budget
+- GIVEN 373 profiles and 3,000 stickers none of which resolves to a cédula
+- WHEN `depurar()` runs
+- THEN it still completes in under 0.5 s and raises nothing
+
+## MODIFIED Requirements
+
+### Requirement: Response Caching With TTL
+
+The system MUST cache the computed table keyed by the fingerprints of ALL its inputs — the content
+version of the sticker snapshot, the roster, the survey names, the reference bundle's content hash
+(`huella`) and the Bogotá `hoy` — so that with unchanged inputs the table is never recomputed, however
+often the TTLs of the individual sources expire. Each Firestore-derived input MUST own its TTL, a
+content version and a single-flight guard (roster 30 min, evaluaciones Firestore side 15 min, survey
+names 60 min, reference 30 min; the sticker walk 5 min). When N concurrent requests need the same
+missing key, exactly ONE computation MUST run and every caller MUST receive its result. The system MUST
+serve the last-good cached value if a live source is unavailable, rather than failing the request.
+(Previously: "MUST cache the computed table for 5-10 minutes (`EVALUACIONES_CACHE_TTL_SECONDS` pattern)",
+keyed by the identity of the sticker payload, which forced a recompute at every 5-minute refresh even
+when the content was identical, and let concurrent requests each recompute.)
+
+#### Scenario: Cache serves within TTL without recomputation
+- GIVEN the table was computed less than the TTL ago
+- WHEN a new request arrives
+- THEN the cached value is returned without recomputing
+
+#### Scenario: Unavailable reference source degrades to last-good cache
+- GIVEN the reference Blob is temporarily unreachable
+- WHEN a request arrives after the cache would normally expire
+- THEN the system serves the last successfully computed value instead of an error
+
+#### Scenario: Identical upstream past every TTL causes no recompute
+- GIVEN every source's TTL has expired and each re-fetch returns identical content
+- WHEN requests arrive
+- THEN sources are re-read within their own budgets, yet `depurar()` is not called again
+
+#### Scenario: Each changed fingerprint causes exactly one recompute
+- GIVEN the previous result was computed
+- WHEN, separately, the snapshot content, the roster content, the survey names, the reference `huella`,
+  or the Bogotá `hoy` changes
+- THEN each change causes exactly one recompute and the next request with the same key causes none
+
+#### Scenario: Concurrent requests at expiry produce one computation
+- GIVEN 20 concurrent requests for the same missing key released together
+- WHEN they are served
+- THEN exactly one `depurar()` ran, at most one survey scan and at most one roster scan, and all 20
+  receive an equal result
+
+#### Scenario: A failing computation does not deadlock or poison the cache
+- GIVEN the computation for a key raises
+- WHEN concurrent and subsequent requests arrive
+- THEN waiters are released (they receive the last-good result when one exists), the in-flight marker
+  is cleared, and the next request retries
+
+#### Scenario: Midnight rollover recomputes once and nothing else
+- GIVEN the Bogotá date changes with every other input identical
+- WHEN requests arrive
+- THEN exactly one recompute runs and no extra scan, download or Blob write occurs
+
+#### Scenario: The roster is scanned once per compute window
+- GIVEN a recompute that both classifies profiles and builds the response payload
+- WHEN it runs
+- THEN the roster is read once and shared, never twice
