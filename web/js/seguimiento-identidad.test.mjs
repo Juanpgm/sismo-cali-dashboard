@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   buildIdentityIndex, buildProfessionalRows, professionalKeyOf, revisionManualHtml, titleCaseName,
+  normalizeName, __statsOrfanos,
 } from './seguimiento.js';
 
 // ── fixtures ────────────────────────────────────────────────────────────────
@@ -28,7 +29,7 @@ import {
 /** A sticker as `/stickers-atencionsismo` serves it. */
 function sticker({
   cedula = '', nombre = '', fecha = '2026-09-10T14:00:00+00:00', fase = 1,
-  fuente = 'api', tarjeta = '', barrio = 'BARRIO',
+  fuente = 'api', tarjeta = '', barrio = 'BARRIO', entidad = '',
 } = {}) {
   return {
     // `fuente` is what stickers.js's tagFuente stamps on every record; faseKeyDe
@@ -39,20 +40,25 @@ function sticker({
     inspector_fuente: fuente,
     barrio,
     inspector: {
-      identificacion: cedula, nombre_completo: nombre, tarjeta_profesional: tarjeta, np: 'P1',
+      identificacion: cedula, nombre_completo: nombre, tarjeta_profesional: tarjeta, np: 'P1', entidad,
     },
   };
 }
 
-/** A Survey (`survey_cali`) record — never carries a cédula. */
-function survey({ nombre = '', fecha = '2026-09-10' } = {}) {
-  return { nombre_evaluador: nombre, fecha_inspeccion: fecha, entidad: '' };
+/** A Survey (`survey_cali`) record — never carries a cédula. `grupo`/`entidad` are the two
+ *  fields D-SUBSECUENCIA's corroboration guard reads (`id_grupo`, `entidad`). */
+function survey({
+  nombre = '', fecha = '2026-09-10', grupo = '', entidad = '',
+} = {}) {
+  return {
+    nombre_evaluador: nombre, fecha_inspeccion: fecha, entidad, id_grupo: grupo,
+  };
 }
 
 /** One `depuracion.inspectores` record. */
 function inspector({
   cedula, nombre, noPersona = false, estado = 'activo', codigo = '048',
-  alias = [], profesion = '', tarjeta = '', enfasis = '',
+  alias = [], profesion = '', tarjeta = '', enfasis = '', entidad = '',
 } = {}) {
   return {
     identidad_key: cedula,
@@ -60,7 +66,7 @@ function inspector({
     nombre_completo: nombre,
     cedulas_unificadas: alias,
     codigo,
-    entidad: '',
+    entidad,
     np: 'P2',
     np_fuente: 'vercel',
     fase: 'Fase I',
@@ -828,4 +834,712 @@ test('a no_persona record on the legacy path is not filtered (no depurado data t
   const { rows } = buildProfessionalRows({ stickers, surveys: [], today: '2026-09-19' });
   assert.equal(rows.length, 1);
   assert.equal(rows[0].stickersTotal, 1);
+});
+
+// ── D-SUBSECUENCIA (2026-09-20): orphan spellings resolve to the certified person ──
+//
+// The gap D-VARIANTE left open: it only ever compared TRUE PREFIXES with 3+ significant
+// tokens on the shorter side, so an inserted first name ("Nicole Tello Segura" vs "Jane
+// Nicole Tello Segura"), a two-token spelling ("Jairo Lopez" vs "Jairo Giovanny Lopez
+// Puentes") and every free-text Survey spelling that never reached the registry at all
+// stayed in their own "Sin dato" rows. The rule below is the in-order-subset generalisation,
+// with a corroboration guard on the two-token case. Typos are NEVER matched (see the
+// "one letter apart" tests): this rule is exact-token-only by design.
+
+/** The padrón + records of the production "Jairo Lopez" case (masked cédulas). */
+const SUB_CERT = { cedula: '1010000024', nombre: 'Carlos Arturo Guerrero Quezada' };
+
+function depuracionCon(inspectores, alias = {}) {
+  return depuracionBlock(inspectores, alias);
+}
+
+function filasDe({ stickers = [], surveys = [], depuracion }) {
+  const identity = buildIdentityIndex({ stickers, surveys, depuracion });
+  return { identity, ...buildProfessionalRows({ stickers, surveys, identity }) };
+}
+
+test('subsecuencia: a Survey spelling contained IN ORDER in ONE certified name lands in that row', () => {
+  const depuracion = depuracionCon([inspector({ cedula: SUB_CERT.cedula, nombre: SUB_CERT.nombre, codigo: '024' })]);
+  const surveys = [survey({ nombre: 'Carlos Arturo Guerrero' }), survey({ nombre: '  carlos arturo GUERRERO  ' })];
+  const { rows, totals } = filasDe({ surveys, depuracion });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].key, `ced:${SUB_CERT.cedula}`);
+  assert.equal(rows[0].surveyTotal, 2);
+  assert.equal(rows[0].name, 'Carlos Arturo Guerrero Quezada');
+  assert.equal(totals.padron, 1);
+  assert.equal(totals.surveys, 2);
+});
+
+test('subsecuencia: both directions — an orphan spelling carrying an EXTRA token merges too', () => {
+  const cedula = '1080000107';
+  const depuracion = depuracionCon([inspector({ cedula, nombre: 'Jhonatan Lozano Bastidas', codigo: '107' })]);
+  const surveys = [survey({ nombre: 'Jhonatan A. Lozano Bastidas' })];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.deepEqual(rows.map((r) => r.key), [`ced:${cedula}`]);
+  assert.equal(rows[0].surveyTotal, 1);
+});
+
+test('subsecuencia: an INSERTED first name resolves (the case the TRUE-prefix rule could not see)', () => {
+  const cedula = '1150000078';
+  const depuracion = depuracionCon([inspector({ cedula, nombre: 'JANE NICOLE TELLO SEGURA', codigo: '078' })]);
+  const surveys = [survey({ nombre: 'Nicole Tello Segura' })];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.deepEqual(rows.map((r) => r.key), [`ced:${cedula}`]);
+});
+
+test('subsecuencia: TWO certified candidates are never merged — each keeps its own row', () => {
+  // The production "Carlos Ospina" case: the registry carries the same human twice, once with a
+  // rank prefix. A frontend rule must not pick; both certified rows stay, the spelling stays apart.
+  const depuracion = depuracionCon([
+    inspector({ cedula: '1670000145', nombre: 'Carlos Emilio Ospina Monsalve', codigo: '145' }),
+    inspector({ cedula: '1570000000', nombre: 'Cn (Ra) Carlos Emilio Ospina Monsalve', codigo: '' }),
+  ]);
+  const surveys = [survey({ nombre: 'Carlos Emilio Ospina' })];
+  const { rows } = filasDe({ surveys, depuracion });
+  const conActividad = rows.filter((r) => r.total > 0);
+  assert.deepEqual(conActividad.map((r) => r.key), ['nom:carlos emilio ospina']);
+  assert.equal(rows.length, 3);
+});
+
+test('subsecuencia: a certified name that is a subset of ANOTHER certified name poisons the spelling', () => {
+  const depuracion = depuracionCon([
+    inspector({ cedula: '1000000001', nombre: 'Ana Maria Torres', codigo: '001' }),
+    inspector({ cedula: '1000000002', nombre: 'Ana Maria Torres Lopez', codigo: '002' }),
+  ]);
+  const surveys = [survey({ nombre: 'Ana Maria Torres Lopez Rojas' })];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.equal(rows.find((r) => r.total > 0).key, 'nom:ana maria torres lopez rojas');
+});
+
+test('subsecuencia: fewer than 2 SIGNIFICANT tokens on the shorter side is never absorbed', () => {
+  const depuracion = depuracionCon([
+    inspector({ cedula: '1000000003', nombre: 'Maria de la Cruz', codigo: '003' }),
+    inspector({ cedula: '1000000004', nombre: 'Juan David Hernandez Bueno', codigo: '004' }),
+  ]);
+  // "de la Cruz" -> 1 significant token (particles never count); "Juan" -> 1.
+  const surveys = [survey({ nombre: 'de la Cruz' }), survey({ nombre: 'Juan' })];
+  const { rows } = filasDe({ surveys, depuracion });
+  const conActividad = rows.filter((r) => r.total > 0).map((r) => r.key).sort();
+  assert.deepEqual(conActividad, ['nom:de la cruz', 'nom:juan']);
+});
+
+test('subsecuencia: a 2-significant-token spelling WITHOUT corroboration stays in its own row', () => {
+  const cedula = '1670000025';
+  const depuracion = depuracionCon([
+    inspector({ cedula, nombre: 'Fernando Alberto Padilla Ramirez', codigo: '025', entidad: 'SGRED' }),
+  ]);
+  const surveys = [survey({ nombre: 'Fernando Padilla' })];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.equal(rows.find((r) => r.total > 0).key, 'nom:fernando padilla');
+  assert.equal(rows.length, 2);
+});
+
+test('subsecuencia: a 2-significant-token spelling WITH the same entidad is absorbed', () => {
+  const cedula = '1670000025';
+  const depuracion = depuracionCon([
+    inspector({ cedula, nombre: 'Fernando Alberto Padilla Ramirez', codigo: '025', entidad: 'SGRED' }),
+  ]);
+  // Entidad is compared normalized: casing, accents and padding never split it.
+  const surveys = [survey({ nombre: 'Fernando Padilla', entidad: ' sgred ' })];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.deepEqual(rows.map((r) => r.key), [`ced:${cedula}`]);
+});
+
+test('subsecuencia: a shared id_grupo is NEVER corroboration (it is a 5-value bucket, not a team)', () => {
+  // Measured on the 2026-09-20 snapshot: `id_grupo` takes 5 distinct values over 1,909 Survey
+  // records ("otro" 715, "alcadia_ugr" 635, "amva" 374, blank 180, "NA" 5). Two strangers sharing
+  // one is worth nothing, so it is not evidence and the spelling stays in its own row.
+  const cedula = '1670000025';
+  const depuracion = depuracionCon([
+    inspector({ cedula, nombre: 'Fernando Alberto Padilla Ramirez', codigo: '025' }),
+  ]);
+  const surveys = [
+    survey({ nombre: 'Fernando Alberto Padilla Ramirez', grupo: 'otro' }),
+    survey({ nombre: 'Fernando Padilla', grupo: 'otro' }),
+  ];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.equal(rows.find((r) => r.total > 0 && r.key.startsWith('nom:')).key, 'nom:fernando padilla');
+});
+
+test('subsecuencia: an entidad carried by a LARGE share of the records is not discriminating', () => {
+  const cedula = '1670000025';
+  const depuracion = depuracionCon([
+    inspector({ cedula, nombre: 'Fernando Alberto Padilla Ramirez', codigo: '025', entidad: 'SGRED' }),
+  ]);
+  // "SGRED" here is what almost every record carries — a team label, not a link between two people.
+  const surveys = [survey({ nombre: 'Fernando Padilla', entidad: 'SGRED' })];
+  for (let i = 0; i < 12; i += 1) surveys.push(survey({ nombre: `Persona Numero ${i} Apellido`, entidad: 'SGRED' }));
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.ok(rows.some((r) => r.key === 'nom:fernando padilla' && r.surveyTotal === 1));
+});
+
+test('subsecuencia: a 2-significant-token spelling whose only shared context is a BLANK field is not absorbed', () => {
+  const cedula = '1670000025';
+  const depuracion = depuracionCon([
+    inspector({ cedula, nombre: 'Fernando Alberto Padilla Ramirez', codigo: '025', entidad: '   ' }),
+  ]);
+  const surveys = [
+    survey({ nombre: 'Fernando Alberto Padilla Ramirez', grupo: '', entidad: '' }),
+    survey({ nombre: 'Fernando Padilla', grupo: '', entidad: '  ' }),
+  ];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.equal(rows.find((r) => r.key.startsWith('nom:')).key, 'nom:fernando padilla');
+});
+
+test('subsecuencia: tokens OUT OF ORDER never merge', () => {
+  const depuracion = depuracionCon([inspector({ cedula: '1000000005', nombre: 'Juan Perez Gomez', codigo: '005' })]);
+  const surveys = [survey({ nombre: 'Gomez Juan Perez' }), survey({ nombre: 'Perez Juan' })];
+  const { rows } = filasDe({ surveys, depuracion });
+  const conActividad = rows.filter((r) => r.total > 0).map((r) => r.key).sort();
+  assert.deepEqual(conActividad, ['nom:gomez juan perez', 'nom:perez juan']);
+});
+
+test('subsecuencia: names that only SHARE a prefix and then diverge never merge', () => {
+  const depuracion = depuracionCon([
+    inspector({ cedula: '1000000006', nombre: 'Juan Carlos Ramirez Torres', codigo: '006' }),
+  ]);
+  const surveys = [survey({ nombre: 'Juan Carlos Gomez' })];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.equal(rows.find((r) => r.total > 0).key, 'nom:juan carlos gomez');
+});
+
+test('subsecuencia: a ONE-LETTER typo is never matched (typos stay out of scope, always)', () => {
+  const depuracion = depuracionCon([
+    inspector({ cedula: '1020000000', nombre: 'Juan Camilo Haya Castaño', codigo: '' }),
+    inspector({ cedula: '8000000022', nombre: 'Tito Alexis Monzón Leyva', codigo: '022' }),
+  ]);
+  const surveys = [survey({ nombre: 'Juan Camilo Aya Castaño' }), survey({ nombre: 'Tito Alexis Monzón Leiva' })];
+  const { rows } = filasDe({ surveys, depuracion });
+  const conActividad = rows.filter((r) => r.total > 0).map((r) => r.key).sort();
+  assert.deepEqual(conActividad, ['nom:juan camilo aya castano', 'nom:tito alexis monzon leiva']);
+});
+
+test('subsecuencia: an alias_nombres entry answering for a certified person WITH a row is never stolen', () => {
+  const depuracion = depuracionCon([
+    inspector({ cedula: '1000000007', nombre: 'Ana Maria Torres Lopez', codigo: '007' }),
+    inspector({ cedula: '1000000008', nombre: 'Beatriz Solano Diaz', codigo: '008' }),
+  ], { 'ana maria torres': '1000000008' });
+  const surveys = [survey({ nombre: 'Ana Maria Torres' })];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.equal(rows.find((r) => r.total > 0).key, 'ced:1000000008');
+});
+
+test('subsecuencia: an alias_nombres entry pointing at a ROWLESS no_persona stub IS overridden', () => {
+  // The production "Jairo Lopez" case: the backend alias pins 39 Survey records on a stub key
+  // that has no row, so the table showed a "Sin dato" row instead of the certified inspector.
+  const cert = '1010000033';
+  const stub = '2870000000';
+  const depuracion = depuracionCon([
+    inspector({ cedula: cert, nombre: 'Jairo Giovanny Lopez Puentes', codigo: '033', entidad: 'EDRU' }),
+    inspector({
+      cedula: stub, nombre: 'Jairo Lopez', noPersona: true, estado: 'no_persona', codigo: '',
+    }),
+  ], { 'jairo lopez': stub, 'jairo giovanny lopez puentes': cert });
+  const surveys = [survey({ nombre: 'Jairo Lopez', entidad: 'EDRU' }), survey({ nombre: 'Jairo lopez ', entidad: 'EDRU' })];
+  const { rows, totals } = filasDe({ surveys, depuracion });
+  assert.deepEqual(rows.map((r) => r.key), [`ced:${cert}`]);
+  assert.equal(rows[0].surveyTotal, 2);
+  assert.equal(rows[0].codigo, '033');
+  assert.equal(totals.padron, 1);
+});
+
+test('subsecuencia: a no_persona stub WITH a código is never absorbed, even with a unique candidate', () => {
+  const cert = '1010000033';
+  const stub = '2870000000';
+  const depuracion = depuracionCon([
+    inspector({ cedula: cert, nombre: 'Jairo Giovanny Lopez Puentes', codigo: '033', entidad: 'EDRU' }),
+    inspector({
+      cedula: stub, nombre: 'Jairo Lopez', noPersona: true, estado: 'no_persona', codigo: '099',
+    }),
+  ], { 'jairo lopez': stub });
+  const surveys = [survey({ nombre: 'Jairo Lopez', entidad: 'EDRU' })];
+  const { rows } = filasDe({ surveys, depuracion });
+  const orfana = rows.find((r) => r.key === `ced:${stub}`);
+  assert.ok(orfana, 'the stub with a código keeps its own orphan row');
+  assert.equal(orfana.surveyTotal, 1);
+  assert.equal(orfana.codigo, '', 'an orphan row never carries a depurado column');
+});
+
+test('subsecuencia: an absorbed stub re-points its OWN cédula and its cedulas_unificadas in ONE hop', () => {
+  const cert = '7940000063';
+  const stub = '2520000000';
+  const fusionada = '9990000000';
+  const depuracion = depuracionCon([
+    inspector({ cedula: cert, nombre: 'Evelio Castaño Arango', codigo: '063', entidad: 'Voluntarios' }),
+    inspector({
+      cedula: stub, nombre: 'Evelio Castaño', noPersona: true, estado: 'no_persona', codigo: '',
+      alias: [fusionada],
+    }),
+  ]);
+  const stickers = [
+    sticker({ cedula: stub, nombre: 'Evelio Castaño' }),
+    sticker({ cedula: fusionada, nombre: 'Evelio Castaño' }),
+    sticker({ cedula: cert, nombre: 'Evelio Castaño Arango' }),
+  ];
+  const surveys = [survey({ nombre: 'Evelio Castaño', entidad: 'Voluntarios' })];
+  const { rows, totals } = filasDe({ stickers, surveys, depuracion });
+  assert.deepEqual(rows.map((r) => r.key), [`ced:${cert}`]);
+  assert.equal(rows[0].stickersTotal, 3);
+  assert.equal(rows[0].surveyTotal, 1);
+  assert.equal(totals.unassigned, 0);
+});
+
+test('subsecuencia: no record is lost or double counted, and the padrón totals never move', () => {
+  const cert = '1010000024';
+  const depuracion = depuracionCon([
+    inspector({ cedula: cert, nombre: 'Carlos Arturo Guerrero Quezada', codigo: '024' }),
+    inspector({ cedula: '1010000099', nombre: 'Otra Persona Certificada', codigo: '099' }),
+  ]);
+  const stickers = [sticker({ cedula: cert, nombre: 'Carlos Arturo Guerrero Quezada' })];
+  const surveys = [survey({ nombre: 'Carlos Arturo Guerrero' }), survey({ nombre: 'Nadie Conocido Aqui' })];
+  const sinRegla = buildProfessionalRows({
+    stickers, surveys, identity: buildIdentityIndex({ stickers, surveys }),
+  });
+  const { rows, totals } = filasDe({ stickers, surveys, depuracion });
+  assert.equal(totals.stickers, sinRegla.totals.stickers);
+  assert.equal(totals.surveys, sinRegla.totals.surveys);
+  assert.equal(totals.unassigned, 0);
+  assert.equal(totals.stickersWithoutDate, 0);
+  // The padrón figures count PROFILES, so a merge of RECORDS can never move them.
+  assert.equal(totals.padron, 2);
+  assert.equal(totals.inspectoresActivos, 2);
+  // No record is lost and none is counted twice.
+  assert.equal(rows.reduce((n, r) => n + r.stickersTotal, 0), 1);
+  assert.equal(rows.reduce((n, r) => n + r.surveyTotal, 0), 2);
+});
+
+test('KPI: a name-only sticker re-attributed to an ACTIVE inspector DOES move stickersInspectoresActivos', () => {
+  // This KPI counts the stickers of profiles whose estado is exactly "activo", so re-attributing a
+  // name-only sticker to such a person MUST move it — that is the correction the owner asked for,
+  // not a regression. `inspectoresActivos` counts PROFILES and still cannot move.
+  const depuracion = depuracionCon([
+    inspector({ cedula: '1110000010', nombre: 'Camila Andrea Rojas Vargas', codigo: '010', estado: 'activo' }),
+  ]);
+  const stickers = [
+    sticker({ cedula: '', nombre: 'Camila Andrea Rojas' }),
+    sticker({ cedula: '', nombre: 'Camila Andrea Rojas' }),
+  ];
+  const conRegla = filasDe({ stickers, depuracion });
+  assert.deepEqual(conRegla.rows.filter((r) => r.total > 0).map((r) => r.key), ['ced:1110000010']);
+  assert.equal(conRegla.totals.stickersInspectoresActivos, 2);
+  assert.equal(conRegla.totals.inspectoresActivos, 1);
+  assert.equal(conRegla.totals.stickers, 2);
+  assert.equal(conRegla.totals.unassigned, 0);
+  // Stickers per active inspector: both stickers now belong to the one active profile.
+  assert.equal(conRegla.totals.stickersInspectoresActivos / conRegla.totals.inspectoresActivos, 2);
+});
+
+test('KPI: a name-only sticker carries the merge — its own entidad is the corroboration', () => {
+  // Kills "contextoDeNombres ignores stickers": the ONLY evidence for this two-token merge is the
+  // entidad on the sticker's own inspector block.
+  const cedula = '1670000025';
+  const depuracion = depuracionCon([
+    inspector({ cedula, nombre: 'Fernando Alberto Padilla Ramirez', codigo: '025', entidad: 'Acme Ingenieria SAS' }),
+  ]);
+  const stickers = [sticker({ cedula: '', nombre: 'Fernando Padilla', entidad: 'Acme Ingenieria SAS' })];
+  const { rows, totals } = filasDe({ stickers, depuracion });
+  assert.deepEqual(rows.filter((r) => r.total > 0).map((r) => r.key), [`ced:${cedula}`]);
+  assert.equal(rows.find((r) => r.key === `ced:${cedula}`).stickersTotal, 1);
+  assert.equal(totals.unassigned, 0);
+});
+
+test('subsecuencia: the result is independent of the order of inspectores, stickers and surveys', () => {
+  const inspectores = [
+    inspector({ cedula: '1010000024', nombre: 'Carlos Arturo Guerrero Quezada', codigo: '024' }),
+    inspector({ cedula: '1150000078', nombre: 'JANE NICOLE TELLO SEGURA', codigo: '078' }),
+    inspector({
+      cedula: '2870000000', nombre: 'Jairo Lopez', noPersona: true, estado: 'no_persona', codigo: '',
+    }),
+    inspector({ cedula: '1010000033', nombre: 'Jairo Giovanny Lopez Puentes', codigo: '033', entidad: 'EDRU' }),
+  ];
+  const surveys = [
+    survey({ nombre: 'Carlos Arturo Guerrero' }),
+    survey({ nombre: 'Nicole Tello Segura' }),
+    survey({ nombre: 'Jairo Lopez', entidad: 'EDRU' }),
+    survey({ nombre: 'Persona Sin Registro Alguno' }),
+  ];
+  const huella = (orden, ordenSurveys) => {
+    const depuracion = depuracionCon(orden, { 'jairo lopez': '2870000000' });
+    const { rows, totals } = filasDe({ surveys: ordenSurveys, depuracion });
+    return JSON.stringify({
+      filas: rows.map((r) => [r.key, r.name, r.surveyTotal]).sort(), totals,
+    });
+  };
+  const esperado = huella(inspectores, surveys);
+  const permutaciones = [
+    [...inspectores].reverse(),
+    [inspectores[2], inspectores[0], inspectores[3], inspectores[1]],
+    [inspectores[3], inspectores[2], inspectores[1], inspectores[0]],
+    [inspectores[1], inspectores[3], inspectores[0], inspectores[2]],
+  ];
+  for (const orden of permutaciones) {
+    assert.equal(huella(orden, [...surveys].reverse()), esperado);
+    assert.equal(huella(orden, surveys), esperado);
+  }
+});
+
+test('subsecuencia: the raw depuracion payload and the raw records are never mutated', () => {
+  const depuracion = depuracionCon([
+    inspector({ cedula: '1010000024', nombre: 'Carlos Arturo Guerrero Quezada', codigo: '024' }),
+    inspector({
+      cedula: '2870000000', nombre: 'Jairo Lopez', noPersona: true, estado: 'no_persona', codigo: '',
+    }),
+  ], { 'jairo lopez': '2870000000' });
+  const surveys = [survey({ nombre: 'Carlos Arturo Guerrero' })];
+  const stickers = [sticker({ cedula: '2870000000', nombre: 'Jairo Lopez' })];
+  const antes = JSON.stringify({ depuracion, surveys, stickers });
+  filasDe({ stickers, surveys, depuracion });
+  assert.equal(JSON.stringify({ depuracion, surveys, stickers }), antes);
+});
+
+test('subsecuencia: the legacy path (no depuracion / activa:false) never merges by subsequence', () => {
+  const surveys = [survey({ nombre: 'Carlos Arturo Guerrero' }), survey({ nombre: 'Carlos Arturo Guerrero Quezada' })];
+  for (const depuracion of [null, undefined, { activa: false, motivo: 'flag off' }]) {
+    const { rows, totals } = filasDe({ surveys, depuracion });
+    assert.deepEqual(rows.map((r) => r.key).sort(), ['nom:carlos arturo guerrero', 'nom:carlos arturo guerrero quezada']);
+    assert.equal(totals.padron, undefined);
+  }
+});
+
+test('subsecuencia: malformed records and a malformed padrón never throw and never merge', () => {
+  const depuracion = depuracionCon([
+    inspector({ cedula: '1010000024', nombre: 'Carlos Arturo Guerrero Quezada', codigo: '024' }),
+    null,
+    { identidad_key: '', nombre_completo: 'Sin Cedula Alguna' },
+    { identidad_key: '1010000077', nombre_completo: null, no_persona: true },
+  ]);
+  const surveys = [null, survey({ nombre: '' }), survey({ nombre: '   ' }), survey({ nombre: 'Carlos Arturo Guerrero' })];
+  const stickers = [null, { fuente: 'atencionsismo', fecha: '2026-09-10T14:00:00+00:00', fase: 1 }];
+  const { rows, totals } = filasDe({ stickers, surveys, depuracion });
+  assert.equal(rows.find((r) => r.total > 0).key, 'ced:1010000024');
+  assert.equal(totals.unassigned, 3);
+  const malformado = buildIdentityIndex({ stickers: [], surveys: [], depuracion: { activa: true, inspectores: 'nope' } });
+  assert.equal(malformado.profiles.size, 0);
+});
+
+// ── D-ORFANO-CANONICO (2026-09-20): duplicate spellings of the SAME orphan ──
+//
+// Rule A only ever aims at a CERTIFIED person. Everything it leaves behind is still split
+// across spellings of one unregistered human. Two steps close that, with the same guards:
+// (i) a spelling that is an in-order variant of exactly one unabsorbed `no_persona` stub
+// lands in that stub's cédula-keyed row; (ii) a purely name-keyed group collapses onto its
+// FULLEST spelling, which is also the name the row displays.
+
+test('canonico: a spelling that varies exactly ONE unabsorbed stub lands in the stub row', () => {
+  const stub = '5840000000';
+  const depuracion = depuracionCon([
+    inspector({
+      cedula: stub, nombre: 'Jenny Alejandra Marín Diosa', noPersona: true, estado: 'no_persona', codigo: '',
+    }),
+  ]);
+  const surveys = [
+    survey({ nombre: 'Jenny Alejandra Marín Diosa' }),
+    survey({ nombre: 'Alejandra Marín Diosa' }),
+  ];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.deepEqual(rows.map((r) => r.key), [`ced:${stub}`]);
+  assert.equal(rows[0].surveyTotal, 2);
+  assert.equal(rows[0].name, 'Jenny Alejandra Marín Diosa');
+  assert.equal(rows[0].estadoSugerido, '', 'an orphan row never gains a depurado column');
+});
+
+test('canonico: a spelling that varies TWO stubs stays in its own row', () => {
+  const depuracion = depuracionCon([
+    inspector({
+      cedula: '5840000000', nombre: 'Jenny Alejandra Marín Diosa', noPersona: true, estado: 'no_persona', codigo: '',
+    }),
+    inspector({
+      cedula: '3210000000', nombre: 'Alejandra Marín', noPersona: true, estado: 'no_persona', codigo: '',
+    }),
+  ]);
+  const surveys = [survey({ nombre: 'Jenny Alejandra Marín' })];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.deepEqual(rows.map((r) => r.key), ['nom:jenny alejandra marin']);
+});
+
+test('canonico: a purely name-keyed group collapses onto its FULLEST spelling', () => {
+  const depuracion = depuracionCon([]);
+  const surveys = [
+    survey({ nombre: 'Juan Camilo Aya' }),
+    survey({ nombre: 'JUAN CAMILO AYA CASTAÑO' }),
+    survey({ nombre: 'Juan Camilo Aya Castaño ' }),
+  ];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.deepEqual(rows.map((r) => r.key), ['nom:juan camilo aya castano']);
+  assert.equal(rows[0].surveyTotal, 3);
+  assert.equal(rows[0].name, 'Juan Camilo Aya Castaño');
+  assert.equal(rows[0].cedula, '');
+});
+
+test('canonico: a chain of spellings compresses to ONE row in a single hop', () => {
+  const depuracion = depuracionCon([]);
+  const surveys = [
+    survey({ nombre: 'Juan Camilo Aya' }),
+    survey({ nombre: 'Juan Camilo Aya Castaño' }),
+    survey({ nombre: 'Juan Camilo Aya Castaño Lopez' }),
+  ];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.deepEqual(rows.map((r) => r.key), ['nom:juan camilo aya castano lopez']);
+  assert.equal(rows[0].surveyTotal, 3);
+});
+
+test('canonico: a spelling with TWO longer candidates is never guessed', () => {
+  const depuracion = depuracionCon([]);
+  const surveys = [
+    survey({ nombre: 'Adan Duran' }),
+    survey({ nombre: 'Adan Duran Yomayusa' }),
+    survey({ nombre: 'Adan Duran Perez' }),
+  ];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.deepEqual(rows.map((r) => r.key).sort(), ['nom:adan duran', 'nom:adan duran perez', 'nom:adan duran yomayusa']);
+});
+
+test('canonico: a 2-significant-token spelling merges when it is a true PREFIX of exactly one longer one', () => {
+  const depuracion = depuracionCon([]);
+  const surveys = [survey({ nombre: 'Robbinson Villalobos' }), survey({ nombre: 'Robbinson Villalobos Reyes' })];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.deepEqual(rows.map((r) => r.key), ['nom:robbinson villalobos reyes']);
+  assert.equal(rows[0].name, 'Robbinson Villalobos Reyes');
+});
+
+test('canonico: a 2-significant-token NON-prefix spelling needs corroboration', () => {
+  const depuracion = depuracionCon([]);
+  const sinContexto = [survey({ nombre: 'Norha Cuellar' }), survey({ nombre: 'Luz Norha Cuellar' })];
+  assert.deepEqual(
+    filasDe({ surveys: sinContexto, depuracion }).rows.map((r) => r.key).sort(),
+    ['nom:luz norha cuellar', 'nom:norha cuellar'],
+  );
+  const conContexto = [
+    survey({ nombre: 'Norha Cuellar', entidad: 'Acme Siete' }),
+    survey({ nombre: 'Luz Norha Cuellar', entidad: 'Acme Siete' }),
+  ];
+  assert.deepEqual(filasDe({ surveys: conContexto, depuracion }).rows.map((r) => r.key), ['nom:luz norha cuellar']);
+});
+
+test('canonico: a spelling already resolved to a CERTIFIED person is never re-pointed at an orphan', () => {
+  const cedula = '1010000024';
+  const depuracion = depuracionCon([inspector({ cedula, nombre: 'Carlos Arturo Guerrero', codigo: '024' })]);
+  const surveys = [survey({ nombre: 'Carlos Arturo Guerrero' }), survey({ nombre: 'Carlos Arturo Guerrero Quezada' })];
+  const { rows } = filasDe({ surveys, depuracion });
+  const certificada = rows.find((r) => r.key === `ced:${cedula}`);
+  assert.ok(certificada && certificada.surveyTotal >= 1);
+  assert.equal(rows.filter((r) => r.total > 0).length, 1, 'the longer spelling joins the certified row, not the other way round');
+});
+
+test('canonico: single-token and sub-threshold spellings never collapse into a longer one', () => {
+  const depuracion = depuracionCon([]);
+  const surveys = [
+    survey({ nombre: 'Carlos' }),
+    survey({ nombre: 'Carlos Rivera Mora' }),
+    survey({ nombre: 'de la Cruz' }),
+    survey({ nombre: 'Maria de la Cruz Perez' }),
+  ];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.equal(rows.length, 4);
+});
+
+test('canonico: the collapse is order independent and conserves every record', () => {
+  const depuracion = depuracionCon([]);
+  const surveys = [
+    survey({ nombre: 'Juan Camilo Aya' }),
+    survey({ nombre: 'Juan Camilo Aya Castaño' }),
+    survey({ nombre: 'Robbinson Villalobos Reyes' }),
+    survey({ nombre: 'Robbinson Villalobos' }),
+  ];
+  const huella = (orden) => {
+    const { rows, totals } = filasDe({ surveys: orden, depuracion });
+    return JSON.stringify({ filas: rows.map((r) => [r.key, r.name, r.surveyTotal]).sort(), totals });
+  };
+  const esperado = huella(surveys);
+  assert.equal(huella([...surveys].reverse()), esperado);
+  assert.equal(huella([surveys[2], surveys[0], surveys[3], surveys[1]]), esperado);
+  const { rows, totals } = filasDe({ surveys, depuracion });
+  assert.equal(rows.reduce((n, r) => n + r.surveyTotal, 0), 4);
+  assert.equal(totals.surveys, 4);
+  assert.equal(totals.unassigned, 0);
+});
+
+test('subsecuencia: a cell naming TWO people ("A / B") is never credited to either of them', () => {
+  // Real registry artefact: `no_persona` stubs whose `nombre_completo` lists a pair. A slash is
+  // never part of one human's name, so the whole spelling is out of every merge, as source and
+  // as target — the records stay in their own orphan row instead of being credited to one half.
+  const depuracion = depuracionCon([
+    inspector({ cedula: '6680000042', nombre: 'ANA MILENA MEJIA SALGADO', codigo: '042', entidad: 'EDRU' }),
+    inspector({
+      cedula: '4330000000', nombre: 'Leonardo Lenis Palomino / Ana Milena Mejía Salgado',
+      noPersona: true, estado: 'no_persona', codigo: '',
+    }),
+  ], { 'leonardo lenis palomino / ana milena mejia salgado': '4330000000' });
+  const surveys = [survey({ nombre: 'Leonardo Lenis Palomino / Ana Milena Mejía Salgado', entidad: 'EDRU' })];
+  const { rows } = filasDe({ surveys, depuracion });
+  const conActividad = rows.filter((r) => r.total > 0);
+  assert.deepEqual(conActividad.map((r) => r.key), ['ced:4330000000']);
+  assert.equal(conActividad[0].codigo, '');
+});
+
+test('canonico: a joint "A / B" spelling is never collapsed into a single-person orphan either', () => {
+  const depuracion = depuracionCon([]);
+  const surveys = [
+    survey({ nombre: 'Camilo Castro / Tulio Rivera' }),
+    survey({ nombre: 'Camilo Castro' }),
+    survey({ nombre: 'Camilo Castro Rivera' }),
+  ];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.ok(rows.some((r) => r.key === 'nom:camilo castro / tulio rivera'));
+  assert.equal(rows.length, 2, 'the two single-person spellings still collapse between themselves');
+});
+
+test('subsecuencia: SIGNIFICANT tokens, not raw ones, gate the merge — even WITH corroboration', () => {
+  // The guard that stops "Maria de la Cruz" from swallowing "de la Cruz" and "J D Hernandez Bueno"
+  // from swallowing "J D Hernandez": both shorter sides have 3 RAW tokens but only ONE that
+  // identifies a person, so no amount of shared entidad may merge them.
+  const depuracion = depuracionCon([
+    inspector({ cedula: '1000000011', nombre: 'Maria de la Cruz Perez', codigo: '011', entidad: 'SGRED' }),
+    inspector({ cedula: '1000000012', nombre: 'J D Hernandez Bueno', codigo: '012', entidad: 'SGRED' }),
+  ]);
+  const surveys = [
+    survey({ nombre: 'de la Cruz', entidad: 'SGRED', grupo: 'G-1' }),
+    survey({ nombre: 'J D Hernandez', entidad: 'SGRED', grupo: 'G-1' }),
+  ];
+  const { rows } = filasDe({ surveys, depuracion });
+  const conActividad = rows.filter((r) => r.total > 0).map((r) => r.key).sort();
+  assert.deepEqual(conActividad, ['nom:de la cruz', 'nom:j d hernandez']);
+});
+
+// ── Review round 3 (2026-09-20): initials, multi-person cells, pass-4 cost ──
+
+test('subsecuencia: an initial written WITH a period is still not a significant token', () => {
+  // "j." and "d." are one letter plus punctuation: spelling, not identity. Counting them would let
+  // "J. D. Hernandez" be absorbed by "J. D. Hernandez Bueno" — a different human entirely.
+  const depuracion = depuracionCon([
+    inspector({ cedula: '1000000021', nombre: 'J. D. Hernandez Bueno', codigo: '021', entidad: 'Acme Uno' }),
+  ]);
+  const surveys = [survey({ nombre: 'J. D. Hernandez', entidad: 'Acme Uno' })];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.equal(rows.find((r) => r.total > 0).key, 'nom:j. d. hernandez');
+});
+
+test('subsecuencia: a name with ONE initial still carries its other two significant tokens', () => {
+  // "Fernando A. Padilla" is 2 significant tokens (the "A." does not count), so it merges only
+  // WITH a discriminating entidad — never on the name alone.
+  const cedula = '1000000022';
+  const padron = [inspector({ cedula, nombre: 'Fernando A. Padilla Ramirez', codigo: '022', entidad: 'Acme Dos' })];
+  const sinEntidad = filasDe({ surveys: [survey({ nombre: 'Fernando A. Padilla' })], depuracion: depuracionCon(padron) });
+  assert.equal(sinEntidad.rows.find((r) => r.total > 0).key, 'nom:fernando a. padilla');
+  const conEntidad = filasDe({
+    surveys: [survey({ nombre: 'Fernando A. Padilla', entidad: 'Acme Dos' })], depuracion: depuracionCon(padron),
+  });
+  assert.deepEqual(conEntidad.rows.filter((r) => r.total > 0).map((r) => r.key), [`ced:${cedula}`]);
+});
+
+test('varias personas: a CERTIFIED row naming several people is never a merge TARGET either', () => {
+  // Real registry value. Before this guard it was a legal destination, so two different humans'
+  // records were credited to one padrón row.
+  const depuracion = depuracionCon([
+    inspector({
+      cedula: '3330000000', nombre: 'Walter Vasquez, Arq Samuel Jiménez, Arq Yeini Roa, Arq Luisa Quiñones',
+      codigo: '333', entidad: 'Acme Tres',
+    }),
+  ]);
+  const surveys = [
+    survey({ nombre: 'Walter Vasquez Samuel Jimenez', entidad: 'Acme Tres' }),
+    survey({ nombre: 'Samuel Jimenez Yeini Roa', entidad: 'Acme Tres' }),
+  ];
+  const { rows } = filasDe({ surveys, depuracion });
+  const conActividad = rows.filter((r) => r.total > 0).map((r) => r.key).sort();
+  assert.deepEqual(conActividad, ['nom:samuel jimenez yeini roa', 'nom:walter vasquez samuel jimenez']);
+});
+
+test('varias personas: " y " between two multi-token names is two people, as source AND as target', () => {
+  const conjunta = 'Leonardo Lenis Palomino y Ana Milena Mejia Salgado';
+  // (a) as a SOURCE: the Survey cell must not be credited to the certified half.
+  const comoOrigen = filasDe({
+    surveys: [survey({ nombre: conjunta, entidad: 'Acme Cuatro' })],
+    depuracion: depuracionCon([
+      inspector({ cedula: '6680000042', nombre: 'Ana Milena Mejia Salgado', codigo: '042', entidad: 'Acme Cuatro' }),
+    ]),
+  });
+  assert.equal(comoOrigen.rows.find((r) => r.total > 0).key, `nom:${normalizeName(conjunta)}`);
+  // (b) as a TARGET: a single person's spelling must not be absorbed by the joint padrón row.
+  const comoDestino = filasDe({
+    surveys: [survey({ nombre: 'Ana Milena Mejia Salgado', entidad: 'Acme Cuatro' })],
+    depuracion: depuracionCon([
+      inspector({ cedula: '4330000001', nombre: `${conjunta} Rojas`, codigo: '433', entidad: 'Acme Cuatro' }),
+    ]),
+  });
+  assert.equal(comoDestino.rows.find((r) => r.total > 0).key, 'nom:ana milena mejia salgado');
+});
+
+test('varias personas: commas and the other separators mark a cell as several people', () => {
+  const depuracion = depuracionCon([
+    inspector({ cedula: '1000000031', nombre: 'Camilo Castro Rivera', codigo: '031', entidad: 'Acme Cinco' }),
+    inspector({ cedula: '1000000032', nombre: 'Luz Maritza Romero Castro', codigo: '032', entidad: 'Acme Cinco' }),
+  ]);
+  const surveys = [
+    survey({ nombre: 'Camilo castro, Tulio Rivera', entidad: 'Acme Cinco' }),
+    survey({ nombre: 'Luz, Maritza, Romero, Castro.', entidad: 'Acme Cinco' }),
+    survey({ nombre: 'Ana Perez & Juan Gomez', entidad: 'Acme Cinco' }),
+    survey({ nombre: 'Ana Perez + Juan Gomez', entidad: 'Acme Cinco' }),
+    survey({ nombre: 'Ana Perez; Juan Gomez', entidad: 'Acme Cinco' }),
+  ];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.equal(rows.filter((r) => r.total > 0).length, 5, 'each joint cell keeps its own row');
+  assert.ok(rows.every((r) => !r.key.startsWith('ced:') || r.total === 0));
+});
+
+test('varias personas: a lone particle, and a " y " with a one-token side, are NOT two people', () => {
+  // Never over-exclude: "Maria de los Angeles" is one human, and "Ortiz y Pino" is a surname pair
+  // inside ONE name. Known and accepted miss on the same side of the line: "Mari Sol y Julián"
+  // really is two people but has a one-token right side, so it is treated as a single name.
+  const depuracion = depuracionCon([
+    inspector({ cedula: '1000000041', nombre: 'Maria de los Angeles Perez', codigo: '041', entidad: 'Acme Seis' }),
+    inspector({ cedula: '1000000042', nombre: 'Ortiz y Pino Ramirez Solano', codigo: '042', entidad: 'Acme Seis' }),
+  ]);
+  const surveys = [
+    survey({ nombre: 'Maria de los Angeles', entidad: 'Acme Seis' }),
+    survey({ nombre: 'Ortiz y Pino Ramirez', entidad: 'Acme Seis' }),
+  ];
+  const { rows } = filasDe({ surveys, depuracion });
+  assert.deepEqual(
+    rows.filter((r) => r.total > 0).map((r) => r.key).sort(),
+    ['ced:1000000041', 'ced:1000000042'],
+  );
+});
+
+test('perf: pass 4 stays linear when thousands of orphan spellings share their leading tokens', () => {
+  // Pathological shape from the reviewer's perf2.mjs: N spellings that all begin "Juan Carlos".
+  // Indexing by the query's RAREST token keeps every lookup to a one- or two-element bucket.
+  const N = 4000;
+  const surveys = [];
+  for (let i = 0; i < N; i += 1) surveys.push(survey({ nombre: `Juan Carlos Ape${i}` }));
+  surveys.push(survey({ nombre: 'Juan Carlos Ape7 Lopez' }));
+  const inicio = Date.now();
+  const identity = buildIdentityIndex({ stickers: [], surveys, depuracion: depuracionCon([]) });
+  const ms = Date.now() - inicio;
+  const stats = __statsOrfanos();
+  // Instrumented, not wall-clock: the bound is what makes the test non-flaky. A quadratic scan
+  // would be ~N*N/2 = 8,000,000 comparisons here.
+  assert.ok(stats.comparacionesPase4 <= 4 * N,
+    `pass 4 made ${stats.comparacionesPase4} comparisons for ${N} spellings (bound ${4 * N})`);
+  assert.ok(ms < 300, `buildIdentityIndex took ${ms} ms for ${N} shared-prefix spellings`);
+  // Correctness is not traded away: the one real variant still collapses.
+  const { rows } = buildProfessionalRows({ stickers: [], surveys, identity });
+  assert.ok(rows.some((r) => r.key === 'nom:juan carlos ape7 lopez' && r.surveyTotal === 2));
+  assert.equal(rows.length, N);
+});
+
+test('varias personas: "&" and "+" separate two people even when the tokens would line up', () => {
+  // Unlike a comma (which sticks to the preceding token and breaks the match by itself), "&" and
+  // "+" are standalone tokens, so WITHOUT this guard "Ana Perez & Juan Gomez" is a clean in-order
+  // superset of the certified "Ana Perez Gomez" and would be credited to her.
+  const depuracion = depuracionCon([
+    inspector({ cedula: '1000000051', nombre: 'Ana Perez Gomez', codigo: '051', entidad: 'Acme Ocho' }),
+  ]);
+  const surveys = [
+    survey({ nombre: 'Ana Perez & Juan Gomez', entidad: 'Acme Ocho' }),
+    survey({ nombre: 'Ana Perez + Juan Gomez', entidad: 'Acme Ocho' }),
+  ];
+  const { rows } = filasDe({ surveys, depuracion });
+  const conActividad = rows.filter((r) => r.total > 0).map((r) => r.key).sort();
+  assert.deepEqual(conActividad, ['nom:ana perez & juan gomez', 'nom:ana perez + juan gomez']);
 });

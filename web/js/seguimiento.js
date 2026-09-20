@@ -290,7 +290,7 @@ export function professionalKeyOf(record, identity = EMPTY_IDENTITY) {
     const nameKey = normalizeName(record.nombre_evaluador || '');
     if (!nameKey) return '';
     if (idx.nameToCedula.has(nameKey)) return `ced:${idx.nameToCedula.get(nameKey)}`;
-    return `nom:${nameKey}`;
+    return `nom:${claveCanonicaDe(idx, nameKey)}`;
   }
   const insp = record.inspector || {};
   const ownCedula = cedulaKey(insp.identificacion);
@@ -305,7 +305,16 @@ export function professionalKeyOf(record, identity = EMPTY_IDENTITY) {
   }
   const nameKey = normalizeName(insp.nombre_completo || '');
   if (nameKey && idx.nameToCedula.has(nameKey)) return `ced:${idx.nameToCedula.get(nameKey)}`;
-  return nameKey ? `nom:${nameKey}` : '';
+  return nameKey ? `nom:${claveCanonicaDe(idx, nameKey)}` : '';
+}
+
+/** D-ORFANO-CANONICO: the spelling an orphan `nom:` key is filed under. `identity.nombreCanonico`
+ *  exists ONLY on a depurado index that found at least one variant group, so the legacy path (and
+ *  every single-source call that passes no identity at all) keeps returning the raw name key,
+ *  byte-identical to before. */
+function claveCanonicaDe(idx, nameKey) {
+  const canonico = idx.nombreCanonico instanceof Map ? idx.nombreCanonico.get(nameKey) : '';
+  return canonico || nameKey;
 }
 
 /** D-PROFESION-CASE (2026-09-19): presentation-only normalization of the registry's free-text profession, so
@@ -415,7 +424,13 @@ const VARIANTE_MIN_TOKENS = 3;
  *  still take part in the prefix comparison; only the THRESHOLD ignores them. */
 function tokensSignificativos(tokens) {
   let n = 0;
-  for (const token of tokens) if (token.length > 1 && !PARTICULAS_NOMBRE.has(token)) n += 1;
+  for (const token of tokens) {
+    if (PARTICULAS_NOMBRE.has(token)) continue;
+    // Review round 3 (2026-09-20): an initial written WITH a period ("j.", "a.") is ONE letter plus
+    // punctuation — spelling, not identity — so only the letters decide. A purely numeric token
+    // ("76202") is never part of a name either and stops counting for the same reason.
+    if ((token.match(/\p{L}/gu) || []).length > 1) n += 1;
+  }
   return n;
 }
 
@@ -472,6 +487,462 @@ function variantePadronDe(tokens, { porPrefijo, porNombreCompleto }) {
   return candidatos.size === 1 ? [...candidatos][0] : '';
 }
 
+// ── D-SUBSECUENCIA / D-ORFANO-CANONICO (2026-09-20) ─────────────────────────
+//
+// What D-VARIANTE above could NOT see, and what these rules add:
+//
+//   D-VARIANTE      compares TRUE PREFIXES of a `no_persona` stub against the padrón, with 3+
+//                   significant tokens on the shorter side. 10 of 122 stubs matched.
+//   D-SUBSECUENCIA  compares ANY name text (a stub's, or a free-text Survey/sticker spelling)
+//                   against the padrón with the tokens of the shorter side appearing IN ORDER
+//                   inside the longer one — so an inserted first name ("Nicole Tello Segura"
+//                   inside "Jane Nicole Tello Segura") and a dropped middle name resolve too.
+//   D-ORFANO-      what is left over still belongs to ONE unregistered human spelled several
+//   CANONICO       ways; those rows collapse onto the fullest spelling.
+//
+// Tokens are compared BYTE-EQUAL over `normalizeName` in every one of them: a typo is a
+// different token and never matches ("Aya"/"Haya", "Jhon"/"John", "Leiva"/"Leyva" all stay
+// apart, deliberately — see the design record).
+
+/** Instrumentation for the perf test ONLY: how much work the last depurado
+ *  `resolverOrfanos` run did. A comparison counter is what makes that test a real bound instead of
+ *  a flaky wall-clock assertion. Never read by the app. */
+const contadoresOrfanos = { comparacionesPase4: 0 };
+
+export function __statsOrfanos() {
+  return { ...contadoresOrfanos };
+}
+
+/** Every token of `corto` appears, IN ORDER, inside `largo` (a subsequence, not a substring, and
+ *  not merely a shared prefix): "nicole tello segura" fits inside "jane nicole tello segura",
+ *  while "juan carlos gomez" does NOT fit inside "juan carlos ramirez torres". */
+function subsecuenciaEnOrden(corto, largo) {
+  let i = 0;
+  for (const token of largo) {
+    if (i < corto.length && corto[i] === token) i += 1;
+  }
+  return i === corto.length;
+}
+
+/** `corto` is the literal BEGINNING of `largo` (the D-VARIANTE relation, reused as the two-token
+ *  escape hatch below). */
+function esPrefijoDeNombre(corto, largo) {
+  if (corto.length > largo.length) return false;
+  for (let i = 0; i < corto.length; i += 1) if (corto[i] !== largo[i]) return false;
+  return true;
+}
+
+/** D-SUBSECUENCIA: the SHORTER of the two names must carry at least this many SIGNIFICANT tokens
+ *  (`tokensSignificativos`). One ("Juan", "de la Cruz") names anybody at all. */
+const SUBSECUENCIA_MIN_TOKENS = 2;
+
+/** At or below this many significant tokens the name by itself is NOT evidence: "Fernando
+ *  Padilla" or "Carlos Rivera" name many humans, and the people this view is missing are
+ *  precisely the ones ABSENT from the registry — so an unregistered homonym is likelier here
+ *  than anywhere else. Such a merge also needs corroboration from the records themselves (a
+ *  shared Survey `id_grupo`, or the same `entidad`). Three or more significant tokens in the
+ *  same order are already a name and need none. */
+const SUBSECUENCIA_CORROBORACION_MAX = 2;
+
+/** The two token sequences as `{corto, largo}` when one is an in-order variant of the other and
+ *  the shorter side clears `SUBSECUENCIA_MIN_TOKENS`, else `null`. */
+function varianteDeNombre(a, b) {
+  if (!a.length || !b.length) return null;
+  const corto = a.length <= b.length ? a : b;
+  const largo = a.length <= b.length ? b : a;
+  if (tokensSignificativos(corto) < SUBSECUENCIA_MIN_TOKENS) return null;
+  return subsecuenciaEnOrden(corto, largo) ? { corto, largo } : null;
+}
+
+/** An `entidad` is evidence only when it is NOT a team-wide label. Measured over the 4,951 records
+ *  that feed this index on the 2026-09-20 snapshot (1,909 Survey + 3,042 stickers): "sgred"
+ *  appears 1,835 times and "voluntario" 325 — a whole organisation, not a link between two
+ *  people — while "edru" (110), "gc1" (78) and "voluntarios" (20) are actual small teams. The
+ *  ceiling is therefore a FRACTION of the records, never a hand-picked deny-list, so a future
+ *  "SGRED-for-everybody" value disqualifies itself. `id_grupo` is deliberately NOT here: it takes
+ *  5 values over the whole dataset ("otro" 715, "alcadia_ugr" 635, "amva" 374, blank 180, "NA" 5),
+ *  so two strangers sharing one is worth nothing (review round 3, 2026-09-20). */
+const ENTIDAD_DISCRIMINANTE_MAX_FRACCION = 0.05;
+/** Floor, so the rule still works on a handful of records: without it a two-record dataset would
+ *  have a ceiling of 0 and no entidad could ever corroborate anything. */
+const ENTIDAD_DISCRIMINANTE_MIN_REGISTROS = 2;
+
+/** Per-spelling corroboration context, keyed by `normalizeName`: the `entidad`es the records of
+ *  that EXACT spelling carry, plus the fullest raw spelling seen (what a canonical orphan row
+ *  displays). `entidad` is compared normalized, so casing/accents/padding never split a real
+ *  match; a blank value is dropped, so it can never manufacture one. Also returns which entidades
+ *  are discriminating enough to be evidence at all (see the constants above). */
+function contextoDeNombres(stickers, surveys) {
+  const ctx = new Map();
+  const ocurrencias = new Map();
+  let registros = 0;
+  const asegurar = (raw) => {
+    const clave = normalizeName(raw);
+    if (!clave) return null;
+    let entrada = ctx.get(clave);
+    if (!entrada) {
+      entrada = {
+        nombre: clave,
+        tokens: clave.split(' '),
+        entidades: new Set(),
+        crudo: '',
+        conjunto: nombreDeVariasPersonas(clave),
+      };
+      ctx.set(clave, entrada);
+    }
+    const texto = String(raw).trim().replace(/\s+/g, ' ');
+    // Longest wins, ties broken lexicographically so the choice never depends on record order.
+    if (texto.length > entrada.crudo.length
+      || (texto.length === entrada.crudo.length && texto < entrada.crudo)) entrada.crudo = texto;
+    return entrada;
+  };
+  const anotarEntidad = (entrada, raw) => {
+    const entidad = normalizeName(raw);
+    if (!entidad) return;
+    ocurrencias.set(entidad, (ocurrencias.get(entidad) || 0) + 1);
+    if (entrada) entrada.entidades.add(entidad);
+  };
+  for (const sv of surveys) {
+    if (!sv) continue;
+    registros += 1;
+    anotarEntidad(asegurar(sv.nombre_evaluador), sv.entidad);
+  }
+  for (const s of stickers) {
+    if (!s) continue;
+    registros += 1;
+    const insp = s.inspector || {};
+    anotarEntidad(asegurar(insp.nombre_completo), insp.entidad);
+  }
+  const techo = Math.max(
+    ENTIDAD_DISCRIMINANTE_MIN_REGISTROS,
+    Math.floor(registros * ENTIDAD_DISCRIMINANTE_MAX_FRACCION),
+  );
+  const discriminantes = new Set();
+  for (const [entidad, n] of ocurrencias) if (n <= techo) discriminantes.add(entidad);
+  return { porNombre: ctx, discriminantes };
+}
+
+/** A cell that names SEVERAL people. Real values from this dataset: "Leonardo Lenis Palomino / Ana
+ *  Milena Mejía Salgado", "Walter Vasquez, Arq Samuel Jiménez, Arq Yeini Roa, Arq Luisa Quiñones",
+ *  "Camilo castro, Tulio Rivera", "Luz, Maritza, Romero, Castro.". Crediting a joint record to
+ *  whichever half happens to be in the padrón would invent work for that person, so such a text
+ *  takes part in NO merge — not as a source, and (review round 3) not as a padrón TARGET either.
+ *
+ *  Two signals, both deliberately conservative, because excluding is the safe direction here and
+ *  a false exclusion only costs one orphan row: (a) a separator that is never part of one human's
+ *  name — "/", ",", ";", "&", "+"; (b) a bare " y "/" e " with at least TWO significant tokens on
+ *  EACH side ("Leonardo Lenis Palomino y Ana Milena Mejia Salgado"). A particle inside one name
+ *  never trips (b) — "Maria de los Angeles", "Jose de la Cruz y los Santos" — and neither does a
+ *  surname pair with a one-token side ("Ortiz y Pino"). Known miss on that same line, accepted:
+ *  "Mari Sol y Julián" IS two people but its right side has one token, so it reads as one name. */
+const SEPARADOR_VARIAS_PERSONAS_RE = /[/,;&+]/;
+const CONJUNCIONES_VARIAS_PERSONAS = new Set(['y', 'e']);
+
+function nombreDeVariasPersonas(texto) {
+  const crudo = String(texto === null || texto === undefined ? '' : texto);
+  if (SEPARADOR_VARIAS_PERSONAS_RE.test(crudo)) return true;
+  const tokens = normalizeName(crudo).split(' ').filter(Boolean);
+  for (let i = 1; i < tokens.length - 1; i += 1) {
+    if (!CONJUNCIONES_VARIAS_PERSONAS.has(tokens[i])) continue;
+    if (tokensSignificativos(tokens.slice(0, i)) >= 2
+      && tokensSignificativos(tokens.slice(i + 1)) >= 2) return true;
+  }
+  return false;
+}
+
+
+/** An empty corroboration context — a destination nobody's records describe never corroborates. */
+function contextoVacio() {
+  return { entidades: new Set() };
+}
+
+/** Folds `origen`'s entidades into `destino` (which may be undefined: then nothing). */
+function fundirContexto(destino, origen) {
+  if (!destino || !origen) return;
+  for (const entidad of origen.entidades) destino.entidades.add(entidad);
+}
+
+/** Whether two contexts share a DISCRIMINATING entidad. Missing context, a blank value and a
+ *  team-wide label all fail to corroborate: the only "yes" is a small shared organisation. */
+function contextosCorroboran(a, b, discriminantes) {
+  if (!a || !b) return false;
+  for (const entidad of a.entidades) {
+    if (discriminantes.has(entidad) && b.entidades.has(entidad)) return true;
+  }
+  return false;
+}
+
+
+/** Entries indexed by every token their name carries. A variant match needs ALL of the shorter
+ *  side's tokens inside the longer one, so the two always share the shorter side's first token —
+ *  one lookup per token of the query reaches every candidate without rescanning the padrón. */
+function indicePorToken(entradas) {
+  const porToken = new Map();
+  for (const entrada of entradas) {
+    for (const token of new Set(entrada.tokens)) {
+      if (!porToken.has(token)) porToken.set(token, []);
+      porToken.get(token).push(entrada);
+    }
+  }
+  return porToken;
+}
+
+/** Every entry of `porToken` whose name is an in-order variant of `tokens`, each with the
+ *  `{corto, largo}` of that match (the two-token guards need both sides). `excluir` drops the
+ *  query's own entry when the index and the query come from the same set. */
+function variantesDe(tokens, porToken, excluir = null) {
+  const vistos = new Set();
+  const encontrados = [];
+  for (const token of tokens) {
+    for (const entrada of porToken.get(token) || []) {
+      if (entrada === excluir || vistos.has(entrada)) continue;
+      vistos.add(entrada);
+      const par = varianteDeNombre(tokens, entrada.tokens);
+      if (par) encontrados.push({ entrada, ...par });
+    }
+  }
+  return encontrados;
+}
+
+/** Pass 4 asks a FIXED question — "which STRICTLY LONGER orphan spelling contains this one in
+ *  order?" — so a candidate must carry EVERY token of the query and therefore lives in the bucket
+ *  of every one of them. Scanning the RAREST of those buckets is both correct (it is a superset of
+ *  the answer) and the cheapest possible: 4,000 spellings that all begin "Juan Carlos" cost 4,000
+ *  lookups of a one-element bucket instead of the ~8,000,000 comparisons a union scan made
+ *  (review round 3, 2026-09-20 — `variantesDe`'s union is still right for passes 1-3, where the
+ *  query may be the LONGER side and the padrón/stub indexes are small and bounded). */
+function variantesContenedoras(tokens, porToken, excluir) {
+  if (tokensSignificativos(tokens) < SUBSECUENCIA_MIN_TOKENS) return [];
+  let cubo = null;
+  for (const token of tokens) {
+    const actual = porToken.get(token) || [];
+    if (cubo === null || actual.length < cubo.length) cubo = actual;
+    if (cubo.length === 0) return [];
+  }
+  const encontrados = [];
+  for (const entrada of cubo || []) {
+    // Counted BEFORE the filters: this is the real work of the pass, and it is what the perf test
+    // bounds. Scanning the widest bucket instead of the rarest is exactly what that bound catches.
+    contadoresOrfanos.comparacionesPase4 += 1;
+    if (entrada === excluir || entrada.tokens.length <= tokens.length) continue;
+    if (subsecuenciaEnOrden(tokens, entrada.tokens)) {
+      encontrados.push({ entrada, corto: tokens, largo: entrada.tokens });
+    }
+  }
+  return encontrados;
+}
+
+/** The single destination `candidatos` agree on, or `''` when there is none or more than one.
+ *  `clave` reads the destination off an entry — poisoning by disagreement is the ONLY way two
+ *  humans can ever be kept apart here, so it is applied before anything else is considered. */
+function destinoUnico(candidatos, clave) {
+  const destinos = new Set(candidatos.map(({ entrada }) => clave(entrada)));
+  return destinos.size === 1 ? [...destinos][0] : '';
+}
+
+/** The weakest (fewest significant tokens) shorter side among `candidatos` — the conservative
+ *  input to the corroboration guard when one destination was reached by several spellings. */
+function minimoSignificativo(candidatos) {
+  return candidatos.reduce((min, { corto }) => Math.min(min, tokensSignificativos(corto)), Infinity);
+}
+
+/** D-ORFANO-CANONICO: the direct parent of a spelling among its STRICTLY LONGER orphan variants.
+ *  Several candidates are NOT automatically an ambiguity: "Juan Camilo Aya" sits inside "Juan
+ *  Camilo Aya Castaño", which sits inside "Juan Camilo Aya Castaño Lopez" — one chain, one human,
+ *  and the shortest candidate is the next link (the chain is then compressed, so all three land in
+ *  the same row). Two candidates that are NOT variants of each other ("Adan Duran Yomayusa" vs
+ *  "Adan Duran Perez") ARE an ambiguity and poison the spelling. Deterministic: the sort breaks
+ *  ties by name, never by record order. */
+function padreDeCadena(candidatos) {
+  if (!candidatos.length) return null;
+  const orden = [...candidatos].sort((a, b) => (
+    a.entrada.tokens.length - b.entrada.tokens.length
+    || (a.entrada.nombre < b.entrada.nombre ? -1 : 1)
+  ));
+  for (let i = 1; i < orden.length; i += 1) {
+    if (!subsecuenciaEnOrden(orden[i - 1].entrada.tokens, orden[i].entrada.tokens)) return null;
+  }
+  return orden[0];
+}
+
+/** D-SUBSECUENCIA + D-ORFANO-CANONICO, the whole resolution. Collect-then-apply throughout: every
+ *  pass reads a snapshot, decides, and only then writes, so NOTHING depends on the order of
+ *  `depuracion.inspectores`, of the stickers or of the Survey records (pinned by permutation
+ *  tests). Mutates `nameToCedula`/`cedulaFusionadaACedulaSurvivor` in place — the same two maps
+ *  D-VARIANTE already filled — and returns the name-only canonicalization, which has no cédula to
+ *  hang off and therefore needs its own map.
+ *
+ *  Passes, in order:
+ *    1. spelling -> certified person (the "Sin dato" rows the owner reported);
+ *    2. `no_persona` stub key -> certified person (the stub's own row disappears with it);
+ *    3. spelling -> unabsorbed stub (D-ORFANO-CANONICO i: the orphan already HAS a cédula row);
+ *    4. spelling -> fullest spelling  (D-ORFANO-CANONICO ii: no cédula anywhere).
+ *  1 and 2 aim ONLY at certified people, so an orphan is never preferred over the padrón. */
+function resolverOrfanos({
+  certificados, stubs, profiles, nameToCedula, cedulaFusionadaACedulaSurvivor,
+  cedulasCertificadas, stickers, surveys,
+}) {
+  contadoresOrfanos.comparacionesPase4 = 0;
+  const { porNombre: ctxNombres, discriminantes } = contextoDeNombres(stickers, surveys);
+  const corroboran = (a, b) => contextosCorroboran(a, b, discriminantes);
+  // Review round 3: a padrón row that names SEVERAL people is not a merge TARGET either. It used
+  // to be, so two different humans' records could be credited to one certified row.
+  const certEntradas = certificados
+    .filter(({ insp }) => !nombreDeVariasPersonas(insp.nombre_completo))
+    .map(({ insp, ced }) => ({ ced, tokens: nameTokensOf(insp.nombre_completo) }))
+    .filter(({ tokens }) => tokens.length);
+  const certPorToken = indicePorToken(certEntradas);
+
+  // A certified person's own context: the registry's entidad plus everything the spellings that
+  // ALREADY resolve to them carry. Read before any write below, so pass 1 cannot corroborate
+  // itself with a merge pass 1 has just made.
+  const ctxCertificados = new Map();
+  for (const { insp, ced } of certificados) {
+    if (!ctxCertificados.has(ced)) ctxCertificados.set(ced, contextoVacio());
+    const entidad = normalizeName(insp.entidad);
+    if (entidad) ctxCertificados.get(ced).entidades.add(entidad);
+  }
+  for (const [nombre, ced] of nameToCedula) {
+    fundirContexto(ctxCertificados.get(ced), ctxNombres.get(nombre));
+  }
+
+  // A `no_persona` stub holding a código is a working identity that D-VARIANTE never absorbs, so
+  // its OWN registry spelling keeps answering for it — otherwise the stub would keep its
+  // cédula-keyed row while its Survey records walked off to a certified namesake.
+  const nombresReservados = new Set(
+    stubs
+      .filter(({ insp, ced }) => insp.codigo && !cedulasCertificadas.has(ced))
+      .map(({ insp }) => normalizeName(insp.nombre_completo))
+      .filter(Boolean),
+  );
+
+  // ── 1. spelling -> certified person ──────────────────────────────────────
+  const destinoDeNombre = new Map();
+  for (const [nombre, ctx] of ctxNombres) {
+    if (nombresReservados.has(nombre) || ctx.conjunto) continue;
+    const actual = nameToCedula.get(nombre);
+    // The certified side always wins: a spelling the backend's own `alias_nombres` (or the exact
+    // padrón name) already resolves to a certified person WITH a row is never re-pointed. One
+    // pointing at a rowless `no_persona` key is exactly what this rule exists to override.
+    if (actual !== undefined && profiles.has(`ced:${actual}`)) continue;
+    const candidatos = variantesDe(ctx.tokens, certPorToken);
+    const destino = destinoUnico(candidatos, (entrada) => entrada.ced);
+    if (!destino) continue;
+    if (minimoSignificativo(candidatos) <= SUBSECUENCIA_CORROBORACION_MAX
+      && !corroboran(ctx, ctxCertificados.get(destino))) continue;
+    destinoDeNombre.set(nombre, destino);
+  }
+
+  // ── 2. `no_persona` stub key -> certified person ─────────────────────────
+  const destinoDeStub = new Map();
+  for (const { insp, ced } of stubs) {
+    // A stub holding a código is a working identity whatever the registry says (D-VARIANTE), the
+    // certified side already owns some cédulas outright, and a D-VARIANTE decision is never redone.
+    if (insp.codigo || cedulasCertificadas.has(ced) || cedulaFusionadaACedulaSurvivor.has(ced)) continue;
+    if (nombreDeVariasPersonas(insp.nombre_completo)) continue;
+    const tokens = nameTokensOf(insp.nombre_completo);
+    if (!tokens.length) continue;
+    const candidatos = variantesDe(tokens, certPorToken);
+    const destino = destinoUnico(candidatos, (entrada) => entrada.ced);
+    if (!destino) continue;
+    if (minimoSignificativo(candidatos) <= SUBSECUENCIA_CORROBORACION_MAX
+      && !corroboran(ctxNombres.get(normalizeName(insp.nombre_completo)), ctxCertificados.get(destino))) continue;
+    destinoDeStub.set(ced, destino);
+  }
+
+  for (const [nombre, ced] of destinoDeNombre) nameToCedula.set(nombre, ced);
+  for (const [ced, destino] of destinoDeStub) cedulaFusionadaACedulaSurvivor.set(ced, destino);
+
+  // `professionalKeyOf` resolves a cédula in ONE hop, so a chain (`cedulas_unificadas` -> stub ->
+  // certified) has to be flattened here or the middle link would swallow the records. Cycle-safe.
+  const destinoFinal = (ced) => {
+    const vistos = new Set([ced]);
+    let actual = ced;
+    for (;;) {
+      const siguiente = cedulaFusionadaACedulaSurvivor.get(actual);
+      if (!siguiente || vistos.has(siguiente)) return actual;
+      vistos.add(siguiente);
+      actual = siguiente;
+    }
+  };
+  for (const ced of [...cedulaFusionadaACedulaSurvivor.keys()]) {
+    const fin = destinoFinal(ced);
+    if (fin !== ced) cedulaFusionadaACedulaSurvivor.set(ced, fin);
+  }
+  for (const [nombre, ced] of nameToCedula) {
+    const fin = destinoFinal(ced);
+    if (fin !== ced) nameToCedula.set(nombre, fin);
+  }
+
+  // ── 3. spelling -> unabsorbed `no_persona` stub (D-ORFANO-CANONICO i) ────
+  const stubsOrfanos = stubs
+    .map(({ insp, ced }) => ({ ced, tokens: nameTokensOf(insp.nombre_completo), nombre: normalizeName(insp.nombre_completo) }))
+    .filter(({ ced, tokens, nombre }) => tokens.length && !nombreDeVariasPersonas(nombre)
+      && !cedulasCertificadas.has(ced) && destinoFinal(ced) === ced);
+  const ctxStubs = new Map();
+  for (const { ced, nombre } of stubsOrfanos) {
+    if (!ctxStubs.has(ced)) ctxStubs.set(ced, contextoVacio());
+    fundirContexto(ctxStubs.get(ced), ctxNombres.get(nombre));
+  }
+  for (const [nombre, ced] of nameToCedula) fundirContexto(ctxStubs.get(ced), ctxNombres.get(nombre));
+  const stubPorToken = indicePorToken(stubsOrfanos);
+  const destinoDeNombreStub = new Map();
+  for (const [nombre, ctx] of ctxNombres) {
+    if (nameToCedula.has(nombre) || ctx.conjunto) continue;
+    const candidatos = variantesDe(ctx.tokens, stubPorToken);
+    const destino = destinoUnico(candidatos, (entrada) => entrada.ced);
+    if (!destino) continue;
+    // Two significant tokens: a dropped surname ("Robbinson Villalobos" of "Robbinson Villalobos
+    // Reyes") is evidence; the same two names in the middle of a longer one are not, unless the
+    // records corroborate it.
+    if (minimoSignificativo(candidatos) <= SUBSECUENCIA_CORROBORACION_MAX
+      && !candidatos.some(({ corto, largo }) => esPrefijoDeNombre(corto, largo))
+      && !corroboran(ctx, ctxStubs.get(destino))) continue;
+    destinoDeNombreStub.set(nombre, destino);
+  }
+  for (const [nombre, ced] of destinoDeNombreStub) nameToCedula.set(nombre, ced);
+
+  // ── 4. spelling -> fullest spelling (D-ORFANO-CANONICO ii) ───────────────
+  const orfanos = [...ctxNombres.values()]
+    .filter(({ nombre, conjunto }) => !conjunto && !nameToCedula.has(nombre));
+  const orfanoPorToken = indicePorToken(orfanos);
+  const canonicoDirecto = new Map();
+  for (const orfano of orfanos) {
+    // Only a STRICTLY longer spelling can be the canonical one, so the relation cannot cycle and
+    // the fullest spelling is always the sink.
+    const candidatos = variantesContenedoras(orfano.tokens, orfanoPorToken, orfano);
+    const padre = padreDeCadena(candidatos);
+    if (!padre) continue;
+    if (tokensSignificativos(padre.corto) <= SUBSECUENCIA_CORROBORACION_MAX
+      && !esPrefijoDeNombre(padre.corto, padre.largo)
+      && !corroboran(orfano, padre.entrada)) continue;
+    canonicoDirecto.set(orfano.nombre, padre.entrada.nombre);
+  }
+  const nombreCanonico = new Map();
+  const nombresCanonicos = new Map();
+  const canonicoFinal = (nombre) => {
+    const vistos = new Set([nombre]);
+    let actual = nombre;
+    for (;;) {
+      const siguiente = canonicoDirecto.get(actual);
+      if (!siguiente || vistos.has(siguiente)) return actual;
+      vistos.add(siguiente);
+      actual = siguiente;
+    }
+  };
+  for (const nombre of canonicoDirecto.keys()) {
+    const fin = canonicoFinal(nombre);
+    if (fin !== nombre) nombreCanonico.set(nombre, fin);
+  }
+  for (const destino of new Set(nombreCanonico.values())) {
+    const ctx = ctxNombres.get(destino);
+    // D-NOMCASE: the fullest RAW spelling, Title Cased once, exactly like a padrón name — the row
+    // must not read as whichever variant its first record happened to carry.
+    if (ctx && ctx.crudo) nombresCanonicos.set(`nom:${destino}`, { name: titleCaseName(ctx.crudo) });
+  }
+  return { nombreCanonico, nombresCanonicos };
+}
+
 /** seguimiento-inspectores-depurado, Fase 4 (design "Frontend Changes
  *  (minimal)"): builds the depuracion-derived branch of buildIdentityIndex
  *  below — profiles come DIRECTLY from `depuracion.inspectores`, never from
@@ -483,7 +954,7 @@ function variantePadronDe(tokens, { porPrefijo, porNombreCompleto }) {
  *  sticker/Survey records into the exact SAME `ced:<cedula>` keys these
  *  profiles are stored under — buildProfessionalRows' per-record loop is
  *  untouched, only WHERE the profile's own fields come from changes. */
-function buildIdentityIndexFromDepuracion(depuracion, depMeta) {
+function buildIdentityIndexFromDepuracion(depuracion, depMeta, stickerList = [], surveyList = []) {
   const eligibleCedulas = new Set();
   const nameToCedula = new Map();
   const profiles = new Map();
@@ -646,13 +1117,29 @@ function buildIdentityIndexFromDepuracion(depuracion, depMeta) {
     }
   }
 
-  const resolverCore = { eligibleCedulas, nameToCedula, cedulaFusionadaACedulaSurvivor };
+  // D-SUBSECUENCIA / D-ORFANO-CANONICO (2026-09-20): the last resolution pass, AFTER every
+  // backend-sourced mapping above has had its say — it only ever fills in what those left
+  // unresolved, and never overrides a spelling that answers for a certified row.
+  const { nombreCanonico, nombresCanonicos } = resolverOrfanos({
+    certificados,
+    stubs,
+    profiles,
+    nameToCedula,
+    cedulaFusionadaACedulaSurvivor,
+    cedulasCertificadas,
+    stickers: stickerList,
+    surveys: surveyList,
+  });
+
+  const resolverCore = {
+    eligibleCedulas, nameToCedula, cedulaFusionadaACedulaSurvivor, nombreCanonico,
+  };
   const keyForSticker = (record) => professionalKeyOf(record, resolverCore);
   const keyForSurvey = (record) => professionalKeyOf(record, resolverCore);
 
   return {
     eligibleCedulas, nameToCedula, ambiguousNames: new Set(), profiles, keyForSticker, keyForSurvey,
-    cedulaFusionadaACedulaSurvivor, perfilesOcultos, ...depMeta,
+    cedulaFusionadaACedulaSurvivor, perfilesOcultos, nombreCanonico, nombresCanonicos, ...depMeta,
   };
 }
 
@@ -698,10 +1185,13 @@ export function buildIdentityIndex({ stickers = [], surveys = [], depuracion = n
     grupoExternos: (block && block.grupo_externos) || null,
     revisionManual: Array.isArray(block && block.revision_manual) ? block.revision_manual : [],
   };
-  if (depMeta.depuracionActiva) return buildIdentityIndexFromDepuracion(depuracion, depMeta);
-
   const stickerList = Array.isArray(stickers) ? stickers : [];
   const surveyList = Array.isArray(surveys) ? surveys : [];
+  // D-SUBSECUENCIA needs the raw records too: the corroboration guard reads the Survey
+  // `id_grupo`/`entidad` of the very spelling it is about to merge (nothing else about them).
+  if (depMeta.depuracionActiva) {
+    return buildIdentityIndexFromDepuracion(depuracion, depMeta, stickerList, surveyList);
+  }
 
   const eligibleCedulas = new Set();
   const nameCedulaCandidates = new Map(); // normalizedName -> Set<cedula>
@@ -970,8 +1460,11 @@ export function buildProfessionalRows({
     // name/cédula its own records carry, then the cédula of its own `ced:` key (a row reached only through a
     // Survey — Survey records have no cédula at all — must not show a blank cell).
     const oculto = seeded && idx.perfilesOcultos instanceof Map ? idx.perfilesOcultos.get(row.key) : null;
+    // D-ORFANO-CANONICO: a name-only row that absorbed its own spelling variants reads as the
+    // FULLEST of them, never as whichever one its first record happened to carry.
+    const canonico = seeded && idx.nombresCanonicos instanceof Map ? idx.nombresCanonicos.get(row.key) : null;
     const profile = idx.profiles.get(row.key) || (seeded ? {
-      name: (oculto && oculto.name) || row.fallbackName,
+      name: (oculto && oculto.name) || (canonico && canonico.name) || row.fallbackName,
       cedula: (oculto && oculto.cedula) || row.fallbackCedula || cedulaDeKey(row.key),
     } : {});
     // Numerator: F1+F2 stickers of the seeded profiles whose estado is exactly

@@ -730,6 +730,150 @@ XLSX/PDF of the depurado base and any backend consumer still see two records unt
 aliases, nor GRUPO-EXTERNOS entries — they are inspectors missing from the depurado registry. That is a registry/publication gap,
 not a join bug, and it is what makes the "Análisis temporales" rows show "Sin dato" in Profesión/Énfasis/Clase/Estado/Código.
 
+### D-SUBSECUENCIA / D-ORFANO-CANONICO (2026-09-20): the "Sin dato" orphan rows resolve to their person
+
+**Symptom (owner, Seguimiento > Profesionales > "Análisis temporales", admin, depurado on, after the D-NOPERSONA deploy).** Dozens
+of rows with Cédula/Profesión/Énfasis/Clase/Estado/Código all "Sin dato": "Juan Camilo Aya" AND "Juan Camilo Aya Castaño" (two rows,
+one human), "Carlos Ospina" (the padrón has a certified "Carlos Emilio Ospina Monsalve", código 145), "Tito Alexis Monzón Leiva",
+"Felipe Guerrero", "Stefan Leiva".
+
+**Measurement (read-only replay of `GET /stickers-atencionsismo?depuracion=1` with admin claims, the real `web/js/seguimiento.js`
+driving it, cédulas masked).** 269 of the 401 rows with activity were orphans — 112 keyed by a `no_persona` stub cédula (name +
+cédula, no depurado column) and 157 name-only (cédula "Sin dato" too). They carried 42 stickers and **1,152 Survey records**: this is
+overwhelmingly a Survey123 free-text-name problem, not a sticker one.
+
+**Root cause (three layers, none of them a bug on its own).**
+
+1. `alias_nombres` (`inspectores_depuracion.py`) matches a Survey spelling to a profile by BYTE-EQUAL normalized name only. It also
+   iterates EVERY profile, `no_persona` stubs included, first-wins by lowest `identidad_key` — so **121 of its 201 entries point at a
+   stub**, pinning that person's Survey records onto a key that D-NOPERSONA gives no row.
+2. `colapsar_externos(..., exentos=frozenset(alias.values()))` then KEEPS those stubs alive: a Survey name corroborated them, which
+   exempts them from GRUPO-EXTERNOS. The record is protected from being dropped but never routed to the real professional.
+3. D-VARIANTE only compares TRUE PREFIXES with 3+ significant tokens on the shorter side, and never indexes a certified name of
+   fewer than 3 tokens — so an inserted first name ("Nicole Tello Segura" vs "Jane Nicole Tello Segura"), a two-token spelling
+   ("Jairo Lopez" vs "Jairo Giovanny Lopez Puentes") and a short certified name ("Andrés Torres", "David Salazar") were all out of
+   reach. It absorbed 10 of 122 stubs.
+
+**Decision (frontend only, presentation/join layer — the engine, the publisher and the bundle are NOT touched).** One new resolver,
+`resolverOrfanos`, runs at the END of `buildIdentityIndexFromDepuracion`, after every backend-sourced mapping has had its say. It
+only ever fills in what they left unresolved.
+
+- **D-SUBSECUENCIA (in-order subset).** A name text (a stub's registry name, or any free-text sticker/Survey spelling) resolves to a
+  certified person when all tokens of the SHORTER of the two names appear IN ORDER inside the longer one — a subsequence, not a
+  shared prefix and not a substring. Both directions are tried ("Nicole Tello Segura" inside "Jane Nicole Tello Segura"; the
+  certified "Andrés Torres" inside "Andrés Felipe Torres"). Names that merely SHARE a prefix and then diverge still never merge
+  ("Juan Carlos Gomez" vs "Juan Carlos Ramirez Torres"), and tokens out of order never match ("Gomez Juan" vs "Juan Perez Gomez").
+- **Tokens are compared BYTE-EQUAL over `normalizeName`. A typo is a different token and is NEVER matched** — "Aya"/"Haya",
+  "Jhon"/"John", "Leiva"/"Leyva", "Gernan"/"German" all stay apart, deliberately. No edit distance, no phonetics, no dictionary:
+  those are registry corrections, listed under "Not fixed here" below.
+- **Threshold: `SUBSECUENCIA_MIN_TOKENS` = 2 SIGNIFICANT tokens on the shorter side** (`tokensSignificativos`, the D-VARIANTE
+  definition: a Spanish particle and a single-letter initial are spelling, not identity). One significant token names anybody
+  ("Juan", "de la Cruz", "J D Hernandez"), so it is never evidence — not even with corroboration. `[REVIEW 3, 2026-09-20]` An
+  initial written WITH a period ("j.", "a.") is one LETTER plus punctuation and used to slip through the length test; only the
+  letters count now, so "J. D. Hernandez" is 1 significant token, not 3, and "J. D. Hernandez Bueno" cannot absorb it. A purely
+  numeric token ("76202") stops counting for the same reason.
+- **`SUBSECUENCIA_CORROBORACION_MAX` = 2: a merge whose shorter side has only TWO significant tokens ALSO needs a shared,
+  DISCRIMINATING `entidad`.** **Rationale:** "Fernando Padilla", "Carlos Rivera", "Jorge Sanchez" are given name + first surname,
+  which names many humans — and the people this view is missing are *precisely the ones absent from the registry*, so an
+  unregistered homonym of a certified inspector is likelier here than anywhere else in the app. A name alone must not create work
+  for someone.
+  - `[REVIEW 3, 2026-09-20 — CORRECTION]` The first version of this record also accepted a shared Survey `id_grupo`. That was
+    **wrong**, and the measurement proves it: `id_grupo` takes FIVE values over the whole 1,909-record Survey set ("otro" 715,
+    "alcadia_ugr" 635, "amva" 374, blank 180, "NA" 5), so two strangers sharing one is worth nothing. It was also doing almost all
+    the work: of the 28 two-token merges that needed corroboration, **20 rested on `id_grupo` alone and 0 on `entidad` alone**.
+    `id_grupo` is now never consulted; those 20 merges are blocked and reported instead.
+  - An **`entidad` is evidence only when it is not a team-wide label**: at most `ENTIDAD_DISCRIMINANTE_MAX_FRACCION` = **5%** of
+    the records that feed the index carry it (floor `ENTIDAD_DISCRIMINANTE_MIN_REGISTROS` = 2 records, so a handful-of-records
+    dataset can still corroborate). Measured over the 4,951 records of the 2026-09-20 snapshot (1,909 Survey + 3,042 stickers):
+    "sgred" 1,835 and "voluntario" 325 are **rejected** as organisation-wide, while "edru" (110), "gc1" (78) and "voluntarios"
+    (20) qualify as real teams. The ceiling is a fraction, never a hand-picked deny-list, so a future "SGRED-for-everybody" value
+    disqualifies itself.
+- **ACCEPTED, MEASURED LIMIT — three or more significant tokens merge on the NAME ALONE.** No corroboration is asked for, and
+  **44 of the 61 accepted merges on the 2026-09-20 snapshot rest on exactly that** (see the apply report for the full list of
+  pairs). The risk the owner is accepting: an unregistered person who shares a certified inspector's given name, first surname AND
+  second surname would have their records credited to that inspector. Judged acceptable because three tokens in the same order is
+  already an identification in a Colombian registry, because every such merge is listed for eyeballing, and because the
+  alternative — demanding an entidad that 63% of Survey records leave blank — would leave the reported rows unresolved. It is a
+  deliberate trade, not an oversight.
+- **Exactly ONE certified candidate, or nothing.** Two candidates poison the spelling and it keeps its own row — which is also how
+  requirement "a certified name that is an in-order subset of ANOTHER certified name is never a target" is met: "Carlos Emilio
+  Ospina" fits BOTH `Cn (Ra) Carlos Emilio Ospina Monsalve` and `Carlos Emilio Ospina Monsalve` (the same human, entered twice, the
+  rank prefix defeating the engine's exact-name dedupe), so it resolves to neither. "Juan Guzmán" fits two genuinely different
+  people and likewise stays split. Both are registry problems, reported below.
+- **The certified side always wins.** A spelling that the backend's `alias_nombres` — or the exact padrón name — already resolves to a
+  certified person WITH a row is never re-pointed. A spelling pointing at a rowless `no_persona` key IS overridden: that is the
+  layer-1/layer-2 defect above, and overriding it is the whole point. A `no_persona` stub holding a código is a working identity
+  (D-VARIANTE never absorbs it), so it also RESERVES its own registry spelling — otherwise it would keep its cédula-keyed row while
+  its Survey records walked off to a certified namesake.
+- **A cell naming SEVERAL people is out of every merge role.** `nombreDeVariasPersonas` fires on (a) a separator that is never
+  part of one human's name — `/`, `,`, `;`, `&`, `+` — or (b) a bare " y "/" e " with at least TWO significant tokens on EACH
+  side. Real values it catches: "Leonardo Lenis Palomino / Ana Milena Mejía Salgado", "Walter Vasquez, Arq Samuel Jiménez, Arq
+  Yeini Roa, Arq Luisa Quiñones", "Camilo castro, Tulio Rivera", "Luz, Maritza, Romero, Castro." (10 such spellings in the
+  2026-09-20 data). Crediting a joint record to whichever half is in the padrón would invent work for that person.
+  `[REVIEW 3, 2026-09-20]` The first version only looked for "/" and only on the SOURCE side, so a padrón row naming four people
+  was still a legal merge TARGET; the certified index now excludes them too. Deliberately conservative in the other direction: a
+  particle inside one name never trips (b) ("Maria de los Angeles", "Jose de la Cruz y los Santos"), and neither does a surname
+  pair with a one-token side ("Ortiz y Pino"). **Accepted miss on that same line:** "Mari Sol y Julián" IS two people but its
+  right side has one token, so it reads as one name — excluding it would also exclude real single names.
+- **D-ORFANO-CANONICO.** What rule A leaves behind is still one unregistered human spelled several ways. Two further passes, same
+  guards: **(i)** a spelling that is an in-order variant of exactly ONE unabsorbed `no_persona` stub lands in that stub's
+  cédula-keyed row; **(ii)** a purely name-keyed group collapses onto its FULLEST spelling, which is also the name the row
+  displays (`nombresCanonicos`, Title Cased once — D-NOMCASE). A stub never absorbs another stub, exactly as before. In (i) and (ii)
+  the two-token case accepts a true PREFIX as evidence instead of corroboration ("Robbinson Villalobos" of "Robbinson Villalobos
+  Reyes" is a dropped surname), because both sides are the SAME unregistered person by construction — there is no padrón identity to
+  misattribute the work to. Several longer candidates are not automatically an ambiguity: "Juan Camilo Aya" ⊂ "Juan Camilo Aya
+  Castaño" ⊂ "Juan Camilo Aya Castaño Lopez" is ONE chain and collapses to its sink, while "Adan Duran" facing "Adan Duran Yomayusa"
+  and "Adan Duran Perez" (not variants of each other) is poisoned.
+- **Chains resolve in ONE hop.** `professionalKeyOf` looks a cédula up once, so `cedulas_unificadas -> stub -> certified` is
+  flattened in the resolver (cycle-safe), or the middle link would swallow the records. The name-only canonicalization is compressed
+  the same way.
+- **Order independence.** Every pass is collect-then-apply: it reads a snapshot, decides, and only then writes. Nothing depends on
+  the order of `depuracion.inspectores`, of the stickers or of the Survey records; the "fullest spelling" tie-break is
+  longest-then-lexicographic, never first-seen. Pinned by permutation tests over inspectores AND records.
+
+- **Cost.** Passes 1-3 ask "is this text a variant of a padrón/stub name?", where the query may be the LONGER side, so they scan
+  the union of the query's token buckets over the bounded padrón (386 certified, 122 stubs). Pass 4 asks a FIXED question — "which
+  STRICTLY LONGER orphan spelling contains this one in order?" — so a candidate must carry EVERY token of the query and therefore
+  lives in the bucket of each of them; scanning the RAREST of those buckets is correct and turns the pass from quadratic into
+  linear. `[REVIEW 3, 2026-09-20]` It WAS quadratic: 4,000 spellings that all begin "Juan Carlos" took ~8,000,000 comparisons
+  (770 ms); they now take ~4,000 (a few ms). The real payload needs 135. Pinned by a test that asserts an instrumented comparison
+  counter (`__statsOrfanos`), not a wall clock.
+
+**Measured effect (2026-09-20 snapshot, read-only replay, cédulas masked).** Rows 655 -> 601; **orphan rows with activity 269 ->
+215**; 30 orphan rows merged into a certified person and 24 into another orphan row; certified rows with activity 132 -> 134. The
+resolver logged 121 decisions: **61 accepted** (44 on 3+ significant tokens, 7 on a discriminating entidad, 10 on a true prefix in
+the orphan↔orphan passes, of which 2 also had an entidad) and **60 blocked** (2 ambiguous, 58 for want of a discriminating
+entidad). Everything that must not move did not: `stickers` 3,042, `surveys` 1,909, `unassigned` 7, `stickersWithoutDate` 0,
+`padron` 386, `inspectoresActivos` 146, `rangoDias` 31, attributed stickers 3,042, attributed surveys 1,902. `professionals`
+(401 -> 349) and `avgPerProfessional` (12.33 -> 14.17) move, which IS the merge.
+
+**`stickersInspectoresActivos` is NOT a "must not move" figure.** `[REVIEW 3, 2026-09-20 — CORRECTION]` The first version of this
+record listed it among the untouched totals. That was a claim about one snapshot, not about the rule: the KPI counts the stickers
+of profiles whose `estado_sugerido` is exactly `activo`, so a name-only sticker re-attributed to an active inspector MUST raise
+it — that is the correction, not a regression, and a test pins it (two "Camila Andrea Rojas" stickers with no cédula land on the
+certified "Camila Andrea Rojas Vargas": 0 -> 2). It happens to be unchanged at 2,866 on THIS snapshot for one reason only: all
+3,042 stickers carry a cédula, so none of them ever reaches the name resolver. `inspectoresActivos` and `padron` count PROFILES
+and genuinely cannot move.
+
+The legacy path (no `depuracion` / `activa:false`) is untouched: `nombreCanonico` only exists on a depurado index, so
+`professionalKeyOf` returns the raw name key exactly as before.
+
+**Limits (deliberate).** A joint cell whose only separator is a " y " with a one-token side ("Mari Sol y Julián") is not detected.
+A pass-4 canonical row displays the fullest spelling even when that spelling is the one with the typo ("Jenny Alejandra Marín
+Dioasa", "Alberto Ceballos R") — the row is right, its label is the longest variant, not the prettiest. The merge is a frontend
+view: the engine still emits both records, so the XLSX/PDF of the depurado base and any backend consumer still see them apart
+until (if ever) an engine-side stage is decided.
+**Not fixed here (reported, needs a newer registry export).** (1) ~163 rows resolve to nobody at all — people missing from the
+depurado registry, the largest being "Faber Albeiro Gaviria Salazar" (50 records), "Jenny Alejandra Marín Diosa" (31), "Carlos
+Daniel García Escudero" (26), "Alejandro Zuñiga" (29 with its variant), "David Orrego" (19). (2) ~35 rows are one or two characters
+from a registry name and are NEVER matched by this rule: "Jhon Pablo Villegas" (31 records) vs "John Pablo Villegas Velásquez",
+"Juan Camilo Aya Castaño" vs "Juan Camilo **H**aya Castaño", "Tito Alexis Monzón Le**i**va" vs "…Le**y**va", and several where the
+TYPO IS IN THE REGISTRY ("Ger**n**an Dario Meluk Bedoya", "Omar **Andras** Rosada Gonzáles", "Luz Mari**tt**za Romero Castro").
+(3) The certified duplicate `Cn (Ra) Carlos Emilio Ospina Monsalve` / `Carlos Emilio Ospina Monsalve` and four more
+certified↔certified in-order-subset pairs (`Andrés Torres` ~ `Carlos Andres Medina Torres`, `lAURA Maria perea` ~ `Laura Perea`,
+`NICOLAS GARCIA` ~ `Nicolás García Román`, `Juan Sebastián González` ~ `Juan Sebastian Velasco González`). (4) Junk evaluator names
+("Prueba Asignacion Especializada", "76202 58346").
+
 ## Contradiction Register (efficiency extension)
 
 | # | Finding | Resolution |
