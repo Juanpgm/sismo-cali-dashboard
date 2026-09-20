@@ -596,7 +596,7 @@ roster and main, duplicate main, unification backfill, permutations, hostile and
    `profesion` right after `tarjeta_profesional` (before `enfasis`; `xlsxRowsFor(..., { withProfesion })`); the individual PDF gets a "Profesión" row right before "Énfasis"
    (only for a row that has the key; `—` when blank). Everything escaped; the legacy table, XLSX and PDF are byte-identical.
 
-**Free text kept verbatim.** The value is trimmed and nothing else: NO case, gender or accent normalisation (neither in the data nor in the UI), NO derived category, NO
+**Free text kept verbatim.** `[UPDATED 2026-09-19: the CAPITALIZATION is now normalized in the presentation layer, see D-PROFESION-CASE below; the data, the bundle and the payload still keep the original text.]` The value is trimmed and nothing else: NO case, gender or accent normalisation (neither in the data nor in the UI), NO derived category, NO
 KPI, NO filter. "ingeniero", "Ingeniero civil" and "INGENIERO CIVIL" are shown as they came; normalising them is a data-cleaning decision for the owner, not something to
 guess here (a wrong merge, e.g. "Voluntario UNGRD" vs "PROFESIONAL VOLUNTARIO", is worse than an honest variant). The search is accent/case-insensitive, so one query finds all variants.
 
@@ -613,6 +613,49 @@ parses with `""` and the column shows "Sin dato". No flag, no schema bump. (Not 
 duplicate main, unification backfill, permutations, independence from enfasis, case variants, hostile and 2,400-char text), the property file,
 `test_stickers_atencionsismo_viewer_pii.py`, and the 15 `test_profesion_*` named tests in `web/js/seguimiento.test.mjs`. Mutation-checked with 11 backend and 14 frontend
 scratch mutants (all killed).
+
+### D-PROFESION-CASE (2026-09-19): the profesión's capitalization is normalized in the presentation layer only
+
+**Request.** The owner asked to "normalize the capitals in the profesión": the registry has "ingeniero" (108), "Ingeniero civil" (107), "Ingeniero Civil" (52), "INGENIERO CIVIL" (7),
+"ARQUITECTO" (8), "arquitecto" (7), "PROFESIONAL VOLUNTARIO" (68), "Profesional Voluntario" (8)... which the table showed, sorted and exported as different values.
+
+**Decision.** Presentation-only. The backend (`depuracion.inspectores[].profesion`), the publisher and the bundle keep the ORIGINAL text (source of truth; the raw payload object is
+never mutated, pinned with a deep-frozen payload). The frontend normalizes ONCE, where the depurado profile is built (`buildIdentityIndexFromDepuracion`, next to
+`tarjetaProfesional`/`enfasis`): `profesion: normalizeProfesion(insp.profesion)`. Every consumer of `row.profesion` (Totales and Análisis temporales cells, the tooltip, both XLSX
+sheets, the individual PDF, the search and the sort) gets the same text with no per-renderer code (a test pins that `normalizeProfesion(` has exactly one call site).
+
+**Rule (`normalizeProfesion(value)`, exported, pure, deterministic, idempotent).** Sentence case with acronyms kept.
+
+- Non-string / null / undefined / NaN / non-finite -> `''`. Trim and collapse whitespace runs (tabs, newlines, no-break space) to one space; empty -> `''`; no letters at all (digits or
+  punctuation) -> returned trimmed, unchanged.
+- Split on whitespace. `allCaps` = the text has no lowercase letters. A token is KEPT as is only when the text is NOT all caps and the token is all caps with 2+ letters (an acronym
+  in a mixed-case phrase, also inside punctuation: "Voluntario UNGRD", "Ingeniero (ESP)"); every other token is lowercased (accents kept).
+- Then the first letter of the whole result is capitalized (accent-aware: "PSICÓLOGO" -> "Psicólogo", "árbol" -> "Árbol"). A letter whose capital is longer ("ß" -> "SS") is left as is, and a
+  result that the capitalization turned into an all-caps text ("a UNGRD" -> "A UNGRD") gets one more pass, so `f(f(x)) === f(x)` (checked over the registry values, hostile values and a
+  3,000-string deterministic fuzz).
+- Outcomes: "ingeniero" -> "Ingeniero"; "INGENIERO CIVIL" / "Ingeniero Civil" -> "Ingeniero civil"; "ARQUITECTA" -> "Arquitecta"; "PROFESIONAL VOLUNTARIO" -> "Profesional voluntario";
+  "Voluntario UNGRD" -> "Voluntario UNGRD". The 18 registry variants listed by the owner collapse to exactly 10 distinct values ("Ingeniero", "Ingeniero civil", "Ingeniera civil",
+  "Arquitecto", "Arquitecta", "Arquitecta voluntaria", "Profesional voluntario", "Voluntario", "Voluntario UNGRD", "Psicólogo"); asserted with the real counts (526 rows).
+
+**Known limits (deliberate; no dictionary of acronyms).**
+
+1. An ALL-CAPS phrase cannot reveal its acronyms: "VOLUNTARIO UNGRD" -> "Voluntario ungrd".
+2. In a mixed-case phrase a lone upper-case word is indistinguishable from an acronym, so it is kept: "ingeniero CIVIL" -> "Ingeniero CIVIL" (the same rule that keeps "UNGRD" in
+   "Voluntario UNGRD"; the two cannot be told apart without a word list). No such value exists among the registry values checked; if one appears, the fix is in the data or a small
+   exception list, not a heuristic.
+3. Gender variants are intentionally NOT merged: "Ingeniera civil" != "Ingeniero civil", "Arquitecta" != "Arquitecto". Merging them is a data-cleaning decision for the owner.
+
+**Énfasis is intentionally untouched.** The owner asked only for profesión. Énfasis is the same kind of free text and has the same kind of case variants; it keeps its original text (a
+test asserts a mixed-case énfasis is not changed and a mutant that normalizes it too is killed). If the owner wants it, it is one more call to the same function.
+
+**Legacy path.** Without a depurado base there is no `profesion` key at all: table, XLSX and PDF are byte-identical. The search already folds case and accents, so it kept finding
+every variant; the sort now groups the variants (they compare equal, ties broken by the stable key order).
+
+**Tests.** 17 `test_profesion_case_*` named tests in `web/js/seguimiento.test.mjs` (function rule, acronyms, gender, non-strings and blanks, whitespace, no-letter values, hostile text
+still escaped by the cell / tooltip and printed as text by the PDF, unicode "İ"/"ß"/"ǅ"/ligatures, idempotence corpus + fuzz, 320k-char text, profile and row, cell / tooltip / both XLSX
+sheets / PDF, search and sort, legacy path and Énfasis untouched, raw payload not mutated, registry data check, single call site) and one existing test updated (`test_profesion_is_read_into_the_depurado_profile_and_the_row`
+asserted the verbatim variants). Mutation-checked with 10 scratch mutants outside the repo (normalization skipped, applied to énfasis too, acronym rule removed, first-letter
+capitalization removed, XLSX writing another casing, all-caps rule off, whitespace not collapsed, settle pass removed, gender merged, raw payload mutated): all killed.
 
 ## Contradiction Register (efficiency extension)
 

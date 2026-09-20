@@ -308,6 +308,46 @@ export function professionalKeyOf(record, identity = EMPTY_IDENTITY) {
   return nameKey ? `nom:${nameKey}` : '';
 }
 
+/** D-PROFESION-CASE (2026-09-19): presentation-only normalization of the registry's free-text profession, so
+ *  "INGENIERO CIVIL", "Ingeniero Civil" and "Ingeniero civil" read as ONE value. Pure, deterministic and idempotent.
+ *  It runs once, where the depurado profile is built (`buildIdentityIndexFromDepuracion`); the backend payload and the
+ *  bundle keep the original text (source of truth) and the raw `depuracion` object is only read, never written.
+ *
+ *  Rule: sentence case with acronyms kept. Non-strings -> ''. Trim + collapse whitespace runs; a text with no letters
+ *  is returned as is (trimmed). Each whitespace token is lowercased, EXCEPT an all-caps token of 2+ letters inside a
+ *  text that is NOT all caps (an acronym in a mixed-case phrase: "Voluntario UNGRD", "(ESP)"). Then the first letter
+ *  of the whole result is capitalized (accent-aware).
+ *
+ *  Known limits (deliberate, no dictionary): (1) an ALL-CAPS phrase cannot reveal its acronyms, so "VOLUNTARIO UNGRD"
+ *  becomes "Voluntario ungrd"; (2) in a mixed-case phrase a lone upper-case word is indistinguishable from an acronym,
+ *  so "ingeniero CIVIL" stays "Ingeniero CIVIL"; (3) gender variants ("Ingeniera"/"Ingeniero") are NOT merged. */
+export function normalizeProfesion(value) {
+  if (typeof value !== 'string') return '';
+  // NFC first: a decomposed accent ("O" + U+0301) must equal the precomposed letter, or look-alike values stay split.
+  const text = value.normalize('NFC').trim().replace(/\s+/g, ' ');
+  if (!text) return '';
+  if (!/\p{L}/u.test(text)) return text;
+  const once = sentenceCase(text);
+  // Capitalizing the first letter can turn a mixed text into an all-caps one ("a UNGRD" -> "A UNGRD"); a second pass
+  // then reads it as an all-caps phrase, which is what a later call would do anyway, so it is applied here (idempotence).
+  return once === once.toUpperCase() ? sentenceCase(once) : once;
+}
+
+/** One pass of the `normalizeProfesion` rule over an already trimmed/collapsed text that has at least one letter. */
+function sentenceCase(text) {
+  const allCaps = text === text.toUpperCase();
+  const lettersIn = (token) => (token.match(/\p{L}/gu) || []).length;
+  const result = text.split(' ').map((token) => (
+    !allCaps && lettersIn(token) >= 2 && token === token.toUpperCase() ? token : token.toLowerCase()
+  )).join(' ');
+  const first = /\p{L}/u.exec(result);
+  if (!first) return result;
+  const upper = first[0].toUpperCase();
+  // A letter whose capital is longer ("ß" -> "SS") is left as is: capitalizing it would break idempotence.
+  if (upper.length !== first[0].length) return result;
+  return result.slice(0, first.index) + upper + result.slice(first.index + first[0].length);
+}
+
 /** seguimiento-inspectores-depurado, Fase 4 (design "Frontend Changes
  *  (minimal)"): builds the depuracion-derived branch of buildIdentityIndex
  *  below — profiles come DIRECTLY from `depuracion.inspectores`, never from
@@ -366,8 +406,9 @@ function buildIdentityIndexFromDepuracion(depuracion, depMeta) {
       // D-ENFASIS: the registry's free text (admin-only depuracion block), kept as is. Only depurado
       // profiles carry the key; the legacy identity profiles never do.
       enfasis: typeof insp.enfasis === 'string' ? insp.enfasis : '',
-      // D-PROFESION: the registry's free-text profession, verbatim (case/gender variants kept), same rules as enfasis.
-      profesion: typeof insp.profesion === 'string' ? insp.profesion : '',
+      // D-PROFESION / D-PROFESION-CASE: the registry's free-text profession. Only its capitalization is normalized
+      // here (presentation layer, once); the payload keeps the original text. Gender variants stay distinct.
+      profesion: normalizeProfesion(insp.profesion),
       celular: insp.num_telefono || '',
       correo: insp.correo_contacto || '',
       noPersona: Boolean(insp.no_persona),

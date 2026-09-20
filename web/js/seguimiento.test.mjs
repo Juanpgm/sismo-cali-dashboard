@@ -4957,8 +4957,9 @@ named('test_profesion_is_read_into_the_depurado_profile_and_the_row', () => {
   assert.equal(identity.profiles.get('ced:1000001').profesion, 'Psicólogo');
   const row = rowsFor({ depuracion: dep }).rows[0];
   assert.equal(row.profesion, 'Psicólogo', 'the row carries the profile text untouched (accents kept)');
-  for (const variant of ['ingeniero', 'INGENIERO CIVIL', 'Arquitecta', 'Arquitecto']) {
-    assert.equal(profesionRowFor({ profesion: variant }).profesion, variant, `case/gender variant kept verbatim: ${variant}`);
+  // D-PROFESION-CASE: the capitalization is normalized in the profile (gender variants stay distinct); see the case tests below.
+  for (const [variant, expected] of [['ingeniero', 'Ingeniero'], ['INGENIERO CIVIL', 'Ingeniero civil'], ['Arquitecta', 'Arquitecta'], ['Arquitecto', 'Arquitecto']]) {
+    assert.equal(profesionRowFor({ profesion: variant }).profesion, expected, `case-normalized: ${variant}`);
   }
 });
 
@@ -5167,6 +5168,245 @@ named('test_profesion_dom_wiring_passes_the_seeded_flag_to_the_table_and_the_exp
     'the export feeds both flags from the depurado base');
 });
 
+// ── D-PROFESION-CASE: the profesión's capitalization is normalized ONCE, where the depurado profile is built ─────
+
+// The real registry values (2026-09-19 export) with their row counts; used as a data-check corpus (no live service).
+const PROFESION_REGISTRY = [
+  ['ingeniero', 108], ['Ingeniero civil', 107], ['Arquitecto', 99], ['PROFESIONAL VOLUNTARIO', 68], ['Ingeniero Civil', 52],
+  ['Arquitecta', 23], ['Ingeniera civil', 11], ['Ingeniera Civil', 9], ['Profesional Voluntario', 8], ['ARQUITECTO', 8],
+  ['INGENIERO CIVIL', 7], ['arquitecto', 7], ['Arquitecta voluntaria', 5], ['INGENIERA CIVIL', 3], ['Voluntario', 3],
+  ['Psicólogo', 3], ['ARQUITECTA', 3], ['Voluntario UNGRD', 2],
+];
+const PROFESION_CASE_HOSTILES = [
+  PROFESION_HOSTIL, '<script>alert(1)</script>', `O'Brien "Q" & Co`, 'İSTANBUL', 'straße', 'STRASSE', 'ß', 'ǅ', 'ﬁnanzas', 'ΑΣ ΣΑΣ',
+  'ÑANDÚ ÜBER', 'Ingeniero (ESP)', 'INGENIERO (ESP)', 'ingeniero CIVIL', 'A', 'a b', '2do ingeniero', '   ', '--', '123', '\t\nINGENIERO\r\nCIVIL\t',
+  'Ingeniero    civil', 'x'.repeat(50), 'ÁRQUITECTO', 'árbol', '(ESP)', 'UN-GRD', 'Voluntario UNGRD,', PROFESION_LARGA,
+];
+const profesionDeepFreeze = (o) => {
+  if (o && typeof o === 'object' && !Object.isFrozen(o)) { Object.freeze(o); Object.values(o).forEach(profesionDeepFreeze); }
+  return o;
+};
+
+named('test_profesion_case_normalize_is_exported_and_gives_sentence_case', () => {
+  assert.equal(typeof SEG.normalizeProfesion, 'function', 'exported pure function');
+  const cases = [
+    ['ingeniero', 'Ingeniero'], ['INGENIERO CIVIL', 'Ingeniero civil'], ['Ingeniero Civil', 'Ingeniero civil'],
+    ['Ingeniero civil', 'Ingeniero civil'], ['ARQUITECTA', 'Arquitecta'], ['arquitecta', 'Arquitecta'],
+    ['PROFESIONAL VOLUNTARIO', 'Profesional voluntario'], ['Profesional Voluntario', 'Profesional voluntario'],
+    ['Psicólogo', 'Psicólogo'], ['PSICÓLOGO', 'Psicólogo'], ['NIÑO ÜBER', 'Niño über'],
+    ['ÁRQUITECTO', 'Árquitecto'], ['árbol', 'Árbol'], ['á', 'Á'], ['Arquitecta voluntaria', 'Arquitecta voluntaria'],
+  ];
+  for (const [input, expected] of cases) assert.equal(SEG.normalizeProfesion(input), expected, `${JSON.stringify(input)}`);
+});
+
+named('test_profesion_case_normalize_keeps_acronyms_inside_a_mixed_case_phrase', () => {
+  assert.equal(SEG.normalizeProfesion('Voluntario UNGRD'), 'Voluntario UNGRD');
+  assert.equal(SEG.normalizeProfesion('Ingeniero SGRED'), 'Ingeniero SGRED');
+  assert.equal(SEG.normalizeProfesion('Ingeniero (ESP)'), 'Ingeniero (ESP)', 'acronym wrapped in punctuation');
+  assert.equal(SEG.normalizeProfesion('Voluntario UNGRD,'), 'Voluntario UNGRD,');
+  assert.equal(SEG.normalizeProfesion('ingeniero de la ONU'), 'Ingeniero de la ONU');
+  assert.equal(SEG.normalizeProfesion('Ingeniero A'), 'Ingeniero a', 'a lone capital letter is not an acronym (needs 2+ letters)');
+  // Documented limitation: an ALL-CAPS phrase cannot reveal its acronyms, so they are lowercased with the rest.
+  assert.equal(SEG.normalizeProfesion('VOLUNTARIO UNGRD'), 'Voluntario ungrd');
+  // Documented consequence of the same rule: a lone upper-case word in a mixed-case phrase is indistinguishable from an
+  // acronym (no dictionary), so it is kept: "ingeniero CIVIL" -> "Ingeniero CIVIL". Not present in the real registry values.
+  assert.equal(SEG.normalizeProfesion('ingeniero CIVIL'), 'Ingeniero CIVIL');
+});
+
+named('test_profesion_case_normalize_gender_variants_stay_distinct', () => {
+  assert.notEqual(SEG.normalizeProfesion('Ingeniera civil'), SEG.normalizeProfesion('Ingeniero civil'));
+  assert.notEqual(SEG.normalizeProfesion('ARQUITECTA'), SEG.normalizeProfesion('ARQUITECTO'));
+  assert.equal(SEG.normalizeProfesion('INGENIERA CIVIL'), 'Ingeniera civil');
+});
+
+named('test_profesion_case_normalize_non_strings_and_blank_are_empty', () => {
+  for (const v of [null, undefined, NaN, Infinity, -Infinity, 0, 5, true, false, [], ['x'], {}, () => 'x', Symbol('s'), 10n]) {
+    assert.equal(SEG.normalizeProfesion(v), '', `non-string ${String(typeof v)} -> ''`);
+  }
+  for (const v of ['', ' ', '   ', '\t', '\n', '\r\n \t', ' ']) assert.equal(SEG.normalizeProfesion(v), '', `blank ${JSON.stringify(v)}`);
+});
+
+named('test_profesion_case_normalize_trims_and_collapses_whitespace', () => {
+  assert.equal(SEG.normalizeProfesion('   ingeniero   '), 'Ingeniero');
+  assert.equal(SEG.normalizeProfesion('INGENIERO     CIVIL'), 'Ingeniero civil');
+  assert.equal(SEG.normalizeProfesion('\tINGENIERO\r\n\tCIVIL\n'), 'Ingeniero civil');
+  assert.equal(SEG.normalizeProfesion('Ingeniero   civil'), 'Ingeniero civil', 'no-break space is whitespace too');
+});
+
+named('test_profesion_case_normalize_composed_and_decomposed_accents_collapse_to_one_value', () => {
+  // "PSICO" + combining acute + "LOGO" (NFD) must read as the same value as the precomposed "PSICÓLOGO".
+  assert.equal(SEG.normalizeProfesion('PSICÓLOGO'), SEG.normalizeProfesion('PSICÓLOGO'));
+  assert.equal(SEG.normalizeProfesion('PSICÓLOGO'), 'Psicólogo');
+});
+
+named('test_profesion_case_normalize_a_value_without_letters_is_returned_trimmed_unchanged', () => {
+  assert.equal(SEG.normalizeProfesion('  123  '), '123');
+  assert.equal(SEG.normalizeProfesion('--'), '--');
+  assert.equal(SEG.normalizeProfesion(' 12 / 34 '), '12 / 34');
+  assert.equal(SEG.normalizeProfesion('***'), '***');
+});
+
+named('test_profesion_case_normalize_hostile_text_is_case_mapped_text_never_markup', () => {
+  assert.equal(SEG.normalizeProfesion('<script>alert(1)</script>'), '<Script>alert(1)</script>');
+  assert.equal(SEG.normalizeProfesion(`"Q" & <B>x</B>`), '"Q" & <b>x</b>', 'tokens are text, case-mapped; no parsing');
+  assert.equal(SEG.normalizeProfesion(`O'BRIEN & CO`), "O'brien & co");
+});
+
+named('test_profesion_case_normalize_unicode_edge_cases_never_throw_and_stay_idempotent', () => {
+  for (const v of ['İSTANBUL', 'straße', 'STRASSE', 'ß', 'ßa', 'ǅ', 'ﬁnanzas', 'ΑΣ ΣΑΣ', '😀 INGENIERO', 'ñandú', 'ÑANDÚ']) {
+    const once = SEG.normalizeProfesion(v);
+    assert.equal(typeof once, 'string');
+    assert.equal(SEG.normalizeProfesion(once), once, `idempotent for ${JSON.stringify(v)}`);
+  }
+  assert.equal(SEG.normalizeProfesion('ß'), 'ß', 'a letter whose capital has 2 letters is left as is (keeps the function idempotent)');
+  assert.equal(SEG.normalizeProfesion('ñandú'), 'Ñandú');
+});
+
+named('test_profesion_case_normalize_is_idempotent_over_the_registry_hostile_and_fuzz_corpus', () => {
+  const corpus = [...PROFESION_REGISTRY.map(([v]) => v), ...PROFESION_CASE_HOSTILES];
+  const alphabet = ['a', 'B', 'é', 'Ñ', 'ü', 'İ', 'ß', 'Σ', 'ǅ', ' ', ' ', '(', ')', '1', '-', 'ﬁ', 'Z', 'q'];
+  let seed = 12345; // small deterministic LCG: the fuzz never changes between runs
+  const next = (n) => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  for (let i = 0; i < 3000; i += 1) {
+    corpus.push(Array.from({ length: 1 + next(12) }, () => alphabet[next(alphabet.length)]).join(''));
+  }
+  for (const v of corpus) {
+    const once = SEG.normalizeProfesion(v);
+    assert.equal(SEG.normalizeProfesion(once), once, `idempotent for ${JSON.stringify(v)}`);
+    assert.equal(once, once.trim(), 'always trimmed');
+    assert.ok(!/\s{2,}/.test(once), 'whitespace runs always collapsed');
+  }
+});
+
+named('test_profesion_case_normalize_extremely_long_text_is_fast', () => {
+  const huge = 'INGENIERO CIVIL '.repeat(20000); // ~320k chars
+  const out = SEG.normalizeProfesion(huge);
+  assert.ok(out.startsWith('Ingeniero civil ingeniero civil'));
+  const expectedLarga = `Ingeniero civil ${'ingeniero civil '.repeat(149)}`.trim();
+  assert.equal(SEG.normalizeProfesion(PROFESION_LARGA), expectedLarga, 'a 2,399-char text is normalized whole, never sliced');
+  assert.equal(SEG.normalizeProfesion(expectedLarga), expectedLarga);
+  assert.equal(SEG.normalizeProfesion('a UNGRD'), 'A ungrd', 'a first letter that turns the phrase all-caps is settled in one call (idempotence)');
+});
+
+named('test_profesion_case_profile_and_row_carry_the_normalized_text_for_every_variant', () => {
+  const dep = depuracionOf([
+    depInspector(1, { profesion: 'INGENIERO CIVIL' }), depInspector(2, { profesion: 'Ingeniero civil' }),
+    depInspector(3, { profesion: 'ingeniero civil' }), depInspector(4, { profesion: '  Ingeniero   Civil ' }),
+    depInspector(5, { profesion: '' }), depInspector(6, { profesion: '   ' }), depInspector(7, {}), depInspector(8, { profesion: 'Voluntario UNGRD' }),
+  ]);
+  const identity = buildIdentityIndex({ stickers: [], surveys: [], depuracion: dep });
+  const { rows } = rowsFor({ depuracion: dep });
+  const byName = (n) => rows.find((r) => r.name === `Profesional ${n}`);
+  for (const n of [1, 2, 3, 4]) {
+    assert.equal(identity.profiles.get(`ced:${1000000 + n}`).profesion, 'Ingeniero civil', `profile ${n}`);
+    assert.equal(byName(n).profesion, 'Ingeniero civil', `row ${n}`);
+  }
+  for (const n of [5, 6, 7]) assert.equal(byName(n).profesion, '', 'blank / whitespace / missing stays empty');
+  assert.equal(byName(8).profesion, 'Voluntario UNGRD');
+  assert.equal(cellHtml(byName(5), 'profesion', true), 'Sin dato', 'the "Sin dato" convention is unchanged');
+  assert.equal(cellHtml(byName(7), 'profesion', true), 'Sin dato');
+});
+
+named('test_profesion_case_cell_tooltip_xlsx_both_sheets_and_pdf_show_the_normalized_text', () => {
+  const dep = depuracionOf([depInspector(1, { profesion: 'INGENIERO CIVIL' }), depInspector(2, { profesion: 'Ingeniero civil' })]);
+  const { rows } = rowsFor({ depuracion: dep });
+  const columns = columnsFor('totales', { withEstado: true, withProfesion: true });
+  const html = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, columns, false);
+  const at = columns.findIndex((c) => c.key === 'profesion');
+  for (const tds of alignRowCells(html)) {
+    assert.equal(tds[at].inner, '<span class="seg-profesion" title="Ingeniero civil">Ingeniero civil</span>', 'cell text and full-text tooltip');
+  }
+  assert.equal(html.includes('INGENIERO CIVIL'), false, 'the raw casing never reaches the table');
+  const tcols = columnsFor('temporales', { withEstado: true, withProfesion: true });
+  const thtml = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, tcols, false);
+  assert.equal(thtml.includes('title="Ingeniero civil">Ingeniero civil</span>'), true, 'Análisis temporales sub-tab too');
+  assert.equal(thtml.includes('INGENIERO CIVIL'), false);
+  for (const subTab of ['totales', 'temporales']) {
+    const out = xlsxRowsFor(rows, { subTab, withProfesion: true }).map((r) => r.profesion);
+    assert.deepEqual(out, ['Ingeniero civil', 'Ingeniero civil'], `XLSX ${subTab} sheet`);
+  }
+  for (const r of rows) {
+    const pdf = JSON.stringify(buildProfessionalReportDocDefinition({ ...profesionReportRow(), profesion: r.profesion }, ENFASIS_POINTS, ENFASIS_CTX).content);
+    assert.match(pdf, /"Profesión"[^\]]*"Ingeniero civil"/, 'PDF row');
+    assert.equal(pdf.includes('INGENIERO CIVIL'), false);
+  }
+});
+
+named('test_profesion_case_search_and_sort_treat_the_case_variants_as_one_value', () => {
+  const dep = depuracionOf([
+    depInspector(1, { profesion: 'INGENIERO CIVIL' }), depInspector(2, { profesion: 'Ingeniero civil' }),
+    depInspector(3, { profesion: 'ARQUITECTO' }), depInspector(4, { profesion: 'Ingeniero Civil' }),
+  ]);
+  const { rows } = rowsFor({ depuracion: dep });
+  for (const q of ['ingeniero civil', 'INGENIERO CIVIL', 'Ingeniero Civil', 'ingenierO CIVIL']) {
+    assert.deepEqual(visibleRowsFor(rows, { query: q }).map((r) => r.name).sort(), ['Profesional 1', 'Profesional 2', 'Profesional 4'], `search ${q}`);
+  }
+  assert.equal(visibleRowsFor(rows, { query: 'arquitecto' }).length, 1);
+  const asc = sortRows(rows, 'profesion', 'asc');
+  assert.deepEqual(asc.map((r) => r.profesion), ['Arquitecto', 'Ingeniero civil', 'Ingeniero civil', 'Ingeniero civil']);
+  assert.deepEqual(asc.slice(1).map((r) => r.name), ['Profesional 1', 'Profesional 2', 'Profesional 4'], 'the variants tie, so the stable key order decides');
+  const desc = sortRows(rows, 'profesion', 'desc');
+  assert.deepEqual(desc.slice(0, 3).map((r) => r.profesion), ['Ingeniero civil', 'Ingeniero civil', 'Ingeniero civil']);
+});
+
+named('test_profesion_case_hostile_text_is_still_escaped_by_the_cell_the_tooltip_and_pdf_prints_it_as_text', () => {
+  const dep = depuracionOf([depInspector(1, { profesion: PROFESION_HOSTIL }), depInspector(2, { profesion: '<SCRIPT>ALERT(1)</SCRIPT>' })]);
+  const { rows } = rowsFor({ depuracion: dep });
+  for (const r of rows) {
+    const cell = cellHtml(r, 'profesion', true);
+    assert.doesNotMatch(cell, /<script|<img|onerror=1>/i, `no raw tag survives: ${r.name}`);
+    assert.ok(cell.includes('&lt;'), 'escaped');
+    const title = /title="([^"]*)"/.exec(cell);
+    assert.ok(title && !/[<>]/.test(title[1]) && !title[1].includes("'"), 'the tooltip attribute is fully escaped');
+    const html = SEG.tableBodyHtml([r], true, false, columnsFor('totales', { withProfesion: true }), false);
+    assert.doesNotMatch(html, /<script|<img/i, 'the whole table row has no raw tag');
+    const pdf = JSON.stringify(buildProfessionalReportDocDefinition({ ...profesionReportRow(), profesion: r.profesion }, ENFASIS_POINTS, ENFASIS_CTX).content);
+    assert.ok(pdf.includes(JSON.stringify(r.profesion).slice(1, -1)), 'pdfmake prints the case-mapped value as text');
+  }
+  assert.equal(rows[0].profesion, "<Script>alert('x')</script> \"q\" & <img src=x onerror=1>", 'case-mapped only');
+});
+
+named('test_profesion_case_legacy_path_and_enfasis_are_untouched_and_the_raw_payload_is_not_mutated', () => {
+  const stickers = [stickerFor('1000001', 'Profesional 1')];
+  const legacy = rowsFor({ stickers }).rows[0];
+  assert.equal('profesion' in legacy, false, 'legacy row: no profesion key');
+  assert.equal(Object.keys(xlsxRowsFor([legacy], { subTab: 'totales' })[0]).includes('profesion'), false);
+  assert.ok(!JSON.stringify(buildProfessionalReportDocDefinition({ ...enfasisReportRow(), ...legacy }, ENFASIS_POINTS, ENFASIS_CTX).content).includes('Profesión'));
+  const ENF = 'ESPECIALIZACIÓN en Estructuras SISMO';
+  const dep = profesionDeepFreeze(depuracionOf([depInspector(1, { profesion: 'INGENIERO CIVIL', enfasis: ENF })]));
+  const before = JSON.parse(JSON.stringify(dep));
+  const { rows } = rowsFor({ depuracion: dep });
+  assert.equal(rows[0].profesion, 'Ingeniero civil');
+  assert.equal(rows[0].enfasis, ENF, 'Énfasis keeps its original casing exactly (out of scope)');
+  assert.equal(cellHtml(rows[0], 'enfasis', true).includes(ENF), true);
+  assert.deepEqual(JSON.parse(JSON.stringify(dep)), before, 'the raw depuracion payload was not mutated');
+  assert.equal(dep.inspectores[0].profesion, 'INGENIERO CIVIL', 'the source of truth keeps the original text');
+});
+
+named('test_profesion_case_registry_data_check_collapses_the_variants_to_ten_distinct_values', () => {
+  const inspectores = [];
+  for (const [text, count] of PROFESION_REGISTRY) for (let k = 0; k < count; k += 1) inspectores.push(depInspector(inspectores.length + 1, { profesion: text }));
+  const { rows } = rowsFor({ depuracion: depuracionOf(inspectores) });
+  const tally = new Map();
+  for (const r of rows) tally.set(r.profesion, (tally.get(r.profesion) || 0) + 1);
+  assert.equal(rows.length, 526);
+  assert.deepEqual([...tally.keys()].sort(), [
+    'Arquitecta', 'Arquitecta voluntaria', 'Arquitecto', 'Ingeniera civil', 'Ingeniero', 'Ingeniero civil',
+    'Profesional voluntario', 'Psicólogo', 'Voluntario', 'Voluntario UNGRD',
+  ].sort(), '18 registry variants -> exactly 10 distinct values');
+  assert.deepEqual(Object.fromEntries(tally), {
+    Ingeniero: 108, 'Ingeniero civil': 166, Arquitecto: 114, 'Profesional voluntario': 76, Arquitecta: 26, 'Ingeniera civil': 23,
+    'Arquitecta voluntaria': 5, Voluntario: 3, Psicólogo: 3, 'Voluntario UNGRD': 2,
+  }, 'row counts per normalized value (gender variants intentionally not merged)');
+});
+
+named('test_profesion_case_is_applied_in_the_profile_builder_only', () => {
+  const js = readFileSync(new URL('./seguimiento.js', import.meta.url), 'utf8');
+  assert.match(js, /profesion:\s*normalizeProfesion\(insp\.profesion\)/, 'normalized where the depurado profile is built');
+  assert.equal((js.match(/normalizeProfesion\(/g) || []).length, 2, 'the definition and the single call site: no renderer re-cases it');
+  assert.match(js, /enfasis:\s*typeof insp\.enfasis === 'string' \? insp\.enfasis : ''/, 'Énfasis is read verbatim');
+});
+
 // ── D-TEMPORALES-COLS: the depurado columns (Profesión, Énfasis, Estado sugerido) also live in "Análisis temporales" ─────
 
 const TEMP_ALL = { withEstado: true, withEnfasis: true, withProfesion: true };
@@ -5284,7 +5524,7 @@ named('test_temporales_body_text_cells_are_left_aligned_escaped_and_kept_whole',
   assert.ok(textCells.filter((c) => c.inner === 'Sin dato').length >= 2, 'the plain "Sin dato" cells carry the alignment class too');
   for (const raw of ['<script', '<img', 'onerror=1>']) assert.ok(!html.includes(raw), `raw ${raw} never survives`);
   assert.ok(html.includes('&lt;script&gt;') && html.includes('&quot;q&quot;'), 'hostile text is escaped');
-  assert.ok(html.includes(PROFESION_LARGA) && html.includes(ENFASIS_LARGO), 'long text stays whole (tooltip/copy), never sliced');
+  assert.ok(html.includes(SEG.normalizeProfesion(PROFESION_LARGA)) && html.includes(ENFASIS_LARGO), 'long text stays whole (tooltip/copy), never sliced');
   assert.match(html, /class="seg-profesion"/); assert.match(html, /class="seg-enfasis"/);
   const legacy = SEG.tableBodyHtml(sortRows(rows, 'name', 'asc'), true, false, COLUMNS_TEMPORALES, false);
   assert.equal(legacy.includes('seg-td-text'), false, 'the old ad-hoc text class is gone from the legacy temporales markup too');
