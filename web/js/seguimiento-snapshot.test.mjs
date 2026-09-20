@@ -421,10 +421,10 @@ await named('test_changed_etag_rerenders_exactly_once_and_replaces_the_retained_
   openTab({ root });
   await settle();
   const tab2 = openTab({ root });
-  assert.match(tab2.tbody.innerHTML, /Profesional 1(?! v2)/, 'first paint is the OLD retained snapshot');
+  assert.match(tab2.tbody.innerHTML, /Profesional 1(?! V2)/, 'first paint is the OLD retained snapshot');
   await settle();
   assert.equal(tab2.kpis.htmlWrites, 2, 'initial + EXACTLY one re-render');
-  assert.match(tab2.tbody.innerHTML, /Profesional 1 v2/, 'the new snapshot is what is on screen now');
+  assert.match(tab2.tbody.innerHTML, /Profesional 1 V2/, 'the new snapshot is what is on screen now');
   const held = SEG.peekSeguimientoSnapshot();
   assert.equal(held.snapshotId, E2);
   assert.equal(held.stickers[0].inspector.nombre_completo, 'Profesional 1 v2');
@@ -650,7 +650,7 @@ await named('test_a_response_without_a_readable_etag_clears_the_older_retained_v
   const tab2 = openTab({ root });
   await settle();
   assert.equal(tab2.kpis.htmlWrites, 2, 'cannot prove "unchanged": renders the fresh body');
-  assert.match(tab2.tbody.innerHTML, /Profesional 1 v2/);
+  assert.match(tab2.tbody.innerHTML, /Profesional 1 V2/);
   assert.equal(SEG.peekSeguimientoSnapshot(), null, 'the stale validator must not survive');
 });
 
@@ -769,7 +769,7 @@ await named('test_stale_response_after_a_newer_open_does_not_overwrite_the_retai
   gates[2].resolve(ok(bodyOf(newer), E2));
   await settle();
   assert.equal(SEG.peekSeguimientoSnapshot().snapshotId, E2);
-  assert.match(tabB.tbody.innerHTML, /Profesional 1 new/);
+  assert.match(tabB.tbody.innerHTML, /Profesional 1 New/);
 
   // The stale response of open A finally arrives (as a full 200 with another ETag).
   gates[1].resolve(ok(bodyOf(stale), '"etag-stale"'));
@@ -853,7 +853,7 @@ await named('test_xss_looking_data_stays_escaped_after_the_retained_rerender', a
     for (const [where, html] of [['tbody', tab.tbody.innerHTML], ['revision', tab.revision.innerHTML], ['select', tab.chartSelect.innerHTML]]) {
       assert.doesNotMatch(html, /<img|<script|<svg/, `${label}: raw markup in ${where}`);
     }
-    assert.match(tab.tbody.innerHTML, /&lt;img/, `${label}: escaped, not dropped`);
+    assert.match(tab.tbody.innerHTML, /&lt;[Ii]mg/, `${label}: escaped, not dropped`);
   };
   const first = openTab({ root });
   await settle();
@@ -997,8 +997,15 @@ function piiUniverse(tag, base) {
     tag, names, ced, stickers, depuracion, secrets,
   };
 }
-const SEES_A = ['Profesional 1 ADMINA', '1500001', 'TP-ADMINA-1', 'Duplicado ADMINA'];
-const leaksOf = (root, secrets) => secrets.filter((s) => root.deepHtml().includes(s));
+// D-NOMCASE: a person's name is displayed Title Case, so the visible spelling of
+// `Profesional 1 ADMINA` is `Profesional 1 Admina`; cédula/tarjeta are untouched.
+const SEES_A = ['Profesional 1 Admina', '1500001', 'TP-ADMINA-1', 'Duplicado Admina'];
+// Case-INSENSITIVE on purpose: D-NOMCASE re-cases a displayed name, and a leak of
+// `Profesional 1 ADMINA` painted as `Profesional 1 Admina` is exactly as much of a leak.
+const leaksOf = (root, secrets) => {
+  const html = root.deepHtml().toLowerCase();
+  return secrets.filter((s) => html.includes(String(s).toLowerCase()));
+};
 
 /** Counts (and cancels on stop) every timer the code under test creates. */
 function trackTimers() {
@@ -1075,7 +1082,7 @@ await named('test_admin_b_signing_in_reinitializes_the_view_and_never_paints_adm
 
   gateB.resolve(ok(bodyOf(b), '"etag-b"'));
   await settle();
-  for (const secret of ['Profesional 1 ADMINB', '1600001', 'TP-ADMINB-1', 'Duplicado ADMINB']) {
+  for (const secret of ['Profesional 1 Adminb', '1600001', 'TP-ADMINB-1', 'Duplicado Adminb']) {
     assert.ok(root.deepHtml().includes(secret), `B sees ${secret}`);
   }
   assert.deepStrictEqual(leaksOf(root, a.secrets), [], 'only B\'s fetch results are on screen');
@@ -1103,7 +1110,7 @@ await named('test_admin_to_admin_uid_change_is_a_session_change_and_never_paints
   gateB.resolve(ok(bodyOf(b), '"etag-b"'));
   await settle();
   assert.deepStrictEqual(leaksOf(root, a.secrets), []);
-  assert.ok(root.deepHtml().includes('Profesional 1 ADMINB'));
+  assert.ok(root.deepHtml().includes('Profesional 1 Adminb'));
 });
 
 await named('test_same_user_token_refresh_does_not_tear_down_or_refetch', async () => {
@@ -1285,7 +1292,7 @@ await named('test_teardown_when_never_initialized_is_a_noop_and_is_idempotent', 
   stubFetch(() => ok(bodyOf(piiUniverse('ADMINA', 1500000)), E1));
   const tab = openTab();
   await settle();
-  assert.match(tab.tbody.innerHTML, /Profesional 1 ADMINA/);
+  assert.match(tab.tbody.innerHTML, /Profesional 1 Admina/);
 });
 
 await named('test_teardown_leaves_the_module_able_to_init_and_retain_again', async () => {
@@ -1358,7 +1365,7 @@ await named('test_xss_looking_strings_stay_escaped_after_a_teardown_and_reinit',
   for (const [where, html] of [['tbody', tab.tbody.innerHTML], ['revision', tab.revision.innerHTML], ['select', tab.chartSelect.innerHTML]]) {
     assert.doesNotMatch(html, /<img|<script|<svg/, `raw markup in ${where} after the re-init`);
   }
-  assert.match(tab.tbody.innerHTML, /&lt;img/);
+  assert.match(tab.tbody.innerHTML, /&lt;[Ii]mg/);
 });
 
 await named('test_wiring_can_be_detached_and_never_leaks_a_listener_per_call', async () => {

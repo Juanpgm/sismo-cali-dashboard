@@ -348,6 +348,130 @@ function sentenceCase(text) {
   return result.slice(0, first.index) + upper + result.slice(first.index + first[0].length);
 }
 
+/** D-NOMCASE (2026-09-19): presentation-only Title Case for a person's name, so the Totales table, the "Análisis
+ *  temporales" sub-tab, the XLSX sheets, the PDF reports, the search box and the sort all read ONE spelling
+ *  ("JUAN DAVID HERNANDEZ BUENO" and "juan david hernandez bueno" are the same human, typed by two different
+ *  apps). Pure, deterministic and idempotent, exactly like `normalizeProfesion`: it runs ONCE where the depurado
+ *  profile is built, the backend payload keeps the original text and the raw `depuracion` object is never written.
+ *
+ *  Rule: NFC, trim + collapse whitespace runs, then per whitespace token — the first letter of each
+ *  apostrophe/hyphen segment is capitalized and the rest lowercased ("o'neil" -> "O'Neil", "PEREZ-GOMEZ" ->
+ *  "Perez-Gomez"), EXCEPT (a) a Spanish particle (`de del la las los y`) anywhere but the first token, which stays
+ *  lowercase, and (b) a roman numeral ALREADY written in capitals, which keeps them ("Juan Perez III"). Accents are
+ *  preserved (never stripped, never decomposed); a letter whose capital is longer than itself ("ß" -> "SS") is left
+ *  as is so the function stays idempotent. Non-strings and blanks -> "".
+ *
+ *  Known limits (deliberate, no dictionary): a lowercase "iii" is read as a name, not a numeral ("Iii"); "MCDONALD"
+ *  becomes "Mcdonald"; a particle typed as the first token is capitalized ("Del Valle Perez"). */
+export function titleCaseName(value) {
+  if (typeof value !== 'string') return '';
+  const text = value.normalize('NFC').trim().replace(/\s+/g, ' ');
+  if (!text) return '';
+  return text.split(' ').map((token, i) => titleCaseToken(token, i === 0)).join(' ');
+}
+
+// Spanish particles: lowercase inside a displayed name (never as its first token), and NEVER counted as one of
+// the significant tokens D-VARIANTE needs — "María de la Cruz" names one significant person, not three.
+const PARTICULAS_NOMBRE = new Set(['de', 'del', 'la', 'las', 'los', 'y', 'e']);
+// I..XIII, the only numerals a person's name realistically carries. Matched ONLY against a token that is already
+// all-caps, so a lowercase look-alike stays a name ("iii" -> "Iii", never "III").
+const NUMERAL_ROMANO_RE = /^(?:i{1,3}|iv|vi{0,3}|ix|xi{0,3}|xii|xiii)$/;
+
+/** One whitespace token of `titleCaseName`. */
+function titleCaseToken(token, esPrimero) {
+  const plano = token.toLowerCase();
+  if (!esPrimero && PARTICULAS_NOMBRE.has(plano)) return plano;
+  if (!esPrimero && token === token.toUpperCase() && NUMERAL_ROMANO_RE.test(plano)) return token;
+  // Odd indexes are the captured separators themselves — kept verbatim.
+  return plano.split(/([-'’])/).map((parte, i) => (i % 2 ? parte : capitalizarPrimeraLetra(parte))).join('');
+}
+
+/** Upper-cases the first LETTER of `text` (accent-aware), leaving any leading punctuation/digits alone. */
+function capitalizarPrimeraLetra(text) {
+  const first = /\p{L}/u.exec(text);
+  if (!first) return text;
+  const upper = first[0].toUpperCase();
+  // A letter whose capital is longer ("ß" -> "SS") is left as is: capitalizing it would break idempotence.
+  if (upper.length !== first[0].length) return text;
+  return text.slice(0, first.index) + upper + text.slice(first.index + first[0].length);
+}
+
+/** The significant tokens of a name, over the SAME normalization the join keys use
+ *  (`normalizeName`: accents stripped, lowercased, whitespace collapsed). */
+function nameTokensOf(raw) {
+  const nombre = normalizeName(raw);
+  return nombre ? nombre.split(' ').filter(Boolean) : [];
+}
+
+/** D-VARIANTE: the SHORTER of the two names must carry at least this many SIGNIFICANT tokens (see
+ *  `tokensSignificativos`). Two ("Juan David", "Ana Pérez") name too many different humans to be evidence of
+ *  anything; three is what the production case needs ("Juan David Hernandez" 3 vs "Juan David Hernandez Bueno" 4)
+ *  and what a Colombian registry realistically spells out (given name + one or two surnames). */
+const VARIANTE_MIN_TOKENS = 3;
+
+/** How many of `tokens` actually identify a person: a Spanish particle ("de", "la", "los", …) and a single-letter
+ *  initial ("J", "D") are spelling, not identity — counting them would let "María de la Cruz" (2 significant) or
+ *  "J D Hernandez" (1) clear the D-VARIANTE threshold and be absorbed by a different human. The tokens themselves
+ *  still take part in the prefix comparison; only the THRESHOLD ignores them. */
+function tokensSignificativos(tokens) {
+  let n = 0;
+  for (const token of tokens) if (token.length > 1 && !PARTICULAS_NOMBRE.has(token)) n += 1;
+  return n;
+}
+
+/** D-VARIANTE index over the CERTIFIED names, both entries poisoned to `null` when two different certified people
+ *  would claim the same text (a poisoned entry never resolves — two humans must never collapse into one row, the
+ *  same rule the backend applies to the padrón itself):
+ *
+ *  - `porPrefijo`: every prefix of `VARIANTE_MIN_TOKENS`+ tokens, INCLUDING the whole name — answers "is this
+ *    stub's WHOLE name the beginning of a certified person's name?".
+ *  - `porNombreCompleto`: the whole name only — answers the mirror question, "is a certified person's WHOLE name
+ *    the beginning of this stub's name?".
+ *
+ *  Only these two questions are ever asked: names that merely SHARE a prefix ("Juan Carlos Ramirez Torres" and
+ *  "Juan Carlos Gomez") are different humans and must never merge. */
+function indiceDeNombresCertificados(certificados) {
+  const porPrefijo = new Map();
+  const porNombreCompleto = new Map();
+  const anotar = (mapa, clave, ced) => {
+    if (mapa.has(clave) && mapa.get(clave) !== ced) mapa.set(clave, null);
+    else mapa.set(clave, ced);
+  };
+  for (const { insp, ced } of certificados) {
+    const tokens = nameTokensOf(insp.nombre_completo);
+    if (tokens.length < VARIANTE_MIN_TOKENS) continue;
+    anotar(porNombreCompleto, tokens.join(' '), ced);
+    for (let n = VARIANTE_MIN_TOKENS; n <= tokens.length; n += 1) {
+      anotar(porPrefijo, tokens.slice(0, n).join(' '), ced);
+    }
+  }
+  return { porPrefijo, porNombreCompleto };
+}
+
+/** The single certified cédula a stub's name resolves to under the TRUE-prefix rule above, or `''`. Both
+ *  directions are tried; a poisoned entry, no candidate, or two different candidates all mean "never guess". */
+function variantePadronDe(tokens, { porPrefijo, porNombreCompleto }) {
+  if (tokens.length < VARIANTE_MIN_TOKENS) return '';
+  const candidatos = new Set();
+  // (a) the stub's WHOLE name is the beginning of a certified name (the production case). The stub is the shorter
+  // side here, so IT is the one that must carry enough significant tokens.
+  if (tokensSignificativos(tokens) >= VARIANTE_MIN_TOKENS) {
+    const comoPrefijo = porPrefijo.get(tokens.join(' '));
+    if (comoPrefijo === null) return '';
+    if (comoPrefijo) candidatos.add(comoPrefijo);
+  }
+  // (b) a certified WHOLE name is the beginning of the stub's name (the stub carries an extra surname). The
+  // certified name — the stub's first `n` tokens — is the shorter side, so the threshold applies to that slice.
+  for (let n = VARIANTE_MIN_TOKENS; n < tokens.length; n += 1) {
+    const prefijo = tokens.slice(0, n);
+    if (tokensSignificativos(prefijo) < VARIANTE_MIN_TOKENS) continue;
+    const contenido = porNombreCompleto.get(prefijo.join(' '));
+    if (contenido === null) return '';
+    if (contenido) candidatos.add(contenido);
+  }
+  return candidatos.size === 1 ? [...candidatos][0] : '';
+}
+
 /** seguimiento-inspectores-depurado, Fase 4 (design "Frontend Changes
  *  (minimal)"): builds the depuracion-derived branch of buildIdentityIndex
  *  below — profiles come DIRECTLY from `depuracion.inspectores`, never from
@@ -372,12 +496,39 @@ function buildIdentityIndexFromDepuracion(depuracion, depMeta) {
   // normalizedName -> Set<cédula> over the SEEDED profiles (W3, see below).
   const seededNameCedulas = new Map();
 
+  // D-NOPERSONA: normalizedName -> Set<destination cédula> over the STUBS — applied AFTER `alias_nombres` below,
+  // because the backend's own survey-name dedupe still points an absorbed stub's spelling at the stub's retired
+  // key (the engine has no variant merge of its own). A name claimed by two stubs with different destinations is
+  // never indexed, exactly like `seededNameCedulas`.
+  const nombreStubADestino = new Map();
+  // D-NOPERSONA: every cédula the CERTIFIED side owns (its key or one of its `cedulas_unificadas`). A stub never
+  // re-points one of these, not even its own `identidad_key` — the certified side always wins.
+  const cedulasCertificadas = new Set();
+  // D-NOPERSONA: the `no_persona` profiles that never become a row, kept NAME AND CÉDULA ONLY — enough for the
+  // manual-review panel to name the stub half of a `nombre_duplicado` pair, and for an unabsorbed stub's orphan
+  // row to identify itself when its own records carry no name; never enough to put a depurado column on a row.
+  const perfilesOcultos = new Map();
+  // D-NOPERSONA: `cedulas_unificadas` cédula -> the destinations the STUBS claim it for. Resolved after the loop
+  // so the payload order cannot decide a contested cédula (see the poisoning step below).
+  const reclamosDeStubs = new Map();
+
   const inspectores = Array.isArray(depuracion.inspectores) ? depuracion.inspectores : [];
+  // D-NOPERSONA: the padrón is split in two BEFORE anything is indexed. A `no_persona` registry row (a migrated
+  // import placeholder, a shared/system account — 122 of the 508 rows in production) is NOT a professional: it
+  // never gets a table row, so it must not seed a profile, claim a cédula, nor answer for a name either. The
+  // certified rows are the only ones the Totales/temporales tables, the exports and `totals.padron` know about.
+  const certificados = [];
+  const stubs = [];
   for (const insp of inspectores) {
     if (!insp) continue;
     const ced = cedulaKey(insp.identidad_key || insp.identificacion);
     if (!ced) continue;
+    (insp.no_persona ? stubs : certificados).push({ insp, ced });
+  }
+
+  for (const { insp, ced } of certificados) {
     eligibleCedulas.add(ced);
+    cedulasCertificadas.add(ced);
     const seededNameKey = normalizeName(insp.nombre_completo || '');
     if (seededNameKey) {
       if (!seededNameCedulas.has(seededNameKey)) seededNameCedulas.set(seededNameKey, new Set());
@@ -388,11 +539,15 @@ function buildIdentityIndexFromDepuracion(depuracion, depMeta) {
       const cedFusionada = cedulaKey(fusionadaRaw);
       if (!cedFusionada || cedFusionada === ced) continue;
       eligibleCedulas.add(cedFusionada);
+      cedulasCertificadas.add(cedFusionada);
       cedulaFusionadaACedulaSurvivor.set(cedFusionada, ced);
     }
+    // D-NOMCASE: the display name is Title-Cased ONCE, here, so the Totales table, the "Análisis temporales"
+    // sub-tab, the XLSX exports, the PDF reports, the search box and the sort all read the same spelling.
+    const nombreMostrado = titleCaseName(insp.nombre_completo);
     profiles.set(`ced:${ced}`, {
-      nameCounts: new Map(insp.nombre_completo ? [[insp.nombre_completo, 1]] : []),
-      name: insp.nombre_completo || '',
+      nameCounts: new Map(nombreMostrado ? [[nombreMostrado, 1]] : []),
+      name: nombreMostrado,
       cedula: insp.identificacion || '',
       codigo: insp.codigo || '',
       entidad: insp.entidad || '',
@@ -416,6 +571,52 @@ function buildIdentityIndexFromDepuracion(depuracion, depMeta) {
     });
   }
 
+  // D-VARIANTE: a `no_persona` stub whose name is a CERTIFIED person's name minus (or plus) a surname is that same
+  // human registered twice — the engine's own dedup passes key on the cédula and on a byte-equal normalized name,
+  // so neither of them catches it ("juan david hernandez" vs "juan david hernandez bueno", two different cédulas).
+  // Absorbing it here keeps the person's stickers/Survey/temporal aggregates in ONE row, under the certified record.
+  // Only an EVIDENCE-FREE stub is absorbed: one holding a código is a working identity whatever the registry says
+  // about the account, and a stub that matches two certified people (or none) is never guessed.
+  const indiceNombres = indiceDeNombresCertificados(certificados);
+  for (const { insp, ced } of stubs) {
+    const survivor = insp.codigo ? '' : variantePadronDe(nameTokensOf(insp.nombre_completo), indiceNombres);
+    perfilesOcultos.set(`ced:${ced}`, {
+      name: titleCaseName(insp.nombre_completo), cedula: insp.identificacion || '',
+    });
+    // The stub's own key: re-pointed at the survivor when one was found, and left alone when the CERTIFIED side
+    // already owns that cédula (the same guard the alias loop below applies — the certified side always wins).
+    if (!cedulasCertificadas.has(ced)) {
+      eligibleCedulas.add(ced);
+      if (survivor) cedulaFusionadaACedulaSurvivor.set(ced, survivor);
+    }
+    // Where this stub's records must land: the survivor when absorbed, else wherever its own key already resolves
+    // (a certified owner of that cédula), else the key itself. An UNABSORBED stub keeps answering for its own
+    // `cedulas_unificadas` exactly as it did when it still had a row, so its activity never splits into two rows.
+    const destino = survivor || cedulaFusionadaACedulaSurvivor.get(ced) || ced;
+    for (const fusionadaRaw of (Array.isArray(insp.cedulas_unificadas) ? insp.cedulas_unificadas : [])) {
+      const cedFusionada = cedulaKey(fusionadaRaw);
+      if (!cedFusionada || cedFusionada === ced) continue;
+      // A cédula a CERTIFIED row already owns is never re-pointed — the certified side always wins.
+      if (cedulasCertificadas.has(cedFusionada)) continue;
+      // Otherwise it is only a CLAIM: resolved after every stub has spoken, so which stub came first in the
+      // payload cannot decide who gets it (the alias claims are collected, then poisoned/applied below).
+      if (!reclamosDeStubs.has(cedFusionada)) reclamosDeStubs.set(cedFusionada, new Set());
+      reclamosDeStubs.get(cedFusionada).add(destino);
+    }
+    const stubNameKey = normalizeName(insp.nombre_completo || '');
+    if (stubNameKey) {
+      if (!nombreStubADestino.has(stubNameKey)) nombreStubADestino.set(stubNameKey, { destinos: new Set(), ced });
+      nombreStubADestino.get(stubNameKey).destinos.add(destino);
+    }
+  }
+  // D-NOPERSONA: a `cedulas_unificadas` cédula two stubs claim for two DIFFERENT destinations belongs to neither
+  // (the same poisoning rule the name index uses). It stays eligible so its records still key by that cédula —
+  // one deterministic orphan row — instead of following whichever stub the payload happened to list first.
+  for (const [cedFusionada, destinos] of reclamosDeStubs) {
+    eligibleCedulas.add(cedFusionada);
+    if (destinos.size === 1) cedulaFusionadaACedulaSurvivor.set(cedFusionada, [...destinos][0]);
+  }
+
   // depuracion.alias_nombres: normalizedName -> identidad_key (backend's own
   // survey-name dedupe, spec: "a survey name that maps to a real person's
   // key never lands in GRUPO-EXTERNOS") — the exact same role nameToCedula
@@ -433,6 +634,17 @@ function buildIdentityIndexFromDepuracion(depuracion, depMeta) {
   for (const [nameKey, cedulas] of seededNameCedulas) {
     if (cedulas.size === 1 && !nameToCedula.has(nameKey)) nameToCedula.set(nameKey, [...cedulas][0]);
   }
+  // D-NOPERSONA/D-VARIANTE: a stub's spelling is re-pointed at its destination, but ONLY over an entry that is
+  // absent, that still names the stub's own (now rowless) key, or that names a key with no row at all. An
+  // `alias_nombres` entry that answers for a DIFFERENT certified person who HAS a row is never stolen.
+  for (const [nameKey, { destinos, ced }] of nombreStubADestino) {
+    if (destinos.size !== 1) continue; // two stubs, two destinations: never guess (same rule as seededNameCedulas)
+    const [destino] = destinos;
+    const actual = nameToCedula.get(nameKey);
+    if (actual === undefined || actual === ced || !profiles.has(`ced:${actual}`)) {
+      nameToCedula.set(nameKey, destino);
+    }
+  }
 
   const resolverCore = { eligibleCedulas, nameToCedula, cedulaFusionadaACedulaSurvivor };
   const keyForSticker = (record) => professionalKeyOf(record, resolverCore);
@@ -440,7 +652,7 @@ function buildIdentityIndexFromDepuracion(depuracion, depMeta) {
 
   return {
     eligibleCedulas, nameToCedula, ambiguousNames: new Set(), profiles, keyForSticker, keyForSurvey,
-    cedulaFusionadaACedulaSurvivor, ...depMeta,
+    cedulaFusionadaACedulaSurvivor, perfilesOcultos, ...depMeta,
   };
 }
 
@@ -642,7 +854,9 @@ function accumulateRowActivity({
   // records carry so it is identifiable instead of a blank "Sin dato" row.
   function adoptFallbackIdentity(row, name, cedula) {
     if (!seeded || idx.profiles.has(row.key)) return;
-    if (!row.fallbackName && name) row.fallbackName = name;
+    // D-NOMCASE: an orphan row's borrowed name follows the SAME display rule as a padrón one, so the two
+    // sub-tabs never mix "JUAN PEREZ" with "Juan Pérez".
+    if (!row.fallbackName && name) row.fallbackName = titleCaseName(name);
     if (!row.fallbackCedula && cedula) row.fallbackCedula = cedula;
   }
 
@@ -750,8 +964,16 @@ export function buildProfessionalRows({
   let stickersInspectoresActivos = 0;
 
   const rows = [...rowsByKey.values()].map((row) => {
-    const profile = idx.profiles.get(row.key)
-      || (seeded ? { name: row.fallbackName, cedula: row.fallbackCedula } : {});
+    // An orphan row (no certified profile) identifies itself with, in order: the hidden `no_persona` registry
+    // entry its key belongs to (D-NOPERSONA — name and cédula ONLY, never a depurado column, so an unabsorbed
+    // stub's row reads like it did before instead of going anonymous when its records carry no name), then the
+    // name/cédula its own records carry, then the cédula of its own `ced:` key (a row reached only through a
+    // Survey — Survey records have no cédula at all — must not show a blank cell).
+    const oculto = seeded && idx.perfilesOcultos instanceof Map ? idx.perfilesOcultos.get(row.key) : null;
+    const profile = idx.profiles.get(row.key) || (seeded ? {
+      name: (oculto && oculto.name) || row.fallbackName,
+      cedula: (oculto && oculto.cedula) || row.fallbackCedula || cedulaDeKey(row.key),
+    } : {});
     // Numerator: F1+F2 stickers of the seeded profiles whose estado is exactly
     // 'activo' (orphan rows carry no estado), dated inside the range. Undated
     // stickers cannot be placed in it, so they never count.
@@ -882,6 +1104,11 @@ export function buildProfessionalRows({
     stickersWithoutDate,
     totals,
   };
+}
+
+/** The cédula inside a `ced:<digits>` professional key, `''` for a `nom:` (name-only) one. */
+function cedulaDeKey(key) {
+  return typeof key === 'string' && key.startsWith('ced:') ? key.slice(4) : '';
 }
 
 /** Whether a table row has any sticker/Survey activity in the selected range
@@ -2076,15 +2303,17 @@ export function hasActiveSegFilters({
 export const ESTADO_ALL = 'all';
 
 /** Options of the estado_sugerido filter (Phase 11, spec "Estado Sugerido
- *  Filter And Column"): "all" first (the default), then the four values the
- *  backend emits. A value outside this list is still LISTED under "all" — the
- *  table never hides a row because of an estado the frontend has no label for. */
+ *  Filter And Column"): "all" first (the default), then the values the backend
+ *  emits FOR A CERTIFIED PERSON. A value outside this list is still LISTED
+ *  under "all" — the table never hides a row because of an estado the frontend
+ *  has no label for. D-NOPERSONA: "no_persona" is deliberately absent — those
+ *  registry rows are no longer professionals, so the option could only ever
+ *  produce an empty table. */
 export const ESTADO_FILTER_OPTIONS = Object.freeze([
   { value: ESTADO_ALL, label: 'Todos' },
   { value: 'activo', label: 'Activo' },
   { value: 'revisar', label: 'Revisar' },
   { value: 'candidato_desactivacion', label: 'Candidato a desactivación' },
-  { value: 'no_persona', label: 'No es persona' },
 ]);
 
 export function sortRows(rows, column, dir = 'asc') {
@@ -2615,7 +2844,8 @@ export function grupoExternosRowHtml(grupoExternos, colspan = 1) {
   if (!grupoExternos) return '';
   const detalle = Array.isArray(grupoExternos.detalle) ? grupoExternos.detalle : [];
   const items = detalle.map((d) => {
-    const nombre = escapeHtml((d && d.nombre_completo) || 'Sin dato');
+    // D-NOMCASE: the collapsed accounts read in the same Title Case as the table above them.
+    const nombre = escapeHtml(titleCaseName(d && d.nombre_completo) || 'Sin dato');
     const identificacion = escapeHtml((d && d.identificacion) || 'Sin dato');
     const motivo = escapeHtml((d && d.motivo) || 'sin motivo');
     const ultimo = d && d.ultimo_sticker ? `, últ. sticker ${escapeHtml(d.ultimo_sticker)}` : '';
@@ -2671,6 +2901,10 @@ const REVISION_LIST_CAP = 25;
  *  just "cédula <key>". Empty key -> ''. */
 function revisionPersonLabeler(identity) {
   const profiles = identity && identity.profiles instanceof Map ? identity.profiles : null;
+  // D-NOPERSONA: a `no_persona` row is hidden from the TABLE, not from this panel — a `nombre_duplicado` entry
+  // names both halves of the pair, and printing a bare cédula for one of them is what the reviewer would have to
+  // look up by hand. Name-only, so none of the hidden row's other fields can leak back into the table.
+  const ocultos = identity && identity.perfilesOcultos instanceof Map ? identity.perfilesOcultos : null;
   const detalle = identity && identity.grupoExternos && Array.isArray(identity.grupoExternos.detalle)
     ? identity.grupoExternos.detalle : [];
   let externos = null;
@@ -2679,14 +2913,16 @@ function revisionPersonLabeler(identity) {
     const key = cedulaKey(raw);
     let name = '';
     let cedula = raw;
-    const profile = profiles && key ? profiles.get(`ced:${key}`) : null;
+    const profile = (profiles && key ? profiles.get(`ced:${key}`) : null)
+      || (ocultos && key ? ocultos.get(`ced:${key}`) : null);
     if (profile) {
       name = profile.name || '';
       cedula = profile.cedula || raw;
     } else if (key && detalle.length) {
       if (!externos) externos = new Map(detalle.filter(Boolean).map((d) => [cedulaKey(d.identificacion), d]));
       const externo = externos.get(key);
-      if (externo) { name = externo.nombre_completo || ''; cedula = externo.identificacion || raw; }
+      // D-NOMCASE: same display rule as a padrón profile's `name` (already Title-Cased above).
+      if (externo) { name = titleCaseName(externo.nombre_completo); cedula = externo.identificacion || raw; }
     }
     if (!name && !cedula) return '';
     return name ? `${escapeHtml(name)} (cédula ${escapeHtml(cedula)})` : `cédula ${escapeHtml(cedula)}`;
@@ -2728,8 +2964,11 @@ function revisionItemText(it, label) {
     many('personas', src.identidad_keys);
     many('titulares que conservan el código', src.identidad_keys_titulares);
     if (src.cedula_key) parts.push(`cédula ${escapeHtml(src.cedula_key)}`);
-    if (src.nombre_completo) parts.push(`nombre: ${escapeHtml(src.nombre_completo)}`);
-    if (src.nombre_completo_duplicado) parts.push(`duplicado: ${escapeHtml(src.nombre_completo_duplicado)}`);
+    // D-NOMCASE: a review item names people too — same Title Case as everywhere else.
+    if (src.nombre_completo) parts.push(`nombre: ${escapeHtml(titleCaseName(src.nombre_completo))}`);
+    if (src.nombre_completo_duplicado) {
+      parts.push(`duplicado: ${escapeHtml(titleCaseName(src.nombre_completo_duplicado))}`);
+    }
     one('candidato', src.identidad_key_candidato);
   }
   if (Number.isFinite(src.score)) parts.push(`score ${escapeHtml(src.score)}`);

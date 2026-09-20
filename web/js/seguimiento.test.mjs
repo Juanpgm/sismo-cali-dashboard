@@ -3743,7 +3743,9 @@ named('test_estado_column_only_with_depuracion_and_options_default_all', () => {
   assert.equal(columnsFor('temporales'), COLUMNS_TEMPORALES, 'legacy temporales sub-tab (no flags) unchanged');
   const values = SEG.ESTADO_FILTER_OPTIONS.map((o) => o.value);
   assert.equal(values[0], 'all');
-  for (const v of ['activo', 'revisar', 'candidato_desactivacion', 'no_persona']) assert.ok(values.includes(v), v);
+  for (const v of ['activo', 'revisar', 'candidato_desactivacion']) assert.ok(values.includes(v), v);
+  // D-NOPERSONA: a `no_persona` row is no longer a professional, so the filter no longer offers it.
+  assert.ok(!values.includes('no_persona'));
   assert.equal(cellHtml({ estadoSugerido: 'candidato_desactivacion' }, 'estadoSugerido', true), 'candidato_desactivacion');
   assert.equal(cellHtml({ estadoSugerido: '' }, 'estadoSugerido', true), 'Sin dato');
   assert.equal(cellHtml({ estadoSugerido: 'activo' }, 'estadoSugerido', false), DASH);

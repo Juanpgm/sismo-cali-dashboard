@@ -657,6 +657,79 @@ sheets / PDF, search and sort, legacy path and Énfasis untouched, raw payload n
 asserted the verbatim variants). Mutation-checked with 10 scratch mutants outside the repo (normalization skipped, applied to énfasis too, acronym rule removed, first-letter
 capitalization removed, XLSX writing another casing, all-caps rule off, whitespace not collapsed, settle pass removed, gender merged, raw payload mutated): all killed.
 
+### D-NOPERSONA / D-VARIANTE / D-NOMCASE (2026-09-19): one row per certified person, Title Case, no `no_persona` rows
+
+**Symptom (owner, Seguimiento > Profesionales > Totales, admin, depurado on).** One human, two rows: `JUAN DAVID HERNANDEZ BUENO`
+(cédula 114***, `activo`, código 048, 22 F1 + 12 F2 stickers) and `Juan David Hernández` (cédula 148***, `no_persona`, "Sin dato"
+in Énfasis/Clase/Código, 0 stickers). A read-only replay of `GET /stickers-atencionsismo?depuracion=1` confirmed BOTH rows come from
+`depuracion.inspectores`: the engine emits 508 profiles, 122 of them `no_persona`, and the second row is one of them.
+
+**Root cause.** Every dedup pass of the engine keys on the cédula (`_unificar_por_nombre` is the one name-based pass, and it compares
+`nombre_norm` for BYTE equality). `juan david hernandez` and `juan david hernandez bueno` are not byte-equal and the two cédulas
+differ, so the migrated stub survives as its own `Perfil`. `colapsar_externos` does not absorb it either: a `survey_cali` name
+corroborated it (`alias_nombres['juan david hernandez'] -> 148***`), which exempts it from GRUPO-EXTERNOS by design. The frontend then
+seeds one row per profile (`seedRowsFromProfiles`), so the stub gets a table row of its own — and `alias_nombres` even routes the
+person's Survey records to it.
+
+**Decision (frontend only, presentation/join layer — the engine is NOT touched).**
+
+- **D-NOPERSONA.** A `no_persona` profile is a registry artefact (a migrated import placeholder, a shared/system account), never a
+  professional: `buildIdentityIndexFromDepuracion` no longer creates a profile for it, so it seeds no row, no name and no cédula.
+  `totals.padron` therefore counts CERTIFIED people only (508 -> 386 on the 2026-09-19 snapshot). Every other KPI is unchanged:
+  `totals.stickers`/`surveys` (nothing is dropped), `unassigned` (0), `professionals` (122), `inspectoresActivos` (146) and
+  `stickersInspectoresActivos` (2,866) are byte-identical before and after.
+- **D-VARIANTE (TRUE-prefix rule, significant tokens).** A stub is absorbed by a certified person ONLY when one WHOLE token
+  sequence is the beginning of the other — the stub's whole name equals the first *k* tokens of exactly one certified name, or a
+  certified whole name equals the first *k* tokens of the stub — AND the SHORTER of the two carries at least
+  **`VARIANTE_MIN_TOKENS` = 3 SIGNIFICANT tokens**, AND the stub holds no código. A *significant* token is one that is neither a
+  Spanish particle (`PARTICULAS_NOMBRE`: `de del la las los y e`) nor a single-letter initial: "Maria de la Cruz" identifies two
+  significant tokens, not four, and "J D Hernandez" one, not three — counting them would let a different human clear the threshold
+  ("Maria de la Cruz" vs "Maria de la Cruz Perez", "Ana de Leon" vs "Ana de Leon Gomez", "J D Hernandez" vs "J D Hernandez Bueno"
+  all stay SEPARATE). The particles still take part in the prefix comparison; only the threshold ignores them. Two significant
+  tokens ("Juan David", "Ana Pérez") name far too many different humans to be evidence of anything; three is what the production
+  case needs ("Juan David Hernandez" 3 vs "Juan David Hernandez Bueno" 4). Names that merely SHARE a prefix and then diverge are
+  different humans and NEVER merge ("Juan Carlos Ramirez Torres" vs "Juan Carlos Gomez", "Ana Maria Perez Torres" vs "Ana Maria
+  Perez Gomez", "Juan Perez Gomez" vs "Juan Perez Ruiz"). A text claimed by two different certified people is poisoned and never
+  resolves; a stub that fits two candidates (one per direction) is never guessed; a stub never absorbs another stub. When it IS
+  absorbed, its own cédula, its `cedulas_unificadas` and its spelling are re-pointed at the survivor — every write guarded so the
+  CERTIFIED side always wins: a cédula that is a certified key or one of a certified row's `cedulas_unificadas` is never re-pointed
+  (not even the stub's own `identidad_key`), and an `alias_nombres` entry that already answers for a DIFFERENT certified person
+  WITH a row is never overridden (only an absent entry, the stub's own retired key, or a key with no row at all). **10 stubs** are
+  absorbed on the 2026-09-19 snapshot, each verified to be a true prefix whose shorter side has 3 significant tokens; 1 further
+  stub is in the class the significant-token rule protects (3+ raw tokens, <3 significant) and is correctly left alone.
+- **Order independence.** Nothing about the result may depend on the order of `depuracion.inspectores`. The `cedulas_unificadas`
+  cédula that two stubs claim for two DIFFERENT destinations is therefore COLLECTED first and resolved afterwards: a contested
+  cédula is poisoned (re-pointed at nobody) and keeps keying its own records, instead of following whichever stub the payload
+  happened to list first. Pinned by permutation tests (all 24 orderings of a 4-row padrón produce identical rows and totals).
+  0 contested cédulas on the 2026-09-19 snapshot.
+- **Unmatched stubs keep their activity, as plain orphan rows.** A `no_persona` stub with real activity and no certified variant
+  keeps its records AND its own `cedulas_unificadas`, so everything that used to land in its row still lands in ONE row — a plain
+  "not in the padrón" orphan row, never two, so NO sticker or evaluation is lost and the KPI arithmetic is untouched. That row is
+  NOT a `no_persona` row: it carries name and cédula only, with no depurado column, no `estado_sugerido` and no flag (owner
+  decision: `no_persona` rows are never shown and the estado filter no longer offers that option). To identify itself it reads, in
+  order, the hidden registry entry for its key (`identity.perfilesOcultos`, name + cédula ONLY), then the name/cédula its own
+  records carry, then the cédula of its own `ced:` key — so a record that carries a cédula but no name, or a Survey record (which
+  carries no cédula at all), still produces an identifiable row rather than an anonymous "Sin dato" one. 2 such rows, 9 stickers,
+  on the 2026-09-19 snapshot (orphan rows 8 -> 10, their stickers 33 -> 42).
+- **The manual-review panel is NOT filtered.** The same `perfilesOcultos` lets a `nombre_duplicado` entry name BOTH halves of the
+  pair, in Title Case, instead of printing a bare cédula for the hidden one.
+- **`row.noPersona` is retained** for shape stability (every consumer keeps the key) and is now always `false`; the estado filter no
+  longer offers "No es persona", which could only ever produce an empty table.
+- **D-NOMCASE.** A person's displayed name is Title Case, computed ONCE where the profile is built (`titleCaseName`, the same
+  shape as `normalizeProfesion`): the raw payload is never mutated, and the Totales table, the "Análisis temporales" sub-tab, both
+  XLSX sheets, the PDF reports, the search box, the sort, the GRUPO-EXTERNOS detail and the manual-review panel all read one
+  spelling. Rule: NFC, trim/collapse, first letter of each apostrophe/hyphen segment capitalized and the rest lowercased, Spanish
+  particles (`de del la las los y`) lowercase except as the first token, an ALREADY all-caps roman numeral kept ("Juan Perez III").
+  Accents are preserved; "ß" is left alone so the function stays idempotent.
+
+**Limits (deliberate, no dictionary).** A lowercase "iii" reads as a name ("Iii"); "MCDONALD" becomes "Mcdonald"; a particle typed
+first is capitalized ("Del Valle Perez"). The variant merge is a frontend-only view: the engine still emits both `Perfil`s, so the
+XLSX/PDF of the depurado base and any backend consumer still see two records until (if ever) an engine-side stage 3b is decided.
+
+**Not fixed here (reported).** 8 names carrying 33 stickers resolve to nobody: they are neither padrón rows, nor `cedulas_unificadas`
+aliases, nor GRUPO-EXTERNOS entries — they are inspectors missing from the depurado registry. That is a registry/publication gap,
+not a join bug, and it is what makes the "Análisis temporales" rows show "Sin dato" in Profesión/Énfasis/Clase/Estado/Código.
+
 ## Contradiction Register (efficiency extension)
 
 | # | Finding | Resolution |
