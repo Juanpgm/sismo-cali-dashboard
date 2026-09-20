@@ -308,11 +308,91 @@ function openTab({
     estadoField: root.el('seg-estado-field'),
     revision: root.el('seg-revision-manual'),
     chartSelect: root.el('seg-chart-professional'),
+    ocultos: root.el('seg-ocultos-note'),
   };
 }
 
 const E1 = '"etag-1"';
 const E2 = '"etag-2"';
+
+// ── D-COMPLETOS (2026-09-20): the rendered tab shows complete people only ───
+
+await named('test_completos_hidden_people_are_not_rendered_and_are_disclosed', async () => {
+  const u = universe();
+  // One extra sticker from somebody the padrón does not know: an incomplete person.
+  u.stickers.push({
+    inspector: { nombre_completo: 'Fantasma Sin Padron Alguno', identificacion: '' },
+    inspector_fuente: 'evaluacion',
+    fuente: 'atencionsismo',
+    fase: 1,
+    fecha: '2026-09-10T15:00:00+00:00',
+  });
+  stubFetch(() => ok(bodyOf(u), E1));
+  const tab = openTab();
+  await settle();
+  const html = tab.tbody.innerHTML;
+  assert.ok(!html.includes('Fantasma'), 'an incomplete person never reaches the table');
+  assert.ok(!tab.chartSelect.innerHTML.includes('Fantasma'), 'nor the "Profesional" selector');
+  assert.equal(tab.ocultos.hidden, false, 'the disclosure note is shown');
+  assert.match(tab.ocultos.textContent, /1 registro de actividad de personas sin datos completos no se listan \(1 sticker\)\./);
+  // The two complete people with activity are still there, and the KPI agrees with them.
+  assert.ok(html.includes('Profesional 1') && html.includes('Profesional 2'));
+  assert.match(tab.kpis.innerHTML, /profesionales con actividad[\s\S]*?>2</i);
+});
+
+await named('test_completos_collapsed_externos_are_never_named_in_the_table', async () => {
+  // D-COMPLETOS: the collapsed group keeps its COUNT, but the accounts behind it are people
+  // without complete data — their names and cédulas may not reach the rendered table.
+  const u = universe({
+    block: {
+      grupo_externos: {
+        n_colapsados: 2,
+        fuente_dato: 'main',
+        detalle: [
+          { nombre_completo: 'Cuenta Importada Una', identificacion: '900000001', motivo: 'cuenta_no_persona' },
+          { nombre_completo: 'Cuenta Importada Dos', identificacion: '900000002', motivo: 'cedula_sospechosa' },
+        ],
+      },
+    },
+  });
+  stubFetch(() => ok(bodyOf(u), E1));
+  const tab = openTab();
+  await settle();
+  const html = tab.tbody.innerHTML;
+  assert.ok(html.includes('Externos agrupados (2)'), 'the accepted aggregate count is still shown');
+  for (const oculto of ['Cuenta Importada Una', 'Cuenta Importada Dos', '900000001', '900000002']) {
+    assert.ok(!html.includes(oculto), `the table must not name "${oculto}"`);
+  }
+  assert.ok(!html.includes('seg-externos-toggle'), 'and there is nothing left to expand');
+});
+
+await named('test_completos_note_disappears_when_every_person_is_complete', async () => {
+  const u = universe();
+  stubFetch(() => ok(bodyOf(u), E1));
+  const tab = openTab();
+  await settle();
+  assert.equal(tab.ocultos.hidden, true, 'nothing hidden -> no note at all');
+  assert.equal(tab.ocultos.textContent, '');
+});
+
+await named('test_completos_note_also_discloses_surveys_with_no_evaluator', async () => {
+  // Review round 4: a Survey record with a blank evaluator belongs to nobody, so it is in neither
+  // a visible row nor the hidden bucket — the note has to name it or the "evaluaciones survey"
+  // tile cannot be reconciled with the table.
+  const u = universe();
+  stubFetch(() => ok(bodyOf(u), E1));
+  const tab = openTab({
+    records: [
+      { nombre_evaluador: u.names[0], fecha_inspeccion: '2026-09-10' },
+      { nombre_evaluador: '', fecha_inspeccion: '2026-09-10' },
+      { nombre_evaluador: '   ', fecha_inspeccion: '2026-09-10' },
+    ],
+  });
+  await settle();
+  assert.equal(tab.ocultos.hidden, false);
+  assert.match(tab.ocultos.textContent, /2 encuestas sin evaluador identificado no se listan\./);
+  assert.match(tab.kpis.innerHTML, /evaluaciones survey[\s\S]*?>3</i, 'the tile still states all 3');
+});
 
 // ── 11.21 / 11.22: the request ──────────────────────────────────────────────
 

@@ -205,7 +205,7 @@ test('the no_persona name variant and the certified person are ONE row', () => {
   // the stub, so only the unification can bring it home.
   const surveys = [survey({ nombre: 'Juan David Hernández' })];
   const identity = buildIdentityIndex({ stickers, surveys, depuracion });
-  const { rows, totals } = buildProfessionalRows({
+  const { rows, totals } = filasCompletas({
     stickers, surveys, identity, today: '2026-09-19',
   });
 
@@ -235,7 +235,7 @@ test('the certified name is displayed Title Case in the row', () => {
   const depuracion = padronDelCasoReal();
   const stickers = [sticker({ cedula: CERT.cedula, nombre: CERT.nombre })];
   const identity = buildIdentityIndex({ stickers, surveys: [], depuracion });
-  const { rows } = buildProfessionalRows({ stickers, surveys: [], identity, today: '2026-09-19' });
+  const { rows } = filasCompletas({ stickers, surveys: [], identity, today: '2026-09-19' });
   assert.equal(rows[0].name, 'Juan David Hernandez Bueno');
 });
 
@@ -258,7 +258,7 @@ test('a no_persona stub is never seeded as its own zero-activity row', () => {
   assert.equal(identity.profiles.size, 1);
   assert.ok(identity.profiles.has('ced:111'));
   assert.ok(!identity.profiles.has('ced:222'));
-  const { rows, totals } = buildProfessionalRows({
+  const { rows, totals } = filasCompletas({
     stickers: [], surveys: [], identity, today: '2026-09-19',
   });
   assert.equal(rows.length, 1);
@@ -279,7 +279,7 @@ test('a no_persona stub WITH stickers and no certified variant keeps its activit
     sticker({ cedula: '222', nombre: 'SOPORTE TECNICO SISTEMAS' }),
   ];
   const identity = buildIdentityIndex({ stickers, surveys: [], depuracion });
-  const { rows, totals } = buildProfessionalRows({
+  const { rows, totals } = filasCompletas({
     stickers, surveys: [], identity, today: '2026-09-19',
   });
   // Nothing is dropped: every sticker is still counted somewhere.
@@ -308,7 +308,7 @@ test('an ambiguous name variant is NEVER merged into either candidate', () => {
   const identity = buildIdentityIndex({ stickers, surveys: [], depuracion });
   assert.equal(professionalKeyOf(stickers[0], identity), 'ced:222',
     'un prefijo reclamado por dos personas se queda en su propia fila, nunca en la de un homónimo');
-  const { rows } = buildProfessionalRows({ stickers, surveys: [], identity, today: '2026-09-19' });
+  const { rows } = filasCompletas({ stickers, surveys: [], identity, today: '2026-09-19' });
   const conActividad = rows.filter((r) => r.total > 0);
   assert.equal(conActividad.length, 1);
   assert.equal(conActividad[0].key, 'ced:222');
@@ -468,7 +468,7 @@ test('alias cédulas with dots, float tails and leading zeros all route home', (
   ];
   const identity = buildIdentityIndex({ stickers, surveys: [], depuracion });
   for (const s of stickers) assert.equal(professionalKeyOf(s, identity), 'ced:0012345');
-  const { rows } = buildProfessionalRows({ stickers, surveys: [], identity, today: '2026-09-19' });
+  const { rows } = filasCompletas({ stickers, surveys: [], identity, today: '2026-09-19' });
   assert.equal(rows.length, 1);
   assert.equal(rows[0].stickersTotal, 3);
 });
@@ -560,12 +560,14 @@ test('a NON-absorbed stub keeps its OWN cedulas_unificadas: one row, never two',
   const identity = buildIdentityIndex({ stickers, surveys: [], depuracion });
   assert.equal(professionalKeyOf(stickers[1], identity), 'ced:222');
   assert.equal(professionalKeyOf(stickers[2], identity), 'ced:222', 'el alias del stub no abre una segunda fila');
-  const { rows, totals } = buildProfessionalRows({
+  const { rows, totals } = filasCompletas({
     stickers, surveys: [], identity, today: '2026-09-19',
   });
   const conActividad = rows.filter((r) => r.total > 0);
   assert.equal(conActividad.length, 2, 'una fila de Ana y UNA sola del stub');
-  assert.equal(totals.professionals, 2);
+  // D-COMPLETOS: el stub no es una persona completa, así que no entra en la métrica de
+  // profesionales (su actividad sigue contada en los totales globales y se reporta aparte).
+  assert.equal(totals.professionals, 1);
   assert.equal(totals.stickers, 3);
   const stub = conActividad.find((r) => r.key === 'ced:222');
   assert.equal(stub.stickersTotal, 2);
@@ -581,7 +583,7 @@ test('a stub reached only through a Survey still shows the cédula of its resolv
   ], { 'cuenta sistema migrada': '222' });
   const surveys = [survey({ nombre: 'CUENTA SISTEMA MIGRADA' })];
   const identity = buildIdentityIndex({ stickers: [], surveys, depuracion });
-  const { rows } = buildProfessionalRows({ stickers: [], surveys, identity, today: '2026-09-19' });
+  const { rows } = filasCompletas({ stickers: [], surveys, identity, today: '2026-09-19' });
   const stub = rows.find((r) => r.total > 0);
   assert.equal(stub.key, 'ced:222');
   assert.equal(stub.cedula, '222');
@@ -602,7 +604,7 @@ test('an orphan row falls back to the cédula of its own key when nothing else c
   ], { 'cuenta sistema migrada': '222' });
   const surveys = [survey({ nombre: 'CUENTA SISTEMA MIGRADA' })];
   const identity = buildIdentityIndex({ stickers: [], surveys, depuracion });
-  const { rows } = buildProfessionalRows({ stickers: [], surveys, identity, today: '2026-09-19' });
+  const { rows } = filasCompletas({ stickers: [], surveys, identity, today: '2026-09-19' });
   const fila = rows.find((r) => r.total > 0);
   assert.equal(fila.key, 'ced:222');
   assert.equal(fila.cedula, '222');
@@ -623,7 +625,7 @@ test('row.noPersona is retained for shape stability and is always false now', ()
   const depuracion = padronDelCasoReal();
   const stickers = [sticker({ cedula: CERT.cedula, nombre: CERT.nombre })];
   const identity = buildIdentityIndex({ stickers, surveys: [], depuracion });
-  const { rows } = buildProfessionalRows({ stickers, surveys: [], identity, today: '2026-09-19' });
+  const { rows } = filasCompletas({ stickers, surveys: [], identity, today: '2026-09-19' });
   for (const row of rows) {
     assert.equal(Object.prototype.hasOwnProperty.call(row, 'noPersona'), true, 'la clave sigue existiendo');
     assert.equal(row.noPersona, false, 'ninguna fila puede ser no_persona bajo D-NOPERSONA');
@@ -657,7 +659,7 @@ test('the rows and every total are independent of the payload order', () => {
       orden.map((i) => base[i]), { 'juan david hernandez': STUB.cedula },
     );
     const identity = buildIdentityIndex({ stickers, surveys, depuracion });
-    const { rows, totals } = buildProfessionalRows({
+    const { rows, totals } = filasCompletas({
       stickers, surveys, identity, today: '2026-09-19',
     });
     const actual = JSON.stringify({
@@ -732,7 +734,7 @@ test('an unabsorbed stub row keeps its registry NAME even when the record carrie
   ]);
   const stickers = [sticker({ cedula: '901', nombre: '' })];
   const identity = buildIdentityIndex({ stickers, surveys: [], depuracion });
-  const { rows } = buildProfessionalRows({ stickers, surveys: [], identity, today: '2026-09-19' });
+  const { rows } = filasCompletas({ stickers, surveys: [], identity, today: '2026-09-19' });
   const fila = rows.find((r) => r.total > 0);
   assert.equal(fila.key, 'ced:901');
   assert.equal(fila.name, 'Ana Maria Gomez', 'el nombre del registro oculto, en Title Case');
@@ -798,7 +800,7 @@ test('a cédula claimed by two stubs resolves the same way under every payload o
   for (const orden of ordenes) {
     const depuracion = depuracionBlock(orden.map((i) => base[i]));
     const identity = buildIdentityIndex({ stickers, surveys: [], depuracion });
-    const { rows, totals } = buildProfessionalRows({
+    const { rows, totals } = filasCompletas({
       stickers, surveys: [], identity, today: '2026-09-19',
     });
     const actual = JSON.stringify({
@@ -819,7 +821,7 @@ test('without depuracion the legacy identity path is unchanged (names stay raw)'
   ];
   for (const depuracion of [null, undefined, { activa: false, motivo: 'flag_off' }]) {
     const identity = buildIdentityIndex({ stickers, surveys: [], depuracion });
-    const { rows, totals } = buildProfessionalRows({
+    const { rows, totals } = filasCompletas({
       stickers, surveys: [], identity, today: '2026-09-19',
     });
     assert.equal(rows.length, 1);
@@ -831,7 +833,7 @@ test('without depuracion the legacy identity path is unchanged (names stay raw)'
 
 test('a no_persona record on the legacy path is not filtered (no depurado data there)', () => {
   const stickers = [sticker({ cedula: '222', nombre: 'CUENTA SISTEMA' })];
-  const { rows } = buildProfessionalRows({ stickers, surveys: [], today: '2026-09-19' });
+  const { rows } = filasCompletas({ stickers, surveys: [], today: '2026-09-19' });
   assert.equal(rows.length, 1);
   assert.equal(rows[0].stickersTotal, 1);
 });
@@ -853,9 +855,22 @@ function depuracionCon(inspectores, alias = {}) {
   return depuracionBlock(inspectores, alias);
 }
 
+/** D-COMPLETOS (2026-09-20): `buildProfessionalRows` plus the rows it now hides, so the resolver
+ *  assertions in this file keep reading the COMPLETE set (see `filasDe`). A no-op on the legacy
+ *  path, where nothing is ever hidden. */
+function filasCompletas(args) {
+  const resultado = buildProfessionalRows(args);
+  return { ...resultado, rows: [...resultado.rows, ...(resultado.rowsOcultas || [])] };
+}
+
+/** D-COMPLETOS (2026-09-20): the tests in this file pin the IDENTITY RESOLVER — WHICH key a record
+ *  lands on, and that no activity is ever split or lost — which `rows` used to show directly. The
+ *  table now hides every row without a certified profile, so `rows` here is the COMPLETE set
+ *  (visible + hidden): the resolver contract is unchanged, only what the user sees is. Tests that
+ *  care about visibility itself live in `seguimiento-completos.test.mjs`. */
 function filasDe({ stickers = [], surveys = [], depuracion }) {
   const identity = buildIdentityIndex({ stickers, surveys, depuracion });
-  return { identity, ...buildProfessionalRows({ stickers, surveys, identity }) };
+  return { identity, ...filasCompletas({ stickers, surveys, identity }) };
 }
 
 test('subsecuencia: a Survey spelling contained IN ORDER in ONE certified name lands in that row', () => {
@@ -1092,7 +1107,7 @@ test('subsecuencia: no record is lost or double counted, and the padrón totals 
   ]);
   const stickers = [sticker({ cedula: cert, nombre: 'Carlos Arturo Guerrero Quezada' })];
   const surveys = [survey({ nombre: 'Carlos Arturo Guerrero' }), survey({ nombre: 'Nadie Conocido Aqui' })];
-  const sinRegla = buildProfessionalRows({
+  const sinRegla = filasCompletas({
     stickers, surveys, identity: buildIdentityIndex({ stickers, surveys }),
   });
   const { rows, totals } = filasDe({ stickers, surveys, depuracion });
@@ -1523,7 +1538,7 @@ test('perf: pass 4 stays linear when thousands of orphan spellings share their l
     `pass 4 made ${stats.comparacionesPase4} comparisons for ${N} spellings (bound ${4 * N})`);
   assert.ok(ms < 300, `buildIdentityIndex took ${ms} ms for ${N} shared-prefix spellings`);
   // Correctness is not traded away: the one real variant still collapses.
-  const { rows } = buildProfessionalRows({ stickers: [], surveys, identity });
+  const { rows } = filasCompletas({ stickers: [], surveys, identity });
   assert.ok(rows.some((r) => r.key === 'nom:juan carlos ape7 lopez' && r.surveyTotal === 2));
   assert.equal(rows.length, N);
 });

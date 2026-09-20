@@ -3413,9 +3413,14 @@ function rowsFor({
   stickers = [], surveys = [], depuracion = null, from = null, to = null,
 } = {}) {
   const identity = buildIdentityIndex({ stickers, surveys, depuracion });
-  return buildProfessionalRows({
+  const resultado = buildProfessionalRows({
     stickers, surveys, from, to, identity, today: P11_TODAY,
   });
+  // D-COMPLETOS (2026-09-20): the Phase 11 seeding tests pin WHERE each record lands and that none
+  // is ever lost — the rows without a certified profile are no longer rendered, but they still
+  // exist (`rowsOcultas`) and these assertions keep reading the complete set. Visibility itself is
+  // pinned in `seguimiento-completos.test.mjs`.
+  return { ...resultado, rows: [...resultado.rows, ...(resultado.rowsOcultas || [])] };
 }
 // 373 seeded people, the first `nActive` of them with 4 stickers over 2 days.
 function seededUniverse(nSeeded = 373, nActive = 116) {
@@ -3574,7 +3579,11 @@ named('test_sticker_for_unseeded_cedula_still_creates_row', () => {
   // padrón is the number of seeded profiles and never counts the orphan rows
   // that records resolved to nobody create.
   assert.equal(totals.padron, 2);
-  assert.equal(totals.professionals, 2, 'only the two rows WITH activity count as active');
+  // D-COMPLETOS (2026-09-20, deliberate change, was `2`): both rows WITH activity here are orphans
+  // (an unseeded cédula and a name-only Survey), so neither is a complete person and neither
+  // counts as a professional any more. Their records still sit in `totals.stickers`/`surveys`
+  // above and are reported by `ocultos`.
+  assert.equal(totals.professionals, 0, 'no CERTIFIED person has activity in this fixture');
 });
 
 // ── 11.4 (characterization) ─────────────────────────────────────────────────
@@ -4128,10 +4137,14 @@ named('test_padron_is_the_seeded_profile_count_in_every_range', () => {
     stickerFor('', 'Ghost A', '2026-09-10T15:00:00+00:00'), // blank cédula, nobody seeded: orphan nom: row
     stickerFor('', 'Ghost B', '2026-09-15T15:00:00+00:00'),
   ];
+  // D-COMPLETOS (2026-09-20, deliberate change — was 3/2/1/0/0): the two "Ghost" stickers carry a
+  // blank cédula and a name nobody in the padrón answers for, so they are incomplete people and no
+  // longer count as professionals. Only the certified "Profesional 1" does. `padron` is unaffected
+  // either way: it counts PROFILES, which is exactly what this test is about.
   const ranges = [
-    [{}, 3], // full range: Profesional 1 + both orphans are active
-    [{ to: '2026-09-12' }, 2], // Ghost B drops out
-    [{ from: '2026-09-14' }, 1], // only Ghost B
+    [{}, 1], // full range: only the certified Profesional 1
+    [{ to: '2026-09-12' }, 1], // her sticker is on 09-10, still in
+    [{ from: '2026-09-14' }, 0], // only the (hidden) Ghost B is left
     [{ from: '2027-01-01', to: '2027-01-31' }, 0], // nobody active
     [{ from: '2026-09-30', to: '2026-09-01' }, 0], // inverted range
   ];
@@ -4227,7 +4240,10 @@ named('test_kpi_inspectores_activos_ignores_unknown_and_missing_estado', () => {
     depInspector(8, { estado_sugerido: '' }),
   ]);
   const result = rowsFor({ depuracion: dep });
-  assert.equal(result.totals.padron, 8);
+  // D-COMPLETOS (review round 4, deliberate change — was `8`): `estado_sugerido` is one of the
+  // three fields a person must HAVE to be shown at all, so the three entries with an
+  // undefined/null/blank estado are incomplete and are not in the padrón either.
+  assert.equal(result.totals.padron, 5);
   assert.equal(result.totals.inspectoresActivos, 1, 'only the exact string "activo" counts');
   // All-inactive padrón: a real 0, never NaN / dash / blank.
   const none = rowsFor({ depuracion: depuracionOf(estadoInspectors({ candidato_desactivacion: 3, no_persona: 1 })) });

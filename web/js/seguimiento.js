@@ -954,6 +954,17 @@ function resolverOrfanos({
  *  sticker/Survey records into the exact SAME `ced:<cedula>` keys these
  *  profiles are stored under — buildProfessionalRows' per-record loop is
  *  untouched, only WHERE the profile's own fields come from changes. */
+/** D-COMPLETOS (review round 4): the three registry fields a person must actually HAVE before the
+ *  table may show them — the ones whose absence renders as "Sin dato" in the identity columns.
+ *  Whitespace-only counts as absent. `codigo` is deliberately NOT required. */
+function perfilEsCompleto(insp) {
+  return Boolean(
+    titleCaseName(insp && insp.nombre_completo)
+    && String((insp && insp.identificacion) || '').trim()
+    && String((insp && insp.estado_sugerido) || '').trim(),
+  );
+}
+
 function buildIdentityIndexFromDepuracion(depuracion, depMeta, stickerList = [], surveyList = []) {
   const eligibleCedulas = new Set();
   const nameToCedula = new Map();
@@ -1038,6 +1049,12 @@ function buildIdentityIndexFromDepuracion(depuracion, depMeta, stickerList = [],
       celular: insp.num_telefono || '',
       correo: insp.correo_contacto || '',
       noPersona: Boolean(insp.no_persona),
+      // D-COMPLETOS (review round 4, 2026-09-20): being CERTIFIED is not enough. A padrón row can
+      // be non-`no_persona` and still carry no nombre, no cédula and no estado — it rendered as a
+      // visible row with "Sin dato" in every identity column, which is the very thing the rule
+      // forbids. A person is complete only with all THREE; `codigo` stays optional, because a
+      // certified inspector may legitimately have none.
+      completo: perfilEsCompleto(insp),
       ambiguous: false,
     });
   }
@@ -1470,7 +1487,7 @@ export function buildProfessionalRows({
     // Numerator: F1+F2 stickers of the seeded profiles whose estado is exactly
     // 'activo' (orphan rows carry no estado), dated inside the range. Undated
     // stickers cannot be placed in it, so they never count.
-    if (seeded && profile.estadoSugerido === 'activo') {
+    if (seeded && profile.completo && profile.estadoSugerido === 'activo') {
       for (const d of row.stickerDates) if (d <= rangeEnd) stickersInspectoresActivos += 1;
     }
     const sortedDates = [...row.dates].sort();
@@ -1552,19 +1569,49 @@ export function buildProfessionalRows({
     return builtRow;
   });
 
-  const stickersAssigned = rows.reduce((n, r) => n + r.stickersTotal, 0);
-  const surveysAssigned = rows.reduce((n, r) => n + r.surveyTotal, 0);
+  // D-COMPLETOS (2026-09-20, owner: "no quiero ver datos de personas que no estén completos"):
+  // with an ACTIVE depuración a row is only shown when it resolves to a CERTIFIED profile — one
+  // that carries the registry identity (nombre, cédula, código, estado sugerido, profesión…).
+  // Everything else is an ORPHAN row: activity whose identity columns all read "Sin dato", either
+  // keyed by a `no_persona` stub's cédula or by a bare Survey/sticker name. Those rows leave the
+  // table, the exports, the reports, the chart selector and every professional-level metric; their
+  // activity is NOT deleted — it stays in the global `stickers`/`surveys` totals and is disclosed,
+  // as a count, by `ocultosNote`. On the LEGACY path (no depuración) there is no certified padrón
+  // at all, so nothing is hidden and every figure below is byte-identical to before.
+  // A row is visible when its profile exists AND is complete (D-COMPLETOS, review round 4). The
+  // legacy profiles carry no `completo` key at all, which is why the whole test is gated on
+  // `seeded` — that path has no padrón and hides nothing.
+  const esVisible = (row) => {
+    const perfil = idx.profiles.get(row.key);
+    return Boolean(perfil && perfil.completo);
+  };
+  const rowsVisibles = seeded ? rows.filter(esVisible) : rows;
+  const rowsOcultas = seeded ? rows.filter((r) => !esVisible(r)) : [];
+  const ocultos = { stickers: 0, surveys: 0, profesionales: 0 };
+  for (const row of rowsOcultas) {
+    ocultos.stickers += row.stickersTotal;
+    ocultos.surveys += row.surveyTotal;
+    if (rowHasActivity(row)) ocultos.profesionales += 1;
+  }
+
+  const stickersAssigned = rowsVisibles.reduce((n, r) => n + r.stickersTotal, 0);
+  const surveysAssigned = rowsVisibles.reduce((n, r) => n + r.surveyTotal, 0);
   // D17: "professionals" (and every average) counts rows WITH activity in the
   // range; seeded zero-activity rows only add to the separate `padron` figure
   // (present ONLY when seeded, so the legacy totals shape is untouched). On
   // the legacy path a row exists only because it has activity, so
   // `professionals === rows.length` exactly as before.
-  const activeRows = rows.filter(rowHasActivity).length;
+  // D-COMPLETOS: "rows" here are the VISIBLE ones, so every professional-level figure equals what
+  // the user can add up on screen — `professionals` is the number of table rows with activity and
+  // `avgPerProfessional` divides their own records by that same number.
+  const activeRows = rowsVisibles.filter(rowHasActivity).length;
 
   const totals = {
     professionals: activeRows,
-    stickers: stickersAssigned + unassignedStickers,
-    surveys: surveysAssigned + unassignedSurveys,
+    // The two ACTIVITY totals keep counting EVERYTHING (visible + hidden + unattributable): no
+    // record is ever lost from the totals, only from the per-person breakdown.
+    stickers: stickersAssigned + ocultos.stickers + unassignedStickers,
+    surveys: surveysAssigned + ocultos.surveys + unassignedSurveys,
     avgPerProfessional: activeRows ? Math.round(((stickersAssigned + surveysAssigned) / activeRows) * 100) / 100 : 0,
     unassigned: unassignedStickers + unassignedSurveys,
     stickersWithoutDate,
@@ -1573,13 +1620,18 @@ export function buildProfessionalRows({
   // `rows.length` (which also counts the orphan `nom:`/`ced:` rows that records
   // resolving to nobody create, and so drifts with the date range).
   if (seeded) {
-    totals.padron = idx.profiles.size;
+    // D-COMPLETOS (review round 4): the padrón counts the people the table can SHOW, so an
+    // incomplete registry row is not in it either — every figure on screen is then consistent
+    // with the rows a user can read.
+    let padron = 0;
+    for (const profile of idx.profiles.values()) if (profile.completo) padron += 1;
+    totals.padron = padron;
     // The depuración's own ACTIVE classification, over the whole padrón: like
     // `padron` it ignores the date range, the search box and the estado filter.
     // Exact match only — a missing/unexpected estado is never counted.
     let inspectoresActivos = 0;
     for (const profile of idx.profiles.values()) {
-      if (profile.estadoSugerido === 'activo') inspectoresActivos += 1;
+      if (profile.completo && profile.estadoSugerido === 'activo') inspectoresActivos += 1;
     }
     totals.inspectoresActivos = inspectoresActivos;
     totals.stickersInspectoresActivos = stickersInspectoresActivos;
@@ -1592,11 +1644,42 @@ export function buildProfessionalRows({
   }
 
   return {
-    rows,
+    rows: rowsVisibles,
     unassigned: { stickers: unassignedStickers, surveys: unassignedSurveys },
     stickersWithoutDate,
     totals,
+    // D-COMPLETOS: both present ONLY on the depurado path (the legacy result keeps its exact
+    // shape). `rowsOcultas` is what `ocultos` counts — no UI surface renders it; it exists so the
+    // hiding is auditable (a replay, a diagnostic, a test can see WHAT was hidden and prove that
+    // no activity was dropped, only moved out of the per-person breakdown).
+    ...(seeded ? { ocultos, rowsOcultas } : {}),
   };
+}
+
+/** D-COMPLETOS disclosure: how much activity belongs to people without complete data and is
+ *  therefore not listed anywhere. Plain text (the DOM layer assigns it with `.textContent`, so it
+ *  is never markup), Spanish, calm and factual — it names COUNTS, never a person: naming them is
+ *  exactly what the rule forbids. `null` when there is nothing to disclose, so the note simply
+ *  does not exist rather than announcing a zero. */
+export function ocultosNote(ocultos, { encuestasSinEvaluador = 0 } = {}) {
+  const stickers = Math.max(0, Number((ocultos && ocultos.stickers) || 0));
+  const surveys = Math.max(0, Number((ocultos && ocultos.surveys) || 0));
+  // Review round 4: a Survey record whose evaluator field is blank belongs to nobody at all, so it
+  // is in neither a visible row nor the hidden bucket — without this clause the "evaluaciones
+  // survey" tile could not be reconciled with the table on screen.
+  const sinEvaluador = Math.max(0, Number(encuestasSinEvaluador) || 0);
+  const total = stickers + surveys;
+  if (!Number.isFinite(total + sinEvaluador) || total + sinEvaluador <= 0) return null;
+  const n = (v) => v.toLocaleString('es-CO');
+  const cola = sinEvaluador
+    ? `${n(sinEvaluador)} encuesta${sinEvaluador === 1 ? '' : 's'} sin evaluador identificado`
+    : '';
+  if (!total) return `${cola} no se ${sinEvaluador === 1 ? 'lista' : 'listan'}.`;
+  const partes = [];
+  if (stickers) partes.push(`${n(stickers)} sticker${stickers === 1 ? '' : 's'}`);
+  if (surveys) partes.push(`${n(surveys)} ${surveys === 1 ? 'evaluación' : 'evaluaciones'} Survey`);
+  return `${n(total)} registro${total === 1 ? '' : 's'} de actividad de personas sin datos completos `
+    + `no se listan (${partes.join(', ')})${cola ? ` y ${cola}` : ''}.`;
 }
 
 /** The cédula inside a `ced:<digits>` professional key, `''` for a `nom:` (name-only) one. */
@@ -3147,15 +3230,18 @@ export function kpiTotals(rowsResult, { stickersLoaded = true } = {}) {
   // there ARE professionals but NONE has any sticker activity, there is no
   // pace to report at all -- DASH, not a lying 0. An empty row set (zero
   // professionals, period) is the one case that stays a real 0.
+  // Review round 4 (D-COMPLETOS): "no visible professional with activity" is a FILTERED-TO-NOTHING
+  // state, not a confirmed zero — a real 0 belongs only to a dataset that genuinely has no sticker
+  // activity at all. When stickers exist but none of them belongs to somebody we can show, the
+  // honest answer is "not available", the same DASH every other unknown uses.
+  const hayStickers = stickersRaw > 0;
   let avgStickersPerDayPerProfessional = 0;
-  if (rows.length) {
-    const paced = rows.filter((r) => (r.stickerActiveDays || 0) > 0);
-    if (!paced.length) {
-      avgStickersPerDayPerProfessional = DASH;
-    } else {
-      const sum = paced.reduce((acc, r) => acc + r.stickersTotal / r.stickerActiveDays, 0);
-      avgStickersPerDayPerProfessional = Math.round((sum / paced.length) * 100) / 100;
-    }
+  const paced = rows.filter((r) => (r.stickerActiveDays || 0) > 0);
+  if (paced.length) {
+    const sum = paced.reduce((acc, r) => acc + r.stickersTotal / r.stickerActiveDays, 0);
+    avgStickersPerDayPerProfessional = Math.round((sum / paced.length) * 100) / 100;
+  } else if (rows.length || hayStickers) {
+    avgStickersPerDayPerProfessional = DASH;
   }
 
   const seenBarrios = new Map(); // normalized -> first-seen spelling (unused, only the count matters)
@@ -3171,7 +3257,9 @@ export function kpiTotals(rowsResult, { stickersLoaded = true } = {}) {
     stickers: stickersLoaded ? stickersRaw : DASH,
     surveys,
     avgStickersPerDayPerProfessional: stickersLoaded ? avgStickersPerDayPerProfessional : DASH,
-    barriosActivos: stickersLoaded ? seenBarrios.size : DASH,
+    // Same rule as the pace tile: with sticker activity but nobody visible to attribute it to,
+    // "0 barrios activos" would be a confirmed zero the data does not support.
+    barriosActivos: stickersLoaded ? ((!rows.length && hayStickers) ? DASH : seenBarrios.size) : DASH,
   };
   // The seeded total ("padrón") is its own figure, never conflated with
   // "profesionales activos"; absent (no key at all) on the legacy path.
@@ -3333,8 +3421,19 @@ export function depuracionBadgeIsDegraded(identity) {
  *  (Acciones), same as the "no rows match" placeholder row in renderTable.
  *  `null`/missing `grupoExternos` (no non-person accounts were collapsed
  *  this pass, or depuracion inactive) -> `''`, no stray row. */
-export function grupoExternosRowHtml(grupoExternos, colspan = 1) {
+export function grupoExternosRowHtml(grupoExternos, colspan = 1, { conDetalle = true } = {}) {
   if (!grupoExternos) return '';
+  // D-COMPLETOS (2026-09-20): the collapsed COUNT is an aggregate the owner already accepted, but
+  // the expandable detail lists people by name and cédula — and those accounts are, by definition,
+  // the ones WITHOUT complete data. With the completeness rule on, the row keeps the count and
+  // loses the list (there is then nothing to expand, so no toggle either).
+  if (!conDetalle) {
+    const soloConteo = grupoExternos.n_colapsados ?? (Array.isArray(grupoExternos.detalle) ? grupoExternos.detalle.length : 0);
+    const fuenteSola = escapeHtml(grupoExternos.fuente_dato || '');
+    return `<tr class="seg-grupo-externos-row"><td colspan="${colspan}">`
+      + `Externos agrupados (${soloConteo})${fuenteSola ? ` — ${fuenteSola}` : ''}`
+      + '</td></tr>';
+  }
   const detalle = Array.isArray(grupoExternos.detalle) ? grupoExternos.detalle : [];
   const items = detalle.map((d) => {
     // D-NOMCASE: the collapsed accounts read in the same Title Case as the table above them.
@@ -3756,6 +3855,7 @@ function sectionHtml() {
       <p class="sticker-note">Cruce aproximado por nombre: Stickers usa inspector.nombre_completo, Survey usa nombre_evaluador.</p>
       <p class="sticker-note" id="seg-sinfecha-note" hidden></p>
       <p class="sticker-note" id="seg-unassigned-note" hidden></p>
+      <p class="sticker-note" id="seg-ocultos-note" hidden></p>
       <p class="sticker-note" id="seg-depuracion-badge" hidden></p>
 
       <div class="eval-filters" id="seg-filters">
@@ -4422,6 +4522,7 @@ export function initSeguimiento(root, {
   const statusEl = $('seg-status');
   const sinFechaNoteEl = $('seg-sinfecha-note');
   const unassignedNoteEl = $('seg-unassigned-note');
+  const ocultosNoteEl = $('seg-ocultos-note');
   const depuracionBadgeEl = $('seg-depuracion-badge');
   const revisionManualEl = $('seg-revision-manual');
   const searchEl = $('seg-search');
@@ -4624,7 +4725,11 @@ export function initSeguimiento(root, {
     // row, in EVERY sub-tab, regardless of search/professional filters (it
     // is a whole-dataset aggregate, not a per-professional record those
     // filters narrow).
-    tbody.insertAdjacentHTML('beforeend', grupoExternosRowHtml(currentIdentity.grupoExternos, columns.length + 1));
+    // D-COMPLETOS: with an active depuración the collapsed group keeps its count but stops
+    // naming the accounts behind it (see grupoExternosRowHtml).
+    tbody.insertAdjacentHTML('beforeend', grupoExternosRowHtml(
+      currentIdentity.grupoExternos, columns.length + 1, { conDetalle: !currentIdentity.depuracionActiva },
+    ));
 
     // Every filter control (search input, Desde/Hasta, seg-chart-professional)
     // re-renders through render() -> renderTable() (search's own debounce
@@ -4782,7 +4887,7 @@ export function initSeguimiento(root, {
     // buildTimeline's own `professionalKey` param (chart) — so it plays no
     // role in this cached aggregation pass either.
     const {
-      rows, stickersWithoutDate, totals, unassigned,
+      rows, stickersWithoutDate, totals, unassigned, ocultos,
     } = segCache.get(
       {
         stickers, surveys, from, to, professionalKey: null, today,
@@ -4804,6 +4909,15 @@ export function initSeguimiento(root, {
     const unassignedText = stickersLoaded ? unassignedNote(unassigned) : null;
     unassignedNoteEl.hidden = !unassignedText;
     unassignedNoteEl.textContent = unassignedText || '';
+    // D-COMPLETOS: one calm line reconciling the global activity KPIs with the people listed
+    // below them. Masked while the stickers are still loading, exactly like every other
+    // sticker-derived disclosure — a count that includes stickers cannot be stated before they
+    // resolve. `.textContent`, so a hostile name could not reach the DOM even if it were in there.
+    const ocultosText = stickersLoaded
+      ? ocultosNote(ocultos, { encuestasSinEvaluador: (unassigned && unassigned.surveys) || 0 })
+      : null;
+    ocultosNoteEl.hidden = !ocultosText;
+    ocultosNoteEl.textContent = ocultosText || '';
     // seguimiento-inspectores-depurado, Fase 4 (tasks 4.6/4.7/4.8): freshness/
     // degraded badge + the "Revisión manual" section, both driven straight
     // off currentIdentity (always present, see buildIdentityIndex's own doc

@@ -874,6 +874,119 @@ certified↔certified in-order-subset pairs (`Andrés Torres` ~ `Carlos Andres M
 `NICOLAS GARCIA` ~ `Nicolás García Román`, `Juan Sebastián González` ~ `Juan Sebastian Velasco González`). (4) Junk evaluator names
 ("Prueba Asignacion Especializada", "76202 58346").
 
+### D-COMPLETOS (2026-09-20): Seguimiento shows COMPLETE people only, and every metric is computed over them
+
+**Owner goal, verbatim.** "no quiero ver datos de personas que no estén completos, calcula todas las métricas, establece todo
+bien en Seguimiento." Context: the 92 real people the engine flags `no_persona` because of their bulk-import e-mail are NOT to be
+rescued (the engine is not touched); the owner simply wants no incomplete person on screen.
+
+**Definition (the ONE rule the whole change hangs on).** With an ACTIVE depuración, a person is **complete/visible** iff their row
+resolves to a **certified depurado profile** — an `inspectores` entry that is not `no_persona` and therefore carries the registry
+identity (nombre, cédula, código, estado sugerido, clase P, profesión, énfasis). Everything else is an **orphan row**: activity
+that resolves to no certified profile, whether keyed by a `no_persona` stub's cédula or by a bare Survey/sticker name. Those are
+exactly the rows whose identity columns all read "Sin dato". A certified person with NO activity stays visible where they already
+were — they are the padrón, which is what `totals.padron` counts and what the table lists with zeros.
+
+**`[REVIEW 4, 2026-09-20 — the definition tightened]`** Being CERTIFIED is not enough. A padrón row can be non-`no_persona` and
+still carry no nombre, no cédula and no estado — it rendered as a visible row with "Sin dato" in every identity column, which is
+precisely what this rule exists to forbid. A person is complete only when **all three** of `nombre_completo`, `identificacion` and
+`estado_sugerido` are present and not whitespace-only (`perfilEsCompleto`). **`codigo` is deliberately NOT required**: 240 of the
+386 certified people on the 2026-09-20 snapshot have none, and requiring it would have hidden every one of them. An incomplete
+certified profile is hidden exactly like an orphan — its activity goes to `ocultos` and is disclosed by the note — **and it is not
+in the padrón either**: `totals.padron`, `inspectoresActivos` and `stickersInspectoresActivos` all count complete people only, so
+every figure on screen is consistent with the rows a user can read. On the live payload this hides **0** profiles (all 386
+certified rows carry the three fields); the rule is a floor against a future bad export, not a filter tuned to today's data.
+
+**`[REVIEW 4]` The note also reconciles the Survey tile.** A Survey record whose `nombre_evaluador` is blank or whitespace-only
+belongs to nobody: it is in neither a visible row nor the hidden bucket, so the "evaluaciones survey" tile could not be added up
+from the screen. `ocultosNote` now takes the existing `unassigned.surveys` count and appends "… y N encuestas sin evaluador
+identificado", or stands alone as "N encuestas sin evaluador identificado no se listan." when that is the only thing to say. Live
+text on the 2026-09-20 payload: *"1.018 registros de actividad de personas sin datos completos no se listan (42 stickers, 976
+evaluaciones Survey) y 7 encuestas sin evaluador identificado."* — and 926 visible + 976 hidden + 7 without evaluator = 1,909,
+the tile. (The sticker half of `unassigned` keeps its own long-standing note, `unassignedNote`.)
+
+**`[REVIEW 4]` "Filtered to nothing" is not a confirmed zero.** When there is sticker activity but NO visible professional with
+activity, `stickers/día por profesional` and `barrios activos (7 d)` now render DASH instead of `0` — a `0` there would claim a
+measured zero pace when the true state is "not available from the people we can show". A real `0` survives only for a dataset that
+genuinely has no sticker activity at all, which is the contract `kpiTotals` already documented for the pace tile.
+
+**`[REVIEW 4]` The GRUPO-EXTERNOS call site is pinned at the DOM level.** Flipping `{ conDetalle: !depuracionActiva }` to
+`{ conDetalle: true }` used to survive every test while re-rendering the collapsed accounts' names and cédulas in the live table;
+a test through the real `initSeguimiento` + fake DOM now asserts that none of them reaches the rendered table, and the mutant dies.
+
+**Where it is enforced.** ONE place: `buildProfessionalRows` splits its rows into `rows` (visible) and `rowsOcultas`, and returns
+`ocultos` (the counts). Every person-level surface reads `rows`, so they are consistent by construction rather than by
+repetition — the Totales table, the "Análisis temporales" table, both XLSX sheets, the individual and mass PDF reports, the
+"Profesional" selector, the search box and the estado filter all narrow the SAME array. `rowsOcultas` is rendered by nothing; it
+exists so the hiding is auditable (a replay or a test can prove no activity was dropped, only moved out of the per-person
+breakdown). On the LEGACY path (no depuración, or `activa:false`) there is no certified padrón at all, so nothing is hidden and
+every figure is byte-identical to before — pinned by a full-result JSON comparison.
+
+**Metric basis, BEFORE -> AFTER.** "Todas" = every record the payload carries; "visibles" = the people on screen.
+
+| Surface | Metric | BEFORE | AFTER |
+|---|---|---|---|
+| KPI | inspectores activos | perfiles certificados con `estado_sugerido === 'activo'` | **igual** (sólo certificados podían contarse) |
+| KPI | stickers/día por inspector activo | `stickersInspectoresActivos / rangoDias / inspectoresActivos` | **igual** (el numerador ya sólo sumaba perfiles `activo`) |
+| KPI | profesionales con actividad | filas con actividad, **huérfanas incluidas** | filas **visibles** con actividad |
+| KPI | stickers (F1+F2) | atribuidos + sin dueño | visibles + **ocultos** + sin dueño = **la misma cifra** |
+| KPI | evaluaciones survey | ídem | ídem, **la misma cifra** |
+| KPI | stickers/día por profesional | media sobre filas con días-con-sticker | media sobre filas **visibles** |
+| KPI | barrios activos (7 d) | barrios distintos sobre todas las filas | sobre filas **visibles** |
+| KPI | profesionales en padrón | `identity.profiles.size` (certificados) | **igual** |
+| totals | avgPerProfessional | (stickers+survey atribuidos) / filas con actividad | (stickers+survey **de las visibles**) / filas visibles con actividad |
+| totals | unassigned / stickersWithoutDate / rangoDias | — | **igual** |
+| Tabla Totales y Análisis temporales | filas | todas | **visibles** |
+| XLSX (ambas hojas), PDF individual y masivo | alcance | `visibleRows` | `visibleRows` sobre filas **visibles** |
+| Selector "Profesional" y buscador | opciones | todas las filas | filas **visibles** |
+| Gráfico "Ritmo diario" (`buildTimeline`) | curva de actividad | TODOS los registros | **igual**: es una curva de ACTIVIDAD global, no una métrica por persona; se estrecha por persona sólo cuando el usuario elige una del selector (que ya sólo ofrece visibles) |
+| Nota "sin fecha" / "sin profesional atribuible" | — | — | **igual** |
+| Nota NUEVA "datos incompletos" | — | no existía | `ocultosNote(ocultos)` |
+| Fila GRUPO-EXTERNOS | conteo + lista desplegable de personas | conteo **y** nombres/cédulas | **sólo el conteo** |
+| Panel "Revisión manual" | nombres y cédulas de casos pendientes | — | **igual** (ver más abajo) |
+
+**Arithmetic contract, pinned by tests and re-checked on the real payload:** `filas visibles + ocultos + sin dueño ===
+totals.stickers` (and lo mismo para `surveys`); `totals.professionals === ` número de filas visibles con actividad;
+`avgPerProfessional === ` (registros de esas filas) / ese mismo número. Lo que el usuario puede sumar en pantalla es lo que dice
+el KPI.
+
+**The disclosure.** One calm line under the KPIs (`#seg-ocultos-note`, `.textContent`, Spanish, no alarm styling):
+"N registros de actividad de personas sin datos completos no se listan (S stickers, E evaluaciones Survey)." It states COUNTS and
+never a name — naming them is precisely what the rule forbids — with es-CO thousands separators and correct singular/plural. It
+does not exist when nothing is hidden (never an announced zero) and is masked while the stickers are still loading, like every
+other sticker-derived disclosure.
+
+**GRUPO-EXTERNOS: decision.** The collapsed count is an aggregate the owner already accepted, so the row stays and keeps showing
+"Externos agrupados (N)". Its expandable detail listed each collapsed account by **name and cédula** — people who are incomplete by
+definition — so with the completeness rule on, the list and its toggle are gone (`grupoExternosRowHtml(..., { conDetalle: false })`).
+
+**Revisión manual: decision, and why it is the exception.** That panel also names people, some of them incomplete. It stays. It is
+not a person-level METRIC surface: it is the maintenance tool whose only purpose is to RESOLVE the incompleteness (código remaps in
+conflict, duplicate códigos, unresolved cases), it is admin-only and already strips every name and cédula for a non-admin, and
+hiding it would remove the only in-app path to fixing the very data the owner is complaining about. Flagged here so the decision is
+the owner's to reverse.
+
+**Measured on the real payload (2026-09-20 snapshot, read-only replay, cédulas masked).** Rows rendered 601 -> **386**; orphan
+rows shown 215 -> **0**; certified rows with activity 134 -> 134 and certified rows without activity 252 -> 252 (the padrón is
+untouched). Hidden and disclosed: **42 stickers + 976 evaluaciones Survey from 215 people without complete data**. Unchanged:
+`stickers` 3,042, `surveys` 1,909, `unassigned` 7, `stickersWithoutDate` 0, `padron` 386, `inspectoresActivos` 146,
+`stickersInspectoresActivos` 2,866, `rangoDias` 31, `stickersPorInspectorActivo` 0.63. Moved, and why: `professionals` 349 -> 134
+(las 215 huérfanas dejan de contar), `avgPerProfessional` 14.17 -> 29.3 (mismo numerador de las visibles sobre un denominador
+honesto), `avgStickersPerDayPerProfessional` 3.5 -> 3.59 y `barriosActivos` 125 -> 122 (3 barrios que sólo veía gente sin datos
+completos). The owner's own case checks out: **"Juan David Hernandez Bueno" is ONE row, código 048, estado activo, 22 F1 + 12 F2**,
+and **0** visible rows are missing nombre/cédula/estado or flagged `no_persona`.
+
+**Mobile (390 × 844, Chromium, synthetic data, real app shell + real CSS).** No horizontal page scroll (`scrollWidth` 390 =
+`clientWidth` 390), no JS errors, the new note wraps inside the card, and the 15 elements wider than the viewport are all inside
+`.table-scroll` — the intentional horizontal scroller for the wide professionals table. The Evaluaciones and Reportes sections were
+audited as markup + the real stylesheet (their data pipelines need live services, which the harness deliberately does not have):
+no overflow outside a scroll container either.
+
+**Limits.** The hidden people are still hidden in the sense that nothing on screen lets an admin see WHO they are; the counts and
+the design record are the only trace, by design. The activity curve ("Ritmo diario") still includes their records, because it is an
+activity total, not a person metric — if the owner wants that curve to match the table instead, it is a one-line change to
+`buildTimeline`'s call site and a deliberate divergence from "global activity totals count everything".
+
 ## Contradiction Register (efficiency extension)
 
 | # | Finding | Resolution |
