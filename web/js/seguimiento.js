@@ -2898,13 +2898,20 @@ export function sortRows(rows, column, dir = 'asc') {
   copy.sort((a, b) => {
     const av = a[column];
     const bv = b[column];
+    // Empty/missing values (rendered as "Sin dato" / DASH) always sink to
+    // the bottom, both directions — same convention as stickers-asignacion.js's
+    // sortRows — so rows without data stay grouped at the end instead of
+    // floating to the top on ascending sorts.
+    const aEmpty = av === null || av === undefined || av === '';
+    const bEmpty = bv === null || bv === undefined || bv === '';
+    if (aEmpty !== bEmpty) return aEmpty ? 1 : -1;
     let cmp;
-    if (typeof av === 'string' || typeof bv === 'string') {
-      cmp = String(av ?? '').localeCompare(String(bv ?? ''), 'es');
+    if (aEmpty) {
+      cmp = 0;
+    } else if (typeof av === 'string' || typeof bv === 'string') {
+      cmp = String(av).localeCompare(String(bv), 'es');
     } else {
-      const an = av === null || av === undefined ? -Infinity : av;
-      const bn = bv === null || bv === undefined ? -Infinity : bv;
-      cmp = an === bn ? 0 : (an < bn ? -1 : 1);
+      cmp = av === bv ? 0 : (av < bv ? -1 : 1);
     }
     // Tie-break is always ascending by `key`, regardless of `dir` — a
     // deterministic order for equal values matters more than it matching

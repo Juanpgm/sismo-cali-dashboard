@@ -1086,30 +1086,25 @@ console.log('buildTemporalMetricsByKey: batch vs per-row equality on a mixed fix
 console.log('sortRows: string vs numeric columns + ties OK');
 
 {
-  // Numeric column with a null value must not crash and sorts as lowest.
-  // `activeDays` (an actual number|null column), not `lastDate`: a string
-  // column like lastDate makes `typeof av === 'string' || typeof bv ===
-  // 'string'` true whenever the OTHER row holds a real date, so it was
-  // silently exercising the localeCompare/string branch instead of the
-  // numeric -Infinity one this test claims to cover.
-  //
-  // A NEGATIVE real value (-5), not a positive one: a placeholder of, say,
-  // 0 instead of -Infinity would still coincidentally sort null "lowest"
-  // against any non-negative real value, passing this test for the WRONG
-  // reason. Only a genuine -Infinity placeholder correctly sorts null below
-  // a negative number too — asserted both ascending and descending so the
-  // ordering is pinned in both directions, not just the one direction that
-  // happens to match array insertion order.
+  // Empty values ("Sin dato" in the UI) must never crash and always group at
+  // the BOTTOM, both directions — null on a numeric column (below even a
+  // NEGATIVE real value, so a 0-placeholder can't pass for the wrong reason),
+  // null on a string (date) column, and '' on a string column all take the
+  // same empty branch.
   const rows = [
-    { key: 'a', name: 'Ana', activeDays: null },
-    { key: 'b', name: 'Beto', activeDays: -5 },
+    { key: 'a', name: 'Ana', activeDays: null, lastDate: null, cedula: '' },
+    { key: 'b', name: 'Beto', activeDays: -5, lastDate: '2026-09-01', cedula: '123' },
+    { key: 'c', name: 'Caro', activeDays: 2, lastDate: '2026-08-01', cedula: '' },
   ];
-  const asc = sortRows(rows, 'activeDays', 'asc');
-  assert.deepEqual(asc.map((r) => r.key), ['a', 'b']); // null (-Infinity) sorts before -5
-  const desc = sortRows(rows, 'activeDays', 'desc');
-  assert.deepEqual(desc.map((r) => r.key), ['b', 'a']); // -5 sorts before null (-Infinity) descending
+  assert.deepEqual(sortRows(rows, 'activeDays', 'asc').map((r) => r.key), ['b', 'c', 'a']);
+  assert.deepEqual(sortRows(rows, 'activeDays', 'desc').map((r) => r.key), ['c', 'b', 'a']);
+  assert.deepEqual(sortRows(rows, 'lastDate', 'asc').map((r) => r.key), ['c', 'b', 'a']);
+  assert.deepEqual(sortRows(rows, 'lastDate', 'desc').map((r) => r.key), ['b', 'c', 'a']);
+  // Two empty rows tie among themselves and break by `key`, still last.
+  assert.deepEqual(sortRows(rows, 'cedula', 'asc').map((r) => r.key), ['b', 'a', 'c']);
+  assert.deepEqual(sortRows(rows, 'cedula', 'desc').map((r) => r.key), ['b', 'a', 'c']);
 }
-console.log('sortRows: null-value numeric column (negative pin, both directions) OK');
+console.log('sortRows: empty values ("Sin dato") group at the bottom, both directions OK');
 
 // ── buildTimeline ──────────────────────────────────────────────────────────
 
@@ -2744,9 +2739,9 @@ console.log('xlsxFiltersSummary: "ninguno" when nothing active, otherwise a stab
     { key: 'c', prevDayFirstMinutes: 60 },
   ];
   const asc = sortRows(rows, 'prevDayFirstMinutes', 'asc');
-  assert.deepEqual(asc.map((r) => r.key), ['a', 'c', 'b'], 'null (no previous timed day) sorts lowest, ascending');
+  assert.deepEqual(asc.map((r) => r.key), ['c', 'b', 'a'], 'null (no previous timed day) sorts LAST, ascending');
   const desc = sortRows(rows, 'prevDayFirstMinutes', 'desc');
-  assert.deepEqual(desc.map((r) => r.key), ['b', 'c', 'a'], 'null still sorts lowest, i.e. LAST descending');
+  assert.deepEqual(desc.map((r) => r.key), ['b', 'c', 'a'], 'null still sorts LAST descending');
 }
 console.log('sortRows: nullable temporal-minutes column (prevDayFirstMinutes) OK');
 
@@ -4943,7 +4938,7 @@ named('test_enfasis_search_composes_with_visibleRowsFor_and_sorts_like_any_text_
   const { rows } = rowsFor({ depuracion: dep });
   assert.equal(visibleRowsFor(rows, { query: 'geotec' }).length, 1);
   assert.equal(visibleRowsFor(rows, { query: 'geotec', estado: 'revisar' }).length, 1);
-  assert.deepEqual(sortRows(rows, 'enfasis', 'asc').map((r) => r.enfasis), ['', 'Estructuras', 'Geotecnia']);
+  assert.deepEqual(sortRows(rows, 'enfasis', 'asc').map((r) => r.enfasis), ['Estructuras', 'Geotecnia', '']);
 });
 
 named('test_enfasis_dom_wiring_passes_the_seeded_flag_to_the_table_and_the_export', () => {
@@ -5173,7 +5168,7 @@ named('test_profesion_search_composes_with_visibleRowsFor_and_sorts_like_any_tex
   const { rows } = rowsFor({ depuracion: dep });
   assert.equal(visibleRowsFor(rows, { query: 'arquitec' }).length, 1);
   assert.equal(visibleRowsFor(rows, { query: 'arquitec', estado: 'revisar' }).length, 1);
-  assert.deepEqual(sortRows(rows, 'profesion', 'asc').map((r) => r.profesion), ['', 'Arquitecto', 'Ingeniero civil']);
+  assert.deepEqual(sortRows(rows, 'profesion', 'asc').map((r) => r.profesion), ['Arquitecto', 'Ingeniero civil', '']);
 });
 
 named('test_profesion_dom_wiring_passes_the_seeded_flag_to_the_table_and_the_export', () => {
@@ -5566,11 +5561,11 @@ named('test_temporales_body_masks_while_loading_and_keeps_the_mobile_hooks_and_c
 named('test_temporales_sorting_by_each_new_column_orders_the_rows', () => {
   const rows = temporalesSeeded();
   const names = (col, dir) => sortRows(rows, col, dir).map((r) => r.name);
-  assert.equal(names('profesion', 'asc')[0], 'Profesional 2', 'blank profesión sorts first ascending');
-  assert.equal(names('profesion', 'desc')[4], 'Profesional 2', 'and last descending');
-  assert.equal(names('enfasis', 'asc')[0], 'Profesional 2');
-  const enfasisAsc = sortRows(rows, 'enfasis', 'asc').map((r) => r.enfasis);
-  assert.deepEqual(enfasisAsc, [...enfasisAsc].sort((a, b) => a.localeCompare(b, 'es')), 'ascending by énfasis text');
+  assert.equal(names('profesion', 'asc')[4], 'Profesional 2', 'blank profesión sorts last ascending');
+  assert.equal(names('profesion', 'desc')[4], 'Profesional 2', 'and last descending too');
+  assert.equal(names('enfasis', 'asc')[4], 'Profesional 2');
+  const enfasisAsc = sortRows(rows, 'enfasis', 'asc').map((r) => r.enfasis).filter(Boolean);
+  assert.deepEqual(enfasisAsc, [...enfasisAsc].sort((a, b) => a.localeCompare(b, 'es')), 'ascending by énfasis text (blanks last)');
   assert.notDeepEqual(names('enfasis', 'desc'), names('enfasis', 'asc'), 'the direction flips the order');
   const estadoAsc = sortRows(rows, 'estadoSugerido', 'asc').map((r) => r.estadoSugerido);
   assert.deepEqual(estadoAsc, [...estadoAsc].sort((a, b) => a.localeCompare(b, 'es')), 'ascending by estado');
