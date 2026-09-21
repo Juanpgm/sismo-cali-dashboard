@@ -22,6 +22,7 @@ import { buildMiniMap, resolveBarrioComuna, prefetchGeo } from './mapview.js';
 import { openLightbox } from './table.js';
 import { renderMultiSelect } from './multiselect.js';
 import { generarInformeEvaluacion } from './report.js';
+import { isAdmin } from './auth.js';
 import {
   upsertChart, baseOptions, totalDataLabelPlugin, setChartEmpty, clearChartEmpty,
 } from './charts.js';
@@ -1342,6 +1343,9 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   listEl.addEventListener('click', async (ev) => {
     const pdfBtn = ev.target.closest('[data-eval-pdf]');
     if (!pdfBtn) return;
+    // Solo administradores descargan reportes. El botón ya está oculto para
+    // viewers (CSS); esto cierra el llamado directo desde la consola.
+    if (!isAdmin()) { showToast('No tenés permisos para descargar reportes.', 'error'); return; }
     const e = byId.get(pdfBtn.dataset.evalPdf);
     if (!e) return;
     pdfBtn.disabled = true;
@@ -1365,6 +1369,9 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   // over whichever evaluación openDetail() last set.
   modalPdfBtn.addEventListener('click', async () => {
     if (!modalEvaluacion) return;
+    // Solo administradores descargan reportes. El botón ya está oculto para
+    // viewers (CSS); esto cierra el llamado directo desde la consola.
+    if (!isAdmin()) { showToast('No tenés permisos para descargar reportes.', 'error'); return; }
     modalPdfBtn.disabled = true;
     modalPdfBtn.classList.add('is-loading');
     modalPdfBtn.innerHTML = SPINNER_ICON;
@@ -1743,6 +1750,9 @@ export function initEvaluaciones(section, { fetchEvaluaciones }) {
   // filtro aplicado, fecha de generación, registros, blank row) but built
   // from Stickers data and the currently active filters.
   downloadBtn.addEventListener('click', async () => {
+    // Solo administradores descargan reportes. El botón ya está oculto para
+    // viewers (CSS); esto cierra el llamado directo desde la consola.
+    if (!isAdmin()) { showToast('No tenés permisos para descargar reportes.', 'error'); return; }
     let XLSX;
     try { XLSX = await loadXlsx(); } catch { showToast('No se pudo cargar el generador de Excel.', 'error'); return; }
     const rows = applyFilters(allEvaluaciones, filters).map((e) => ({

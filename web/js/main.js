@@ -618,6 +618,9 @@ async function triggerRefresh() {
  *  derived fields (_search, n_pisos_rango) are stripped, but the derived
  *  suspension_servicios column ships in the export on purpose. */
 el('#datos-download').addEventListener('click', async () => {
+  // Solo administradores descargan reportes. El botón ya está oculto para el
+  // resto de roles (CSS); esto cierra el llamado directo desde la consola.
+  if (!isAdmin()) { showToast('No tenés permisos para descargar reportes.', 'error'); return; }
   let XLSX;
   try { XLSX = await loadXlsx(); } catch { showToast('No se pudo cargar el generador de Excel.', 'error'); return; }
   const rows = store.filtered.map(({ _search, n_pisos_rango, ...r }) => {

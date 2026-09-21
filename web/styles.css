@@ -1773,6 +1773,7 @@ select.gestion-edit:focus, input.gestion-edit:focus { outline: none; border-colo
    Panel only. Server-side enforcement lives in api/refresh|stickers|usuarios. */
 body:not([data-role="admin"]) #refresh-btn,
 body:not([data-role="admin"]) #detail-report-btn,
+body:not([data-role="admin"]) #datos-download,
 body:not([data-role="admin"]) .view-tab[data-view="acciones"],
 body:not([data-role="admin"]) .view-tab[data-view="usuarios"],
 body:not([data-role="admin"]) .view-tab[data-view="analista"],
@@ -1784,6 +1785,13 @@ body:not([data-role="admin"]) .view-tab[data-view="seguimiento"] { display: none
    /evaluaciones) admits admin+viewer; Vuelos UAS is a read-only ArcGIS layer. */
 body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="stickers"],
 body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="vuelos-uas"] { display: none !important; }
+
+/* Within Stickers itself (open to admin+viewer), report downloads (.xlsx/PDF)
+   stay admin-only: viewers browse the data but can't extract it. .accion-pdf-btn
+   also covers the per-row PDF button ([data-eval-pdf]) and Acciones' own
+   (already admin-only tab, so redundant-but-harmless there). */
+body:not([data-role="admin"]) #eval-download,
+body:not([data-role="admin"]) .accion-pdf-btn { display: none !important; }
 
 #detail-report-btn:disabled { opacity: .6; cursor: wait; }
 
