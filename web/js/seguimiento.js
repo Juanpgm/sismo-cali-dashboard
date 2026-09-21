@@ -3467,6 +3467,49 @@ export function grupoExternosRowHtml(grupoExternos, colspan = 1, { conDetalle = 
     + '</td></tr>';
 }
 
+/** Splits already-sorted rows into the individually listed professionals and
+ *  the ones collapsed into the trailing aggregate row: no Clase (P) (`np`
+ *  empty -> "Sin dato") OR zero active days. Order within each partition is
+ *  preserved (rows arrive already sorted). Only the TABLE consumes this —
+ *  the XLSX/PDF exports keep every individual row (the report stays as
+ *  complete as possible). */
+export function partitionAgregado(rows) {
+  const listados = [];
+  const agregados = [];
+  for (const r of rows || []) {
+    const sinClase = r.np === null || r.np === undefined || r.np === '';
+    (sinClase || !r.activeDays ? agregados : listados).push(r);
+  }
+  return { listados, agregados };
+}
+
+/** The collapsed professionals as ONE trailing aggregate `<tr>` — same
+ *  expandable pattern (and CSS classes) as grupoExternosRowHtml: a toggle
+ *  with the count + aggregate sticker/Survey totals, and a hidden detail
+ *  `<ul>` listing every collapsed professional with their full stats
+ *  (cédula, Clase (P), días activos, stickers, Survey, date range, and WHY
+ *  they were collapsed). Empty `agregados` -> `''`, no stray row. */
+export function agregadoRowHtml(agregados, colspan = 1) {
+  if (!Array.isArray(agregados) || !agregados.length) return '';
+  const stickers = agregados.reduce((n, r) => n + (r.stickersTotal || 0), 0);
+  const surveys = agregados.reduce((n, r) => n + (r.surveyTotal || 0), 0);
+  const items = agregados.map((r) => {
+    const motivo = [
+      (r.np === null || r.np === undefined || r.np === '') ? 'sin Clase (P)' : '',
+      !r.activeDays ? 'sin días activos' : '',
+    ].filter(Boolean).join(', ');
+    const fechas = r.firstDate ? `, ${escapeHtml(r.firstDate)} → ${escapeHtml(r.lastDate)}` : '';
+    return `<li>${escapeHtml(titleCaseName(r.name) || 'Sin dato')} — cédula ${escapeHtml(r.cedula || 'Sin dato')}, `
+      + `Clase (P) ${escapeHtml(r.np || 'Sin dato')}, ${r.activeDays || 0} días activos, `
+      + `${r.stickersTotal || 0} stickers, ${r.surveyTotal || 0} Survey${fechas} (${motivo})</li>`;
+  }).join('');
+  return `<tr class="seg-grupo-externos-row seg-agregado-row"><td colspan="${colspan}">`
+    + `<button type="button" class="seg-sort-btn" id="seg-agregado-toggle" data-seg-agregado-toggle aria-expanded="false">`
+    + `▸ Agrupados sin Clase (P) o sin días activos (${agregados.length}) — ${stickers} stickers, ${surveys} evaluaciones Survey</button>`
+    + `<ul class="seg-externos-detail" id="seg-agregado-detail" hidden>${items}</ul>`
+    + '</td></tr>';
+}
+
 /** Task 4.6/4.7 (seguimiento-inspectores-depurado, Fase 4; spec: "Manual
  *  Review Section Surfaces Unresolved Depuration Cases"): renders
  *  `depuracion.revision_manual` — código remaps in conflict
@@ -4734,7 +4777,16 @@ export function initSeguimiento(root, {
     // from an OLD, now-orphaned init after a mid-export tab re-open (see
     // canStartMassExport's own doc comment).
     const rowsBusy = busy || exportInFlight;
-    tbody.innerHTML = tableBodyHtml(sorted, stickersLoaded, isDegraded, columns, rowsBusy);
+    // Professionals without Clase (P) or without active days collapse into
+    // ONE trailing aggregate row (partitionAgregado) — only in the table;
+    // visibleRows (and thus the XLSX/PDF exports) keeps every individual.
+    const { listados, agregados } = partitionAgregado(sorted);
+    // Skip the "no match" placeholder when the aggregate row alone will
+    // represent every matching professional.
+    tbody.innerHTML = (listados.length || !agregados.length)
+      ? tableBodyHtml(listados, stickersLoaded, isDegraded, columns, rowsBusy)
+      : '';
+    tbody.insertAdjacentHTML('beforeend', agregadoRowHtml(agregados, columns.length + 1));
     // Task 4.4/4.5: GRUPO-EXTERNOS is NEVER one of `rows` (see
     // grupoExternosRowHtml's own doc comment) — appended as its own trailing
     // row, in EVERY sub-tab, regardless of search/professional filters (it
@@ -5029,9 +5081,11 @@ export function initSeguimiento(root, {
   // + aria-expanded) — grupoExternosRowHtml itself never re-renders on
   // toggle, it only has to make sure the detail content EXISTS to reveal.
   tbody.addEventListener('click', (ev) => {
-    const toggleBtn = ev.target.closest('[data-seg-externos-toggle]');
+    const toggleBtn = ev.target.closest('[data-seg-externos-toggle], [data-seg-agregado-toggle]');
     if (!toggleBtn) return;
-    const detail = tbody.querySelector('#seg-externos-detail');
+    const detail = tbody.querySelector(
+      toggleBtn.hasAttribute('data-seg-agregado-toggle') ? '#seg-agregado-detail' : '#seg-externos-detail',
+    );
     if (!detail) return;
     const nextExpanded = detail.hidden;
     detail.hidden = !nextExpanded;

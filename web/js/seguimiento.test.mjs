@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   normalizeName, cedulaKey, professionalKeyOf, buildIdentityIndex,
-  buildProfessionalRows, buildTimeline, sortRows,
+  buildProfessionalRows, buildTimeline, sortRows, partitionAgregado, agregadoRowHtml,
   professionalRecords, buildTemporalMetrics, buildTemporalMetricsByKey,
   buildBarriosActivos, buildBarriosActivosByKey,
   buildProfessionalReportDocDefinition, hasActiveSegFilters,
@@ -1124,6 +1124,31 @@ console.log('sortRows: empty values ("Sin dato") group at the bottom, both direc
   assert.deepEqual(sortRows(plain, 'total', 'desc').map((r) => r.key), ['y', 'x']);
 }
 console.log('sortRows: rows without Clase (P) form one trailing block OK');
+
+{
+  // partitionAgregado: no Clase (P) OR zero active days -> collapsed into the
+  // aggregate; everyone else stays individually listed, order preserved.
+  const rows = [
+    { key: 'a', name: 'ANA', np: 'P1', activeDays: 3, stickersTotal: 5, surveyTotal: 1, cedula: '1', firstDate: '2026-08-01', lastDate: '2026-08-10' },
+    { key: 'b', name: 'BETO', np: '', activeDays: 4, stickersTotal: 2, surveyTotal: 0, cedula: '2', firstDate: '2026-08-02', lastDate: '2026-08-09' },
+    { key: 'c', name: 'CARO', np: 'P2', activeDays: 0, stickersTotal: 0, surveyTotal: 3, cedula: '3', firstDate: null, lastDate: null },
+    { key: 'd', name: 'DORA', np: 'P1', activeDays: 1, stickersTotal: 1, surveyTotal: 1, cedula: '4', firstDate: '2026-08-05', lastDate: '2026-08-05' },
+  ];
+  const { listados, agregados } = partitionAgregado(rows);
+  assert.deepEqual(listados.map((r) => r.key), ['a', 'd'], 'rows with clase AND activity stay listed');
+  assert.deepEqual(agregados.map((r) => r.key), ['b', 'c'], 'no-clase and zero-active-days rows collapse');
+  const html = agregadoRowHtml(agregados, 7);
+  assert.ok(html.includes('colspan="7"'));
+  assert.ok(html.includes('(2)'), 'the toggle carries the collapsed count');
+  assert.ok(html.includes('2 stickers') && html.includes('3 Survey'), 'aggregate totals in summary/detail');
+  assert.ok(html.includes('hidden'), 'detail ships collapsed');
+  assert.ok(html.includes('Beto') && html.includes('Caro'), 'detail lists every collapsed professional, title-cased');
+  assert.ok(html.includes('sin Clase (P)') && html.includes('sin días activos'), 'each entry names WHY it was collapsed');
+  assert.equal(agregadoRowHtml([], 7), '', 'no collapsed rows -> no stray row');
+  const hostil = agregadoRowHtml([{ key: 'x', name: '<img>', np: '', activeDays: 0 }], 3);
+  assert.ok(hostil.includes('&lt;') && !/<img>/.test(hostil), 'names are escaped');
+}
+console.log('partitionAgregado/agregadoRowHtml: aggregate trailing row OK');
 
 // ── buildTimeline ──────────────────────────────────────────────────────────
 
