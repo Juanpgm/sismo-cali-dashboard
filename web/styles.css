@@ -1774,15 +1774,16 @@ select.gestion-edit:focus, input.gestion-edit:focus { outline: none; border-colo
 body:not([data-role="admin"]) #refresh-btn,
 body:not([data-role="admin"]) #detail-report-btn,
 body:not([data-role="admin"]) .view-tab[data-view="acciones"],
-body:not([data-role="admin"]) .view-tab[data-view="vuelos-uas"],
 body:not([data-role="admin"]) .view-tab[data-view="usuarios"],
 body:not([data-role="admin"]) .view-tab[data-view="analista"],
 body:not([data-role="admin"]) .view-tab[data-view="reportes-ciudadanos"],
 body:not([data-role="admin"]) .view-tab[data-view="seguimiento"] { display: none !important; }
 
-/* Stickers is the exception: viewers (institucional) may see its data too.
-   The read endpoint (Railway GET /evaluaciones) admits admin+viewer. */
-body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="stickers"] { display: none !important; }
+/* Stickers and Vuelos UAS are the exception: viewers (institucional) may see
+   their (read-only) data too. Stickers' read endpoint (Railway GET
+   /evaluaciones) admits admin+viewer; Vuelos UAS is a read-only ArcGIS layer. */
+body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="stickers"],
+body:not([data-role="admin"]):not([data-role="viewer"]) .view-tab[data-view="vuelos-uas"] { display: none !important; }
 
 #detail-report-btn:disabled { opacity: .6; cursor: wait; }
 

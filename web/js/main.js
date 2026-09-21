@@ -18,7 +18,7 @@ import { wireSeguimientoSession } from './seguimiento-session.js';
 import { initUsuarios } from './usuarios.js';
 import { initAnalista } from './analista.js';
 import { initTheme } from './theme.js';
-import { initAuth, getIdToken, isAdmin } from './auth.js';
+import { initAuth, getIdToken, isAdmin, getRole } from './auth.js';
 import {
   debounce, setSourceLabels, sourceLabel, habBinary, labelForCode,
   loadXlsx, downloadStamp, showToast,
@@ -331,7 +331,8 @@ function switchView(view) {
   }
   // Vuelos UAS reads its ArcGIS layer directly (independent of the Panel
   // store) — cached in-module, refetched only via its own Actualizar button.
-  if (view === 'vuelos-uas' && isAdmin()) {
+  // Read-only, so viewers (institucional) get it too, same as Stickers.
+  if (view === 'vuelos-uas' && (isAdmin() || getRole() === 'viewer')) {
     initVuelosUasTab(document.getElementById('view-vuelos-uas'));
   }
 }

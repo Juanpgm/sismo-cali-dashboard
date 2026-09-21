@@ -6,7 +6,7 @@
 //     un-lockable); others become admin via an assignable custom claim.
 //   • USUARIO — password account created from the Usuarios tab. Panel only.
 //   • VIEWER — Google @cali.gov.co (auto-provisioned on first sign-in).
-//     Panel + Stickers read-only (Evaluaciones data; no Asignación).
+//     Panel + Stickers read-only (Evaluaciones data; no Asignación) + Vuelos UAS.
 //   • INSPECTOR — @sismocali.gov.co field account. Panel only.
 //   • Anything else (e.g. a Google account outside @cali.gov.co) is rejected.
 //
@@ -75,7 +75,7 @@ export async function signOutUser() {
 // custom claim from the ID token. Precedence: superadmin email > custom claim >
 // @sismocali (inspector) > password (usuario) > google@cali (viewer) > reject.
 // Only 'admin' sees Usuarios/Actualizar; 'viewer' also gets Stickers
-// (read-only Evaluaciones); the rest see Panel only.
+// (read-only Evaluaciones) and Vuelos UAS; the rest see Panel only.
 async function roleForUser(user) {
   const email = (user.email || '').toLowerCase();
   if (email === SUPERADMIN_EMAIL) return 'admin';
