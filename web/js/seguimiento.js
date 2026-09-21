@@ -3063,6 +3063,33 @@ export function formatMinutes(min) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+/** ONE synthetic professional row aggregating the collapsed group (same
+ *  partition as the table's partitionAgregado), meant to be appended to the
+ *  listados and fed through xlsxRowsFor like any other row — that reuse is
+ *  what guarantees the aggregate XLSX row carries the EXACT same key set as
+ *  every individual row (see xlsxRowsFor's own doc comment on why that
+ *  matters). Numeric fields are summed; dates are the group's min/max;
+ *  identity/average fields stay empty. `[]` -> null, nothing to append. */
+export function agregadoXlsxRow(agregados) {
+  if (!Array.isArray(agregados) || !agregados.length) return null;
+  const sum = (f) => agregados.reduce((n, r) => n + (r[f] || 0), 0);
+  const firsts = agregados.map((r) => r.firstDate).filter(Boolean).sort();
+  const lasts = agregados.map((r) => r.lastDate).filter(Boolean).sort();
+  return {
+    key: '__agregado__',
+    name: `Agrupados sin Clase (P) o sin días activos (${agregados.length})`,
+    stickersFase1: sum('stickersFase1'),
+    stickersFase2: sum('stickersFase2'),
+    stickersTotal: sum('stickersTotal'),
+    surveyTotal: sum('surveyTotal'),
+    total: sum('total'),
+    firstDate: firsts.length ? firsts[0] : null,
+    lastDate: lasts.length ? lasts[lasts.length - 1] : null,
+    activeDays: sum('activeDays'),
+    rosterSourced: sum('rosterSourced'),
+  };
+}
+
 /** Pure mapper: professional rows (buildProfessionalRows output, already
  *  carrying the W9 avgStickersPerDay/temporal-metrics fields) -> plain
  *  objects ready for XLSX.utils.sheet_add_json, one shape per sub-tab sheet.
@@ -3233,7 +3260,12 @@ export function kpiTotals(rowsResult, { stickersLoaded = true } = {}) {
   // carry some). Unseeded (legacy) rows all have activity: untouched.
   const seeded = Number.isFinite(totals.padron);
   const rows = seeded ? allRows.filter(rowHasActivity) : allRows;
-  const professionals = totals.professionals || 0;
+  // Unique-user counting (owner 2026-09-20): the professionals the table
+  // collapses into the trailing aggregate (no Clase (P) or zero active days,
+  // partitionAgregado) count as ONE user in every people-count KPI — the KPI
+  // figures must read like the table does.
+  const { listados: visibles, agregados: colapsados } = partitionAgregado(rows);
+  const professionals = visibles.length + (colapsados.length ? 1 : 0);
   const surveys = totals.surveys || 0;
   const stickersRaw = totals.stickers || 0;
 
@@ -3283,11 +3315,23 @@ export function kpiTotals(rowsResult, { stickersLoaded = true } = {}) {
     // Only with a non-empty padrón (nothing to classify otherwise) and a real
     // figure (older/hand-built results may not carry it); masked like padrón.
     if (totals.padron > 0 && Number.isFinite(totals.inspectoresActivos)) {
-      result.inspectoresActivos = stickersLoaded ? totals.inspectoresActivos : DASH;
+      // Unique-user counting, same rule as `professionals` above but over the
+      // WHOLE padrón (this figure never depends on the range): individually
+      // listed 'activo' inspectors + 1 for the collapsed group when at least
+      // one of its members is 'activo'.
+      const { listados: padronListados, agregados: padronColapsados } = partitionAgregado(allRows);
+      const inspectoresActivos = padronListados.filter((r) => r.estadoSugerido === 'activo').length
+        + (padronColapsados.some((r) => r.estadoSugerido === 'activo') ? 1 : 0);
+      result.inspectoresActivos = stickersLoaded ? inspectoresActivos : DASH;
+      // The padrón-classified count (pre-collapse) stays available for the
+      // pace ratio and its tooltip: a RATE per real person must divide by
+      // real people, not by the collapsed display count.
+      result.inspectoresActivosPadron = stickersLoaded ? totals.inspectoresActivos : DASH;
       // Daily pace of the ACTIVE padrón: stickers of the active inspectors in
-      // the range / days of the range / number of active inspectors. DASH for
-      // anything that is not a real ratio (no active inspector, no valid range,
-      // stickers still loading) — never NaN/Infinity/negative.
+      // the range / days of the range / number of padrón-classified active
+      // inspectors. DASH for anything that is not a real ratio (no active
+      // inspector, no valid range, stickers still loading) — never
+      // NaN/Infinity/negative.
       const days = totals.rangoDias;
       const stickersActivos = totals.stickersInspectoresActivos;
       result.rangoDias = Number.isFinite(days) && days >= 1 ? days : DASH;
@@ -4008,14 +4052,14 @@ export function kpisHtml(rowsResult, stickersLoaded) {
     ...(t.inspectoresActivos === undefined ? [] : [tile(
       'inspectores activos',
       t.inspectoresActivos,
-      `Inspectores que la depuración clasifica como activos (con código vigente o sticker válido), sobre el total del padrón (${fmt(t.inspectoresActivos)} de ${fmt(t.padron)}). No depende del rango de fechas.`,
+      `Usuarios únicos activos: los inspectores activos listados individualmente en la tabla, más la agrupación de sin Clase (P) o sin días activos contada como un solo usuario cuando contiene algún activo. Clasificados activos en el padrón: ${fmt(t.inspectoresActivosPadron)} de ${fmt(t.padron)}. Sigue el rango de fechas.`,
     )]),
     // Second tile: the daily sticker pace of that same active padrón (owner
     // definition 2026-09-19). Follows the range but not the search/estado filters.
     ...(t.stickersPorInspectorActivo === undefined ? [] : [tile(
       'stickers/día por inspector activo',
       t.stickersPorInspectorActivo,
-      `Stickers de los inspectores activos en el rango ÷ días del rango (${fmt(t.rangoDias)}) ÷ inspectores activos (${fmt(t.inspectoresActivos)}). Es el rendimiento del padrón activo completo; no depende del buscador ni del filtro de estado.`,
+      `Stickers de los inspectores activos en el rango ÷ días del rango (${fmt(t.rangoDias)}) ÷ inspectores activos (${fmt(t.inspectoresActivosPadron)}). Es el rendimiento del padrón activo completo; no depende del buscador ni del filtro de estado.`,
     )]),
     // Seeded: "activos" alone would be ambiguous next to "inspectores activos"
     // (the depuración's classification), so this one says what it measures.
@@ -5360,7 +5404,11 @@ export function initSeguimiento(root, {
       const wb = XLSX.utils.book_new();
       for (const sheetSubTab of ['totales', 'temporales']) {
         const sortSpec = defaultSortFor(sheetSubTab);
-        const sorted = sortRows(visibleRows, sortSpec.column, sortSpec.dir);
+        // Same collapse as the table: the no-clase / zero-active-days group
+        // exports as ONE trailing aggregate row instead of its individuals.
+        const { listados, agregados } = partitionAgregado(sortRows(visibleRows, sortSpec.column, sortSpec.dir));
+        const agregadoRow = agregadoXlsxRow(agregados);
+        const sorted = agregadoRow ? [...listados, agregadoRow] : listados;
         const rows = xlsxRowsFor(sorted, {
           subTab: sheetSubTab,
           withEnfasis: currentIdentity.depuracionActiva,

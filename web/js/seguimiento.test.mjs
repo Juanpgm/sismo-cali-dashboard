@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   normalizeName, cedulaKey, professionalKeyOf, buildIdentityIndex,
-  buildProfessionalRows, buildTimeline, sortRows, partitionAgregado, agregadoRowHtml,
+  buildProfessionalRows, buildTimeline, sortRows, partitionAgregado, agregadoRowHtml, agregadoXlsxRow,
   professionalRecords, buildTemporalMetrics, buildTemporalMetricsByKey,
   buildBarriosActivos, buildBarriosActivosByKey,
   buildProfessionalReportDocDefinition, hasActiveSegFilters,
@@ -1149,6 +1149,29 @@ console.log('sortRows: rows without Clase (P) form one trailing block OK');
   assert.ok(hostil.includes('&lt;') && !/<img>/.test(hostil), 'names are escaped');
 }
 console.log('partitionAgregado/agregadoRowHtml: aggregate trailing row OK');
+
+{
+  // agregadoXlsxRow: one synthetic row, summed metrics, min/max dates — and,
+  // fed through xlsxRowsFor, the EXACT same key set as an individual row.
+  const agregados = [
+    { key: 'b', name: 'BETO', np: '', activeDays: 4, stickersFase1: 1, stickersFase2: 1, stickersTotal: 2, surveyTotal: 0, total: 2, firstDate: '2026-08-02', lastDate: '2026-08-09', rosterSourced: 1 },
+    { key: 'c', name: 'CARO', np: 'P2', activeDays: 0, stickersTotal: 0, surveyTotal: 3, total: 3, firstDate: null, lastDate: null, rosterSourced: 0 },
+  ];
+  const agg = agregadoXlsxRow(agregados);
+  assert.equal(agg.name, 'Agrupados sin Clase (P) o sin días activos (2)');
+  assert.equal(agg.stickersTotal, 2);
+  assert.equal(agg.surveyTotal, 3);
+  assert.equal(agg.total, 5);
+  assert.equal(agg.activeDays, 4);
+  assert.equal(agg.firstDate, '2026-08-02');
+  assert.equal(agg.lastDate, '2026-08-09');
+  assert.equal(agregadoXlsxRow([]), null);
+  for (const subTab of ['totales', 'temporales']) {
+    const [indiv, aggMapped] = xlsxRowsFor([agregados[0], agg], { subTab });
+    assert.deepEqual(Object.keys(aggMapped), Object.keys(indiv), `${subTab}: aggregate row keeps the same column set`);
+  }
+}
+console.log('agregadoXlsxRow: XLSX aggregate row OK');
 
 // ── buildTimeline ──────────────────────────────────────────────────────────
 
@@ -4241,27 +4264,32 @@ named('test_kpi_inspectores_activos_counts_only_estado_activo', () => {
     stickerFor('1000007', 'Profesional 7', '2026-09-10T15:00:00+00:00'),
   ];
   const result = rowsFor({ stickers, depuracion: dep });
-  assert.equal(result.totals.inspectoresActivos, 3);
+  assert.equal(result.totals.inspectoresActivos, 3, 'the padrón-classified total is untouched');
   assert.equal(result.totals.padron, 7);
+  // Unique-user counting (owner 2026-09-20): the TILE counts the individually
+  // listed activos (1000001, with activity) plus the collapsed group as ONE
+  // user (it holds activos 1000002-3, both without activity) = 1 + 1.
   const t = kpiTotals(result, { stickersLoaded: true });
-  assert.equal(t.inspectoresActivos, 3);
+  assert.equal(t.inspectoresActivos, 2);
+  assert.equal(t.inspectoresActivosPadron, 3, 'the pace ratio keeps the real padrón count');
   const html = kpisHtml(result, true);
-  assert.equal(kpiTileValue(html, 'inspectores activos'), '3');
-  assert.equal(kpiTileValue(html, 'profesionales con actividad'), '2', 'activity tile still counts only rows with activity');
+  assert.equal(kpiTileValue(html, 'inspectores activos'), '2');
+  assert.equal(kpiTileValue(html, 'profesionales con actividad'), '2', '2 rows with activity, none collapsible (both have np + days)');
   assert.equal((html.match(/kpi-tile/g) || []).length, 8);
   // Prominent: first depuración tile, i.e. right after the five legacy ones... and before padrón.
   assert.ok(html.indexOf('inspectores activos') < html.indexOf('profesionales en padrón'));
-  // Range-independent: same value for a different (and an empty / inverted) range.
+  // Range-DEPENDENT now (owner 2026-09-20): a range with no activity collapses
+  // every row into the group, which still holds activos -> ONE unique user.
   for (const range of [{ from: '2026-09-11' }, { from: '2027-01-01', to: '2027-01-31' }, { from: '2026-09-30', to: '2026-09-01' }]) {
     const r = rowsFor({ stickers, depuracion: dep, ...range });
-    assert.equal(r.totals.inspectoresActivos, 3, `range ${JSON.stringify(range)}`);
-    assert.equal(kpiTileValue(kpisHtml(r, true), 'inspectores activos'), '3');
+    assert.equal(r.totals.inspectoresActivos, 3, `padrón total untouched, range ${JSON.stringify(range)}`);
+    assert.equal(kpiTileValue(kpisHtml(r, true), 'inspectores activos'), '1');
   }
-  // Search / estado filter never touch it: the UI hands kpisHtml the full totals, and even
-  // a narrowed row list cannot move a padrón-level figure.
+  // The UI hands kpisHtml the FULL row set (search/estado narrow only the
+  // table); a hand-narrowed list without activos yields the honest 0.
   const narrowed = visibleRowsFor(result.rows, { query: 'Profesional 5', estado: 'candidato_desactivacion' });
   assert.equal(narrowed.length, 1);
-  assert.equal(kpiTileValue(kpisHtml({ rows: narrowed, totals: result.totals }, true), 'inspectores activos'), '3');
+  assert.equal(kpiTileValue(kpisHtml({ rows: narrowed, totals: result.totals }, true), 'inspectores activos'), '0');
   // Triangulation: a different split.
   const other = rowsFor({ depuracion: depuracionOf(estadoInspectors({ activo: 1, revisar: 4 })) });
   assert.equal(other.totals.inspectoresActivos, 1);
@@ -4335,7 +4363,7 @@ named('test_kpi_activity_label_renamed_only_when_seeded', () => {
     kpiTileTitle(seeded, 'profesionales con actividad'),
     'Profesionales con actividad en el rango de fechas seleccionado.',
   );
-  assert.match(kpiTileTitle(seeded, 'inspectores activos'), /^Inspectores que la depuración clasifica como activos \(con código vigente o sticker válido\), sobre el total del padrón \(2 de 2\)\. No depende del rango de fechas\.$/);
+  assert.match(kpiTileTitle(seeded, 'inspectores activos'), /^Usuarios únicos activos: .* Clasificados activos en el padrón: 2 de 2\. Sigue el rango de fechas\.$/);
   // Other tiles unchanged when seeded.
   for (const label of ['stickers \\(F1\\+F2\\)', 'evaluaciones survey', 'stickers/día por profesional', 'barrios activos \\(7 d\\)', 'profesionales en padrón']) {
     assert.notEqual(kpiTileValue(seeded, label), null, `${label} still rendered`);
@@ -4364,12 +4392,17 @@ named('test_kpi_inspectores_activos_masks_while_stickers_load_and_escapes_markup
 
 named('test_kpi_inspectores_activos_uses_es_co_number_format', () => {
   const dep = depuracionOf(estadoInspectors({ activo: 1234, revisar: 266 }));
-  const result = rowsFor({ depuracion: dep });
+  // Unique-user counting: 1,233 activos with activity stay individually
+  // listed; activo #1234 (no activity) collapses into the group, which then
+  // counts as ONE user -> 1.233 + 1 = 1.234 unique active users.
+  const stickers = [];
+  for (let i = 1; i <= 1233; i += 1) stickers.push(stickerFor(String(1000000 + i), `Profesional ${i}`));
+  const result = rowsFor({ stickers, depuracion: dep });
   assert.equal(result.totals.inspectoresActivos, 1234);
   const html = kpisHtml(result, true);
   assert.equal(kpiTileValue(html, 'inspectores activos'), (1234).toLocaleString('es-CO'));
   assert.equal(kpiTileValue(html, 'inspectores activos'), '1.234');
-  assert.match(kpiTileTitle(html, 'inspectores activos'), /\(1\.234 de 1\.500\)/);
+  assert.match(kpiTileTitle(html, 'inspectores activos'), /1\.234 de 1\.500/);
 });
 
 named('test_kpi_inspectores_activos_is_the_first_tile_of_the_row', () => {
@@ -4399,7 +4432,10 @@ named('test_kpi_inspectores_activos_373_row_fixture_is_fast', () => {
   let html;
   for (let n = 0; n < 50; n += 1) html = kpisHtml(result, true);
   const perCall = (performance.now() - started) / 50;
-  assert.equal(kpiTileValue(html, 'inspectores activos'), '125');
+  // Unique-user counting: 125 padrón activos, but only inspectors 1..116 have
+  // activity — activos among them are i%3===0 -> 1,4,...,115 = 39 listed; the
+  // other 86 activos collapse into the group = ONE more user -> 40.
+  assert.equal(kpiTileValue(html, 'inspectores activos'), '40');
   assert.ok(perCall < 20, `kpisHtml over 373 rows took ${perCall}ms per call`);
 });
 
