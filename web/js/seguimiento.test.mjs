@@ -1106,6 +1106,25 @@ console.log('sortRows: string vs numeric columns + ties OK');
 }
 console.log('sortRows: empty values ("Sin dato") group at the bottom, both directions OK');
 
+{
+  // Rows without Clase (P) (`np` empty -> "Sin dato") form ONE block at the
+  // very end, no matter which column/direction is active; the block still
+  // sorts by the active column internally.
+  const rows = [
+    { key: 'a', name: 'Ana', np: '', total: 50 },
+    { key: 'b', name: 'Beto', np: 'P1', total: 10 },
+    { key: 'c', name: 'Caro', np: '', total: 99 },
+    { key: 'd', name: 'Dora', np: 'P2', total: 1 },
+  ];
+  assert.deepEqual(sortRows(rows, 'total', 'desc').map((r) => r.key), ['b', 'd', 'c', 'a'], 'np-less block last even on total desc');
+  assert.deepEqual(sortRows(rows, 'total', 'asc').map((r) => r.key), ['d', 'b', 'a', 'c'], 'np-less block last on total asc, sorted internally');
+  assert.deepEqual(sortRows(rows, 'name', 'asc').map((r) => r.key), ['b', 'd', 'a', 'c'], 'np-less block last on a text column too');
+  // Rows with no `np` field at all (non-table callers) are untouched by the rule.
+  const plain = [{ key: 'x', total: 1 }, { key: 'y', total: 2 }];
+  assert.deepEqual(sortRows(plain, 'total', 'desc').map((r) => r.key), ['y', 'x']);
+}
+console.log('sortRows: rows without Clase (P) form one trailing block OK');
+
 // ── buildTimeline ──────────────────────────────────────────────────────────
 
 {

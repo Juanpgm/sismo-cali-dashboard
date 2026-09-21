@@ -2896,6 +2896,14 @@ export function sortRows(rows, column, dir = 'asc') {
   const sign = dir === 'desc' ? -1 : 1;
   const copy = [...rows];
   copy.sort((a, b) => {
+    // Rows without Clase (P) form ONE block at the very end of the table,
+    // whatever column/direction is active — the block itself still sorts by
+    // the active column internally. Rows that don't carry an `np` field at
+    // all (non-table callers/tests) all land in the same partition, so this
+    // is a no-op for them.
+    const aNoNp = a.np === null || a.np === undefined || a.np === '';
+    const bNoNp = b.np === null || b.np === undefined || b.np === '';
+    if (aNoNp !== bNoNp) return aNoNp ? 1 : -1;
     const av = a[column];
     const bv = b[column];
     // Empty/missing values (rendered as "Sin dato" / DASH) always sink to
