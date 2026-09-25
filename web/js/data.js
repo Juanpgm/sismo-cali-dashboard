@@ -6,6 +6,7 @@ import {
 } from './utils.js';
 import { fetchIsraelRecords } from './israel-source.js';
 import { apiUrl } from './api-config.js';
+import { applyBuildingFilter, inDateRange } from './panel-model.js';
 
 // Re-exported so existing/potential external import sites (`import { bucketNpisos } from './data.js'`)
 // keep working; the actual implementation lives in utils.js (see comment there
@@ -204,7 +205,8 @@ class Store {
   constructor() {
     this.meta = null;
     this.records = []; // raw records + _search index
-    this.filtered = [];
+    this.filtered = []; // inspections that individually match the filters (table, raw total, xlsx)
+    this.filteredBuildings = []; // one representative per building with >=1 matching inspection (KPIs, charts, map)
     // Reportes ciudadanos en estado "Reportado", leído EN VIVO de la API
     // atencionsismo vía el endpoint `reportados` de api-config.js (consolidated
     // FastAPI backend en Railway desde tasks.md 3.7; caché CDN de 15 min).
@@ -523,10 +525,10 @@ class Store {
       }
     }
     const { dateFrom, dateTo, search } = this.filters;
-    this.filtered = this.records.filter((r) => {
-      const recordDate = cleanDate(r.fecha_inspeccion);
-      if (dateFrom && (!recordDate || recordDate < dateFrom)) return false;
-      if (dateTo && (!recordDate || recordDate > dateTo)) return false;
+    // Filter AFTER grouping (see applyBuildingFilter): a building passes when
+    // ANY of its inspections matches, and is counted once.
+    const matches = (r) => {
+      if (!inDateRange(r.fecha_inspeccion, dateFrom, dateTo)) return false;
       for (const def of FILTER_FIELDS) {
         if (!matchesField(r, def, this.filters[def.field])) return false;
       }
@@ -535,7 +537,10 @@ class Store {
       }
       if (search.length && !search.every((tok) => r._search.includes(tok))) return false;
       return true;
-    });
+    };
+    const { inspecciones, edificios } = applyBuildingFilter(this.records, matches);
+    this.filtered = inspecciones;
+    this.filteredBuildings = edificios;
     this.notify();
   }
 }

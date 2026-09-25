@@ -1,5 +1,6 @@
 // Entry point: wires data store, filters, KPIs, map and table together.
 import { store, fetchData, soloRepresentantes } from './data.js';
+import { countByFuente } from './panel-model.js';
 import { initFilters, clearFiltersAndRerender } from './filters.js';
 import { renderKpis } from './kpi.js';
 import { renderStatistics, resetCharts } from './charts.js';
@@ -8,7 +9,7 @@ import {
   setChoroplethLevel, setChoroplethMetric, invalidateSize, highlightRecord, applyMapTheme,
   setStickerStatus, setZonasInteresVisible,
 } from './mapview.js';
-import { initTable, renderTable, setTotalRecords, openDetailModal, configurarRepresentante } from './table.js';
+import { initTable, renderTable, openDetailModal, configurarRepresentante } from './table.js';
 import { initAccionesTab } from './acciones-capa.js';
 import { initVuelosUasTab } from './vuelos-uas.js';
 import { initStickers } from './stickers.js';
@@ -144,23 +145,23 @@ function onStoreChange() {
     searchInput.value = store.filters.searchRaw || '';
   }
   // Las CIFRAS cuentan edificios, no envíos: un edificio re-inspeccionado
-  // aparecía varias veces e inflaba todo ~13.7% (colapso total marcaba 33 con
-  // 30 edificios colapsados). La TABLA y el MAPA siguen mostrando cada
-  // inspección — no se borra nada, solo se deja de contar dos veces.
-  const unicos = soloRepresentantes(store.filtered);
+  // aparecía varias veces e inflaba todo ~13.7%. El filtro se aplica DESPUÉS de
+  // agrupar (store.filteredBuildings: un representante por edificio con al
+  // menos una inspección que cumple). La TABLA sigue mostrando cada inspección
+  // que cumple — no se borra nada. El número grande de Total registros son los
+  // envíos sin agrupar (store.filtered.length).
+  const unicos = store.filteredBuildings;
   const unicosTodos = soloRepresentantes(store.records);
-  // Recolectados = cada envío del formulario, sin agrupar (lo que trae el
-  // cron). `unicos` ya es la cifra sanitizada (un edificio, no un envío) que
-  // consume el resto de renderKpis — este conteo solo alimenta la referencia
-  // "recolectados" de la tarjeta Total registros.
-  renderKpis(kpiRow, unicos, unicosTodos, { recolectados: store.filtered.length });
-  setTotalRecords(store.records.length);
-  renderTable(store.filtered);
-  renderMap(soloRepresentantes(store.filtered)).catch((err) => {
+  renderKpis(kpiRow, unicos, unicosTodos, {
+    recolectados: store.filtered.length,
+    israel: countByFuente(store.filtered).israel,
+  });
+  renderTable(store.filtered, { edificios: unicos.length });
+  renderMap(unicos).catch((err) => {
     console.error(err);
     showToast('No se pudo cargar la capa geográfica.', 'error');
   });
-  renderStatistics(soloRepresentantes(store.filtered), soloRepresentantes(store.records), store.reportados);
+  renderStatistics(unicos, unicosTodos, store.reportados, store.filtered);
   // Acciones works over ALL records: the filters sidebar only applies to Panel.
   // Solo admin, and only while that tab is actually visible — skip the full
   // rebuild on every Panel filter keystroke otherwise (see switchView()).
@@ -205,30 +206,30 @@ function wireMapControls() {
       document.querySelectorAll('[data-mode-controls]').forEach((panel) => {
         panel.classList.toggle('is-hidden', panel.dataset.modeControls !== mode);
       });
-      renderMap(soloRepresentantes(store.filtered));
+      renderMap(store.filteredBuildings);
       setTimeout(invalidateSize, 60);
     });
   });
 
   el('#color-by-select').addEventListener('change', (e) => {
     setColorBy(e.target.value);
-    renderMap(soloRepresentantes(store.filtered));
+    renderMap(store.filteredBuildings);
   });
   el('#size-by-select').addEventListener('change', (e) => {
     setSizeBy(e.target.value);
-    renderMap(soloRepresentantes(store.filtered));
+    renderMap(store.filteredBuildings);
   });
   el('#heat-weight-select').addEventListener('change', (e) => {
     setHeatWeight(e.target.value);
-    renderMap(soloRepresentantes(store.filtered));
+    renderMap(store.filteredBuildings);
   });
   el('#choropleth-level-select').addEventListener('change', (e) => {
     setChoroplethLevel(e.target.value);
-    renderMap(soloRepresentantes(store.filtered)).catch(() => showToast('No se pudo cargar el nivel geográfico.', 'error'));
+    renderMap(store.filteredBuildings).catch(() => showToast('No se pudo cargar el nivel geográfico.', 'error'));
   });
   el('#choropleth-metric-select').addEventListener('change', (e) => {
     setChoroplethMetric(e.target.value);
-    renderMap(soloRepresentantes(store.filtered));
+    renderMap(store.filteredBuildings);
   });
 
   // Zonas de interés: independent overlay, not a map mode — no renderMap()
@@ -681,7 +682,7 @@ document.addEventListener('themechange', () => {
   applyMapTheme();
   if (store.records.length) {
     resetCharts(); // force destroy+recreate so Chart.js re-bakes the new theme's CSS-var colors
-    renderStatistics(soloRepresentantes(store.filtered), soloRepresentantes(store.records), store.reportados);
+    renderStatistics(store.filteredBuildings, soloRepresentantes(store.records), store.reportados, store.filtered);
   }
 });
 

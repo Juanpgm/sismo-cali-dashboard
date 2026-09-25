@@ -3,6 +3,7 @@ import {
   labelForField, labelForCode, formatValue, escapeHtml, DETAIL_GROUPS, BADGE_FIELDS, normalize,
   barrioVeredaDisplay, addressDisplay, isTypedAddress, SURVEY_LAYER_URL, isFirmaAttachment, attachmentUrl, showToast,
 } from './utils.js';
+import { inspeccionesEdificiosText } from './panel-model.js';
 import { buildMiniMap, highlightRecord } from './mapview.js';
 import { generarInformePdf } from './report.js';
 
@@ -52,8 +53,8 @@ let sortDir = 'desc';
 let els = null;
 let onRowClick = null;
 let lastRecords = [];
+let lastEdificios; // building count from the last full render; re-renders (sort/columns) reuse it
 let lastSorted = []; // current render's sorted rows, read by the delegated row handler
-let totalRecords = null;
 
 function discoverFields(records) {
   const found = new Set();
@@ -203,8 +204,9 @@ function renderCell(record, field) {
   return text;
 }
 
-export function renderTable(records) {
+export function renderTable(records, { edificios } = {}) {
   lastRecords = records;
+  if (edificios !== undefined) lastEdificios = edificios;
   renderHeader();
   const sorted = [...records].sort((a, b) => {
     // Empties always sink to the bottom, regardless of sort direction, so the
@@ -233,12 +235,10 @@ export function renderTable(records) {
     `).join('');
   }
 
-  els.countEl.textContent = `Mostrando ${sorted.length} de ${totalRecords ?? sorted.length}`;
+  // "X inspecciones (Y edificios)": Y = edificios con al menos una inspección en
+  // la tabla; sin dato (llamada sin opciones) se asume un edificio por fila.
+  els.countEl.textContent = inspeccionesEdificiosText(sorted.length, lastEdificios ?? sorted.length);
   lastSorted = sorted; // read by the delegated row handler (see wireRowDelegation)
-}
-
-export function setTotalRecords(n) {
-  totalRecords = n;
 }
 
 /* ------------------------------------------------------------------ */

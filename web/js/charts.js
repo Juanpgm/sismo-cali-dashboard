@@ -5,6 +5,7 @@ import {
   buildCategoricalScale, interpolateRamp, colapsoResuelto, danoGradoColor, DANO_GRADO_ORDER,
   CONCEPTO_CIERRE_ORDER, conceptoCierreColor, conceptoCierreCounts,
 } from './utils.js';
+import { flagYesCount } from './panel-model.js';
 
 /** Colores de un set de valores por INTENSIDAD de un mismo hue (el acento):
  *  mayor valor = más intenso. Reusa interpolateRamp con una rampa de 2 paradas. */
@@ -19,12 +20,12 @@ const registry = new Map();
 // Ayuda orientativa por gráfico: un ⓘ discreto junto al título que despliega una
 // explicación breve de cómo interpretar el elemento. Se inyecta una sola vez.
 const CHART_HELP = {
-  'chart-timeseries': 'Ritmo de inspecciones en el tiempo. "Diarias" = inspecciones por día · "Acumuladas" = total corrido · "Momento 2 · Reportados" = universo de reportes ciudadanos, como referencia. El eje Y es logarítmico para que convivan magnitudes muy distintas; los totales van rotulados sobre cada línea.',
+  'chart-timeseries': 'Ritmo de inspecciones en el tiempo (inspecciones sin agrupar, igual que el número grande de Total registros). "Diarias" = inspecciones por día · "Acumuladas" = total corrido · "Momento 2 · Reportados" = universo de reportes ciudadanos, como referencia. El eje Y es logarítmico para que convivan magnitudes muy distintas; los totales van rotulados sobre cada línea.',
   'chart-tipologia': 'Cuántas casas (3 pisos o menos y uso residencial) y edificaciones (más de 3 pisos, o de uso no residencial aunque tengan pocos pisos) hay en cada color del semáforo: verde = habitable (H) · amarillo = uso restringido (R1/R2) · rojo = no habitable (I1/I2/I3).',
-  'chart-hab-tipologia': 'Registros habitables vs. no habitables, separando casas de edificaciones. Habitable = H · No habitable = R1/R2/I1/I2/I3.',
+  'chart-hab-tipologia': 'Registros habitables vs. no habitables o restringidos (R + I), separando casas de edificaciones. Habitable = H · No habitable o restringido = R1/R2/I1/I2/I3 (la tarjeta "No habitable" del panel es solo I1/I2/I3).',
   'chart-colapso-tipologia': 'Registros con colapso total, colapso parcial y sin colapso ("No colapsadas"), por casa y edificación.',
-  'chart-severidad': 'Cómo se reparten las inspecciones según la severidad de los daños observados.',
-  'chart-hab-doughnut': 'Distribución de la habitabilidad (H · R1 · R2 · I1 · I2 · I3) sobre las inspecciones filtradas.',
+  'chart-severidad': 'Cómo se reparten los edificios según la severidad de los daños observados.',
+  'chart-hab-doughnut': 'Distribución de la habitabilidad (H · R1 · R2 · I1 · I2 · I3) sobre los edificios filtrados.',
   'chart-uso-doughnut': 'Cuántas inspecciones por uso de la edificación. Usa los mismos colores que el mapa coloreado por uso.',
   'chart-suspension': 'Cuántas edificaciones requieren suspensión de servicios (colapso parcial cruzado con habitabilidad) frente al total visitado. La cifra central es requieren / total.',
   'chart-flags': 'Cuántas inspecciones marcaron "Sí" en cada riesgo o afectación, ordenadas de mayor a menor.',
@@ -469,6 +470,8 @@ export const totalDataLabelPlugin = {
   },
 };
 
+/** `records` = inspecciones SIN agrupar bajo el filtro activo, así el acumulado
+ *  termina en el mismo número grande de la tarjeta Total registros. */
 function renderTimeSeries(records, reportados) {
   const byDay = new Map();
   let undated = 0; // registros del survey sin fecha_inspeccion (aún cuentan al total)
@@ -485,7 +488,7 @@ function renderTimeSeries(records, reportados) {
   clearChartEmpty('chart-timeseries');
   // Etiquetas + conteo diario. Se agrega un bucket final "Sin fecha" con los
   // registros del survey sin fecha_inspeccion, para que el ACUMULADO llegue al
-  // total real (= records.length, el mismo del KPI "Total registros"), no solo
+  // total real (= records.length, el mismo número grande del KPI "Total registros": envíos sin agrupar), no solo
   // a los que traen fecha. Todo se recomputa en cada render (se actualiza).
   const labels = days.map(formatDate);
   const daily = days.map((d) => byDay.get(d));
@@ -580,10 +583,11 @@ const FLAG_PALETTE = [
   COLORS.categoricalOther,
 ];
 
-/** Horizontal bar: count of "Sí" for every meaningful binary flag. */
+/** Horizontal bar: count of "Sí" for every meaningful binary flag. Colapso
+ *  total/parcial use the depurated value (flagYesCount), same as the KPI cards. */
 function renderFlags(records) {
   const rows = FLAG_FIELDS
-    .map((f) => ({ label: labelForField(f), count: records.reduce((n, r) => n + (isYes(r[f]) ? 1 : 0), 0) }))
+    .map((f) => ({ label: labelForField(f), count: flagYesCount(records, f) }))
     .sort((a, b) => b.count - a.count);
   const total = records.length;
   upsertChart('chart-flags', {
@@ -829,12 +833,12 @@ function renderTipologia(records) {
 // (habitable = H · no habitable = R1/R2/I1/I2/I3). Cuatro métricas por tipología,
 // en número de registros:
 //   · Habitable      = habBinary == 'habitable'
-//   · No habitable   = habBinary == 'no_habitable'
+//   · No habitable o restringido (R + I) = habBinary == 'no_habitable'
 //   · Colapso total  = colapso_total == 'sí'
 //   · Colapso parcial= colapso_parcial == 'sí'
 const CH_METRICS = [
   ['habitable', 'Habitable', COLORS.status.h],
-  ['no_habitable', 'No habitable', COLORS.status.i2],
+  ['no_habitable', 'No habitable o restringido (R + I)', COLORS.status.i2],
   ['colapso_total', 'Colapso total', COLORS.status.i3],
   ['colapso_parcial', 'Colapso parcial', COLORS.status.r2],
 ];
@@ -886,7 +890,7 @@ function renderColapsoHab(records) {
       <thead><tr><th scope="col">Tipología (pisos sobre el terreno)</th>${head}</tr></thead>
       <tbody>${bodyRows}${footRow}</tbody>
     </table>
-    <p class="chart-note">Valor principal = registros · valor secundario = unidades habitacionales (viviendas), un <strong>aproximado según los datos de la inspección</strong> (n_residenciales). Habitable = H · No habitable = R1/R2/I1/I2/I3. Casa = 3 pisos o menos y uso residencial · Edificación = más de 3 pisos, o cualquier uso no residencial. Un registro puede sumar en colapso y en habitabilidad a la vez.</p>`;
+    <p class="chart-note">Valor principal = registros · valor secundario = unidades habitacionales (viviendas), un <strong>aproximado según los datos de la inspección</strong> (n_residenciales). Habitable = H · No habitable o restringido (R + I) = R1/R2/I1/I2/I3 (no es la misma definición de la tarjeta "No habitable" del panel, que es solo I1/I2/I3). Casa = 3 pisos o menos y uso residencial · Edificación = más de 3 pisos, o cualquier uso no residencial. Un registro puede sumar en colapso y en habitabilidad a la vez.</p>`;
   }
 
   renderTipologiaBar('chart-hab-tipologia', records, ['habitable', 'no_habitable']);
@@ -975,8 +979,10 @@ let warnedMissingChart = false;
 
 /** Render all "Estadísticas" charts from the current filtered record set.
  *  allRecords (sin filtrar) alimenta el reporte alcalde, que es un resumen fijo
- *  sobre el total y NO debe moverse con los filtros del tablero. */
-export function renderStatistics(records, allRecords, reportados = null) {
+ *  sobre el total y NO debe moverse con los filtros del tablero.
+ *  records = EDIFICIOS (un representante por edificio); rawRecords = inspecciones
+ *  sin agrupar (solo para la serie de tiempo, que cuenta envíos). */
+export function renderStatistics(records, allRecords, reportados = null, rawRecords = records) {
   if (typeof Chart === 'undefined') {
     if (!warnedMissingChart) {
       console.warn('Chart.js no está disponible (falló la carga del CDN) — se omite "Estadísticas".');
@@ -997,6 +1003,6 @@ export function renderStatistics(records, allRecords, reportados = null) {
   renderDanosEstructura(records);
   renderSuspension(records);
   renderFlags(records);
-  renderTimeSeries(records, reportados);
+  renderTimeSeries(rawRecords, reportados);
   injectChartHelp();
 }

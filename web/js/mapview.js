@@ -693,7 +693,7 @@ async function renderChoropleth(records) {
 }
 
 function metricLabel(metric) {
-  if (metric === 'no_habitables') return 'No habitables';
+  if (metric === 'no_habitables') return 'No habitables o restringidos (R + I)';
   if (metric === 'casas') return 'Casas (≤3 pisos)';
   if (metric === 'edificaciones') return 'Edificaciones (>3 pisos)';
   if (metric === 'victims') return 'Muertos + heridos';

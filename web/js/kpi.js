@@ -5,6 +5,7 @@ import {
   COLORS, isNoHabitableBinary, habCode, labelForCode, splitMultiValue, escapeHtml, normalize,
   CONCEPTO_CIERRE_ORDER, conceptoCierreColor, conceptoCierreCounts,
 } from './utils.js';
+import { reconcile } from './panel-model.js';
 
 function sumField(records, field) {
   let total = 0;
@@ -40,6 +41,7 @@ const TILE_DEFS = [
   { key: 'hab_h', label: 'Habitable (H)', accent: COLORS.status.h, group: 'headline', section: 'registros' },
   { key: 'hab_r', label: 'Uso restringido (R1 + R2)', accent: COLORS.status.r2, group: 'headline', section: 'registros' },
   { key: 'hab_i', label: 'No habitable (I1 + I2 + I3)', accent: COLORS.status.i2, group: 'headline', section: 'registros' },
+  { key: 'hab_sin_dato', label: 'Sin criterio de habitabilidad', accent: null, group: 'headline', section: 'registros' },
   { key: 'colapso_total', label: 'Colapso total', accent: COLORS.status.i3, group: 'headline', section: 'registros' },
   { key: 'colapso_parcial', label: 'Colapso parcial', accent: COLORS.status.r2, group: 'headline', section: 'registros' },
   { key: 'u_residenciales', label: 'Total unidades habitacionales', accent: null, group: 'headline', section: 'residenciales' },
@@ -49,7 +51,8 @@ const TILE_DEFS = [
   // Human cost + counts — hidden by default, smaller, low visual weight.
   { key: 'muertos', label: 'Muertos', accent: COLORS.status.i2, group: 'secondary' },
   { key: 'heridos', label: 'Heridos', accent: COLORS.status.r2, group: 'secondary' },
-  { key: 'ocupantes_riesgo', label: 'Ocupantes en no habitables', accent: COLORS.status.i1, group: 'secondary' },
+  // R + I (binary PMU definition), NOT the I1-I3 of the "No habitable" tile above.
+  { key: 'ocupantes_riesgo', label: 'Ocupantes en no habitables o restringidos (R + I)', accent: COLORS.status.i1, group: 'secondary' },
   { key: 'ocupantes_total', label: 'Ocupantes totales', accent: null, group: 'secondary' },
   { key: 'u_comerciales', label: 'Unidades comerciales', accent: null, group: 'secondary' },
   { key: 'u_no_habitadas', label: 'Unidades no habitadas', accent: null, group: 'secondary' },
@@ -83,6 +86,10 @@ export function computeKpis(records) {
     hab_h: habCounts.h,
     hab_r: habCounts.r1 + habCounts.r2,
     hab_i: habCounts.i1 + habCounts.i2 + habCounts.i3,
+    // Buildings with no valid habitability code (blank / malformed): the
+    // remainder that makes H + R + I + Sin dato equal the building total.
+    hab_sin_dato: records.length - habCounts.h - habCounts.r1 - habCounts.r2
+      - habCounts.i1 - habCounts.i2 - habCounts.i3,
     hab_h_res: resByCode.h,
     hab_r_res: resByCode.r1 + resByCode.r2,
     hab_i_res: resByCode.i1 + resByCode.i2 + resByCode.i3,
@@ -120,15 +127,9 @@ function subLine(html) {
 }
 
 // Small inline qualifier next to a headline label: "procesado" for Total
-// registros cuando NO hay cifra cruda disponible (raw.recolectados ausente) —
-// en ese caso el valor grande sigue siendo el agrupado por edificio (ver
-// soloRepresentantes). Cuando sí hay cifra cruda, el tile la usa como valor
-// principal en su lugar (ver tileHtml) y este tag no aplica. También
-// "recategorizado" SOLO para Colapso total — es la única tarjeta donde
-// colapso_resuelto cambia la cifra de forma visible (34→~15 en producción).
-// Colapso parcial se queda prácticamente igual (la mayoría de los conflictos
-// ya caían ahí bajo el conteo OR anterior), así que la referencia cruda ahí
-// es ruido, no señal — no lleva tag ni línea "sin depurar".
+// registros only when there is NO raw figure (then the big value is the
+// building count). "recategorizado" SOLO para Colapso total — es la única
+// tarjeta donde colapso_resuelto cambia la cifra de forma visible.
 function kpiLabelTag(key) {
   if (key === 'total') return ' <span class="kpi-label-tag">procesado</span>';
   if (key === 'colapso_total') return ' <span class="kpi-label-tag">recategorizado</span>';
@@ -184,10 +185,11 @@ function conceptoCierreTilesHtml(records) {
 }
 
 /** @param {HTMLElement} container @param {object[]} filteredRecords @param {object[]} allRecords
- *  @param {{recolectados?: number}} [raw] - inspecciones sin agrupar bajo el
- *  mismo filtro que `filteredRecords`, para contrastar contra la tarjeta
- *  Total registros (que ya cuenta edificios, no envíos — ver soloRepresentantes
- *  en data.js). Opcional: si no llega, la tarjeta no muestra la referencia. */
+ *  @param {{recolectados?: number, israel?: number}} [raw] - inspecciones sin
+ *  agrupar bajo el mismo filtro (valor grande de Total registros) y cuántas
+ *  son de Israel. `filteredRecords` ya son EDIFICIOS (ver applyBuildingFilter
+ *  en panel-model.js). Opcional: sin `recolectados` la tarjeta muestra los
+ *  edificios y no la línea de reconciliación. */
 export function renderKpis(container, filteredRecords, allRecords, raw = {}) {
   const values = computeKpis(filteredRecords);
   const total = filteredRecords.length;
@@ -226,13 +228,15 @@ export function renderKpis(container, filteredRecords, allRecords, raw = {}) {
       sub = subLine(spans.join(''));
     } else if (def.key === 'colapso_parcial' && filtersActive) {
       sub = subLine(`<span class="kpi-sub">Refleja los filtros activos · ${globalColapso.colapso_parcial} sin filtrar</span>`);
-    } else if (def.key === 'total' && Number.isFinite(raw.recolectados) && raw.recolectados !== values.total) {
-      // El valor grande ahora es la cifra CRUDA (envíos sin agrupar por
-      // edificio, ver soloRepresentantes/es_representante). Esta línea, en
-      // tono secundario, deja explícito cuántos de esos envíos representan
-      // edificios únicos una vez agrupados — la cifra que antes era la
-      // principal — para no perder esa referencia.
-      sub = subLine(`<span class="kpi-sub kpi-sub-raw">${values.total} agrupados por edificio</span>`);
+    } else if (def.key === 'total' && Number.isFinite(raw.recolectados)) {
+      // El valor grande es la cifra CRUDA (envíos sin agrupar). Esta línea
+      // reconcilia contra el resto de tarjetas, que cuentan EDIFICIOS:
+      // registros - edificios = reinspecciones. Israel no se agrupa (sin
+      // dirección ni grupo de duplicados), así que se rotula aparte.
+      const rec = reconcile(raw.recolectados, filteredRecords);
+      const spans = [`<span class="kpi-sub kpi-sub-raw">${rec.edificios} ${rec.edificios === 1 ? 'edificio' : 'edificios'} · ${rec.reinspecciones} ${rec.reinspecciones === 1 ? 'reinspección' : 'reinspecciones'}</span>`];
+      if (raw.israel > 0) spans.push(`<span class="kpi-sub">${raw.israel} de Israel, sin agrupar</span>`);
+      sub = subLine(spans.join(''));
     }
     const isRawTotal = def.key === 'total' && Number.isFinite(raw.recolectados);
     const label = isRawTotal ? def.label : `${def.label}${kpiLabelTag(def.key)}`;
@@ -253,7 +257,7 @@ export function renderKpis(container, filteredRecords, allRecords, raw = {}) {
   const tilesFor = (section) => TILE_DEFS
     .filter((d) => d.group === 'headline' && d.section === section)
     .map(tileHtml).join('');
-  const headlineHtml = sectionTitle('Por número de registros', 'Cuenta INSPECCIONES de visitas especializadas (un registro por edificación evaluada) y se recalcula con los filtros.')
+  const headlineHtml = sectionTitle('Por número de registros', 'El número grande de Total registros son las inspecciones sin agrupar. Habitable, Uso restringido, No habitable (I1 + I2 + I3), Sin criterio y el resto de cifras cuentan edificios (uno por edificio, con su evaluación más crítica): H + R + I + Sin criterio = edificios. Se recalcula con los filtros.')
     + tilesFor('registros')
     + sectionTitle('Por unidades habitacionales (viviendas)', 'Aquí se suman VIVIENDAS (n_residenciales), un aproximado según cada inspección — no inspecciones. Sirve para dimensionar cuántos hogares hay detrás de cada estado de habitabilidad.')
     + tilesFor('residenciales')
