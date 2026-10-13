@@ -379,3 +379,72 @@ def test_orphaned_override_warns_and_still_resolves_via_the_automatic_rule(caplo
     assert any("huerfano" in r.message for r in caplog.records)
     assert df["es_representante"].sum() == 1
     assert df[df["es_representante"]].iloc[0]["GlobalID"] == "a"
+
+
+# --- i3 severity: the WORST habitability class must win the representative --
+
+def _rep_id(rows):
+    df = rd.add_dup_group(_df(rows))
+    reps = df[df["es_representante"]]
+    assert len(reps) == 1
+    return reps.iloc[0]["GlobalID"]
+
+
+def _hab_rows(*codes):
+    return [{"GlobalID": f"g{i}", "direccion_norm": "CL 5", "criterio_habitabilidad": c}
+            for i, c in enumerate(codes)]
+
+
+def test_i3_outranks_every_other_habitability_class():
+    for other in ("i2", "i1", "r2", "r1", "h"):
+        assert rd._HAB_SEVERIDAD["i3"] > rd._HAB_SEVERIDAD[other]
+
+
+def test_i3_represents_its_building_against_a_habitable_record():
+    assert _rep_id(_hab_rows("h", "i3")) == "g1"
+
+
+def test_i3_representative_is_order_independent():
+    assert _rep_id(_hab_rows("i3", "h")) == "g0"
+    assert _rep_id(_hab_rows("i2", "i3", "i1")) == "g1"
+    assert _rep_id(_hab_rows("i3", "i2", "i1")) == "g0"
+
+
+def test_i3_is_case_and_whitespace_insensitive():
+    assert _rep_id(_hab_rows("i2", " I3 ")) == "g1"
+
+
+def test_equal_habitability_ties_fall_through_to_recency():
+    rows = [
+        {"GlobalID": "viejo", "direccion_norm": "CL 5", "criterio_habitabilidad": "i3",
+         "fecha_inspeccion": "2026-08-14"},
+        {"GlobalID": "nuevo", "direccion_norm": "CL 5", "criterio_habitabilidad": "i3",
+         "fecha_inspeccion": "2026-08-20"},
+    ]
+    assert _rep_id(rows) == "nuevo"
+
+
+def test_unknown_or_blank_habitability_scores_below_h():
+    assert _rep_id(_hab_rows("zzz", "h")) == "g1"
+    assert _rep_id(_hab_rows(None, "h")) == "g1"
+    assert _rep_id(_hab_rows("", "h")) == "g1"
+    assert rd._recencia({"criterio_habitabilidad": "zzz"})[2] == 0
+
+
+def test_a_single_i3_record_is_its_own_representative():
+    assert _rep_id(_hab_rows("i3")) == "g0"
+
+
+def test_empty_frame_has_no_representatives():
+    df = rd.add_dup_group(_df([]))
+    assert len(df) == 0
+
+
+def test_collapse_still_outranks_i3():
+    """Collapse flags sit above habitability in the ranking tuple."""
+    rows = [
+        {"GlobalID": "i3", "direccion_norm": "CL 5", "criterio_habitabilidad": "i3"},
+        {"GlobalID": "colapso", "direccion_norm": "CL 5", "criterio_habitabilidad": "h",
+         "colapso_total": "si"},
+    ]
+    assert _rep_id(rows) == "colapso"
