@@ -37,6 +37,7 @@ from shapely.geometry import Point, shape
 from shapely.strtree import STRtree
 
 from address_norm import normalize_address
+from address_unify import address_unify_key
 from geocode_validate import (
     API_KEY_ENV,
     cache_key,
@@ -456,13 +457,11 @@ _CRRA_RE = re.compile(r"\bCRRA\b")
 
 
 def normalize_direccion(value) -> str:
-    """Single normalizer shared by BOTH the `direccion_norm` column shipped
-    to the panel and `_clave_direccion`'s bucket key -- the address-matching
-    step that runs BEFORE `_misma_edificacion`'s name-similarity/30 m cascade
-    ever sees a pair of records (see that function's docstring: address
-    alone is never a merge key, but a weak bucket key still hides true
-    duplicates by splitting them into different buckets before the cascade
-    gets a chance to compare them).
+    """Display normalizer behind the `direccion_norm` column shipped to the
+    panel (the IGAC-style address a person reads). It is NOT the building
+    bucket key any more: `_clave_direccion` buckets by `address_unify_key`
+    (scripts/address_unify.py), the same canonical key atencionsismo uses, so
+    both dashboards count the same buildings.
 
     `normalize_address` already canonicalizes most IGAC road-type
     abbreviations (CARRERA/CRA/KRA/CR -> KR, CALLE/CLL -> CL, AVENIDA/AVDA
@@ -1666,15 +1665,20 @@ def _haversine_m(lat1, lon1, lat2, lon2) -> float:
 def _clave_direccion(row) -> str:
     """Coarse bucket: everything that COULD be the same building.
 
+    The address part is `dir:` + `address_unify_key(direccion)`, the canonical
+    key shared with atencionsismo (so "KR 72 # 10-40" and "CRA 72 No 10-40
+    Madrigal" are one bucket). The raw `direccion` is the input; the display
+    `direccion_norm` only stands in when there is no raw value. Without an
+    address it falls back to a ~110 m geo cell, then to the GlobalID.
+
     `_misma_edificacion` then splits each bucket into actual buildings.
     """
-    # pd.isna() first: a missing value arrives as NaN, and str(NaN) is the
-    # TRUTHY string "nan" -- without this guard every address-less record
-    # collapses into one bogus "dir:NAN" building.
-    direccion_raw = row.get("direccion_norm")
-    direccion = "" if pd.isna(direccion_raw) else str(direccion_raw).strip().upper()
-    if direccion:
-        return f"dir:{direccion}"
+    # address_unify_key() treats None/NaN/pd.NA/blank as "no address":
+    # str(NaN) is the TRUTHY string "nan", and without that guard every
+    # address-less record collapses into one bogus "dir:nan" building.
+    clave = address_unify_key(row.get("direccion")) or address_unify_key(row.get("direccion_norm"))
+    if clave:
+        return f"dir:{clave}"
     x, y = row.get("x"), row.get("y")
     if pd.notna(x) and pd.notna(y):
         # 3 decimals (~110 m cell), not 5 (~1 m): an address-less record's
@@ -1957,6 +1961,21 @@ def add_dup_group(df: pd.DataFrame, overrides: dict | None = None) -> pd.DataFra
         # erroring, so surface it here or an operator's manual choice quietly
         # goes back to the automatic rule with no trace.
         grupos_por_id = df.groupby("dup_grupo_id")["GlobalID"].apply(set)
+        # A pin saved under a group id that no longer exists (the id format
+        # changed -- e.g. when the bucket key became `address_unify_key`) but
+        # whose record is still there follows that record to its new group,
+        # instead of silently dropping the operator's choice.
+        grupo_por_gid = {str(g): k for k, gids in grupos_por_id.items() for g in gids}
+        migrados: dict = {}
+        for clave_pin, gid_pin in pins.items():
+            nueva = grupo_por_gid.get(str(gid_pin))
+            if clave_pin not in grupos_por_id.index and nueva is not None:
+                log.info("Representante fijado a mano migrado: '%s' -> '%s' (GlobalID %s).",
+                         clave_pin, nueva, gid_pin)
+                migrados.setdefault(nueva, gid_pin)
+            else:
+                migrados.setdefault(clave_pin, gid_pin)
+        pins = {**migrados, **{k: v for k, v in pins.items() if k in grupos_por_id.index}}
         for clave_pin, gid_pin in pins.items():
             ids_del_grupo = grupos_por_id.get(clave_pin)
             if ids_del_grupo is None:
@@ -2014,7 +2033,8 @@ def normalize(rows_raw: pd.DataFrame) -> pd.DataFrame:
     df = resolve_zona_interes(df)
     df = add_id_edan(df)
     df = add_address_norm(df)
-    # AFTER add_address_norm: the grouping keys off `direccion_norm`.
+    # The grouping keys off the raw `direccion` (address_unify_key); the
+    # display `direccion_norm` is only its fallback.
     df = add_dup_group(df, overrides=leer_representantes_fijados())
     log.info(
         "Edificios: %d registros -> %d edificios unicos (%d duplicados agrupados).",

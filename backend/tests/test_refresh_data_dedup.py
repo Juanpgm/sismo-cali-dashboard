@@ -86,7 +86,7 @@ def test_a_manual_override_wins_over_the_automatic_rule():
     df = rd.add_dup_group(_df([
         {"GlobalID": "auto", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-20"},
         {"GlobalID": "elegido", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-14"},
-    ]), overrides={"dir:CL 5": "elegido"})
+    ]), overrides={"dir:cl:5": "elegido"})
     rep = df[df["es_representante"]].iloc[0]
     assert rep["GlobalID"] == "elegido"
     assert df["es_representante"].sum() == 1
@@ -99,7 +99,7 @@ def test_an_override_pointing_at_a_missing_record_falls_back_to_the_rule():
     df = rd.add_dup_group(_df([
         {"GlobalID": "a", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-20"},
         {"GlobalID": "b", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-14"},
-    ]), overrides={"dir:CL 5": "ya-no-existe"})
+    ]), overrides={"dir:cl:5": "ya-no-existe"})
     assert df["es_representante"].sum() == 1
     assert df[df["es_representante"]].iloc[0]["GlobalID"] == "a"
 
@@ -237,8 +237,8 @@ def test_bridge_merges_different_address_strings_same_name_close():
     df = rd.add_dup_group(_df([
         {"GlobalID": "a", "direccion_norm": "CL 5 # 60-64", "nombre_edificacion": "Torre Pacifico",
          "y": 3.40000, "x": -76.50000},
-        {"GlobalID": "b", "direccion_norm": "CALLE 5 NO 60-64", "nombre_edificacion": "Torre Pacifico",
-         "y": 3.40010, "x": -76.50000},  # ~11 m, different address string
+        {"GlobalID": "b", "direccion_norm": "CL 5 # 60-65", "nombre_edificacion": "Torre Pacifico",
+         "y": 3.40010, "x": -76.50000},  # ~11 m, typo in the plate (different bucket)
     ]))
     assert df.loc[0, "dup_grupo_id"] == df.loc[1, "dup_grupo_id"]
     assert list(df["dup_n"]) == [2, 2]
@@ -248,7 +248,7 @@ def test_bridge_does_not_merge_same_name_far_apart():
     df = rd.add_dup_group(_df([
         {"GlobalID": "a", "direccion_norm": "CL 5 # 60-64", "nombre_edificacion": "Torre Pacifico",
          "y": 3.40000, "x": -76.50000},
-        {"GlobalID": "b", "direccion_norm": "CALLE 5 NO 60-64", "nombre_edificacion": "Torre Pacifico",
+        {"GlobalID": "b", "direccion_norm": "CL 5 # 60-65", "nombre_edificacion": "Torre Pacifico",
          "y": 3.40150, "x": -76.50000},  # ~165 m
     ]))
     assert df.loc[0, "dup_grupo_id"] != df.loc[1, "dup_grupo_id"]
@@ -286,7 +286,7 @@ def test_audit_excludes_singleton_groups_and_clears_revisar_when_consistent():
         {"GlobalID": "c", "direccion_norm": "KR 9", "colapso_total": "no"},
     ]))
     audit = rd.build_dup_audit(df)
-    assert set(audit["dup_grupo_id"]) == {"dir:CL 5"}, "the singleton KR 9 group must not appear"
+    assert set(audit["dup_grupo_id"]) == {"dir:cl:5"}, "the singleton KR 9 group must not appear"
     assert len(audit) == 2
     assert not audit["revisar"].any()
     assert (audit["senales"] == "misma-direccion").all()
@@ -340,8 +340,8 @@ def test_bridge_still_merges_a_specific_two_token_name_across_addresses():
     df = rd.add_dup_group(_df([
         {"GlobalID": "a", "direccion_norm": "CL 5 # 60-64", "nombre_edificacion": "Conjunto Asturias",
          "y": 3.40000, "x": -76.50000},
-        {"GlobalID": "b", "direccion_norm": "CALLE 5 NO 60-64", "nombre_edificacion": "Conjunto Asturias",
-         "y": 3.40010, "x": -76.50000},  # ~11 m, different address string
+        {"GlobalID": "b", "direccion_norm": "CL 5 # 60-65", "nombre_edificacion": "Conjunto Asturias",
+         "y": 3.40010, "x": -76.50000},  # ~11 m, typo in the plate (different bucket)
     ]))
     assert df.loc[0, "dup_grupo_id"] == df.loc[1, "dup_grupo_id"]
 
@@ -353,7 +353,7 @@ def test_audit_flags_every_puente_geo_group_for_review():
     df = rd.add_dup_group(_df([
         {"GlobalID": "a", "direccion_norm": "CL 5 # 60-64", "nombre_edificacion": "Conjunto Asturias",
          "y": 3.40000, "x": -76.50000},
-        {"GlobalID": "b", "direccion_norm": "CALLE 5 NO 60-64", "nombre_edificacion": "Conjunto Asturias",
+        {"GlobalID": "b", "direccion_norm": "CL 5 # 60-65", "nombre_edificacion": "Conjunto Asturias",
          "y": 3.40010, "x": -76.50000},
     ]))
     audit = rd.build_dup_audit(df)
@@ -375,7 +375,7 @@ def test_orphaned_override_warns_and_still_resolves_via_the_automatic_rule(caplo
         df = rd.add_dup_group(_df([
             {"GlobalID": "a", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-20"},
             {"GlobalID": "b", "direccion_norm": "CL 5", "fecha_inspeccion": "2026-08-14"},
-        ]), overrides={"dir:CL 5": "ya-no-existe"})
+        ]), overrides={"dir:cl:5": "ya-no-existe"})
     assert any("huerfano" in r.message for r in caplog.records)
     assert df["es_representante"].sum() == 1
     assert df[df["es_representante"]].iloc[0]["GlobalID"] == "a"
