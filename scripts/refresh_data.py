@@ -1507,7 +1507,9 @@ def fetch_survey_raw() -> pd.DataFrame:
 # charts can count BUILDINGS while the table still lists every inspection.
 
 # Habitability, worst first (ATC-20: i* unsafe > r* restricted > h habitable).
-_HAB_SEVERIDAD = {"i2": 5, "i1": 4, "r2": 3, "r1": 2, "h": 1}
+# i3 is the WORST class (above i2/i1); without an entry it scored 0 and lost
+# its building to a lesser record.
+_HAB_SEVERIDAD = {"i3": 6, "i2": 5, "i1": 4, "r2": 3, "r1": 2, "h": 1}
 _DANO_SEVERIDAD = {"alto": 3, "medio": 2, "bajo": 1}
 
 
