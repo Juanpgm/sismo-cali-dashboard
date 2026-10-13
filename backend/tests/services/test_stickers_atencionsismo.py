@@ -1371,3 +1371,65 @@ def test_clasificacion_fallback_normalises_but_keeps_an_unrecognised_match_value
 def test_clasificacion_non_string_match_value_does_not_raise():
     assert _clase("", 5) == "5"
     assert _clase("rojo", 5) == "INSEGURO"
+
+
+# ── test accounts: stickers created by QA technicians never reach the
+# dashboard (list, KPIs, exports). ───────────────────────────────────────────
+
+def _norm_with_cedula(cedula, **row_over):
+    row = _row(profesional={"cedula": cedula, "nombre": "Tecnico", "rango": "P1"}, **row_over)
+    return sa.normalize_sticker(row, roster_by_codigo={}, evaluacion_by_codigo={})
+
+
+def test_cedulas_prueba_constant_lists_the_three_known_accounts():
+    assert sa.CEDULAS_PRUEBA == frozenset({"123789000", "111122226", "1234567890"})
+
+
+@pytest.mark.parametrize("cedula", ["123789000", "111122226", "1234567890"])
+def test_sticker_of_a_test_technician_is_dropped(cedula):
+    assert _norm_with_cedula(cedula) is None
+
+
+@pytest.mark.parametrize("cedula", [123789000, 111122226, 1234567890, "123789000.0", "123.789.000",
+                                    " 111122226 ", "1.234.567.890"])
+def test_test_cedula_matches_as_int_float_string_or_formatted(cedula):
+    assert _norm_with_cedula(cedula) is None
+
+
+@pytest.mark.parametrize("cedula", ["12345678901", "1234567", "9123789000", "1237890001", "987654321"])
+def test_a_real_cedula_that_merely_resembles_a_test_one_is_kept(cedula):
+    out = _norm_with_cedula(cedula)
+    assert out is not None and out["inspector"]["identificacion"] == str(cedula)
+
+
+@pytest.mark.parametrize("profesional", [None, {}, {"cedula": "", "nombre": "X"}, {"cedula": None, "nombre": "X"}])
+def test_empty_or_missing_cedula_is_never_treated_as_a_test_account(profesional):
+    out = sa.normalize_sticker(_row(profesional=profesional), roster_by_codigo={}, evaluacion_by_codigo={})
+    assert out is not None
+
+
+def test_sticker_whose_matched_evaluacion_inspector_is_a_test_account_is_dropped():
+    ev = _eval_firestore(inspector={"uid": "u1", "codigo": "004", "nombre_completo": "QA",
+                                    "identificacion": "111122226", "entidad": "E", "np": "P1"})
+    out = sa.normalize_sticker(_row(), roster_by_codigo={},
+                               evaluacion_by_codigo={"76001-1-0040007": ev})
+    assert out is None
+
+
+def test_roster_only_attribution_never_drops_a_sticker():
+    # Brigade codes are reused, so a roster-by-code identity is not proof the
+    # sticker was made by that person: it must NOT be dropped on that basis.
+    roster = {"004": {"identificacion": "123789000", "nombre_completo": "QA", "np": "P1"}}
+    out = sa.normalize_sticker(_row(), roster_by_codigo=roster, evaluacion_by_codigo={})
+    assert out is not None and out["inspector_fuente"] == "roster"
+
+
+def test_build_evaluaciones_drops_only_the_test_stickers():
+    rows = [
+        _row(id="a", profesional={"cedula": "123789000", "nombre": "QA"}),
+        _row(id="b", profesional={"cedula": "55555", "nombre": "Real"}),
+        _row(id="c", profesional={"cedula": 1234567890, "nombre": "QA2"}),
+        _row(id="d"),
+    ]
+    out = sa.build_evaluaciones(rows, roster_by_codigo={}, evaluaciones_firestore=[])
+    assert sorted(e["id"] for e in out) == ["b", "d"]

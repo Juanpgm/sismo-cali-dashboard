@@ -115,6 +115,10 @@ is only a FALLBACK, used when the colour is blank or unknown (and then
 normalised: trimmed, upper-cased, spaces/dashes -> "_"). If both are
 blank the result is "". This replaces the older priority in which a
 matched evaluación's class beat the colour.
+
+Test accounts (2026-10-13): a sticker whose VERIFIED technician cédula
+(API `profesional.cedula`, or a matched evaluación's own inspector) is in
+`CEDULAS_PRUEBA` is dropped (`normalize_sticker` returns None).
 """
 from __future__ import annotations
 
@@ -130,6 +134,14 @@ from app.services import cedula_utils, fechas_es_co
 CODIGO_RE = re.compile(r"^(?P<municipio>\d{5})-(?P<area>\d)-(?P<inspector>\d{3})(?P<consecutivo>\d{4,})$")
 
 COLOR_TO_CLASE = {"verde": "INSPECCIONADA", "amarillo": "USO_RESTRINGIDO", "rojo": "INSEGURO"}
+
+# Technician cédulas of QA/test accounts (digits-only, compared through
+# `cedula_key`, so int / float-artifact / dotted forms all match). Stickers
+# attributed to them are dropped by `normalize_sticker` and therefore never
+# reach the map, list, KPIs or the xlsx/pdf exports. The Survey123 (Panel)
+# counterpart is `EVALUADORES_PRUEBA` in scripts/refresh_data.py (that script
+# ships standalone to the cron image, so it cannot import this module).
+CEDULAS_PRUEBA = frozenset({"123789000", "111122226", "1234567890"})
 
 # Values the API substitutes when a field is missing (contract §Stickers JSON).
 PLACEHOLDERS = frozenset({"Sin código", "Sin dirección", "Sin identificar"})
@@ -447,6 +459,14 @@ def normalize_sticker(
             if any((nombre_completo_value, identificacion_value, entidad_value))
             else ""
         )
+
+    # Test accounts: judged only on VERIFIED attributions -- the API's own
+    # `profesional.cedula` (Rule A) or a matched evaluación's own inspector
+    # (Rule B step 1). A roster-by-brigade-code identity is deliberately NOT
+    # used: brigade codes are reused, so it is not proof of who made THIS
+    # sticker and could drop a real one.
+    if inspector_fuente in ("api", "evaluacion") and cedula_key(identificacion_value) in CEDULAS_PRUEBA:
+        return None
 
     clase = COLOR_TO_CLASE.get(str(row.get("color") or "").strip().lower(), "")
     desc_match = (match or {}).get("descripcion") or {}

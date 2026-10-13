@@ -529,6 +529,28 @@ def _norm(value) -> str:
     return stripped.lower().strip()
 
 
+# Survey123 evaluators that are QA/test accounts, as EXACT normalised names
+# (accent-stripped, lower-cased, whitespace collapsed -- see `_norm`). Their
+# records are dropped in `normalize()` so they never reach the Panel. Matching
+# is by whole name, never substring: a real person whose name merely contains
+# "prueba" must be kept. The stickers counterpart is `CEDULAS_PRUEBA` in
+# backend/app/services/stickers_atencionsismo.py (this script ships alone to
+# the cron image, so it cannot import that module).
+EVALUADORES_PRUEBA = frozenset({"especializado pruebas", "especializado bbpruebas"})
+
+
+def exclude_test_accounts(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop the records authored by `EVALUADORES_PRUEBA` (exact normalised
+    `nombre_evaluador`). Runs BEFORE building grouping so a test record can
+    neither represent a building nor inflate its `dup_n`. The index is reset
+    because the grouping code addresses rows positionally. A frame without the
+    column is returned untouched."""
+    if "nombre_evaluador" not in df.columns or df.empty:
+        return df
+    nombres = df["nombre_evaluador"].map(lambda v: " ".join(_norm(v).split()))
+    return df[~nombres.isin(EVALUADORES_PRUEBA)].reset_index(drop=True)
+
+
 def add_suspension_servicios(df: pd.DataFrame) -> pd.DataFrame:
     """Derived `suspension_servicios` (si/no): colapso (parcial O total) declarado
     Y criterio de habitabilidad no habitable (I1–I3). Same rule the dashboard
@@ -1972,6 +1994,7 @@ def normalize(rows_raw: pd.DataFrame) -> pd.DataFrame:
     the live layer: rename columns, derive dates/comuna/barrio/id_edan/dirección."""
     df = rows_raw.drop(columns=[c for c in COLS_A_ELIMINAR if c in rows_raw.columns])
     df = df.rename(columns=RENAME_MAP)
+    df = exclude_test_accounts(df)
     if "municipio" in df.columns:
         df["municipio"] = normalize_municipio(df["municipio"])
     if "comuna_formulario" in df.columns:
