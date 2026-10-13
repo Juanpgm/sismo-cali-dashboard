@@ -1576,10 +1576,16 @@ _DIST_MISMO_EDIFICIO_M = 30.0
 
 
 def _norm_nombre(value) -> str:
+    """NFKD-strip accents, uppercase, every run of non-alphanumerics -> ONE
+    space, trim. Mirrors atencionsismo's `normNombre` exactly: a run must
+    collapse (not stay "NARINO  ETAPA") or SequenceMatcher's ratio drops under
+    the threshold and a pair the reference merges is split here.
+    """
     if pd.isna(value):
         return ""
-    txt = unicodedata.normalize("NFKD", str(value)).encode("ascii", "ignore").decode().upper()
-    return re.sub(r"[^A-Z0-9 ]", " ", txt).strip()
+    decomposed = unicodedata.normalize("NFKD", str(value))
+    stripped = "".join(ch for ch in decomposed if not unicodedata.category(ch).startswith("M"))
+    return re.sub(r"[^A-Z0-9]+", " ", stripped.upper(), flags=re.ASCII).strip()
 
 
 def _nombres_coinciden(na: str, nb: str) -> bool:
