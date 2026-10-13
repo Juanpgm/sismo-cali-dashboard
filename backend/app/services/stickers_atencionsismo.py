@@ -59,7 +59,7 @@ path (a different sticker's/person's brigade code, not this one's) — only
 `roster_by_cedula`'s own `codigo` (if the cédula is in the roster) or the
 code parsed straight from THIS sticker's own `numero` are legitimate
 `codigo` sources here. Everything else the match still drives
-(`fecha`/`fecha_fuente`, `fotos`, `clasificacion`, `alcance`, `coords`,
+(`fecha`/`fecha_fuente`, `fotos`, `alcance`, `coords`,
 `descripcion`, `restricciones`, `acciones_posteriores`, `comentarios`) is
 UNAFFECTED by this rule and keeps coming from the match exactly as before.
 
@@ -106,6 +106,15 @@ Firestore-sourced Evaluaciones tab still classifies those same evaluaciones
 by inspector NP (unaffected by this contract), so the Stickers tab and the
 Evaluaciones tab can disagree on the Fase of the same evaluación — by
 design, since they are now two independent signals.
+
+`clasificacion` (2026-10-13): the Atención Sismo app is the source of truth
+for the sticker class. The class derived from the API's own sticker colour
+(`color` -> `COLOR_TO_CLASE`) ALWAYS wins, even when a matched Firestore
+evaluación says something else. The matched evaluación's `clasificacion`
+is only a FALLBACK, used when the colour is blank or unknown (and then
+normalised: trimmed, upper-cased, spaces/dashes -> "_"). If both are
+blank the result is "". This replaces the older priority in which a
+matched evaluación's class beat the colour.
 """
 from __future__ import annotations
 
@@ -247,6 +256,18 @@ def cedula_key(value: object) -> str:
     "1234567" - it used to become "12345670" - and digits are ASCII only, like
     the depuracion engine and the frontend's `cedulaKey`."""
     return cedula_utils.solo_digitos(str(value or ""))
+
+
+def _clase_fallback(value: object) -> str:
+    """Normalise a matched evaluación's `clasificacion` for use as fallback.
+
+    Trims, upper-cases and turns runs of spaces/dashes into "_" so
+    "uso restringido" / "Uso-Restringido" become "USO_RESTRINGIDO" (the same
+    normalisation the front applies). Blank/None -> "". An unrecognised value
+    is still returned (normalised), never dropped."""
+    if value is None:
+        return ""
+    return re.sub(r"[\s-]+", "_", str(value).strip().upper())
 
 
 def normalize_sticker(
@@ -469,7 +490,9 @@ def normalize_sticker(
         "municipio": (match or {}).get("municipio") or (parsed or {}).get("municipio") or "",
         "area": (match or {}).get("area") if match else (parsed or {}).get("area"),
         "area_nombre": (match or {}).get("area_nombre") or "",
-        "clasificacion": (match or {}).get("clasificacion") or clase,
+        # The colour from the Atención Sismo app wins; the matched
+        # evaluación's class only fills in when the colour is blank/unknown.
+        "clasificacion": clase or _clase_fallback((match or {}).get("clasificacion")),
         "alcance": (match or {}).get("alcance") or "",
         "coords": _coords(row) or (match or {}).get("coords"),
         "inspector_fuente": inspector_fuente,

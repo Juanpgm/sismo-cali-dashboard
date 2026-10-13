@@ -1307,3 +1307,67 @@ def test_different_cedulas_still_do_not_match_after_the_change():
         roster_by_codigo={}, evaluacion_by_codigo={"76001-1-0040007": ev}, roster_by_cedula={},
     )
     assert out["inspector"]["np"] == "" and out["inspector"]["uid"] == ""  # a genuinely different cédula
+
+
+# ── clasificacion: the sticker colour (Atención Sismo app) is the source of
+# truth; the matched Firestore evaluación only fills in when the colour is
+# blank or unknown. ──────────────────────────────────────────────────────────
+
+def _clase(row_color, match_clasif=None, **row_over):
+    evals = {}
+    if match_clasif is not None:
+        evals = {"76001-1-0040007": _eval_firestore(clasificacion=match_clasif)}
+    out = sa.normalize_sticker(
+        _row(color=row_color, **row_over), roster_by_codigo={}, evaluacion_by_codigo=evals,
+    )
+    return out["clasificacion"]
+
+
+def test_clasificacion_colour_wins_when_it_disagrees_with_the_match():
+    assert _clase("verde", "INSEGURO") == "INSPECCIONADA"
+    assert _clase("amarillo", "INSEGURO") == "USO_RESTRINGIDO"
+    assert _clase("rojo", "INSPECCIONADA") == "INSEGURO"
+
+
+def test_clasificacion_colour_and_match_agree():
+    assert _clase("rojo", "INSEGURO") == "INSEGURO"
+
+
+def test_clasificacion_blank_colour_falls_back_to_the_match():
+    assert _clase("", "USO_RESTRINGIDO") == "USO_RESTRINGIDO"
+    assert _clase(None, "INSEGURO") == "INSEGURO"
+    assert _clase("   ", "INSPECCIONADA") == "INSPECCIONADA"
+
+
+def test_clasificacion_unknown_colour_falls_back_to_the_match():
+    assert _clase("azul", "INSEGURO") == "INSEGURO"
+
+
+def test_clasificacion_unknown_colour_without_match_is_blank():
+    assert _clase("azul") == ""
+
+
+def test_clasificacion_both_blank_is_blank():
+    assert _clase("", "") == ""
+    assert _clase(None, None) == ""
+    assert _clase("", None) == ""
+
+
+def test_clasificacion_colour_is_case_and_spacing_insensitive():
+    assert _clase("  ROJO ", "INSPECCIONADA") == "INSEGURO"
+    assert _clase("Verde", "INSEGURO") == "INSPECCIONADA"
+
+
+def test_clasificacion_fallback_normalises_mixed_case_and_spacing_of_the_match():
+    assert _clase("", " uso restringido ") == "USO_RESTRINGIDO"
+    assert _clase("", "Uso-Restringido") == "USO_RESTRINGIDO"
+    assert _clase("", "inseguro") == "INSEGURO"
+
+
+def test_clasificacion_fallback_normalises_but_keeps_an_unrecognised_match_value():
+    assert _clase("", "  peligro_colapso ") == "PELIGRO_COLAPSO"
+
+
+def test_clasificacion_non_string_match_value_does_not_raise():
+    assert _clase("", 5) == "5"
+    assert _clase("rojo", 5) == "INSEGURO"
